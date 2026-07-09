@@ -1,18 +1,91 @@
+<div align="center">
+  <img src="assets/brand/platform-config-forge-avatar-transparent-512.png" width="256" alt="platform-config logo">
+</div>
+
+<h1 align="center">platform-config</h1>
+
 <p align="center">
-  <img src="assets/brand/platform-config-forge-avatar-transparent-512.png" alt="platform-config logo" width="256">
+  Public Ansible configuration for platform hosts, services, and safe example inventories.
 </p>
 
 ---
 
-# platform-config
+## Overview
 
-`platform-config` configures operating systems and services with Ansible.
+`platform-config` configures already-provisioned hosts with Ansible. It
+contains public playbooks, roles, examples, helper scripts, and documentation
+for operating system and service configuration.
+
+The repository is one part of a split homelab platform project. Template
+building, infrastructure provisioning, system configuration, Kubernetes bastion
+tooling, documentation, and shared helper tools live in separate repositories
+so each layer can evolve independently.
+
+## Scope
+
+This repository owns public Ansible code: playbooks, roles, examples, helper scripts, and documentation.
+
+It configures already-provisioned hosts. It does not create VMs, build Proxmox templates, manage OpenTofu state, or store secrets.
+
+Only safe examples belong here. Real inventories, host variables, access policies, CA certificates, and non-secret environment-specific configuration belong in `../platform-private/config/`; real kubeconfigs, tokens, passwords, private keys, and other secrets belong outside Git.
+
+Working plans, test plans, incident notes, and environment-specific operational
+notes belong in `../platform-plans/config/plans/`, not in this public repo.
+
+## Requirements
+
+- Python 3.12+ on the Ansible control node.
+- Git and Make for local setup and helper targets.
+- Ansible and lint tooling from `requirements-dev.txt`.
+- Ansible Galaxy collections from `requirements.yml`.
+- The `vendor/platform-k8s-bastion` submodule for default bastion runtime input.
+- SSH access, host keys, private inventory, and secret files for real runs.
+
+## Quick Start
+
+Clone submodules and install local dependencies:
+
+```bash
+git submodule update --init --recursive
+make deps
+make help
+```
+
+Manual setup is equivalent:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-dev.txt
+ansible-galaxy collection install -r requirements.yml
+```
+
+For real runs, source the matching private environment file and run a helper
+script:
+
+```bash
+source ../platform-private/config/homelab.ansible.env
+./scripts/run-homelab.sh
+```
+
+The helper scripts also accept explicit inventory overrides when needed.
+
+For the full environment bring-up order, SSH key handoff, secrets layout, and service smoke commands, see [Operator runbook](docs/operator-runbook.md).
+
+## Common Commands
+
+```bash
+make help
+make syntax ENV=dev
+make check ENV=dev
+make verify
+make smoke-k8s-bastion ENV=dev
+```
+
+Most Make targets accept `ENV`, `PLAYBOOK`, `LIMIT`, and `EXTRA_ARGS`. Real
+runs require the matching private environment file and inventory.
 
 ## Platform Project
-
-This repository is one part of a homelab platform project.
-
-The repositories are split by responsibility so that template building, infrastructure provisioning, system configuration, Kubernetes bastion tooling, documentation, and shared helper tools can evolve independently.
 
 | Repository | Purpose |
 |---|---|
@@ -35,41 +108,6 @@ platform-tools provides optional shared helper commands.
 platform-docs documents the design and operations across all repositories.
 ```
 
-## Scope
-
-This repository owns public Ansible code: playbooks, roles, examples, helper scripts, and documentation.
-
-It configures already-provisioned hosts. It does not create VMs, build Proxmox templates, manage OpenTofu state, or store secrets.
-
-Only safe examples belong here. Real inventories, host variables, access policies, CA certificates, and non-secret environment-specific configuration belong in `../platform-private/config/`; real kubeconfigs, tokens, passwords, private keys, and other secrets belong outside Git.
-
-## Quick Start
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements-dev.txt
-ansible-galaxy collection install -r requirements.yml
-```
-
-Or use the Make wrapper:
-
-```bash
-make deps
-make help
-```
-
-For real runs, source the matching private environment file and run a helper script:
-
-```bash
-source ../platform-private/config/homelab.ansible.env
-./scripts/run-homelab.sh
-```
-
-The helper scripts also accept explicit inventory overrides when needed.
-
-For the full environment bring-up order, SSH key handoff, secrets layout, and service smoke commands, see [Operator runbook](docs/operator-runbook.md).
-
 ## Documentation
 
 - [Private workflow](docs/private-workflow.md)
@@ -84,3 +122,7 @@ For the full environment bring-up order, SSH key handoff, secrets layout, and se
 - [Roles](docs/roles.md)
 - [Development](docs/development.md)
 - [Platform workflow](docs/workflow.md)
+
+## License
+
+No license file was found for this repository.
