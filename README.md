@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="assets/brand/platform-config-forge-avatar-transparent-512.png" alt="platform-config logo" width="256">
+</p>
+
+---
+
 # platform-config
 
 `platform-config` configures operating systems and services with Ansible.
