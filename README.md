@@ -14,12 +14,13 @@
 
 `platform-config` configures already-provisioned hosts with Ansible. It
 contains public playbooks, roles, examples, helper scripts, and documentation
-for operating system and service configuration.
+for production-oriented operating system and service configuration.
 
-The repository is one part of a split homelab platform project. Template
-building, infrastructure provisioning, system configuration, Kubernetes bastion
-tooling, documentation, and shared helper tools live in separate repositories
-so each layer can evolve independently.
+The repository is one part of a split platform project. Template building,
+infrastructure provisioning, system configuration, Kubernetes bastion tooling,
+documentation, and shared helper tools live in separate repositories so each
+layer can evolve independently. Site-specific and personal configuration stays
+outside this public repository.
 
 ## Scope
 
@@ -61,7 +62,8 @@ ansible-galaxy collection install -r requirements.yml
 ```
 
 For real runs, source the matching private environment file and run a helper
-script:
+script. `homelab` is one example environment name; use the environment name
+from your private configuration layout.
 
 ```bash
 source ../platform-private/config/homelab.ansible.env
@@ -125,4 +127,5 @@ platform-docs documents the design and operations across all repositories.
 
 ## License
 
-No license file was found for this repository.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for
+details.
