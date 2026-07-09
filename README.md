@@ -33,16 +33,16 @@ notes belong in `../platform-plans/config/plans/`, not in this public repo.
 
 ## Requirements
 
-- Python 3.12+ on the Ansible control node.
+- Podman for the development/tooling container.
 - Git and Make for local setup and helper targets.
-- Ansible and lint tooling from `requirements-dev.txt`.
-- Ansible Galaxy collections from `requirements.yml`.
+- Ansible and lint tooling installed inside `Containerfile.dev` from
+  `requirements-dev.txt` and `requirements.yml`.
 - The `vendor/platform-k8s-bastion` submodule for default bastion runtime input.
 - SSH access, host keys, private inventory, and secret files for real runs.
 
 ## Quick Start
 
-Clone submodules and install local dependencies:
+Clone submodules and build the local development container:
 
 ```bash
 git submodule update --init --recursive
@@ -50,13 +50,11 @@ make deps
 make help
 ```
 
-Manual setup is equivalent:
+Open an interactive toolbox shell when you need to run Ansible or lint tooling
+without installing those dependencies on the host:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements-dev.txt
-ansible-galaxy collection install -r requirements.yml
+make shell
 ```
 
 For real runs, source the matching private environment file and run a helper
@@ -78,6 +76,8 @@ For the full environment bring-up order, SSH key handoff, secrets layout, and se
 make help
 make syntax ENV=dev
 make check ENV=dev
+make lint
+make yamllint
 make verify
 make smoke-k8s-bastion ENV=dev
 ```

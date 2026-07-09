@@ -18,11 +18,10 @@
 
 ## Setup And Checks
 
-- Local setup requires control-node Python 3.12+: `python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt`.
-- Install collections before Ansible checks: `ansible-galaxy collection install -r requirements.yml`.
-- Main syntax checks use a private inventory: `source ../platform-private/config/dev.ansible.env && ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/site.yml --syntax-check` and `ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/k8s-bastion-access.yml --syntax-check`.
-- Bastion smoke checks after apply: `ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/k8s-bastion-smoke.yml --limit k8s-bastion-01`.
-- Lint checks, when available: `ansible-lint playbooks/ roles/` and `yamllint .`.
+- Use the Podman dev container for Ansible and lint tooling; do not install project Python packages on the host. Build it with `make deps` or run commands through `./scripts/in-container`.
+- Main syntax checks use a private inventory: `make syntax ENV=dev` and `make syntax ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml`.
+- Bastion smoke checks after apply: `make smoke-k8s-bastion ENV=dev LIMIT=k8s-bastion-01`.
+- Lint checks: `make lint` and `make yamllint`.
 - Helper scripts source `../platform-private/config/<env>.ansible.env` when present; use `PLATFORM_CONFIG_INVENTORY=...`, `PLATFORM_CONFIG_ENV_FILE=...`, or `-i/--inventory` overrides for focused runs.
 
 ## How To Investigate

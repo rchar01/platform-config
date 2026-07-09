@@ -29,6 +29,7 @@ zot_registry_auth_enabled: false
 zot_registry_auth_htpasswd_src: ""
 zot_registry_auth_htpasswd_path: "{{ zot_registry_config_dir }}/htpasswd"
 zot_registry_auth_fail_delay: 5
+zot_registry_allow_insecure_anonymous_access: false
 
 zot_registry_ui_enabled: false
 zot_registry_ui_config: {}

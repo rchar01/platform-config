@@ -14,6 +14,44 @@
     fail_msg: "zot_registry_auth_htpasswd_src is required when Zot htpasswd auth is enabled."
   when: zot_registry_auth_enabled | bool
 
+- name: Check Zot firewalld active state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - firewalld
+  register: zot_registry_firewalld_active
+  changed_when: false
+  failed_when: false
+  when: zot_registry_firewalld_manage | bool
+
+- name: Close broad Zot registry firewalld port before refusing unsafe exposure
+  ansible.posix.firewalld:
+    port: "{{ zot_registry_firewalld_port }}"
+    permanent: true
+    immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
+    state: disabled
+  failed_when: false
+  when:
+    - zot_registry_firewalld_manage | bool
+    - zot_registry_firewalld_allowed_sources | length == 0
+    - not (zot_registry_auth_enabled | bool)
+    - not (zot_registry_allow_insecure_anonymous_access | bool)
+
+- name: Assert Zot registry exposure is protected
+  ansible.builtin.assert:
+    that:
+      - >-
+        zot_registry_auth_enabled | bool
+        or (zot_registry_firewalld_manage | bool and zot_registry_firewalld_allowed_sources | length > 0)
+        or zot_registry_allow_insecure_anonymous_access | bool
+    fail_msg: >-
+      Refusing to deploy a broadly reachable anonymous Zot registry. Enable
+      zot_registry_auth_enabled, configure zot_registry_firewalld_allowed_sources
+      with zot_registry_firewalld_manage=true, or set
+      zot_registry_allow_insecure_anonymous_access=true only for isolated
+      development environments.
+
 - name: Ensure Zot directories exist
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -102,17 +140,18 @@
   ansible.posix.firewalld:
     port: "{{ zot_registry_firewalld_port }}"
     permanent: true
-    immediate: "{{ zot_registry_firewalld_immediate }}"
+    immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
     state: enabled
   when:
     - zot_registry_firewalld_manage | bool
     - zot_registry_firewalld_allowed_sources | length == 0
+    - zot_registry_auth_enabled | bool or zot_registry_allow_insecure_anonymous_access | bool
 
 - name: Close broad Zot registry firewalld port when source allowlist is configured
   ansible.posix.firewalld:
     port: "{{ zot_registry_firewalld_port }}"
     permanent: true
-    immediate: "{{ zot_registry_firewalld_immediate }}"
+    immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
     state: disabled
   when:
     - zot_registry_firewalld_manage | bool
@@ -144,3 +183,16 @@
   when:
     - zot_registry_firewalld_manage | bool
     - not ansible_check_mode
+
+- name: Reload active firewalld after Zot registry rich rule changes
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --reload
+  changed_when: true
+  when:
+    - zot_registry_firewalld_manage | bool
+    - zot_registry_firewalld_allowed_sources | length > 0
+    - not ansible_check_mode
+    - zot_registry_firewalld_active.rc | default(1) == 0
+    - zot_registry_firewalld_rich_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list | length > 0

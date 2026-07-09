@@ -1,0 +1,26 @@
+FROM docker.io/library/python:3.12-slim
+
+ENV ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.ansible/collections \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_ROOT_USER_ACTION=ignore
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        git \
+        make \
+        openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY requirements-dev.txt requirements.yml /tmp/platform-config/
+RUN pip install -r /tmp/platform-config/requirements-dev.txt \
+    && ansible-galaxy collection install \
+        -r /tmp/platform-config/requirements.yml \
+        -p /usr/share/ansible/collections
+
+CMD ["/bin/bash"]

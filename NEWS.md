@@ -24,6 +24,10 @@ Initial public release of `platform-config`.
   packages, firewalld, storage volumes, Podman hosts, GitLab CE, GitLab Runner,
   OpenBao, monitoring, RKE2, kube-vip, Kong ingress, workload load balancing,
   Zot registry, and Kubernetes bastion access.
+- Run Ansible and lint tooling in a Podman development container instead of a
+  host Python environment.
+- Guard Zot registry exposure so broad anonymous access requires an explicit
+  isolated-development override.
 - Add public documentation for development, inventories, roles, private
   workflow, operator runs, registry operations, rebuild flow, and maintenance
   playbooks.

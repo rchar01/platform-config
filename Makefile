@@ -9,19 +9,17 @@ INVENTORY ?= $(PRIVATE_CONFIG_ROOT)/inventories/$(ENV)/hosts.yml
 PLAYBOOK ?= playbooks/site.yml
 LIMIT ?=
 EXTRA_ARGS ?=
-PYTHON ?= python3
-VENV ?= .venv
-ANSIBLE ?= $(VENV)/bin/ansible
-ANSIBLE_PLAYBOOK ?= $(VENV)/bin/ansible-playbook
-ANSIBLE_INVENTORY ?= $(VENV)/bin/ansible-inventory
-ANSIBLE_GALAXY ?= $(VENV)/bin/ansible-galaxy
-ANSIBLE_LINT ?= $(VENV)/bin/ansible-lint
-YAMLLINT ?= $(VENV)/bin/yamllint
-PIP ?= $(VENV)/bin/pip
+DEV_IMAGE ?= platform-config-dev:latest
+IN_CONTAINER ?= ./scripts/in-container
+ANSIBLE ?= ansible
+ANSIBLE_PLAYBOOK ?= ansible-playbook
+ANSIBLE_INVENTORY ?= ansible-inventory
+ANSIBLE_LINT ?= ansible-lint
+YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps inventory ping syntax check apply verify lint yamllint test smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file
 
 ## Show available commands
 help:
@@ -46,6 +44,7 @@ help:
 	@printf '  %-24s %s\n' 'EXTRA_ARGS' 'Extra arguments passed to Ansible commands'
 	@printf '\n%s\n' 'Examples:'
 	@printf '  %s\n' 'make deps'
+	@printf '  %s\n' 'make shell'
 	@printf '  %s\n' 'make inventory ENV=dev'
 	@printf '  %s\n' 'make check ENV=homelab PLAYBOOK=playbooks/gitlab.yml'
 	@printf '  %s\n' 'make apply ENV=dev PLAYBOOK=playbooks/registry.yml LIMIT=registry-01'
@@ -58,39 +57,44 @@ help:
 	@printf '  %s\n' 'make smoke-workload-lb ENV=dev'
 	@printf '  %s\n' 'make smoke-k8s-bastion ENV=dev'
 
-## Install Python and Ansible dependencies
-deps:
-	@$(PYTHON) -m venv "$(VENV)"
-	@"$(PIP)" install -r requirements-dev.txt
-	@"$(ANSIBLE_GALAXY)" collection install -r requirements.yml
+## Build the development container image
+container-build:
+	@podman build -f Containerfile.dev -t "$(DEV_IMAGE)" .
+
+## Prepare the development container image
+deps: container-build
+
+## Open an interactive development container shell
+shell:
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/devshell
 
 ## Show selected environment inventory graph
 inventory: _guard-env-file _guard-inventory
-	@. "$(ENV_FILE)" && "$(ANSIBLE_INVENTORY)" -i "$(INVENTORY)" --graph $(EXTRA_ARGS)
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" sh -c '. "$(ENV_FILE)" && "$(ANSIBLE_INVENTORY)" -i "$(INVENTORY)" --graph $(EXTRA_ARGS)'
 
 ## Ping all hosts in the selected environment
 ping: _guard-env-file _guard-inventory
-	@. "$(ENV_FILE)" && "$(ANSIBLE)" -i "$(INVENTORY)" all -m ping $(LIMIT_ARG) $(EXTRA_ARGS)
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" sh -c '. "$(ENV_FILE)" && "$(ANSIBLE)" -i "$(INVENTORY)" all -m ping $(LIMIT_ARG) $(EXTRA_ARGS)'
 
 ## Syntax-check PLAYBOOK in the selected environment
 syntax: _guard-env-file _guard-inventory
-	@. "$(ENV_FILE)" && "$(ANSIBLE_PLAYBOOK)" -i "$(INVENTORY)" "$(PLAYBOOK)" --syntax-check $(LIMIT_ARG) $(EXTRA_ARGS)
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" sh -c '. "$(ENV_FILE)" && "$(ANSIBLE_PLAYBOOK)" -i "$(INVENTORY)" "$(PLAYBOOK)" --syntax-check $(LIMIT_ARG) $(EXTRA_ARGS)'
 
 ## Run PLAYBOOK in check mode with diff
 check: _guard-env-file _guard-inventory
-	@. "$(ENV_FILE)" && "$(ANSIBLE_PLAYBOOK)" -i "$(INVENTORY)" "$(PLAYBOOK)" --check --diff $(LIMIT_ARG) $(EXTRA_ARGS)
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" sh -c '. "$(ENV_FILE)" && "$(ANSIBLE_PLAYBOOK)" -i "$(INVENTORY)" "$(PLAYBOOK)" --check --diff $(LIMIT_ARG) $(EXTRA_ARGS)'
 
 ## Apply PLAYBOOK to the selected environment
 apply: _guard-env-file _guard-inventory
-	@. "$(ENV_FILE)" && "$(ANSIBLE_PLAYBOOK)" -i "$(INVENTORY)" "$(PLAYBOOK)" $(LIMIT_ARG) $(EXTRA_ARGS)
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" sh -c '. "$(ENV_FILE)" && "$(ANSIBLE_PLAYBOOK)" -i "$(INVENTORY)" "$(PLAYBOOK)" $(LIMIT_ARG) $(EXTRA_ARGS)'
 
 ## Run ansible-lint
 lint:
-	@"$(ANSIBLE_LINT)" playbooks/ roles/
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" "$(ANSIBLE_LINT)" playbooks/ roles/
 
 ## Run yamllint for public files
 yamllint:
-	@"$(YAMLLINT)" .
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" "$(YAMLLINT)" .
 
 ## Run repository tests
 test:
@@ -143,9 +147,9 @@ smoke-workload-lb:
 smoke-k8s-bastion:
 	@$(MAKE) apply PLAYBOOK=playbooks/k8s-bastion-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
-## Remove local Python environment
+## Remove local Ansible runtime cache
 clean:
-	@rm -rf "$(VENV)"
+	@rm -rf .ansible
 
 _guard-env-file:
 	@test -f "$(ENV_FILE)" || { printf 'Environment file not found: %s\n' "$(ENV_FILE)" >&2; exit 1; }

@@ -19,9 +19,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registry, and Kubernetes bastion access.
 - Safe example inventories and private environment file examples for named
   environments such as `dev` and `homelab`.
-- Makefile workflow for dependency setup, inventory inspection, syntax checks,
-  check-mode runs, apply runs, linting, repository tests, and service smoke
-  playbooks.
+- Makefile workflow for containerized dependency setup, inventory inspection,
+  syntax checks, check-mode runs, apply runs, linting, repository tests, and
+  service smoke playbooks.
+- Podman development container for Ansible and lint tooling.
 - Kubernetes bastion runtime submodule pinned under
   `vendor/platform-k8s-bastion`.
 - Public documentation for development, inventories, roles, private workflow,
@@ -44,3 +45,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added ignore rules for private inventories, env files, access policies,
   kubeconfigs, certificate/key material, vault files, and private working
   plans.
+- Added a Zot registry exposure guard so broad anonymous access requires an
+  explicit isolated-development override.
+- Hardened the public Zot registry example with htpasswd authentication,
+  source-scoped firewalld access, and an access-control policy example.

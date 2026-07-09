@@ -13,7 +13,7 @@ Roles are intentionally variable-driven. Real environment values come from `plat
 - `nfs_client`: client-side NFS mount management from `nfs_client_mounts`.
 - `podman_host`: Podman host foundation for service containers. It installs Podman, creates the system Quadlet directory, and manages the Podman socket when `podman_host_socket_manage` is true.
 - `registry_client_tools`: Pinned client tooling for registry smoke tests on `registry_clients`, currently Helm for OCI chart push/pull checks.
-- `zot_registry`: Zot OCI registry deployment as a system Podman Quadlet service with TLS, optional UI, persistent storage, service lifecycle, and broad or source-scoped firewalld management.
+- `zot_registry`: Zot OCI registry deployment as a system Podman Quadlet service with TLS, optional htpasswd authentication, optional UI, persistent storage, service lifecycle, and guarded broad or source-scoped firewalld management.
 - `openbao`: OpenBao deployment as a system Podman Quadlet service with TLS, persistent Raft storage, service lifecycle, and source-scoped permanent firewalld rules. Init and unseal are intentionally excluded from normal convergence.
 - `gitlab_ce`: GitLab CE deployment as a system Podman Quadlet service with HTTPS, persistent storage, Git-over-SSH port mapping, service lifecycle, and permanent firewalld port management.
 - `gitlab_runner`: GitLab Runner deployment as a system Podman Quadlet service. It registers with a pre-created runner authentication token stored outside Git and starts with the shell executor, no privileged image-build support, and no container runtime socket mount.

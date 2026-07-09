@@ -1,18 +1,16 @@
 # Development
 
-Use a local Python virtual environment for Ansible and lint tooling.
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements-dev.txt
-ansible-galaxy collection install -r requirements.yml
-```
-
-The repository Makefile wraps the same setup and common Ansible operations:
+Use the Podman development container for Ansible and lint tooling. This keeps
+Python packages, Ansible collections, and linters out of the host environment.
 
 ```bash
 make deps
+make shell
+```
+
+The repository Makefile wraps the container and common Ansible operations:
+
+```bash
 make help
 make syntax ENV=dev
 make verify
@@ -20,24 +18,31 @@ make verify
 
 Required local tools:
 
-- Python 3.12+ on the control node
-- Ansible from `requirements-dev.txt`
-- Ansible Galaxy collections from `requirements.yml`
+- Podman on the workstation or CI runner
+- Git and Make
+- Ansible from `requirements-dev.txt`, installed inside `Containerfile.dev`
+- Ansible Galaxy collections from `requirements.yml`, installed inside `Containerfile.dev`
 - Git when using `vendor/platform-k8s-bastion` as a submodule
 
 Useful checks:
 
 ```bash
-source ../platform-private/config/dev.ansible.env
-ansible-inventory -i "$PLATFORM_CONFIG_INVENTORY" --graph
-ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/site.yml --syntax-check
-ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/k8s-bastion-access.yml --syntax-check
-ansible-lint playbooks/ roles/
-yamllint .
+make inventory ENV=dev
+make syntax ENV=dev
+make syntax ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml
+make lint
+make yamllint
 bash tests/run-all.sh
 ```
 
-`ansible-lint`, `yamllint`, and `tests/run-all.sh` are development checks. They are not required on managed hosts. Their local configuration excludes `.venv/` and the vendored bastion runtime.
+`ansible-lint`, `yamllint`, and `tests/run-all.sh` are development checks. They are not required on managed hosts. Their local configuration excludes `.ansible/` and the vendored bastion runtime.
+
+The dev container mounts this repository at `/workspace`. If
+`../platform-private` exists next to the repository, it is mounted read-only at
+`/platform-private` so the default relative private paths still work from
+`/workspace`. If `~/.config/platform-infrastructure` exists, it is mounted
+read-only under the container home so env files that derive outside-Git secret
+paths from `$HOME` continue to work.
 
 See [Operator Runbook](operator-runbook.md) for the full homelab and dev bring-up sequence.
 

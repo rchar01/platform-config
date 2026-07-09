@@ -1,0 +1,7 @@
+.ansible/
+.git/
+.venv/
+__pycache__/
+*.pyc
+ansible.log
+vendor/

@@ -23,7 +23,7 @@ The smoke playbook has three tiers.
 | Test | Enabled By | Requires | What It Verifies |
 |---|---|---|---|
 | Zot service/API/firewall/UI | Registry host vars | `systemctl`, `firewall-offline-cmd`, Python Ansible modules | Zot is active, `/v2/` responds, firewalld exposure matches vars, and the UI root serves HTML when enabled. |
-| Raw OCI API push/pull | Always on `registry_clients` | Python Ansible modules only | Zot accepts a minimal OCI config blob and manifest over the Distribution API. |
+| Raw OCI API push/pull | Always on `registry_clients` | Python Ansible modules only | Zot accepts a minimal OCI config blob and manifest over the Distribution API. Set smoke credentials when registry auth is enabled. |
 | Podman image push/pull/run | `zot_registry_smoke_image_enabled: true` | Podman on `registry_clients` | A real `hello-world` image can be pulled, retagged, pushed to Zot, pulled back, and run. |
 | Helm OCI chart push/pull | `zot_registry_smoke_helm_enabled: true` | Helm from `registry_client_tools` | A temporary Helm chart can be packaged, pushed as an OCI artifact, and pulled back. |
 
@@ -48,9 +48,15 @@ zot_registry_smoke_base_url: "{{ platform_registry_url }}"
 zot_registry_smoke_validate_certs: false
 zot_registry_smoke_image_enabled: true
 zot_registry_smoke_helm_enabled: true
+zot_registry_smoke_username: registry-admin
+zot_registry_smoke_password: "replace-with-secret-password"
 ```
 
 `zot_registry_smoke_validate_certs: false` makes Podman use `--tls-verify=false` and Helm use `--insecure-skip-tls-verify` during smoke tests. Keep this aligned with whether the client host trusts the registry CA.
+
+Set both `zot_registry_smoke_username` and `zot_registry_smoke_password`, or
+neither. Authenticated registries require both values for raw OCI API, Podman,
+and Helm smoke checks. Store real smoke passwords outside public Git.
 
 ## UI And Network Access
 
@@ -71,16 +77,24 @@ zot_registry_firewalld_allowed_sources:
 
 When this allowlist is non-empty, the broad permanent registry port is closed and only the listed CIDRs are allowed.
 
+The role refuses to deploy a broadly reachable anonymous registry by default. A
+deployment must enable htpasswd authentication, configure a source allowlist
+that this role manages with firewalld, or explicitly set
+`zot_registry_allow_insecure_anonymous_access: true` for an isolated development
+environment.
+
 ## Security Model
 
-The current dev registry setup is optimized for internal platform testing, not production exposure.
+The registry role is safe by default. It requires authentication, source-scoped
+network access, or an explicit development-only override before opening the
+registry listener broadly.
 
 | Area | Current Dev Setup | Production Recommendation |
 |---|---|---|
 | TLS | Enabled with platform PKI service certificate. | Enabled with a CA trusted by all users, CI hosts, and Kubernetes nodes. |
 | Client certificate validation | Smoke tests disable validation with client flags. | Do not use `--tls-verify=false` or `--insecure-skip-tls-verify`; install the registry CA instead. |
-| Authentication | Disabled. | Enable registry authentication before exposing beyond trusted admin networks. |
-| Authorization | Not configured. | Use least-privilege repository policies for humans, CI, and admins. |
+| Authentication | Required for broad exposure unless explicitly overridden. | Enable registry authentication before exposing beyond trusted admin networks. |
+| Authorization | Example policy grants a registry admin full access. | Use least-privilege repository policies for humans, CI, and admins. |
 | Image signing | Not configured. | Sign release images and enforce signed-only deployment with registry trust and Kubernetes admission policy. |
 | Network access | Firewalld source allowlist for local CIDRs. | Keep firewall, VPN, or site routing restrictions in addition to registry auth. |
 | Kubernetes pulls | RKE2 nodes trust the registry CA. | Add node-level registry auth, `imagePullSecrets`, or both when the registry requires login. |
@@ -98,6 +112,14 @@ The role already has auth inputs:
 zot_registry_auth_enabled: true
 zot_registry_auth_htpasswd_src: /outside-git/path/htpasswd
 ```
+
+For isolated development only, anonymous registry access can be made explicit:
+
+```yaml
+zot_registry_allow_insecure_anonymous_access: true
+```
+
+Do not use that override for shared, routed, production, or CI-facing registries.
 
 Create bcrypt htpasswd entries with a tool such as:
 

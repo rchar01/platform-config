@@ -14,6 +14,14 @@
       {{ zot_registry_smoke_effective_url | regex_replace('/v2/?$', '') }}
     zot_registry_smoke_effective_status_codes: "{{ zot_registry_smoke_status_codes | default([200, 401]) }}"
   tasks:
+    - name: Assert registry smoke auth credentials are complete on registry hosts
+      ansible.builtin.assert:
+        that:
+          - >-
+            (zot_registry_smoke_username is defined and zot_registry_smoke_password is defined)
+            or (zot_registry_smoke_username is not defined and zot_registry_smoke_password is not defined)
+        fail_msg: "Set both zot_registry_smoke_username and zot_registry_smoke_password, or neither."
+
     - name: Check Zot service active state
       ansible.builtin.command:
         argv:
@@ -34,6 +42,9 @@
         url: "{{ zot_registry_smoke_effective_url }}"
         method: GET
         validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        url_username: "{{ zot_registry_smoke_username | default(omit) }}"
+        url_password: "{{ zot_registry_smoke_password | default(omit) }}"
+        force_basic_auth: "{{ zot_registry_smoke_username is defined }}"
         status_code: "{{ zot_registry_smoke_effective_status_codes }}"
       register: zot_registry_smoke_api
 
@@ -116,6 +127,9 @@
         url: "{{ zot_registry_smoke_effective_base_url }}/"
         method: GET
         validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        url_username: "{{ zot_registry_smoke_username | default(omit) }}"
+        url_password: "{{ zot_registry_smoke_password | default(omit) }}"
+        force_basic_auth: "{{ zot_registry_smoke_username is defined }}"
         status_code: 200
       when: zot_registry_ui_enabled | default(false) | bool
 
@@ -148,11 +162,22 @@
           - zot_registry_smoke_base_url | length > 0
         fail_msg: "zot_registry_smoke_base_url is required for registry client smoke checks."
 
+    - name: Assert registry smoke auth credentials are complete
+      ansible.builtin.assert:
+        that:
+          - >-
+            (zot_registry_smoke_username is defined and zot_registry_smoke_password is defined)
+            or (zot_registry_smoke_username is not defined and zot_registry_smoke_password is not defined)
+        fail_msg: "Set both zot_registry_smoke_username and zot_registry_smoke_password, or neither. Authenticated registries require both for raw API smoke checks."
+
     - name: Start OCI config blob upload
       ansible.builtin.uri:
         url: "{{ zot_registry_smoke_base_url }}/v2/{{ zot_registry_smoke_repository }}/blobs/uploads/"
         method: POST
         validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        url_username: "{{ zot_registry_smoke_username | default(omit) }}"
+        url_password: "{{ zot_registry_smoke_password | default(omit) }}"
+        force_basic_auth: "{{ zot_registry_smoke_username is defined }}"
         status_code: 202
       register: zot_registry_smoke_config_upload
 
@@ -171,6 +196,9 @@
         method: PUT
         body: "{{ zot_registry_smoke_config_body }}"
         validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        url_username: "{{ zot_registry_smoke_username | default(omit) }}"
+        url_password: "{{ zot_registry_smoke_password | default(omit) }}"
+        force_basic_auth: "{{ zot_registry_smoke_username is defined }}"
         status_code: 201
 
     - name: Push OCI smoke manifest
@@ -181,6 +209,9 @@
           Content-Type: "{{ zot_registry_smoke_manifest_media_type }}"
         body: "{{ zot_registry_smoke_manifest_body }}"
         validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        url_username: "{{ zot_registry_smoke_username | default(omit) }}"
+        url_password: "{{ zot_registry_smoke_password | default(omit) }}"
+        force_basic_auth: "{{ zot_registry_smoke_username is defined }}"
         status_code: 201
 
     - name: Pull OCI smoke manifest
@@ -190,6 +221,9 @@
         headers:
           Accept: "{{ zot_registry_smoke_manifest_media_type }}"
         validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        url_username: "{{ zot_registry_smoke_username | default(omit) }}"
+        url_password: "{{ zot_registry_smoke_password | default(omit) }}"
+        force_basic_auth: "{{ zot_registry_smoke_username is defined }}"
         status_code: 200
       register: zot_registry_smoke_pulled_manifest
 
@@ -207,6 +241,7 @@
     zot_registry_smoke_tool_registry: "{{ zot_registry_smoke_base_url | regex_replace('^https?://', '') | regex_replace('/+$', '') }}"
     zot_registry_smoke_tool_tls_args: "{{ [] if (zot_registry_smoke_validate_certs | default(true) | bool) else ['--tls-verify=false'] }}"
     zot_registry_smoke_helm_tls_args: "{{ [] if (zot_registry_smoke_validate_certs | default(true) | bool) else ['--insecure-skip-tls-verify'] }}"
+    zot_registry_smoke_helm_login_tls_args: "{{ [] if (zot_registry_smoke_validate_certs | default(true) | bool) else ['--insecure'] }}"
     zot_registry_smoke_helm_bin: /usr/local/bin/helm
     zot_registry_smoke_image_source: docker.io/library/hello-world:latest
     zot_registry_smoke_image_repository: platform-smoke/hello-world
@@ -228,6 +263,15 @@
           - zot_registry_smoke_base_url is defined
           - zot_registry_smoke_base_url | length > 0
         fail_msg: "zot_registry_smoke_base_url is required for registry client tool smoke checks."
+      when: zot_registry_smoke_image_enabled | default(false) | bool or zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Assert registry smoke auth credentials are complete for tool checks
+      ansible.builtin.assert:
+        that:
+          - >-
+            (zot_registry_smoke_username is defined and zot_registry_smoke_password is defined)
+            or (zot_registry_smoke_username is not defined and zot_registry_smoke_password is not defined)
+        fail_msg: "Set both zot_registry_smoke_username and zot_registry_smoke_password, or neither. Authenticated registries require both for tool smoke checks."
       when: zot_registry_smoke_image_enabled | default(false) | bool or zot_registry_smoke_helm_enabled | default(false) | bool
 
     - name: Check Podman client command
@@ -257,6 +301,16 @@
           - "{{ zot_registry_smoke_image_ref }}"
       changed_when: false
       when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Log in to Zot with Podman
+      ansible.builtin.command:
+        argv: "{{ ['podman', 'login'] + zot_registry_smoke_tool_tls_args + ['--username', zot_registry_smoke_username, '--password-stdin', zot_registry_smoke_tool_registry] }}"
+        stdin: "{{ zot_registry_smoke_password }}"
+      no_log: true
+      changed_when: false
+      when:
+        - zot_registry_smoke_image_enabled | default(false) | bool
+        - zot_registry_smoke_username is defined
 
     - name: Push hello-world image to Zot
       ansible.builtin.command:
@@ -364,6 +418,18 @@
           - "{{ zot_registry_smoke_helm_tmp.path }}"
       changed_when: false
       when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Log in to Zot with Helm
+      ansible.builtin.command:
+        argv: >-
+          {{ [zot_registry_smoke_helm_bin, 'registry', 'login', zot_registry_smoke_tool_registry,
+              '--username', zot_registry_smoke_username, '--password-stdin'] + zot_registry_smoke_helm_login_tls_args }}
+        stdin: "{{ zot_registry_smoke_password }}"
+      no_log: true
+      changed_when: false
+      when:
+        - zot_registry_smoke_helm_enabled | default(false) | bool
+        - zot_registry_smoke_username is defined
 
     - name: Push temporary Helm smoke chart to Zot
       ansible.builtin.command:

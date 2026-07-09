@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${PLATFORM_CONFIG_DEV_IMAGE:-platform-config-dev:latest}"
+containerfile="${PLATFORM_CONFIG_DEV_CONTAINERFILE:-Containerfile.dev}"
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+repo_parent="$(dirname "$repo_root")"
+private_root="${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_parent/platform-private}"
+secret_root="${PLATFORM_CONFIG_SECRET_ROOT:-$HOME/.config/platform-infrastructure}"
+
+if [[ $# -eq 0 ]]; then
+  set -- bash
+fi
+
+if ! podman image exists "$image" >/dev/null 2>&1; then
+  podman build -f "$repo_root/$containerfile" -t "$image" "$repo_root"
+fi
+
+podman_args=(
+  run
+  --rm
+  --userns=keep-id
+  --workdir /workspace
+  --env HOME=/tmp/platform-home
+  --env ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.ansible/collections
+  --volume "$repo_root:/workspace"
+)
+
+if [[ -d "$private_root" ]]; then
+  podman_args+=(--volume "$private_root:/platform-private:ro")
+fi
+
+if [[ -d "$HOME/.ssh" ]]; then
+  podman_args+=(--volume "$HOME/.ssh:/tmp/platform-home/.ssh:ro")
+fi
+
+if [[ -d "$secret_root" ]]; then
+  podman_args+=(--volume "$secret_root:/tmp/platform-home/.config/platform-infrastructure:ro")
+fi
+
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+  podman_args+=(--env SSH_AUTH_SOCK=/tmp/ssh-agent --volume "$SSH_AUTH_SOCK:/tmp/ssh-agent")
+fi
+
+if [[ -t 0 && -t 1 ]]; then
+  podman_args+=(-it)
+fi
+
+exec podman "${podman_args[@]}" "$image" "$@"

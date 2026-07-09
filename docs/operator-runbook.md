@@ -83,7 +83,7 @@ make deps
 make help
 ```
 
-`make deps` creates `.venv/`, installs `requirements-dev.txt`, and installs Ansible Galaxy collections from `requirements.yml`.
+`make deps` builds the Podman development container with Ansible, lint tooling, and Ansible Galaxy collections from the repository requirements files.
 
 ## Version Pinning And Updates
 
@@ -437,8 +437,7 @@ run should target only one host.
 Native equivalents remain supported:
 
 ```bash
-source ../platform-private/config/dev.ansible.env
-.venv/bin/ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/site.yml --check --diff
+./scripts/in-container sh -c '. ../platform-private/config/dev.ansible.env && ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/site.yml --check --diff'
 ```
 
 ## Homelab Bring-Up
@@ -552,9 +551,7 @@ make smoke-openbao ENV=dev
 Before configuring dev GitLab runners, confirm homelab GitLab is reachable from the runner hosts:
 
 ```bash
-source ../platform-private/config/dev.ansible.env
-.venv/bin/ansible -i "$PLATFORM_CONFIG_INVENTORY" gitlab_runners -m uri \
-  -a "url=https://gitlab.example.test/users/sign_in validate_certs=false status_code=200"
+./scripts/in-container sh -c '. ../platform-private/config/dev.ansible.env && ansible -i "$PLATFORM_CONFIG_INVENTORY" gitlab_runners -m uri -a "url=https://gitlab.example.test/users/sign_in validate_certs=false status_code=200"'
 ```
 
 Runner authentication tokens are created in GitLab and stored outside Git. Do not put runner tokens in public examples, plain private vars, shell history, or logs.
@@ -787,7 +784,7 @@ Run from `platform-config`:
 make syntax ENV=homelab
 make syntax ENV=dev
 make verify
-.venv/bin/yamllint ../platform-private/config/inventories/homelab ../platform-private/config/inventories/dev ../platform-private/config/plans
+./scripts/in-container yamllint ../platform-private/config/inventories/homelab ../platform-private/config/inventories/dev ../platform-private/config/plans
 git diff --check
 ```
 
