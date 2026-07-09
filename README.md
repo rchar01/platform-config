@@ -10,8 +10,6 @@
 
 ---
 
-## Overview
-
 `platform-config` configures already-provisioned hosts with Ansible. It
 contains public playbooks, roles, examples, helper scripts, and documentation
 for production-oriented operating system and service configuration.
