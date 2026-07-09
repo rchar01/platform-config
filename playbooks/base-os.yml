@@ -1,0 +1,10 @@
+---
+- name: Configure base OS
+  hosts: rocky
+  become: true
+  roles:
+    - common
+    - packages
+    - root_lvm
+    - chrony
+    - firewalld

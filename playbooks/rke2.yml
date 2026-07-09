@@ -1,0 +1,14 @@
+---
+- name: Configure RKE2 server nodes
+  hosts: rke2_servers
+  become: true
+  serial: 1
+  roles:
+    - rke2
+
+- name: Configure RKE2 agent nodes
+  hosts: rke2_agents
+  become: true
+  serial: 1
+  roles:
+    - rke2

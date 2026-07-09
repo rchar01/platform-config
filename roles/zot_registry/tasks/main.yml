@@ -1,0 +1,146 @@
+---
+- name: Assert Zot TLS source files are configured
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_cert_src | length > 0
+      - zot_registry_tls_key_src | length > 0
+    fail_msg: "zot_registry_tls_cert_src and zot_registry_tls_key_src are required when TLS is enabled."
+  when: zot_registry_tls_enabled | bool
+
+- name: Assert Zot htpasswd source file is configured
+  ansible.builtin.assert:
+    that:
+      - zot_registry_auth_htpasswd_src | length > 0
+    fail_msg: "zot_registry_auth_htpasswd_src is required when Zot htpasswd auth is enabled."
+  when: zot_registry_auth_enabled | bool
+
+- name: Ensure Zot directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ zot_registry_config_dir }}"
+      mode: "0755"
+    - path: "{{ zot_registry_tls_dir }}"
+      mode: "0750"
+    - path: "{{ zot_registry_data_dir }}"
+      mode: "0755"
+
+- name: Copy Zot TLS certificate
+  ansible.builtin.copy:
+    src: "{{ zot_registry_tls_cert_src }}"
+    dest: "{{ zot_registry_tls_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: zot_registry_tls_cert_result
+  notify: Restart Zot registry
+  when: zot_registry_tls_enabled | bool
+
+- name: Copy Zot TLS private key
+  ansible.builtin.copy:
+    src: "{{ zot_registry_tls_key_src }}"
+    dest: "{{ zot_registry_tls_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  register: zot_registry_tls_key_result
+  no_log: true
+  notify: Restart Zot registry
+  when: zot_registry_tls_enabled | bool
+
+- name: Copy Zot htpasswd file
+  ansible.builtin.copy:
+    src: "{{ zot_registry_auth_htpasswd_src }}"
+    dest: "{{ zot_registry_auth_htpasswd_path }}"
+    owner: root
+    group: root
+    mode: "0640"
+  register: zot_registry_htpasswd_result
+  notify: Restart Zot registry
+  when: zot_registry_auth_enabled | bool
+
+- name: Write Zot configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ zot_registry_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: zot_registry_config_result
+  notify: Restart Zot registry
+
+- name: Write Zot Quadlet unit
+  ansible.builtin.template:
+    src: zot.container.j2
+    dest: "{{ zot_registry_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: zot_registry_quadlet_result
+  notify:
+    - Reload systemd
+    - Restart Zot registry
+
+- name: Reload systemd manager configuration
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Manage Zot registry service
+  ansible.builtin.systemd_service:
+    name: "{{ zot_registry_service_name }}"
+    enabled: "{{ zot_registry_service_enabled }}"
+    state: "{{ zot_registry_service_state }}"
+  when: not (ansible_check_mode and zot_registry_quadlet_result is changed)
+
+- name: Open Zot registry firewalld port
+  ansible.posix.firewalld:
+    port: "{{ zot_registry_firewalld_port }}"
+    permanent: true
+    immediate: "{{ zot_registry_firewalld_immediate }}"
+    state: enabled
+  when:
+    - zot_registry_firewalld_manage | bool
+    - zot_registry_firewalld_allowed_sources | length == 0
+
+- name: Close broad Zot registry firewalld port when source allowlist is configured
+  ansible.posix.firewalld:
+    port: "{{ zot_registry_firewalld_port }}"
+    permanent: true
+    immediate: "{{ zot_registry_firewalld_immediate }}"
+    state: disabled
+  when:
+    - zot_registry_firewalld_manage | bool
+    - zot_registry_firewalld_allowed_sources | length > 0
+
+- name: Check permanent Zot registry firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --query-rich-rule
+      - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ zot_registry_host_port }}\" protocol=\"tcp\" accept"
+  loop: "{{ zot_registry_firewalld_allowed_sources }}"
+  register: zot_registry_firewalld_rich_rule_checks
+  check_mode: false
+  changed_when: false
+  failed_when: zot_registry_firewalld_rich_rule_checks.rc not in [0, 1]
+  when:
+    - zot_registry_firewalld_manage | bool
+    - zot_registry_firewalld_allowed_sources | length > 0
+
+- name: Add permanent Zot registry firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --add-rich-rule
+      - "{{ item.cmd[2] }}"
+  loop: "{{ zot_registry_firewalld_rich_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
+  changed_when: true
+  when:
+    - zot_registry_firewalld_manage | bool
+    - not ansible_check_mode

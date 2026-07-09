@@ -1,0 +1,37 @@
+---
+- name: Run Kubernetes bastion preflight checks
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Install Kubernetes bastion OS packages
+  ansible.builtin.import_tasks: install_packages.yml
+
+- name: Install external Kubernetes bastion tools
+  ansible.builtin.import_tasks: tools.yml
+  when: k8s_bastion_install_external_tools
+
+- name: Install Kubernetes bastion runtime commands and libraries
+  ansible.builtin.import_tasks: runtime.yml
+
+- name: Install Kubernetes bastion host configuration
+  ansible.builtin.import_tasks: host_config.yml
+
+- name: Install Kubernetes bastion login profile
+  ansible.builtin.import_tasks: profile.yml
+
+- name: Configure Kubernetes bastion users from policy
+  ansible.builtin.import_tasks: users.yml
+  when: k8s_bastion_configure_users
+
+- name: Configure Kubernetes bastion cluster RBAC from policy
+  ansible.builtin.import_tasks: cluster_rbac.yml
+  when: k8s_bastion_manage_cluster_rbac
+
+- name: Install Kubernetes bastion systemd units
+  ansible.builtin.import_tasks: systemd.yml
+  when: k8s_bastion_enable_systemd
+
+- name: Create Kubernetes bastion symlinks
+  ansible.builtin.import_tasks: symlinks.yml
+
+- name: Validate Kubernetes bastion commands
+  ansible.builtin.import_tasks: validate.yml

@@ -1,0 +1,44 @@
+---
+- name: Smoke test GitLab runner hosts
+  hosts: gitlab_runners
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check GitLab Runner service active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ gitlab_runner_service_name | default('gitlab-runner.service') }}"
+      register: gitlab_runner_smoke_service_active
+      changed_when: false
+
+    - name: Assert GitLab Runner service is active
+      ansible.builtin.assert:
+        that:
+          - gitlab_runner_smoke_service_active.stdout == 'active'
+        fail_msg: "GitLab Runner service is not active."
+
+    - name: Check GitLab Runner configuration exists
+      ansible.builtin.stat:
+        path: "{{ gitlab_runner_config_path | default('/etc/gitlab-runner/config.toml') }}"
+      register: gitlab_runner_smoke_config
+
+    - name: Assert GitLab Runner configuration exists
+      ansible.builtin.assert:
+        that:
+          - gitlab_runner_smoke_config.stat.exists
+          - gitlab_runner_smoke_config.stat.isreg
+        fail_msg: "GitLab Runner configuration file is missing."
+
+    - name: Verify GitLab Runner registration
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - "{{ gitlab_runner_container_name | default('gitlab-runner') }}"
+          - gitlab-runner
+          - verify
+          - --delete=false
+      register: gitlab_runner_smoke_verify
+      changed_when: false

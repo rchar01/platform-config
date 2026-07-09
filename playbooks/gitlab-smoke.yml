@@ -1,0 +1,56 @@
+---
+- name: Smoke test GitLab CE hosts
+  hosts: gitlab
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check GitLab CE service active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ gitlab_ce_service_name | default('gitlab.service') }}"
+      register: gitlab_ce_smoke_service_active
+      changed_when: false
+
+    - name: Assert GitLab CE service is active
+      ansible.builtin.assert:
+        that:
+          - gitlab_ce_smoke_service_active.stdout == 'active'
+        fail_msg: "GitLab CE service is not active."
+
+    - name: Check GitLab CE web endpoint
+      ansible.builtin.uri:
+        url: "{{ gitlab_ce_smoke_url | default((gitlab_ce_external_url | default('https://' ~ (ansible_host | default(inventory_hostname)))) ~ '/users/sign_in') }}"
+        method: GET
+        validate_certs: "{{ gitlab_ce_smoke_validate_certs | default(true) }}"
+        status_code: "{{ gitlab_ce_smoke_status_codes | default([200]) }}"
+      register: gitlab_ce_smoke_web
+      until: gitlab_ce_smoke_web.status | default(-1) in (gitlab_ce_smoke_status_codes | default([200]))
+      retries: "{{ gitlab_ce_smoke_retries | default(60) }}"
+      delay: "{{ gitlab_ce_smoke_delay | default(10) }}"
+
+    - name: Assert GitLab CE web endpoint responded
+      ansible.builtin.assert:
+        that:
+          - gitlab_ce_smoke_web.status in (gitlab_ce_smoke_status_codes | default([200]))
+        fail_msg: "GitLab CE web endpoint did not return an expected status code."
+
+    - name: Check permanent GitLab CE firewalld ports
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-port
+          - "{{ item }}"
+      loop: "{{ gitlab_ce_firewalld_ports | default(['443/tcp', '2222/tcp']) }}"
+      register: gitlab_ce_smoke_firewalld_ports
+      changed_when: false
+      failed_when: gitlab_ce_smoke_firewalld_ports.rc not in [0, 1]
+      when: gitlab_ce_firewalld_manage | default(true) | bool
+
+    - name: Assert permanent GitLab CE firewalld ports are open
+      ansible.builtin.assert:
+        that:
+          - gitlab_ce_smoke_firewalld_ports.results | selectattr('rc', 'eq', 1) | list | length == 0
+        fail_msg: "One or more GitLab CE ports are missing from permanent firewalld configuration."
+      when: gitlab_ce_firewalld_manage | default(true) | bool

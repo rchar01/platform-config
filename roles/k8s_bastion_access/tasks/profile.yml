@@ -1,0 +1,31 @@
+---
+- name: Build Kubernetes bastion external tool command list
+  ansible.builtin.set_fact:
+    k8s_bastion_external_tool_commands: >-
+      {{
+        lookup('template', 'profile-external-tools.yml.j2') | from_yaml
+      }}
+
+- name: Build Kubernetes bastion profile tool lists
+  ansible.builtin.set_fact:
+    k8s_bastion_user_tools: >-
+      {{
+        k8s_bastion_external_tool_commands
+        + k8s_bastion_profile_os_tools
+        + k8s_bastion_install_manifest.publicCommands.files
+      }}
+    k8s_bastion_admin_tools: >-
+      {{
+        k8s_bastion_install_manifest.adminCommands.files
+        | reject('in', k8s_bastion_profile_hidden_admin_commands)
+        | list
+      }}
+    k8s_bastion_helper_tools: "{{ k8s_bastion_install_manifest.publicCommands.files }}"
+
+- name: Install Kubernetes bastion login profile
+  ansible.builtin.template:
+    src: bastion-login.sh.j2
+    dest: "{{ k8s_bastion_profile_path }}"
+    owner: root
+    group: root
+    mode: "0644"

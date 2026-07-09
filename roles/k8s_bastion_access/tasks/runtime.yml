@@ -1,0 +1,191 @@
+---
+- name: Ensure Kubernetes bastion runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ k8s_bastion_install_dir }}"
+    - "{{ k8s_bastion_python_lib_dir }}"
+    - "{{ k8s_bastion_internal_bin_dir }}"
+    - "{{ k8s_bastion_bin_dir }}"
+    - "{{ k8s_bastion_sbin_dir }}"
+    - "{{ k8s_bastion_libexec_dir }}"
+
+- name: Check previous Kubernetes bastion managed runtime manifest
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_runtime_managed_manifest_path }}"
+  register: k8s_bastion_previous_runtime_manifest_stat
+
+- name: Read previous Kubernetes bastion managed runtime manifest
+  ansible.builtin.slurp:
+    path: "{{ k8s_bastion_runtime_managed_manifest_path }}"
+  register: k8s_bastion_previous_runtime_manifest_slurp
+  when: k8s_bastion_previous_runtime_manifest_stat.stat.exists
+
+- name: Track Kubernetes bastion runtime managed paths
+  ansible.builtin.set_fact:
+    k8s_bastion_previous_runtime_managed_paths: >-
+      {{
+        (
+          k8s_bastion_previous_runtime_manifest_slurp.content
+          | b64decode
+          | from_yaml
+        ).managedPaths | default([])
+        if k8s_bastion_previous_runtime_manifest_stat.stat.exists
+        else []
+      }}
+    k8s_bastion_current_runtime_managed_paths: []
+
+- name: Track Kubernetes bastion public command paths
+  ansible.builtin.set_fact:
+    k8s_bastion_current_runtime_managed_paths: >-
+      {{
+        k8s_bastion_current_runtime_managed_paths
+        + [k8s_bastion_bin_dir + '/' + item]
+      }}
+  loop: "{{ k8s_bastion_install_manifest.publicCommands.files }}"
+
+- name: Track Kubernetes bastion internal command paths
+  ansible.builtin.set_fact:
+    k8s_bastion_current_runtime_managed_paths: >-
+      {{
+        k8s_bastion_current_runtime_managed_paths
+        + [k8s_bastion_internal_bin_dir + '/' + item]
+      }}
+  loop: "{{ k8s_bastion_install_manifest.internalCommands.files }}"
+
+- name: Track Kubernetes bastion admin command paths
+  ansible.builtin.set_fact:
+    k8s_bastion_current_runtime_managed_paths: >-
+      {{
+        k8s_bastion_current_runtime_managed_paths
+        + [k8s_bastion_sbin_dir + '/' + item]
+      }}
+  loop: "{{ k8s_bastion_install_manifest.adminCommands.files }}"
+
+- name: Install Kubernetes bastion shell libraries
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ k8s_bastion_install_dir }}/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ query('fileglob', k8s_bastion_runtime_src + '/lib/*.sh') }}"
+
+- name: Install Kubernetes bastion Python libraries
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ k8s_bastion_python_lib_dir }}/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ query('fileglob', k8s_bastion_runtime_src + '/lib/python/*.py') }}"
+
+- name: Install Kubernetes bastion public commands
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_runtime_src }}/{{ k8s_bastion_install_manifest.publicCommands.sourceDir }}/{{ item }}"
+    dest: "{{ k8s_bastion_bin_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ k8s_bastion_install_manifest.publicCommands.mode }}"
+  loop: "{{ k8s_bastion_install_manifest.publicCommands.files }}"
+
+- name: Install Kubernetes bastion internal commands
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_runtime_src }}/{{ k8s_bastion_install_manifest.internalCommands.sourceDir }}/{{ item }}"
+    dest: "{{ k8s_bastion_internal_bin_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ k8s_bastion_install_manifest.internalCommands.mode }}"
+  loop: "{{ k8s_bastion_install_manifest.internalCommands.files }}"
+
+- name: Install Kubernetes bastion admin commands
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_runtime_src }}/{{ k8s_bastion_install_manifest.adminCommands.sourceDir }}/{{ item }}"
+    dest: "{{ k8s_bastion_sbin_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ k8s_bastion_install_manifest.adminCommands.mode }}"
+  loop: "{{ k8s_bastion_install_manifest.adminCommands.files }}"
+
+- name: Check Kubernetes bastion libexec source directory
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_runtime_src }}/libexec"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: k8s_bastion_libexec_src_stat
+
+- name: Find Kubernetes bastion libexec helpers
+  ansible.builtin.set_fact:
+    k8s_bastion_libexec_helpers: >-
+      {{ query('fileglob', k8s_bastion_runtime_src + '/libexec/*')
+         if k8s_bastion_libexec_src_stat.stat.exists else [] }}
+
+- name: Install Kubernetes bastion libexec helpers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ k8s_bastion_libexec_dir }}/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ k8s_bastion_libexec_helpers }}"
+
+- name: Install Kubernetes bastion version file
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_runtime_src }}/VERSION"
+    dest: "{{ k8s_bastion_install_dir }}/VERSION"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Remove internal commands from public binary path
+  ansible.builtin.file:
+    path: "{{ k8s_bastion_bin_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ k8s_bastion_install_manifest.internalCommands.files }}"
+
+- name: Remove legacy bastion install/configuration commands
+  ansible.builtin.file:
+    path: "{{ k8s_bastion_sbin_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ k8s_bastion_install_manifest.removedLegacyCommands }}"
+
+- name: Remove stale managed Kubernetes bastion runtime files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{
+      k8s_bastion_previous_runtime_managed_paths
+      | difference(k8s_bastion_current_runtime_managed_paths)
+    }}
+  when: k8s_bastion_prune_stale_runtime_files
+
+- name: Write Kubernetes bastion managed runtime manifest
+  ansible.builtin.copy:
+    dest: "{{ k8s_bastion_runtime_managed_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'managedPaths': k8s_bastion_current_runtime_managed_paths | unique | sort
+        } | to_nice_yaml
+      }}
+
+- name: Install sudo secure path for local bastion admin commands
+  ansible.builtin.copy:
+    dest: "{{ k8s_bastion_sudoers_path_file }}"
+    owner: root
+    group: root
+    mode: "0440"
+    content: |
+      Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    validate: /usr/sbin/visudo -cf %s
+  when: k8s_bastion_install_sudo_secure_path

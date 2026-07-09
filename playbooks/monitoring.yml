@@ -1,0 +1,19 @@
+---
+- name: Configure node exporters
+  hosts: monitoring_targets
+  become: true
+  roles:
+    - node_exporter
+
+- name: Configure monitoring stack
+  hosts: monitoring
+  become: true
+  roles:
+    - podman_host
+    - monitoring_stack
+
+- name: Configure log agents
+  hosts: monitoring_targets
+  become: true
+  roles:
+    - grafana_alloy

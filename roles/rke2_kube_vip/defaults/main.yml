@@ -1,0 +1,30 @@
+---
+rke2_kube_vip_enabled: false
+
+rke2_kube_vip_server_group: rke2_servers
+rke2_kube_vip_bootstrap_host: "{{ groups[rke2_kube_vip_server_group][0] }}"
+rke2_kube_vip_manifest_dir: /var/lib/rancher/rke2/server/manifests
+rke2_kube_vip_manifest_path: "{{ rke2_kube_vip_manifest_dir }}/kube-vip.yaml"
+
+rke2_kube_vip_api_vip: ""
+rke2_kube_vip_interface: ""
+
+rke2_kube_vip_release_name: kube-vip
+rke2_kube_vip_namespace: kube-system
+rke2_kube_vip_chart_name: kube-vip
+rke2_kube_vip_chart_repo: https://kube-vip.github.io/helm-charts
+rke2_kube_vip_chart_version: 0.9.9
+
+rke2_kube_vip_env:
+  cp_enable: "true"
+  svc_enable: "false"
+  vip_arp: "true"
+  vip_subnet: "32"
+  vip_leaderelection: "true"
+  lb_enable: "true"
+  lb_port: "6443"
+  vip_interface: "{{ rke2_kube_vip_interface }}"
+
+rke2_kube_vip_node_selector_label: node-role.kubernetes.io/control-plane
+rke2_kube_vip_kubectl: /var/lib/rancher/rke2/bin/kubectl
+rke2_kube_vip_kubeconfig: /etc/rancher/rke2/rke2.yaml

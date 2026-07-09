@@ -1,0 +1,11 @@
+---
+- name: Install chrony
+  ansible.builtin.package:
+    name: "{{ chrony_package }}"
+    state: present
+
+- name: Ensure chrony service is enabled and running
+  ansible.builtin.service:
+    name: "{{ chrony_service_name }}"
+    enabled: "{{ chrony_enabled }}"
+    state: "{{ 'started' if chrony_enabled else 'stopped' }}"

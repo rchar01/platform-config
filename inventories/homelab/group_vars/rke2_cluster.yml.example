@@ -1,0 +1,47 @@
+---
+rke2_version: v1.35.5+rke2r1
+rke2_token_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/rke2/homelab/cluster-token"
+rke2_tls_sans:
+  - 192.0.2.72
+rke2_kube_vip_enabled: true
+rke2_kube_vip_api_vip: 192.0.2.72
+rke2_kube_vip_interface: eth0
+rke2_kube_vip_chart_version: 0.9.9
+rke2_kube_vip_env:
+  cp_enable: "true"
+  svc_enable: "false"
+  vip_arp: "true"
+  vip_subnet: "32"
+  vip_leaderelection: "true"
+  lb_enable: "true"
+  lb_port: "6443"
+  vip_interface: "{{ rke2_kube_vip_interface }}"
+kong_ingress_enabled: true
+kong_ingress_chart_version: 0.24.0
+kong_ingress_gateway_image_tag: 3.9.1
+kong_ingress_controller_image_tag: 3.5.7
+kong_ingress_proxy_http_node_port: 30080
+kong_ingress_proxy_https_node_port: 30443
+rke2_registry_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/registry/homelab/tls.crt"
+rke2_registry_mirrors: "{{ {
+  platform_registry_hostname: {
+    'endpoint': [platform_registry_url]
+  }
+} }}"
+rke2_registry_configs: "{{ {
+  platform_registry_hostname: {
+    'tls': {
+      'ca_file': rke2_registry_ca_path
+    }
+  }
+} }}"
+rke2_firewalld_cluster_sources:
+  - 192.0.2.66/32
+  - 192.0.2.67/32
+  - 192.0.2.68/32
+  - 192.0.2.69/32
+  - 192.0.2.70/32
+  - 192.0.2.71/32
+rke2_firewalld_api_sources:
+  - 192.0.2.60/32
+  - 192.0.2.65/32

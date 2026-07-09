@@ -1,0 +1,42 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+loki.write "default" {
+  endpoint {
+    url = {{ grafana_alloy_loki_url | to_json }}
+  }
+}
+
+loki.relabel "journal" {
+  forward_to = [loki.write.default.receiver]
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  rule {
+    source_labels = ["__journal_container_name"]
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
+loki.source.journal "system" {
+  max_age    = {{ grafana_alloy_journal_max_age | to_json }}
+  path       = "/var/log/journal"
+  forward_to = [loki.relabel.journal.receiver]
+  labels     = {
+    job           = "systemd-journal",
+    environment   = {{ grafana_alloy_environment | to_json }},
+    vm_name       = {{ grafana_alloy_vm_name | to_json }},
+    ip            = {{ grafana_alloy_ip | to_json }},
+    platform_role = {{ grafana_alloy_platform_role | trim | to_json }},
+  }
+}

@@ -1,0 +1,58 @@
+---
+openbao_image: ghcr.io/openbao/openbao:2.5.0
+openbao_container_name: openbao
+openbao_quadlet_name: openbao.container
+openbao_service_name: openbao.service
+
+openbao_config_dir: /etc/openbao
+openbao_tls_dir: "{{ openbao_config_dir }}/tls"
+openbao_config_path: "{{ openbao_config_dir }}/openbao.hcl"
+openbao_data_dir: /var/lib/openbao/data
+openbao_container_data_dir: /openbao/data
+
+openbao_listener_address: 0.0.0.0
+openbao_host_port: 8200
+openbao_container_port: 8200
+openbao_cluster_port: 8201
+openbao_api_addr: "{{ openbao_scheme }}://{{ ansible_host | default(inventory_hostname) }}:{{ openbao_host_port }}"
+openbao_cluster_addr: "{{ openbao_scheme }}://{{ ansible_host | default(inventory_hostname) }}:{{ openbao_cluster_port }}"
+openbao_node_id: "{{ inventory_hostname }}"
+openbao_ui_enabled: true
+openbao_log_level: info
+openbao_log_format: standard
+openbao_extra_config: ""
+
+openbao_container_uid: "100"
+openbao_container_gid: "1000"
+
+openbao_tls_enabled: true
+openbao_tls_cert_src: ""
+openbao_tls_key_src: ""
+openbao_tls_cert_path: "{{ openbao_tls_dir }}/tls.crt"
+openbao_tls_key_path: "{{ openbao_tls_dir }}/tls.key"
+openbao_tls_min_version: tls12
+
+openbao_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+openbao_quadlet_path: "{{ openbao_quadlet_dir }}/{{ openbao_quadlet_name }}"
+openbao_quadlet_wants: network-online.target
+openbao_quadlet_after: network-online.target
+openbao_quadlet_restart_policy: always
+openbao_quadlet_volume_label: Z
+openbao_quadlet_memory_swap_max: "0"
+
+openbao_service_enabled: true
+openbao_service_state: started
+
+openbao_firewalld_manage: true
+openbao_firewalld_allowed_sources: []
+
+openbao_scheme: "{{ 'https' if openbao_tls_enabled else 'http' }}"
+openbao_status_url: "{{ openbao_scheme }}://127.0.0.1:{{ openbao_host_port }}/v1/sys/health"
+openbao_status_validate_certs: false
+openbao_status_codes:
+  - 200
+  - 429
+  - 472
+  - 473
+  - 501
+  - 503

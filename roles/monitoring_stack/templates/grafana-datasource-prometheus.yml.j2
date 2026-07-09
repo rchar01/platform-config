@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: {{ monitoring_stack_grafana_datasource_uid | to_json }}
+    type: prometheus
+    access: proxy
+    url: {{ monitoring_stack_grafana_prometheus_url | to_json }}
+    isDefault: true
+    editable: false
+  - name: Loki
+    uid: {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}
+    type: loki
+    access: proxy
+    url: {{ monitoring_stack_grafana_loki_url | to_json }}
+    editable: false

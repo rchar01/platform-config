@@ -1,0 +1,352 @@
+---
+- name: Check whether Kubernetes bastion policy is installed
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_policy_path }}"
+  register: k8s_bastion_installed_policy
+
+- name: Validate Kubernetes bastion policy identity names
+  ansible.builtin.shell: |
+    set -o pipefail
+    policy={{ k8s_bastion_policy_path | quote }}
+    name_pattern='^[a-z_][a-z0-9_-]{0,31}$'
+
+    validate_linux_name() {
+      local kind="$1"
+      local name="$2"
+
+      [[ -n "$name" ]] || {
+        printf '%s is empty\n' "$kind" >&2
+        return 1
+      }
+      [[ "$name" =~ $name_pattern ]] || {
+        printf '%s must match %s: %s\n' "$kind" "$name_pattern" "$name" >&2
+        return 1
+      }
+    }
+
+    daemon_group="$(yq -r '.daemon.allowedLoginGroup // ""' "$policy")"
+    group_prefix="$(yq -r '.csr.groupPrefix // ""' "$policy")"
+    validate_linux_name daemon.allowedLoginGroup "$daemon_group"
+    validate_linux_name csr.groupPrefix "$group_prefix"
+
+    yq -r '(.groups // {}) | keys[]' "$policy" | while IFS= read -r group; do
+      [[ -n "$group" ]] || continue
+      validate_linux_name 'policy group' "$group"
+    done
+
+    yq -r '(.users // {}) | keys[]' "$policy" | while IFS= read -r user; do
+      [[ -n "$user" ]] || continue
+      validate_linux_name 'policy user' "$user"
+      USER_KEY="$user" yq -r '.users[strenv(USER_KEY)].ensureGroups // [] | .[]' "$policy" | while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        validate_linux_name "policy ensureGroups entry for $user" "$group"
+      done
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: k8s_bastion_installed_policy.stat.exists
+  check_mode: false
+
+- name: Check previous Kubernetes bastion managed policy access manifest
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_policy_access_managed_manifest_path }}"
+  register: k8s_bastion_policy_access_managed_manifest_stat
+
+- name: Collect Kubernetes bastion current managed policy groups
+  ansible.builtin.shell: |
+    set -o pipefail
+    policy={{ k8s_bastion_policy_path | quote }}
+
+    {
+      yq -r '.daemon.allowedLoginGroup // ""' "$policy"
+      yq -r '(.groups // {}) | keys[]' "$policy"
+      yq -r '(.users // {}) | to_entries[] | .value.ensureGroups // [] | .[]' "$policy"
+    } | sort -u | while IFS= read -r group; do
+      [[ -n "$group" ]] || continue
+      printf '%s\n' "$group"
+    done
+  args:
+    executable: /bin/bash
+  register: k8s_bastion_current_managed_policy_groups
+  changed_when: false
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_reconcile_policy_access
+  check_mode: false
+
+- name: Check Kubernetes bastion user group drift
+  ansible.builtin.shell: |
+    set -o pipefail
+    policy={{ k8s_bastion_policy_path | quote }}
+    manifest={{ k8s_bastion_policy_access_managed_manifest_path | quote }}
+
+    managed_groups() {
+      {
+        yq -r '.daemon.allowedLoginGroup // ""' "$policy"
+        yq -r '(.groups // {}) | keys[]' "$policy"
+        yq -r '(.users // {}) | to_entries[] | .value.ensureGroups // [] | .[]' "$policy"
+        if [[ -f "$manifest" ]]; then
+          yq -r '(.managedGroups // []) | .[]' "$manifest"
+        fi
+      } | sort -u
+    }
+
+    daemon_group="$(yq -r '.daemon.allowedLoginGroup // ""' "$policy")"
+    if [[ -n "$daemon_group" ]] && ! getent group "$daemon_group" >/dev/null; then
+      printf 'missing-group %s\n' "$daemon_group"
+    fi
+
+    yq -r '(.groups // {}) | keys[]' "$policy" | while IFS= read -r group; do
+      if ! getent group "$group" >/dev/null; then
+        printf 'missing-group %s\n' "$group"
+      fi
+    done
+
+    yq -r '(.users // {}) | keys[]' "$policy" | while IFS= read -r user; do
+      if ! getent passwd "$user" >/dev/null; then
+        continue
+      fi
+
+      groups="$(USER_KEY="$user" yq -r '.users[strenv(USER_KEY)].ensureGroups // [] | .[]' "$policy" 2>/dev/null || true)"
+      if [[ -n "$daemon_group" ]]; then
+        groups="${groups}"$'\n'"${daemon_group}"
+      fi
+
+      while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        if ! id -nG "$user" | tr ' ' '\n' | grep -qx "$group"; then
+          printf 'missing-membership %s %s\n' "$user" "$group"
+        fi
+      done <<< "$groups"
+    done
+
+    if [[ {{ k8s_bastion_reconcile_policy_access | bool | ternary('1', '0') }} -eq 1 ]]; then
+      managed_groups | while IFS= read -r group; do
+        [[ -n "$group" ]] || continue
+        getent group "$group" >/dev/null || continue
+
+        members="$(getent group "$group" | cut -d: -f4 | tr ',' '\n')"
+        while IFS= read -r member; do
+          [[ -n "$member" ]] || continue
+          if [[ "$group" == "$daemon_group" ]]; then
+            USER_KEY="$member" yq -e '.users[strenv(USER_KEY)]' "$policy" >/dev/null 2>&1 && continue
+          fi
+          USER_KEY="$member" GROUP_KEY="$group" yq -e '(.users[strenv(USER_KEY)].ensureGroups // []) | contains([strenv(GROUP_KEY)])' "$policy" >/dev/null 2>&1 && continue
+          printf 'extra-membership %s %s\n' "$member" "$group"
+        done <<< "$members"
+      done
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_bastion_user_group_drift
+  changed_when: false
+  when: k8s_bastion_installed_policy.stat.exists
+  check_mode: false
+
+- name: Configure Kubernetes bastion user groups from policy
+  ansible.builtin.command:
+    cmd: "{{ k8s_bastion_sbin_dir }}/bastion-bootstrap-user-groups --policy {{ k8s_bastion_policy_path }}"
+  changed_when: >-
+    k8s_bastion_user_group_drift.stdout_lines
+    | default([])
+    | select('match', '^(missing-group|missing-membership) ')
+    | list
+    | length > 0
+  when: k8s_bastion_installed_policy.stat.exists
+
+- name: Revoke stale Kubernetes bastion group memberships from policy
+  ansible.builtin.shell: |
+    set -o pipefail
+    policy={{ k8s_bastion_policy_path | quote }}
+    manifest={{ k8s_bastion_policy_access_managed_manifest_path | quote }}
+    daemon_group="$(yq -r '.daemon.allowedLoginGroup // ""' "$policy")"
+
+    managed_groups() {
+      {
+        yq -r '.daemon.allowedLoginGroup // ""' "$policy"
+        yq -r '(.groups // {}) | keys[]' "$policy"
+        yq -r '(.users // {}) | to_entries[] | .value.ensureGroups // [] | .[]' "$policy"
+        if [[ -f "$manifest" ]]; then
+          yq -r '(.managedGroups // []) | .[]' "$manifest"
+        fi
+      } | sort -u
+    }
+
+    managed_groups | while IFS= read -r group; do
+      [[ -n "$group" ]] || continue
+      getent group "$group" >/dev/null || continue
+
+      members="$(getent group "$group" | cut -d: -f4 | tr ',' '\n')"
+      while IFS= read -r member; do
+        [[ -n "$member" ]] || continue
+        if [[ "$group" == "$daemon_group" ]]; then
+          USER_KEY="$member" yq -e '.users[strenv(USER_KEY)]' "$policy" >/dev/null 2>&1 && continue
+        fi
+        USER_KEY="$member" GROUP_KEY="$group" yq -e '(.users[strenv(USER_KEY)].ensureGroups // []) | contains([strenv(GROUP_KEY)])' "$policy" >/dev/null 2>&1 && continue
+        gpasswd -d "$member" "$group"
+      done <<< "$members"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: >-
+    k8s_bastion_user_group_drift.stdout_lines
+    | default([])
+    | select('match', '^extra-membership ')
+    | list
+    | length > 0
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_reconcile_policy_access
+
+- name: Find users missing Kubernetes bastion bootstrap credentials
+  ansible.builtin.shell: |
+    set -o pipefail
+    yq -r '(.users // {}) | keys[]' {{ k8s_bastion_policy_path | quote }} | while IFS= read -r user; do
+      home_dir="$(getent passwd "$user" | cut -d: -f6 || true)"
+      if [[ -n "$home_dir" && ! -f "$home_dir/.kube/config" && ! -f "$home_dir/.kube/bootstrap" ]]; then
+        printf '%s\n' "$user"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  register: k8s_bastion_users_needing_bootstrap
+  changed_when: false
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_bootstrap_user_kubeconfigs
+  check_mode: false
+
+- name: Bootstrap Kubernetes bastion user kubeconfigs from policy
+  ansible.builtin.command:
+    cmd: >-
+      {{ k8s_bastion_sbin_dir }}/bastion-bootstrap-kubeconfig
+      --all
+      --policy {{ k8s_bastion_policy_path }}
+      {{ '--offline-bootstrap' if k8s_bastion_offline_bootstrap else '' }}
+  register: k8s_bastion_bootstrap_user_kubeconfigs_result
+  changed_when: >-
+    'Bootstrap kubeconfig installed for'
+    in (
+      k8s_bastion_bootstrap_user_kubeconfigs_result.stdout
+      + k8s_bastion_bootstrap_user_kubeconfigs_result.stderr
+    )
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_bootstrap_user_kubeconfigs
+    - >-
+      k8s_bastion_force_bootstrap_user_kubeconfigs
+      or k8s_bastion_users_needing_bootstrap.stdout_lines | default([]) | length > 0
+
+- name: Check Kubernetes bastion admin kubeconfig drift
+  ansible.builtin.shell: |
+    set -o pipefail
+    policy={{ k8s_bastion_policy_path | quote }}
+    admin_kubeconfig={{ k8s_bastion_admin_kubeconfig_path | quote }}
+    admin_group={{ k8s_bastion_admin_group | quote }}
+
+    yq -r '(.users // {}) | keys[]' "$policy" | while IFS= read -r user; do
+      if ! getent passwd "$user" >/dev/null; then
+        continue
+      fi
+
+      if ! USER_KEY="$user" ADMIN_GROUP="$admin_group" yq -e '(.users[strenv(USER_KEY)].ensureGroups // []) | contains([strenv(ADMIN_GROUP)])' "$policy" >/dev/null 2>&1; then
+        continue
+      fi
+
+      home_dir="$(getent passwd "$user" | cut -d: -f6 || true)"
+      [[ -n "$home_dir" ]] || continue
+
+      if [[ -f "$home_dir/.kube/bootstrap" ]]; then
+        printf 'admin-bootstrap-present %s\n' "$user"
+      fi
+
+      if [[ ! -f "$home_dir/.kube/config" ]] || ! cmp -s "$admin_kubeconfig" "$home_dir/.kube/config"; then
+        printf 'admin-config-drift %s\n' "$user"
+      fi
+    done
+
+    if [[ {{ k8s_bastion_reconcile_policy_access | bool | ternary('1', '0') }} -eq 1 ]]; then
+      getent passwd | while IFS=: read -r user _ _ _ _ home_dir _; do
+        [[ -n "$home_dir" ]] || continue
+        [[ "$home_dir" == /home/* ]] || continue
+        config="$home_dir/.kube/config"
+        [[ -f "$config" ]] || continue
+        cmp -s "$admin_kubeconfig" "$config" || continue
+        USER_KEY="$user" ADMIN_GROUP="$admin_group" yq -e '(.users[strenv(USER_KEY)].ensureGroups // []) | contains([strenv(ADMIN_GROUP)])' "$policy" >/dev/null 2>&1 && continue
+        printf 'stale-admin-config %s\n' "$user"
+      done
+    fi
+  args:
+    executable: /bin/bash
+  register: k8s_bastion_admin_kubeconfig_drift
+  changed_when: false
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_admin_kubeconfig_src | length > 0
+    - k8s_bastion_bootstrap_admin_kubeconfigs
+  check_mode: false
+
+- name: Bootstrap Kubernetes bastion admin kubeconfigs from policy
+  ansible.builtin.command:
+    cmd: >-
+      {{ k8s_bastion_sbin_dir }}/bastion-bootstrap-admin-kubeconfig
+      --policy {{ k8s_bastion_policy_path }}
+      --admin-kubeconfig {{ k8s_bastion_admin_kubeconfig_path }}
+      --admin-group {{ k8s_bastion_admin_group }}
+  changed_when: >-
+    k8s_bastion_admin_kubeconfig_drift.stdout_lines
+    | default([])
+    | select('match', '^(admin-bootstrap-present|admin-config-drift) ')
+    | list
+    | length > 0
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_admin_kubeconfig_src | length > 0
+    - k8s_bastion_bootstrap_admin_kubeconfigs
+
+- name: Revoke stale Kubernetes bastion admin kubeconfigs from policy
+  ansible.builtin.shell: |
+    set -o pipefail
+    policy={{ k8s_bastion_policy_path | quote }}
+    admin_kubeconfig={{ k8s_bastion_admin_kubeconfig_path | quote }}
+    admin_group={{ k8s_bastion_admin_group | quote }}
+
+    getent passwd | while IFS=: read -r user _ _ _ _ home_dir _; do
+      [[ -n "$home_dir" ]] || continue
+      [[ "$home_dir" == /home/* ]] || continue
+      config="$home_dir/.kube/config"
+      [[ -f "$config" ]] || continue
+      cmp -s "$admin_kubeconfig" "$config" || continue
+      USER_KEY="$user" ADMIN_GROUP="$admin_group" yq -e '(.users[strenv(USER_KEY)].ensureGroups // []) | contains([strenv(ADMIN_GROUP)])' "$policy" >/dev/null 2>&1 && continue
+      rm -f "$config"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: >-
+    k8s_bastion_admin_kubeconfig_drift.stdout_lines
+    | default([])
+    | select('match', '^stale-admin-config ')
+    | list
+    | length > 0
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_admin_kubeconfig_src | length > 0
+    - k8s_bastion_bootstrap_admin_kubeconfigs
+    - k8s_bastion_reconcile_policy_access
+
+- name: Write Kubernetes bastion managed policy access manifest
+  ansible.builtin.copy:
+    dest: "{{ k8s_bastion_policy_access_managed_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'managedGroups': k8s_bastion_current_managed_policy_groups.stdout_lines | default([]) | unique | sort
+        } | to_nice_yaml
+      }}
+  when:
+    - k8s_bastion_installed_policy.stat.exists
+    - k8s_bastion_reconcile_policy_access

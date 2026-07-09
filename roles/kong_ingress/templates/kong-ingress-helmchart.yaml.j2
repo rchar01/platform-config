@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ kong_ingress_namespace | to_json }}
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: {{ kong_ingress_release_name | to_json }}
+  namespace: {{ kong_ingress_helmchart_namespace | to_json }}
+spec:
+  chart: {{ kong_ingress_chart_name | to_json }}
+  repo: {{ kong_ingress_chart_repo | to_json }}
+  version: {{ kong_ingress_chart_version | string | to_json }}
+  targetNamespace: {{ kong_ingress_namespace | to_json }}
+  valuesContent: |-
+    controller:
+      ingressController:
+        image:
+          tag: {{ kong_ingress_controller_image_tag | string | to_json }}
+        ingressClass: {{ kong_ingress_class_name | to_json }}
+        createIngressClass: {{ kong_ingress_create_class | bool | to_json }}
+        rbac:
+          gatewayAPI:
+            enabled: {{ kong_ingress_gateway_api_enabled | bool | to_json }}
+    gateway:
+      image:
+        tag: {{ kong_ingress_gateway_image_tag | string | to_json }}
+      manager:
+        enabled: false
+      portal:
+        enabled: false
+      portalapi:
+        enabled: false
+      proxy:
+        enabled: true
+        type: NodePort
+        http:
+          enabled: {{ kong_ingress_proxy_http_enabled | bool | to_json }}
+          nodePort: {{ kong_ingress_proxy_http_node_port | int }}
+        tls:
+          enabled: {{ kong_ingress_proxy_https_enabled | bool | to_json }}
+          nodePort: {{ kong_ingress_proxy_https_node_port | int }}
+{% if kong_ingress_extra_values | length > 0 %}
+{{ kong_ingress_extra_values | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}

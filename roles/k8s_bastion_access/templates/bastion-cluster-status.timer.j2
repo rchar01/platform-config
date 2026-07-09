@@ -1,0 +1,10 @@
+[Unit]
+Description=Run bastion cluster status probe periodically
+
+[Timer]
+OnBootSec={{ k8s_bastion_cluster_status_on_boot }}
+OnUnitActiveSec={{ k8s_bastion_cluster_status_on_active }}
+Unit=bastion-cluster-status.service
+
+[Install]
+WantedBy=timers.target

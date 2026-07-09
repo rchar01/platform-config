@@ -1,0 +1,108 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "{environment=\"$environment\", vm_name=~\"$vm_name\", unit=~\"$unit\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent VM Logs",
+      "type": "logs"
+    },
+    {
+      "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "logs/sec"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 2,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "sum by (vm_name) (rate({environment=\"$environment\", vm_name=~\"$vm_name\", unit=~\"$unit\"}[$__rate_interval]))",
+          "legendFormat": "{{ '{{' }} vm_name {{ '}}' }}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Log Rate by VM",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "logs/sec"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 3,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "sum by (unit) (rate({environment=\"$environment\", vm_name=~\"$vm_name\", unit=~\"$unit\"}[$__rate_interval]))",
+          "legendFormat": "{{ '{{' }} unit {{ '}}' }}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Log Rate by Systemd Unit",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 40,
+  "tags": ["platform", "logs", "ansible-managed"],
+  "templating": {
+    "list": [
+      {"current": {"selected": false, "text": "dev", "value": "dev"}, "hide": 0, "name": "environment", "query": "dev", "type": "constant"},
+      {"allValue": ".*", "current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}}, "definition": "label_values({environment=\"$environment\"}, vm_name)", "includeAll": true, "label": "VM", "multi": true, "name": "vm_name", "options": [], "query": "label_values({environment=\"$environment\"}, vm_name)", "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"allValue": ".*", "current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "loki", "uid": {{ monitoring_stack_grafana_loki_datasource_uid | to_json }}}, "definition": "label_values({environment=\"$environment\", vm_name=~\"$vm_name\"}, unit)", "includeAll": true, "label": "Unit", "multi": true, "name": "unit", "options": [], "query": "label_values({environment=\"$environment\", vm_name=~\"$vm_name\"}, unit)", "refresh": 1, "regex": "", "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": {{ monitoring_stack_grafana_logs_dashboard_title | to_json }},
+  "uid": {{ monitoring_stack_grafana_logs_dashboard_uid | to_json }},
+  "version": 1,
+  "weekStart": ""
+}

@@ -1,0 +1,75 @@
+---
+- name: Assert Kong ingress inputs are configured
+  ansible.builtin.assert:
+    that:
+      - groups.get(kong_ingress_server_group, []) | length > 0
+      - kong_ingress_release_name | length > 0
+      - kong_ingress_namespace | length > 0
+      - kong_ingress_chart_repo | length > 0
+      - kong_ingress_chart_name | length > 0
+      - kong_ingress_chart_version | string | length > 0
+      - kong_ingress_gateway_image_tag | string | length > 0
+      - kong_ingress_controller_image_tag | string | length > 0
+      - kong_ingress_node_port_min | int > 0
+      - kong_ingress_node_port_max | int >= kong_ingress_node_port_min | int
+      - kong_ingress_proxy_http_node_port | int >= kong_ingress_node_port_min | int
+      - kong_ingress_proxy_http_node_port | int <= kong_ingress_node_port_max | int
+      - kong_ingress_proxy_https_node_port | int >= kong_ingress_node_port_min | int
+      - kong_ingress_proxy_https_node_port | int <= kong_ingress_node_port_max | int
+      - not kong_ingress_gateway_api_enabled | bool
+    fail_msg: >-
+      Kong ingress requires RKE2 server hosts, release/chart settings, pinned image tags,
+      fixed proxy NodePorts within the configured NodePort range, and Gateway API disabled
+      for this first classic Ingress phase.
+  when: kong_ingress_enabled | bool
+
+- name: Check Kong ingress manifest directory on bootstrap server
+  ansible.builtin.stat:
+    path: "{{ kong_ingress_manifest_dir }}"
+  register: kong_ingress_manifest_dir_stat
+  when:
+    - kong_ingress_enabled | bool
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Assert Kong ingress manifest directory exists on bootstrap server
+  ansible.builtin.assert:
+    that:
+      - kong_ingress_manifest_dir_stat.stat.exists
+      - kong_ingress_manifest_dir_stat.stat.isdir
+    fail_msg: "RKE2 manifest directory does not exist: {{ kong_ingress_manifest_dir }}"
+  when:
+    - kong_ingress_enabled | bool
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Check RKE2 server service before Kong ingress install
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - rke2-server.service
+  register: kong_ingress_server_service
+  check_mode: false
+  changed_when: false
+  when:
+    - kong_ingress_enabled | bool
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Assert RKE2 server service is active before Kong ingress install
+  ansible.builtin.assert:
+    that:
+      - kong_ingress_server_service.stdout == 'active'
+    fail_msg: "rke2-server.service must be active before installing Kong ingress."
+  when:
+    - kong_ingress_enabled | bool
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Write Kong ingress HelmChart manifest on bootstrap server
+  ansible.builtin.template:
+    src: kong-ingress-helmchart.yaml.j2
+    dest: "{{ kong_ingress_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - kong_ingress_enabled | bool
+    - inventory_hostname == kong_ingress_bootstrap_host

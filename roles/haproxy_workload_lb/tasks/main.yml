@@ -1,0 +1,108 @@
+---
+- name: Configure HAProxy workload load balancer
+  when: haproxy_workload_lb_enabled | bool
+  block:
+    - name: Assert HAProxy workload LB inputs are configured
+      ansible.builtin.assert:
+        that:
+          - haproxy_workload_lb_http_enabled | bool or haproxy_workload_lb_https_enabled | bool
+          - haproxy_workload_lb_backends | length > 0
+          - haproxy_workload_lb_backends | selectattr('name', 'defined') | list | length == haproxy_workload_lb_backends | length
+          - haproxy_workload_lb_backends | selectattr('address', 'defined') | list | length == haproxy_workload_lb_backends | length
+          - haproxy_workload_lb_http_backend_port | int > 0
+          - haproxy_workload_lb_https_backend_port | int > 0
+        fail_msg: "HAProxy workload LB requires at least one enabled frontend and one backend with name and address."
+
+    - name: Install HAProxy package
+      ansible.builtin.package:
+        name: "{{ haproxy_workload_lb_package }}"
+        state: present
+      register: haproxy_workload_lb_package_result
+
+    - name: Install SELinux port management package
+      ansible.builtin.package:
+        name: "{{ haproxy_workload_lb_selinux_package }}"
+        state: present
+      when:
+        - haproxy_workload_lb_selinux_manage | bool
+        - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+
+    - name: Label HAProxy backend ports for SELinux
+      community.general.seport:
+        ports: "{{ item }}"
+        proto: tcp
+        setype: "{{ haproxy_workload_lb_selinux_backend_port_type }}"
+        state: present
+      loop: >-
+        {{
+          (
+            (
+              [haproxy_workload_lb_http_backend_port | string]
+              if haproxy_workload_lb_http_enabled | bool
+              else []
+            )
+            +
+            (
+              [haproxy_workload_lb_https_backend_port | string]
+              if haproxy_workload_lb_https_enabled | bool
+              else []
+            )
+          )
+          | unique
+        }}
+      when:
+        - haproxy_workload_lb_selinux_manage | bool
+        - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+      notify: Restart HAProxy workload LB
+
+    - name: Write HAProxy workload LB configuration
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: "{{ haproxy_workload_lb_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: haproxy_workload_lb_config_result
+      notify: Restart HAProxy workload LB
+
+    - name: Validate HAProxy workload LB configuration
+      ansible.builtin.command:
+        argv:
+          - haproxy
+          - -c
+          - -f
+          - "{{ haproxy_workload_lb_config_path }}"
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Manage HAProxy workload LB service
+      ansible.builtin.systemd_service:
+        name: "{{ haproxy_workload_lb_service_name }}"
+        enabled: "{{ haproxy_workload_lb_service_enabled }}"
+        state: "{{ haproxy_workload_lb_service_state }}"
+      when: not (ansible_check_mode and haproxy_workload_lb_package_result is changed)
+
+    - name: Check permanent HAProxy workload LB firewalld ports
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-port
+          - "{{ item }}"
+      loop: "{{ haproxy_workload_lb_firewalld_ports }}"
+      register: haproxy_workload_lb_firewalld_port_checks
+      check_mode: false
+      changed_when: false
+      failed_when: haproxy_workload_lb_firewalld_port_checks.rc not in [0, 1]
+      when: haproxy_workload_lb_firewalld_manage | bool
+
+    - name: Add permanent HAProxy workload LB firewalld ports
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --add-port
+          - "{{ item.item }}"
+      loop: "{{ haproxy_workload_lb_firewalld_port_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
+      changed_when: true
+      when:
+        - haproxy_workload_lb_firewalld_manage | bool
+        - not ansible_check_mode

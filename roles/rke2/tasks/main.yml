@@ -1,0 +1,244 @@
+---
+- name: Assert RKE2 inputs are configured
+  ansible.builtin.assert:
+    that:
+      - rke2_node_role in ['server', 'agent']
+      - rke2_token_src | length > 0
+      - rke2_cni | length > 0
+      - groups.get(rke2_server_group, []) | length > 0
+      - rke2_version | length > 0 or rke2_allow_unpinned | bool
+    fail_msg: >-
+      RKE2 requires server/agent groups, rke2_token_src, rke2_cni, and an explicit
+      rke2_version pin. Set rke2_allow_unpinned=true only for intentional one-off
+      discovery installs.
+
+- name: Check RKE2 token source on control node
+  ansible.builtin.stat:
+    path: "{{ rke2_token_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: rke2_token_src_stat
+
+- name: Assert RKE2 token source exists on control node
+  ansible.builtin.assert:
+    that:
+      - rke2_token_src_stat.stat.exists
+      - rke2_token_src_stat.stat.isreg
+    fail_msg: "RKE2 token file does not exist on the control node: {{ rke2_token_src }}"
+
+- name: Assert RKE2 token source permissions are private
+  ansible.builtin.assert:
+    that:
+      - rke2_token_src_stat.stat.mode is match('^0?[46]00$')
+    fail_msg: "RKE2 token file should be readable only by its owner: {{ rke2_token_src }}"
+
+- name: Check RKE2 registry CA source when configured
+  ansible.builtin.stat:
+    path: "{{ rke2_registry_ca_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: rke2_registry_ca_src_stat
+  when: rke2_registry_ca_src | length > 0
+
+- name: Assert RKE2 registry CA source exists when configured
+  ansible.builtin.assert:
+    that:
+      - rke2_registry_ca_src_stat.stat.exists
+      - rke2_registry_ca_src_stat.stat.isreg
+    fail_msg: "RKE2 registry CA file does not exist on the control node: {{ rke2_registry_ca_src }}"
+  when: rke2_registry_ca_src | length > 0
+
+- name: Persist RKE2 kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/rke2.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {% for module in rke2_kernel_modules %}
+      {{ module }}
+      {% endfor %}
+
+- name: Load RKE2 kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ rke2_kernel_modules }}"
+
+- name: Configure RKE2 sysctl settings
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ rke2_sysctl | dict2items }}"
+
+- name: Ensure RKE2 configuration directory exists
+  ansible.builtin.file:
+    path: "{{ rke2_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy RKE2 cluster token
+  ansible.builtin.copy:
+    src: "{{ rke2_token_src }}"
+    dest: "{{ rke2_token_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart RKE2
+
+- name: Copy RKE2 registry CA certificate
+  ansible.builtin.copy:
+    src: "{{ rke2_registry_ca_src }}"
+    dest: "{{ rke2_registry_ca_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart RKE2
+  when: rke2_registry_ca_src | length > 0
+
+- name: Write RKE2 configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ rke2_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart RKE2
+
+- name: Write RKE2 registries configuration
+  ansible.builtin.template:
+    src: registries.yaml.j2
+    dest: "{{ rke2_registries_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart RKE2
+  when: rke2_registry_mirrors | length > 0 or rke2_registry_configs | length > 0
+
+- name: Remove RKE2 registries configuration when unused
+  ansible.builtin.file:
+    path: "{{ rke2_registries_path }}"
+    state: absent
+  notify: Restart RKE2
+  when: rke2_registry_mirrors | length == 0 and rke2_registry_configs | length == 0
+
+- name: Check installed RKE2 binary
+  ansible.builtin.stat:
+    path: "{{ rke2_binary_path }}"
+  register: rke2_binary_stat
+
+- name: Check installed RKE2 version
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_binary_path }}"
+      - --version
+  register: rke2_installed_version
+  changed_when: false
+  when: rke2_binary_stat.stat.exists
+
+- name: Download RKE2 install script
+  ansible.builtin.get_url:
+    url: "{{ rke2_install_script_url }}"
+    dest: "{{ rke2_install_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode
+
+- name: Install RKE2
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - "{{ rke2_install_script_path }}"
+  environment:
+    INSTALL_RKE2_TYPE: "{{ rke2_node_role }}"
+    INSTALL_RKE2_CHANNEL: "{{ rke2_channel }}"
+    INSTALL_RKE2_VERSION: "{{ rke2_version }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - >-
+      not rke2_binary_stat.stat.exists or
+      (rke2_version | length > 0 and not (rke2_installed_version.stdout is search('^rke2 version ' ~ (rke2_version | regex_escape) ~ ' ')))
+
+- name: Manage RKE2 service
+  ansible.builtin.systemd_service:
+    name: "{{ rke2_service_name }}"
+    enabled: "{{ rke2_service_enabled }}"
+    state: "{{ rke2_service_state }}"
+  when: not ansible_check_mode
+
+- name: Wait for RKE2 supervisor on server nodes
+  ansible.builtin.wait_for:
+    host: "{{ rke2_node_ip }}"
+    port: 9345
+    timeout: "{{ rke2_wait_for_supervisor_timeout }}"
+  when:
+    - not ansible_check_mode
+    - rke2_node_role == 'server'
+
+- name: Check permanent RKE2 cluster firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --query-rich-rule
+      - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" accept"
+  loop: "{{ rke2_firewalld_cluster_sources }}"
+  register: rke2_firewalld_cluster_rule_checks
+  check_mode: false
+  changed_when: false
+  failed_when: rke2_firewalld_cluster_rule_checks.rc not in [0, 1]
+  when:
+    - rke2_firewalld_manage | bool
+    - rke2_firewalld_cluster_sources | length > 0
+
+- name: Add permanent RKE2 cluster firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --add-rich-rule
+      - "{{ item.cmd[2] }}"
+  loop: "{{ rke2_firewalld_cluster_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
+  changed_when: true
+  when:
+    - rke2_firewalld_manage | bool
+    - not ansible_check_mode
+
+- name: Check permanent RKE2 API firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --query-rich-rule
+      - "rule family=\"{{ 'ipv6' if ':' in item.0 else 'ipv4' }}\" source address=\"{{ item.0 }}\" port port=\"{{ item.1 }}\" protocol=\"tcp\" accept"
+  loop: "{{ rke2_firewalld_api_sources | product(rke2_firewalld_api_ports) | list }}"
+  register: rke2_firewalld_api_rule_checks
+  check_mode: false
+  changed_when: false
+  failed_when: rke2_firewalld_api_rule_checks.rc not in [0, 1]
+  when:
+    - rke2_firewalld_manage | bool
+    - rke2_node_role == 'server'
+    - rke2_firewalld_api_sources | length > 0
+
+- name: Add permanent RKE2 API firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --add-rich-rule
+      - "{{ item.cmd[2] }}"
+  loop: "{{ rke2_firewalld_api_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
+  changed_when: true
+  when:
+    - rke2_firewalld_manage | bool
+    - not ansible_check_mode
+    - rke2_node_role == 'server'

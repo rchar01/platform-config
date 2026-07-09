@@ -1,0 +1,6 @@
+---
+- name: Configure external workload load balancers
+  hosts: load_balancers
+  become: true
+  roles:
+    - haproxy_workload_lb

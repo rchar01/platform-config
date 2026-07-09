@@ -1,0 +1,84 @@
+---
+- name: Smoke test external workload load balancers
+  hosts: load_balancers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check HAProxy workload LB service active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ haproxy_workload_lb_service_name | default('haproxy.service') }}"
+      register: haproxy_workload_lb_smoke_service_active
+      changed_when: false
+      when: haproxy_workload_lb_enabled | default(false) | bool
+
+    - name: Assert HAProxy workload LB service is active
+      ansible.builtin.assert:
+        that:
+          - haproxy_workload_lb_smoke_service_active.stdout == 'active'
+        fail_msg: "HAProxy workload LB service is not active."
+      when: haproxy_workload_lb_enabled | default(false) | bool
+
+    - name: Validate HAProxy workload LB configuration
+      ansible.builtin.command:
+        argv:
+          - haproxy
+          - -c
+          - -f
+          - "{{ haproxy_workload_lb_config_path | default('/etc/haproxy/haproxy.cfg') }}"
+      changed_when: false
+      when: haproxy_workload_lb_enabled | default(false) | bool
+
+    - name: Check HAProxy HTTP listener
+      ansible.builtin.wait_for:
+        host: "{{ haproxy_workload_lb_smoke_listener_host | default(ansible_host | default(inventory_hostname)) }}"
+        port: "{{ (haproxy_workload_lb_http_bind | default('*:80')).split(':')[-1] | int }}"
+        state: started
+        timeout: 5
+      when:
+        - haproxy_workload_lb_enabled | default(false) | bool
+        - haproxy_workload_lb_http_enabled | default(true) | bool
+
+    - name: Check HAProxy HTTPS listener
+      ansible.builtin.wait_for:
+        host: "{{ haproxy_workload_lb_smoke_listener_host | default(ansible_host | default(inventory_hostname)) }}"
+        port: "{{ (haproxy_workload_lb_https_bind | default('*:443')).split(':')[-1] | int }}"
+        state: started
+        timeout: 5
+      when:
+        - haproxy_workload_lb_enabled | default(false) | bool
+        - haproxy_workload_lb_https_enabled | default(true) | bool
+
+    - name: Check permanent HAProxy workload LB firewalld ports
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-port
+          - "{{ item }}"
+      loop: "{{ haproxy_workload_lb_firewalld_ports | default(['80/tcp', '443/tcp']) }}"
+      register: haproxy_workload_lb_smoke_firewalld_ports
+      changed_when: false
+      failed_when: haproxy_workload_lb_smoke_firewalld_ports.rc not in [0, 1]
+      when:
+        - haproxy_workload_lb_enabled | default(false) | bool
+        - haproxy_workload_lb_firewalld_manage | default(true) | bool
+
+    - name: Assert permanent HAProxy workload LB firewalld ports are open
+      ansible.builtin.assert:
+        that:
+          - haproxy_workload_lb_smoke_firewalld_ports.results | map(attribute='rc') | list | max == 0
+        fail_msg: "A HAProxy workload LB port is not present in permanent firewalld configuration."
+      when:
+        - haproxy_workload_lb_enabled | default(false) | bool
+        - haproxy_workload_lb_firewalld_manage | default(true) | bool
+
+    - name: Probe HAProxy workload LB URLs
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        method: GET
+        validate_certs: "{{ haproxy_workload_lb_smoke_probe_validate_certs | default(false) }}"
+        status_code: "{{ haproxy_workload_lb_smoke_probe_status_codes | default([200, 301, 302, 400, 401, 403, 404, 503]) }}"
+      loop: "{{ haproxy_workload_lb_smoke_probe_urls | default([]) }}"
+      when: haproxy_workload_lb_enabled | default(false) | bool

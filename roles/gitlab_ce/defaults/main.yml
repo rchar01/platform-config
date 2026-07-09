@@ -1,0 +1,61 @@
+---
+gitlab_ce_image: docker.io/gitlab/gitlab-ce:18.11.3-ce.0
+gitlab_ce_container_name: gitlab
+gitlab_ce_quadlet_name: gitlab.container
+gitlab_ce_service_name: gitlab.service
+
+gitlab_ce_root_dir: /var/lib/gitlab
+gitlab_ce_config_dir: "{{ gitlab_ce_root_dir }}/config"
+gitlab_ce_logs_dir: "{{ gitlab_ce_root_dir }}/logs"
+gitlab_ce_data_dir: "{{ gitlab_ce_root_dir }}/data"
+gitlab_ce_tls_dir: "{{ gitlab_ce_config_dir }}/ssl"
+gitlab_ce_config_path: "{{ gitlab_ce_config_dir }}/gitlab.rb"
+
+gitlab_ce_hostname: "{{ ansible_host | default(inventory_hostname) }}"
+gitlab_ce_external_url: "https://{{ gitlab_ce_hostname }}"
+gitlab_ce_ssh_host_port: 2222
+gitlab_ce_https_host_port: 443
+gitlab_ce_http_host_port: 80
+gitlab_ce_publish_http: false
+gitlab_ce_container_https_port: 443
+gitlab_ce_container_http_port: 80
+gitlab_ce_container_ssh_port: 22
+gitlab_ce_time_zone: "{{ platform_timezone | default('UTC') }}"
+
+gitlab_ce_tls_enabled: true
+gitlab_ce_tls_cert_src: ""
+gitlab_ce_tls_key_src: ""
+gitlab_ce_tls_cert_name: "{{ gitlab_ce_hostname }}.crt"
+gitlab_ce_tls_key_name: "{{ gitlab_ce_hostname }}.key"
+gitlab_ce_tls_cert_path: "{{ gitlab_ce_tls_dir }}/{{ gitlab_ce_tls_cert_name }}"
+gitlab_ce_tls_key_path: "{{ gitlab_ce_tls_dir }}/{{ gitlab_ce_tls_key_name }}"
+
+gitlab_ce_initial_root_password_src: ""
+gitlab_ce_initial_root_password_path: "{{ gitlab_ce_config_dir }}/initial_root_password_ansible"
+gitlab_ce_initial_root_password_container_path: /etc/gitlab/initial_root_password_ansible
+
+gitlab_ce_extra_omnibus_config: ""
+
+gitlab_ce_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+gitlab_ce_quadlet_path: "{{ gitlab_ce_quadlet_dir }}/{{ gitlab_ce_quadlet_name }}"
+gitlab_ce_quadlet_wants: network-online.target
+gitlab_ce_quadlet_after: network-online.target
+gitlab_ce_quadlet_restart_policy: always
+gitlab_ce_quadlet_volume_label: Z
+gitlab_ce_quadlet_shm_size: 256m
+gitlab_ce_quadlet_timeout_start_sec: 900
+
+gitlab_ce_service_enabled: true
+gitlab_ce_service_state: started
+
+gitlab_ce_firewalld_manage: true
+gitlab_ce_firewalld_ports:
+  - "{{ gitlab_ce_https_host_port }}/tcp"
+  - "{{ gitlab_ce_ssh_host_port }}/tcp"
+
+gitlab_ce_smoke_url: "{{ gitlab_ce_external_url }}/users/sign_in"
+gitlab_ce_smoke_validate_certs: true
+gitlab_ce_smoke_retries: 60
+gitlab_ce_smoke_delay: 10
+gitlab_ce_smoke_status_codes:
+  - 200

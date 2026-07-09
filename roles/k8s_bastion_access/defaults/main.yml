@@ -1,0 +1,182 @@
+---
+k8s_bastion_runtime_src: "{{ playbook_dir }}/../vendor/platform-k8s-bastion/runtime"
+k8s_bastion_runtime_expected_version: "1.1.3"
+k8s_bastion_install_dir: /usr/local/lib/bastion
+k8s_bastion_bin_dir: /usr/local/bin
+k8s_bastion_sbin_dir: /usr/local/sbin
+k8s_bastion_internal_bin_dir: /usr/local/lib/bastion/internal
+k8s_bastion_python_lib_dir: /usr/local/lib/bastion/python
+k8s_bastion_libexec_dir: /usr/libexec
+k8s_bastion_etc_dir: /etc/bastion
+k8s_bastion_var_dir: /var/lib/bastion
+k8s_bastion_tool_cache_dir: /var/cache/platform/k8s-bastion-tools
+k8s_bastion_systemd_dir: /etc/systemd/system
+k8s_bastion_profile_path: /etc/profile.d/bastion-login.sh
+k8s_bastion_sudoers_path_file: /etc/sudoers.d/bastion-path
+k8s_bastion_runtime_managed_manifest_path: "{{ k8s_bastion_install_dir }}/managed-runtime.yml"
+k8s_bastion_external_tools_managed_manifest_path: "{{ k8s_bastion_var_dir }}/managed-external-tools.yml"
+k8s_bastion_policy_access_managed_manifest_path: "{{ k8s_bastion_var_dir }}/managed-policy-access.yml"
+
+k8s_bastion_runtime_owner: root
+k8s_bastion_runtime_group: root
+
+k8s_bastion_os_packages:
+  - bash-completion
+  - file
+  - git
+  - gzip
+  - openssl
+  - podman
+  - python3
+  - sudo
+  - tar
+
+k8s_bastion_install_external_tools: true
+k8s_bastion_external_tools_require_checksums: true
+k8s_bastion_prune_stale_external_tools: true
+k8s_bastion_prune_stale_runtime_files: true
+k8s_bastion_force_install_external_tools: false
+k8s_bastion_download_use_proxy: true
+k8s_bastion_download_environment: {}
+k8s_bastion_arch: amd64
+k8s_bastion_archive_arch: amd64
+k8s_bastion_archive_arch_x86_64: x86_64
+
+k8s_bastion_versions:
+  kubectl: v1.29.15
+  helm: v4.1.1
+  k9s: v0.50.18
+  stern: v1.33.1
+  jq: jq-1.8.1
+  yq: v4.52.4
+  go_containerregistry: v0.21.1
+  regctl: v0.11.2
+  skopeo: v1.22.0
+  etcd: v3.6.8
+
+k8s_bastion_external_tools:
+  - name: kubectl
+    type: raw
+    filename: kubectl
+    url: "https://dl.k8s.io/release/{{ k8s_bastion_versions.kubectl }}/bin/linux/{{ k8s_bastion_arch }}/kubectl"
+    checksum: sha256:3473e14c7b024a6e5403c6401b273b3faff8e5b1fed022d633815eb3168e4516
+    install_as: kubectl
+  - name: helm
+    type: archive
+    filename: "helm-{{ k8s_bastion_versions.helm }}-linux-{{ k8s_bastion_archive_arch }}.tar.gz"
+    url: "https://get.helm.sh/helm-{{ k8s_bastion_versions.helm }}-linux-{{ k8s_bastion_archive_arch }}.tar.gz"
+    checksum: sha256:5d4c7623283e6dfb1971957f4b755468ab64917066a8567dd50464af298f4031
+    binaries:
+      - src: "linux-{{ k8s_bastion_archive_arch }}/helm"
+        dest: helm
+  - name: k9s
+    type: archive
+    filename: "k9s_Linux_{{ k8s_bastion_archive_arch }}.tar.gz"
+    url: "https://github.com/derailed/k9s/releases/download/{{ k8s_bastion_versions.k9s }}/k9s_Linux_{{ k8s_bastion_archive_arch }}.tar.gz"
+    checksum: sha256:0b697ed4aa80997f7de4deeed6f1fba73df191b28bf691b1f28d2f45fa2a9e9b
+    binaries:
+      - src: k9s
+        dest: k9s
+  - name: stern
+    type: archive
+    filename: "stern_{{ k8s_bastion_versions.stern | regex_replace('^v', '') }}_linux_{{ k8s_bastion_archive_arch }}.tar.gz"
+    url: "https://github.com/stern/stern/releases/download/{{ k8s_bastion_versions.stern }}/stern_{{ k8s_bastion_versions.stern | regex_replace('^v', '') }}_linux_{{ k8s_bastion_archive_arch }}.tar.gz"
+    checksum: sha256:185be29c6a22bd07c0791ec697900943c0cc27292e5a5640a07a543886f1bfc9
+    binaries:
+      - src: stern
+        dest: stern
+  - name: jq
+    type: raw
+    filename: "jq-linux-{{ k8s_bastion_arch }}"
+    url: "https://github.com/jqlang/jq/releases/download/{{ k8s_bastion_versions.jq }}/jq-linux-{{ k8s_bastion_arch }}"
+    checksum: sha256:020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
+    install_as: jq
+  - name: yq
+    type: raw
+    filename: "yq_linux_{{ k8s_bastion_arch }}"
+    url: "https://github.com/mikefarah/yq/releases/download/{{ k8s_bastion_versions.yq }}/yq_linux_{{ k8s_bastion_arch }}"
+    checksum: sha256:0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c
+    install_as: yq
+  - name: go-containerregistry
+    type: archive
+    filename: "go-containerregistry_Linux_{{ k8s_bastion_archive_arch_x86_64 }}.tar.gz"
+    url: "https://github.com/google/go-containerregistry/releases/download/{{ k8s_bastion_versions.go_containerregistry }}/go-containerregistry_Linux_{{ k8s_bastion_archive_arch_x86_64 }}.tar.gz"
+    checksum: sha256:ffca5eafe0af8078f2c627fb852104f9d762fad1eb36c04e93ca14fce76d47d2
+    binaries:
+      - src: crane
+        dest: crane
+      - src: gcrane
+        dest: gcrane
+      - src: krane
+        dest: krane
+  - name: regctl
+    type: raw
+    filename: "regctl-linux-{{ k8s_bastion_arch }}"
+    url: "https://github.com/regclient/regclient/releases/download/{{ k8s_bastion_versions.regctl }}/regctl-linux-{{ k8s_bastion_arch }}"
+    checksum: sha256:d79774ee6d3873ba59119b3d4cc9dba850485fbf54a03a17f66fc836bbbe2785
+    install_as: regctl
+  - name: skopeo
+    type: raw
+    filename: "skopeo-linux-{{ k8s_bastion_arch }}"
+    url: "https://github.com/lework/skopeo-binary/releases/download/{{ k8s_bastion_versions.skopeo }}/skopeo-linux-{{ k8s_bastion_arch }}"
+    checksum: sha256:397708bef1afa0defdc041bb0d3684570d97135076370257438c871600c1c587
+    install_as: skopeo
+  - name: etcd
+    type: archive
+    filename: "etcd-{{ k8s_bastion_versions.etcd }}-linux-{{ k8s_bastion_archive_arch }}.tar.gz"
+    url: "https://github.com/etcd-io/etcd/releases/download/{{ k8s_bastion_versions.etcd }}/etcd-{{ k8s_bastion_versions.etcd }}-linux-{{ k8s_bastion_archive_arch }}.tar.gz"
+    checksum: sha256:cf9cfe91a4856cb90eed9c99e6aee4b708db2c7888b88a6f116281f04b0ea693
+    binaries:
+      - src: "etcd-{{ k8s_bastion_versions.etcd }}-linux-{{ k8s_bastion_archive_arch }}/etcdctl"
+        dest: etcdctl
+      - src: "etcd-{{ k8s_bastion_versions.etcd }}-linux-{{ k8s_bastion_archive_arch }}/etcdutl"
+        dest: etcdutl
+
+k8s_bastion_policy_src: ""
+k8s_bastion_admin_kubeconfig_src: ""
+k8s_bastion_ca_src: ""
+k8s_bastion_local_secret_config_dir: >-
+  {{
+    lookup('env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR')
+    | default(lookup('env', 'HOME') + '/.config/platform-infrastructure/config', true)
+  }}
+k8s_bastion_policy_path: /etc/bastion/access-policy.yaml
+k8s_bastion_admin_kubeconfig_path: /etc/bastion/admin.kubeconfig
+k8s_bastion_ca_path: /etc/bastion/ca.crt
+k8s_bastion_configure_users: true
+k8s_bastion_reconcile_policy_access: true
+k8s_bastion_offline_bootstrap: false
+k8s_bastion_bootstrap_user_kubeconfigs: true
+k8s_bastion_force_bootstrap_user_kubeconfigs: false
+k8s_bastion_bootstrap_admin_kubeconfigs: true
+k8s_bastion_manage_cluster_rbac: false
+k8s_bastion_cluster_admin_role: cluster-admin
+
+k8s_bastion_install_sudo_secure_path: true
+k8s_bastion_admin_group: k8s-admin
+k8s_bastion_profile_os_tools:
+  - podman
+k8s_bastion_profile_hidden_admin_commands:
+  - bastion-bootstrapd
+
+k8s_bastion_enable_systemd: true
+k8s_bastion_enable_bootstrapd: true
+k8s_bastion_enable_csr_timers: true
+k8s_bastion_enable_cert_renew_timer: true
+k8s_bastion_enable_cluster_status_timer: true
+k8s_bastion_cluster_status_cache: /run/bastion-cluster-status.json
+k8s_bastion_cluster_status_stale_seconds: 90
+k8s_bastion_csr_approver_on_boot: 1min
+k8s_bastion_csr_approver_on_active: 2min
+k8s_bastion_csr_cleanup_on_boot: 10min
+k8s_bastion_csr_cleanup_on_active: 6h
+k8s_bastion_cert_renew_on_boot: 10min
+k8s_bastion_cert_renew_on_active: 30min
+k8s_bastion_cert_renew_jitter: 5min
+k8s_bastion_cluster_status_on_boot: 30s
+k8s_bastion_cluster_status_on_active: 30s
+
+k8s_bastion_symlinks: []
+k8s_bastion_validate_commands:
+  - bastion-version
+k8s_bastion_kubeconfig_files: []

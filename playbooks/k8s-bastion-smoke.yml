@@ -1,0 +1,100 @@
+---
+- name: Smoke test Kubernetes bastion hosts
+  hosts: k8s_bastion
+  become: true
+  tasks:
+    - name: Check bastion runtime version command
+      ansible.builtin.command:
+        cmd: bastion-version
+      register: k8s_bastion_smoke_version
+      changed_when: false
+
+    - name: Check kubectl client command
+      ansible.builtin.command:
+        cmd: kubectl version --client=true
+      changed_when: false
+
+    - name: Check helm client command
+      ansible.builtin.command:
+        cmd: helm version
+      changed_when: false
+
+    - name: Check Kubernetes API readiness through bastion admin kubeconfig
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --kubeconfig
+          {{ k8s_bastion_admin_kubeconfig_path | default('/etc/bastion/admin.kubeconfig') }}
+          get --raw=/readyz
+      changed_when: false
+
+    - name: Check Kubernetes node visibility through bastion admin kubeconfig
+      ansible.builtin.command:
+        cmd: >-
+          kubectl --kubeconfig
+          {{ k8s_bastion_admin_kubeconfig_path | default('/etc/bastion/admin.kubeconfig') }}
+          get nodes --no-headers
+      register: k8s_bastion_smoke_nodes
+      changed_when: false
+
+    - name: Assert Kubernetes nodes are visible through bastion admin kubeconfig
+      ansible.builtin.assert:
+        that:
+          - k8s_bastion_smoke_nodes.stdout_lines | length > 0
+        fail_msg: Kubernetes nodes were not visible through the bastion admin kubeconfig.
+
+    - name: Check Kubernetes bastion installed files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ k8s_bastion_policy_path | default('/etc/bastion/access-policy.yaml') }}"
+        - "{{ k8s_bastion_admin_kubeconfig_path | default('/etc/bastion/admin.kubeconfig') }}"
+        - "{{ k8s_bastion_ca_path | default('/etc/bastion/ca.crt') }}"
+        - "{{ k8s_bastion_profile_path | default('/etc/profile.d/bastion-login.sh') }}"
+      register: k8s_bastion_smoke_files
+
+    - name: Assert Kubernetes bastion files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Expected Kubernetes bastion file missing: {{ item.item }}"
+      loop: "{{ k8s_bastion_smoke_files.results }}"
+
+    - name: Check bootstrap daemon is enabled when configured  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-enabled bastion-bootstrapd.service
+      changed_when: false
+      when: k8s_bastion_enable_bootstrapd | default(true)
+
+    - name: Check bootstrap daemon is active when configured  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-active bastion-bootstrapd.service
+      changed_when: false
+      when: k8s_bastion_enable_bootstrapd | default(true)
+
+    - name: Check configured bastion timers are enabled  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: "systemctl is-enabled {{ item.name }}"
+      changed_when: false
+      loop:
+        - name: bastion-csr-approver.timer
+          enabled: "{{ k8s_bastion_enable_csr_timers | default(true) }}"
+        - name: bastion-csr-cleanup.timer
+          enabled: "{{ k8s_bastion_enable_csr_timers | default(true) }}"
+        - name: bastion-cert-renew.timer
+          enabled: "{{ k8s_bastion_enable_cert_renew_timer | default(true) }}"
+        - name: bastion-cluster-status.timer
+          enabled: "{{ k8s_bastion_enable_cluster_status_timer | default(true) }}"
+      when: item.enabled | bool
+
+    - name: List bastion timers for diagnostics  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl list-timers 'bastion-*' --no-pager
+      register: k8s_bastion_smoke_timers
+      changed_when: false
+      failed_when: false
+
+    - name: Show bastion smoke summary
+      ansible.builtin.debug:
+        msg:
+          - "bastion-version: {{ k8s_bastion_smoke_version.stdout }}"
+          - "timer output available: {{ k8s_bastion_smoke_timers.stdout | length > 0 }}"

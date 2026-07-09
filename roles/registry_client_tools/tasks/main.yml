@@ -1,0 +1,90 @@
+---
+- name: Check installed Helm version
+  ansible.builtin.command:
+    argv:
+      - "{{ registry_client_tools_bin_dir }}/helm"
+      - version
+      - --short
+  register: registry_client_tools_helm_version_check
+  changed_when: false
+  failed_when: false
+  when: registry_client_tools_helm_enabled | bool
+
+- name: Set Helm install state
+  ansible.builtin.set_fact:
+    registry_client_tools_helm_install_needed: >-
+      {{ registry_client_tools_helm_version_check.rc | default(1) != 0
+         or registry_client_tools_helm_version not in (registry_client_tools_helm_version_check.stdout | default('')) }}
+  when: registry_client_tools_helm_enabled | bool
+
+- name: Ensure registry client tools cache directory exists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ registry_client_tools_cache_dir }}"
+    - "{{ registry_client_tools_cache_dir }}/helm-{{ registry_client_tools_helm_version }}"
+  when:
+    - registry_client_tools_helm_enabled | bool
+    - registry_client_tools_helm_install_needed | bool
+
+- name: Download pinned Helm archive
+  ansible.builtin.get_url:
+    url: "{{ registry_client_tools_helm_url }}"
+    dest: "{{ registry_client_tools_cache_dir }}/helm-{{ registry_client_tools_helm_version }}.tar.gz"
+    checksum: "{{ registry_client_tools_helm_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - registry_client_tools_helm_enabled | bool
+    - registry_client_tools_helm_install_needed | bool
+    - not ansible_check_mode
+
+- name: Extract pinned Helm archive
+  ansible.builtin.unarchive:
+    src: "{{ registry_client_tools_cache_dir }}/helm-{{ registry_client_tools_helm_version }}.tar.gz"
+    dest: "{{ registry_client_tools_cache_dir }}/helm-{{ registry_client_tools_helm_version }}"
+    remote_src: true
+    creates: "{{ registry_client_tools_cache_dir }}/helm-{{ registry_client_tools_helm_version }}/linux-{{ registry_client_tools_helm_archive_arch }}/helm"
+  when:
+    - registry_client_tools_helm_enabled | bool
+    - registry_client_tools_helm_install_needed | bool
+    - not ansible_check_mode
+
+- name: Install pinned Helm binary
+  ansible.builtin.copy:
+    src: "{{ registry_client_tools_cache_dir }}/helm-{{ registry_client_tools_helm_version }}/linux-{{ registry_client_tools_helm_archive_arch }}/helm"
+    dest: "{{ registry_client_tools_bin_dir }}/helm"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - registry_client_tools_helm_enabled | bool
+    - registry_client_tools_helm_install_needed | bool
+    - not ansible_check_mode
+
+- name: Verify pinned Helm version
+  ansible.builtin.command:
+    argv:
+      - "{{ registry_client_tools_bin_dir }}/helm"
+      - version
+      - --short
+  register: registry_client_tools_helm_installed_version
+  changed_when: false
+  when:
+    - registry_client_tools_helm_enabled | bool
+    - not (ansible_check_mode and registry_client_tools_helm_install_needed | bool)
+
+- name: Assert pinned Helm version is installed
+  ansible.builtin.assert:
+    that:
+      - registry_client_tools_helm_version in registry_client_tools_helm_installed_version.stdout
+    fail_msg: "Pinned Helm {{ registry_client_tools_helm_version }} is not installed."
+  when:
+    - registry_client_tools_helm_enabled | bool
+    - not (ansible_check_mode and registry_client_tools_helm_install_needed | bool)

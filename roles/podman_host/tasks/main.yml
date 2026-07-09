@@ -1,0 +1,24 @@
+---
+- name: Install Podman host packages
+  ansible.builtin.package:
+    name: "{{ podman_host_packages }}"
+    state: present
+  register: podman_host_packages_result
+  when: podman_host_packages | length > 0
+
+- name: Ensure system Quadlet directory exists
+  ansible.builtin.file:
+    path: "{{ podman_host_quadlet_dir }}"
+    state: directory
+    owner: "{{ podman_host_quadlet_dir_owner }}"
+    group: "{{ podman_host_quadlet_dir_group }}"
+    mode: "{{ podman_host_quadlet_dir_mode }}"
+
+- name: Manage Podman socket
+  ansible.builtin.service:
+    name: "{{ podman_host_socket_name }}"
+    enabled: "{{ podman_host_socket_enabled }}"
+    state: "{{ 'started' if podman_host_socket_enabled else 'stopped' }}"
+  when:
+    - podman_host_socket_manage | bool
+    - not (ansible_check_mode and podman_host_packages_result is defined and podman_host_packages_result is changed)

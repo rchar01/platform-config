@@ -1,0 +1,9 @@
+---
+platform_timezone: UTC
+platform_common_directories: []
+platform_host_aliases: []
+platform_logrotate_manage: true
+platform_logrotate_compress: true
+platform_motd_manage: true
+platform_motd: ""
+platform_motd_remove_when_empty: false

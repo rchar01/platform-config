@@ -1,0 +1,28 @@
+---
+platform_environment: homelab
+platform_domain: homelab.example
+
+ansible_user: ansible
+ansible_become: true
+
+platform_timezone: UTC
+
+platform_registry_hostname: registry.example.test
+platform_registry_ip: 192.0.2.61
+platform_registry_url: "https://{{ platform_registry_hostname }}"
+
+platform_host_aliases:
+  - address: "{{ platform_registry_ip }}"
+    names:
+      - "{{ platform_registry_hostname }}"
+      - registry-01
+
+platform_base_packages:
+  - bash-completion
+  - curl
+  - git
+  - jq
+  - lsof
+  - sysstat
+  - tar
+  - wget

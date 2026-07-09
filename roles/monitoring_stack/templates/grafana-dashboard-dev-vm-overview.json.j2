@@ -1,0 +1,474 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "count(up{job=\"$job\"} == 1)",
+          "legendFormat": "up",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Targets Up",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+      "id": 9,
+      "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "up{job=\"$job\",vm_name=~\"$vm_name\"}",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "VM Name to IP Mapping",
+      "transformations": [
+        {"id": "organize", "options": {"excludeByName": {"Time": true, "__name__": true, "job": true}, "indexByName": {}, "renameByName": {"Value": "Up", "vm_name": "VM", "ip": "IP", "platform_role": "Role", "environment": "Environment", "instance": "Exporter"}}}
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 90}
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "avg(100 - (avg by (instance) (rate(node_cpu_seconds_total{job=\"$job\",mode=\"idle\"}[$__rate_interval])) * 100))",
+          "legendFormat": "cpu",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Average CPU Used",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 90}
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "avg((1 - (node_memory_MemAvailable_bytes{job=\"$job\"} / node_memory_MemTotal_bytes{job=\"$job\"})) * 100)",
+          "legendFormat": "memory",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Average Memory Used",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 4,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "100 - (avg by (vm_name) (rate(node_cpu_seconds_total{job=\"$job\",vm_name=~\"$vm_name\",mode=\"idle\"}[$__rate_interval])) * 100)",
+          "legendFormat": "{{ '{{' }} vm_name {{ '}}' }}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "CPU Used by Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "(1 - (node_memory_MemAvailable_bytes{job=\"$job\",vm_name=~\"$vm_name\"} / node_memory_MemTotal_bytes{job=\"$job\",vm_name=~\"$vm_name\"})) * 100",
+          "legendFormat": "{{ '{{' }} vm_name {{ '}}' }}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Memory Used by Instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "id": 6,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "100 - ((node_filesystem_avail_bytes{job=\"$job\",vm_name=~\"$vm_name\",fstype!~\"tmpfs|overlay|squashfs\",mountpoint!~\"/run.*|/var/lib/containers/storage/overlay.*\"} * 100) / node_filesystem_size_bytes{job=\"$job\",vm_name=~\"$vm_name\",fstype!~\"tmpfs|overlay|squashfs\",mountpoint!~\"/run.*|/var/lib/containers/storage/overlay.*\"})",
+          "legendFormat": "{{ '{{' }} vm_name {{ '}}' }} {{ '{{' }} mountpoint {{ '}}' }}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Filesystem Used",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {"type": "linear"},
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "rate(node_network_receive_bytes_total{job=\"$job\",vm_name=~\"$vm_name\",device!~\"lo|veth.*|cali.*|flannel.*|vxlan.*\"}[$__rate_interval])",
+          "legendFormat": "rx {{ '{{' }} vm_name {{ '}}' }} {{ '{{' }} device {{ '}}' }}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "rate(node_network_transmit_bytes_total{job=\"$job\",vm_name=~\"$vm_name\",device!~\"lo|veth.*|cali.*|flannel.*|vxlan.*\"}[$__rate_interval])",
+          "legendFormat": "tx {{ '{{' }} vm_name {{ '}}' }} {{ '{{' }} device {{ '}}' }}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Network Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Uptime"}, "properties": [{"id": "unit", "value": "s"}]},
+          {"matcher": {"id": "byName", "options": "Load 1m"}, "properties": [{"id": "unit", "value": "short"}]}
+        ]
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+      "id": 8,
+      "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "node_load1{job=\"$job\",vm_name=~\"$vm_name\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "load",
+          "range": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+          "editorMode": "code",
+          "expr": "time() - node_boot_time_seconds{job=\"$job\",vm_name=~\"$vm_name\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "uptime",
+          "range": false,
+          "refId": "B"
+        }
+      ],
+      "title": "Host Load and Uptime",
+      "transformations": [
+        {"id": "seriesToColumns", "options": {"byField": "vm_name"}},
+        {"id": "organize", "options": {"excludeByName": {}, "indexByName": {}, "renameByName": {"Value #A": "Load 1m", "Value #B": "Uptime", "vm_name": "VM"}}}
+      ],
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 40,
+  "tags": ["platform", "node-exporter", "ansible-managed"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": {{ monitoring_stack_prometheus_node_exporter_job_name | to_json }}, "value": {{ monitoring_stack_prometheus_node_exporter_job_name | to_json }}},
+        "hide": 2,
+        "name": "job",
+        "query": {{ monitoring_stack_prometheus_node_exporter_job_name | to_json }},
+        "type": "constant"
+      },
+      {
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": {"type": "prometheus", "uid": {{ monitoring_stack_grafana_datasource_uid | to_json }}},
+        "definition": "label_values(up{job=\"$job\"}, vm_name)",
+        "includeAll": true,
+        "label": "VM",
+        "multi": true,
+        "name": "vm_name",
+        "options": [],
+        "query": {"query": "label_values(up{job=\"$job\"}, vm_name)", "refId": "StandardVariableQuery"},
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": {{ monitoring_stack_grafana_vm_overview_dashboard_title | to_json }},
+  "uid": {{ monitoring_stack_grafana_vm_overview_dashboard_uid | to_json }},
+  "version": 1,
+  "weekStart": ""
+}

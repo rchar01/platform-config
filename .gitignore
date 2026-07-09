@@ -1,0 +1,52 @@
+# Local/private inventory copies
+inventories/**/hosts.yml
+inventories/**/hosts.yaml
+inventories/**/group_vars/*.yml
+inventories/**/group_vars/*.yaml
+inventories/**/host_vars/*.yml
+inventories/**/host_vars/*.yaml
+
+# Keep public examples
+!inventories/**/*.example
+!inventories/**/README.md
+
+# Ansible runtime
+*.retry
+.ansible/
+ansible.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets / local config
+*.vault
+.vault_pass
+.vault-pass
+secrets.yml
+secret.yml
+private.yml
+*.private.yml
+*.secret.yml
+*.ansible.env
+**/access-policy.yaml
+
+# Private working plans
+docs/*-plan.md
+
+# Kubeconfigs and certificate material
+*kubeconfig*
+*.kubeconfig
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

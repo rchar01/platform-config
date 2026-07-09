@@ -1,0 +1,7 @@
+---
+- name: Configure Kubernetes bastion access
+  hosts: k8s_bastion
+  become: true
+  roles:
+    - bastion_host
+    - k8s_bastion_access

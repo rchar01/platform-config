@@ -1,0 +1,24 @@
+---
+platform_environment: dev
+platform_domain: dev.example
+
+ansible_user: ansible
+ansible_become: true
+
+platform_timezone: UTC
+
+platform_host_aliases:
+  - address: 192.0.2.61
+    names:
+      - registry.example.test
+      - registry-01.example.test
+
+platform_base_packages:
+  - bash-completion
+  - curl
+  - git
+  - jq
+  - lsof
+  - sysstat
+  - tar
+  - wget

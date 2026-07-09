@@ -1,0 +1,14 @@
+---
+users_manage_ansible_user: false
+users_ansible_user_name: "{{ ansible_user | default('ansible') }}"
+users_ansible_authorized_keys: []
+users_ansible_authorized_keys_exclusive: true
+users_ansible_passwordless_sudo: true
+
+platform_admin_users: []
+platform_admin_append_groups_default: false
+platform_admin_authorized_keys_exclusive: true
+platform_admin_prune_managed_access: true
+platform_admin_prune_stale_authorized_keys: true
+platform_admin_managed_state_dir: /var/lib/platform-config
+platform_admin_managed_manifest_path: "{{ platform_admin_managed_state_dir }}/platform-admin-users.yml"

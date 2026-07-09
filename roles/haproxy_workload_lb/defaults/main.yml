@@ -1,0 +1,53 @@
+---
+haproxy_workload_lb_enabled: false
+
+haproxy_workload_lb_package: haproxy
+haproxy_workload_lb_service_name: haproxy.service
+haproxy_workload_lb_service_enabled: true
+haproxy_workload_lb_service_state: started
+haproxy_workload_lb_config_path: /etc/haproxy/haproxy.cfg
+
+haproxy_workload_lb_user: haproxy
+haproxy_workload_lb_group: haproxy
+haproxy_workload_lb_maxconn: 4096
+haproxy_workload_lb_timeout_connect: 5s
+haproxy_workload_lb_timeout_client: 50s
+haproxy_workload_lb_timeout_server: 50s
+
+haproxy_workload_lb_http_enabled: true
+haproxy_workload_lb_http_bind: "*:80"
+haproxy_workload_lb_http_frontend_name: workload_http
+haproxy_workload_lb_http_backend_name: workload_http
+haproxy_workload_lb_http_backend_port: 30080
+
+haproxy_workload_lb_https_enabled: true
+haproxy_workload_lb_https_bind: "*:443"
+haproxy_workload_lb_https_frontend_name: workload_https
+haproxy_workload_lb_https_backend_name: workload_https
+haproxy_workload_lb_https_backend_port: 30443
+
+haproxy_workload_lb_backend_balance: roundrobin
+haproxy_workload_lb_backend_check_enabled: true
+haproxy_workload_lb_backends: []
+
+haproxy_workload_lb_selinux_manage: true
+haproxy_workload_lb_selinux_package: policycoreutils-python-utils
+haproxy_workload_lb_selinux_backend_port_type: http_port_t
+
+haproxy_workload_lb_firewalld_manage: true
+haproxy_workload_lb_firewalld_ports:
+  - 80/tcp
+  - 443/tcp
+
+haproxy_workload_lb_smoke_probe_urls: []
+haproxy_workload_lb_smoke_listener_host: "{{ ansible_host | default(inventory_hostname) }}"
+haproxy_workload_lb_smoke_probe_status_codes:
+  - 200
+  - 301
+  - 302
+  - 400
+  - 401
+  - 403
+  - 404
+  - 503
+haproxy_workload_lb_smoke_probe_validate_certs: false

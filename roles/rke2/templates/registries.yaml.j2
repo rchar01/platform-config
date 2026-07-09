@@ -1,0 +1,25 @@
+{% if rke2_registry_mirrors | length > 0 %}
+mirrors:
+{% for registry, mirror in rke2_registry_mirrors.items() %}
+  {{ registry | to_json }}:
+    endpoint:
+{% for endpoint in mirror.endpoint | default([]) %}
+      - {{ endpoint | to_json }}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if rke2_registry_configs | length > 0 %}
+configs:
+{% for registry, config in rke2_registry_configs.items() %}
+  {{ registry | to_json }}:
+{% if config.tls is defined %}
+    tls:
+{% if config.tls.ca_file is defined %}
+      ca_file: {{ config.tls.ca_file | to_json }}
+{% endif %}
+{% if config.tls.insecure_skip_verify is defined %}
+      insecure_skip_verify: {{ config.tls.insecure_skip_verify | bool | to_json }}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,106 @@
+---
+- name: Smoke test RKE2 kube-vip from bootstrap server
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_kube_vip_smoke_bootstrap_host: "{{ (groups.get('rke2_servers', []) | first) | default('') }}"
+    rke2_kube_vip_smoke_is_bootstrap: "{{ inventory_hostname == rke2_kube_vip_smoke_bootstrap_host }}"
+    rke2_kube_vip_smoke_kubectl: "{{ rke2_kube_vip_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+    rke2_kube_vip_smoke_kubeconfig: "{{ rke2_kube_vip_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+    rke2_kube_vip_smoke_expected_servers: "{{ groups.get('rke2_servers', []) | length }}"
+  tasks:
+    - name: Confirm kube-vip HelmChart exists
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_kube_vip_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_kube_vip_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_kube_vip_namespace | default('kube-system') }}"
+          - get
+          - helmchart
+          - "{{ rke2_kube_vip_release_name | default('kube-vip') }}"
+      register: rke2_kube_vip_smoke_helmchart
+      retries: 30
+      delay: 5
+      until: rke2_kube_vip_smoke_helmchart.rc == 0
+      changed_when: false
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+    - name: Wait for kube-vip DaemonSet rollout
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_kube_vip_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_kube_vip_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_kube_vip_namespace | default('kube-system') }}"
+          - rollout
+          - status
+          - daemonset/{{ rke2_kube_vip_release_name | default('kube-vip') }}
+          - --timeout=300s
+      changed_when: false
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+    - name: Read kube-vip DaemonSet readiness
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_kube_vip_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_kube_vip_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_kube_vip_namespace | default('kube-system') }}"
+          - get
+          - daemonset
+          - "{{ rke2_kube_vip_release_name | default('kube-vip') }}"
+          - -o=jsonpath={.status.desiredNumberScheduled}{" "}{.status.numberReady}
+      register: rke2_kube_vip_smoke_daemonset
+      changed_when: false
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+    - name: Assert kube-vip is ready on all RKE2 server nodes
+      ansible.builtin.assert:
+        that:
+          - (rke2_kube_vip_smoke_daemonset.stdout.split()[0] | int) == (rke2_kube_vip_smoke_expected_servers | int)
+          - (rke2_kube_vip_smoke_daemonset.stdout.split()[1] | int) == (rke2_kube_vip_smoke_expected_servers | int)
+        fail_msg: "kube-vip DaemonSet is not ready on all RKE2 server nodes."
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+    - name: Verify Kubernetes API reachability through kube-vip
+      ansible.builtin.uri:
+        url: "https://{{ rke2_kube_vip_api_vip }}:6443/readyz"
+        validate_certs: false
+        status_code:
+          - 200
+          - 401
+        return_content: true
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+- name: Smoke test RKE2 kube-vip from bastion hosts
+  hosts: bastion
+  become: false
+  gather_facts: false
+  vars:
+    rke2_kube_vip_smoke_server_hosts: "{{ groups.get('rke2_servers', []) }}"
+    rke2_kube_vip_smoke_api_vip: >-
+      {{
+        hostvars[rke2_kube_vip_smoke_server_hosts[0]].rke2_kube_vip_api_vip | default('')
+        if rke2_kube_vip_smoke_server_hosts | length > 0 else ''
+      }}
+  tasks:
+    - name: Assert kube-vip smoke inputs are available from bastion
+      ansible.builtin.assert:
+        that:
+          - rke2_kube_vip_smoke_server_hosts | length > 0
+          - rke2_kube_vip_smoke_api_vip | length > 0
+        fail_msg: "kube-vip smoke requires rke2_servers and rke2_kube_vip_api_vip."
+
+    - name: Verify Kubernetes API reachability through kube-vip from bastion
+      ansible.builtin.uri:
+        url: "https://{{ rke2_kube_vip_smoke_api_vip }}:6443/readyz"
+        validate_certs: false
+        status_code:
+          - 200
+          - 401
+        return_content: true

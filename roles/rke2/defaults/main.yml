@@ -1,0 +1,55 @@
+---
+rke2_install_script_url: https://get.rke2.io
+rke2_install_script_path: /usr/local/sbin/rke2-install.sh
+rke2_binary_path: /usr/bin/rke2
+rke2_channel: stable
+rke2_version: ""
+rke2_allow_unpinned: false
+
+rke2_config_dir: /etc/rancher/rke2
+rke2_config_path: "{{ rke2_config_dir }}/config.yaml"
+rke2_registries_path: "{{ rke2_config_dir }}/registries.yaml"
+rke2_token_path: "{{ rke2_config_dir }}/cluster-token"
+rke2_token_src: ""
+
+rke2_cluster_group: rke2_cluster
+rke2_server_group: rke2_servers
+rke2_agent_group: rke2_agents
+rke2_bootstrap_host: "{{ groups[rke2_server_group][0] }}"
+rke2_bootstrap_host_address: "{{ hostvars[rke2_bootstrap_host].ansible_host | default(rke2_bootstrap_host) }}"
+rke2_server_url: "https://{{ rke2_bootstrap_host_address }}:9345"
+
+rke2_node_role: "{{ 'server' if inventory_hostname in groups.get(rke2_server_group, []) else 'agent' }}"
+rke2_service_name: "{{ 'rke2-server.service' if rke2_node_role == 'server' else 'rke2-agent.service' }}"
+rke2_service_enabled: true
+rke2_service_state: started
+
+rke2_node_name: "{{ inventory_hostname }}"
+rke2_node_ip: "{{ ansible_host | default(inventory_hostname) }}"
+rke2_selinux: true
+rke2_write_kubeconfig_mode: "0600"
+rke2_kernel_modules:
+  - br_netfilter
+  - overlay
+rke2_sysctl:
+  net.bridge.bridge-nf-call-iptables: "1"
+  net.bridge.bridge-nf-call-ip6tables: "1"
+  net.ipv4.ip_forward: "1"
+
+rke2_cni: calico
+rke2_disable:
+  - rke2-ingress-nginx
+rke2_tls_sans: []
+rke2_extra_config: {}
+
+rke2_registry_mirrors: {}
+rke2_registry_configs: {}
+rke2_registry_ca_src: ""
+rke2_registry_ca_path: "{{ rke2_config_dir }}/registry-ca.crt"
+
+rke2_firewalld_manage: true
+rke2_firewalld_cluster_sources: []
+rke2_firewalld_api_sources: []
+rke2_firewalld_api_ports:
+  - "6443"
+rke2_wait_for_supervisor_timeout: 600

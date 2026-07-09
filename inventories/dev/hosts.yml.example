@@ -1,0 +1,21 @@
+---
+all:
+  children:
+    rocky:
+      hosts:
+        k8s-bastion-01:
+          ansible_host: 192.0.2.210
+
+    bastion:
+      hosts:
+        k8s-bastion-01:
+
+    k8s_bastion:
+      hosts:
+        k8s-bastion-01:
+
+    container_hosts:
+      hosts: {}
+
+    storage_clients:
+      hosts: {}

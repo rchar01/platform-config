@@ -1,0 +1,19 @@
+[Unit]
+Description=Prometheus Monitoring Server
+Wants={{ monitoring_stack_quadlet_wants }}
+After={{ monitoring_stack_quadlet_after }}
+
+[Container]
+Image={{ monitoring_stack_prometheus_image }}
+ContainerName={{ monitoring_stack_prometheus_container_name }}
+Network=host
+User={{ monitoring_stack_prometheus_user }}:{{ monitoring_stack_prometheus_group }}
+Volume={{ monitoring_stack_prometheus_config_dir }}:/etc/prometheus:ro,{{ monitoring_stack_quadlet_volume_label }}
+Volume={{ monitoring_stack_prometheus_data_dir }}:{{ monitoring_stack_prometheus_container_data_dir }}:{{ monitoring_stack_quadlet_volume_label }}
+Exec=--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path={{ monitoring_stack_prometheus_container_data_dir }} --web.listen-address={{ monitoring_stack_prometheus_web_listen_address }}:{{ monitoring_stack_prometheus_web_listen_port }} --web.enable-lifecycle
+
+[Service]
+Restart={{ monitoring_stack_quadlet_restart_policy }}
+
+[Install]
+WantedBy=multi-user.target

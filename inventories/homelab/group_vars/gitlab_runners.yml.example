@@ -1,0 +1,9 @@
+---
+gitlab_runner_gitlab_url: https://gitlab.example.test
+gitlab_runner_tls_ca_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/gitlab/homelab/tls.crt"
+
+# Token files must be created in GitLab first and stored outside Git.
+# Configure gitlab_runner_token_src per host rather than putting tokens in vars.
+gitlab_runner_tags:
+  - dev
+  - linux-amd64

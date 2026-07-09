@@ -1,0 +1,9 @@
+---
+registry_client_tools_helm_enabled: true
+registry_client_tools_helm_version: v4.2.2
+registry_client_tools_helm_arch: amd64
+registry_client_tools_helm_archive_arch: "{{ registry_client_tools_helm_arch }}"
+registry_client_tools_helm_checksum: sha256:9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6
+registry_client_tools_helm_url: "https://get.helm.sh/helm-{{ registry_client_tools_helm_version }}-linux-{{ registry_client_tools_helm_archive_arch }}.tar.gz"
+registry_client_tools_cache_dir: /var/cache/platform/registry-client-tools
+registry_client_tools_bin_dir: /usr/local/bin

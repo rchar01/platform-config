@@ -1,0 +1,23 @@
+---
+node_exporter_version: 1.8.2
+node_exporter_arch: linux-amd64
+node_exporter_archive_name: "node_exporter-{{ node_exporter_version }}.{{ node_exporter_arch }}"
+node_exporter_download_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/{{ node_exporter_archive_name }}.tar.gz"
+node_exporter_download_checksum: ""
+node_exporter_cache_dir: /var/cache/platform/node_exporter
+node_exporter_install_dir: /usr/local/bin
+node_exporter_binary_path: "{{ node_exporter_install_dir }}/node_exporter"
+
+node_exporter_user: node_exporter
+node_exporter_group: node_exporter
+node_exporter_service_name: node_exporter.service
+node_exporter_service_enabled: true
+node_exporter_service_state: started
+node_exporter_web_listen_address: 0.0.0.0
+node_exporter_web_listen_port: 9100
+node_exporter_enabled_collectors: []
+node_exporter_disabled_collectors: []
+node_exporter_extra_args: []
+
+node_exporter_firewalld_manage: true
+node_exporter_firewalld_allowed_sources: []

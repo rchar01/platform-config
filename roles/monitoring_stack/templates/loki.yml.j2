@@ -1,0 +1,33 @@
+auth_enabled: false
+
+server:
+  http_listen_address: {{ monitoring_stack_loki_http_listen_address | to_json }}
+  http_listen_port: {{ monitoring_stack_loki_http_listen_port }}
+
+common:
+  path_prefix: {{ monitoring_stack_loki_container_data_dir | to_json }}
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: {{ (monitoring_stack_loki_container_data_dir + '/chunks') | to_json }}
+      rules_directory: {{ (monitoring_stack_loki_container_data_dir + '/rules') | to_json }}
+
+schema_config:
+  configs:
+    - from: "2024-04-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true
+  volume_enabled: true
+
+analytics:
+  reporting_enabled: false

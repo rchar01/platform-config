@@ -1,0 +1,28 @@
+[Unit]
+Description=Prometheus Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User={{ node_exporter_user }}
+Group={{ node_exporter_group }}
+{% set node_exporter_args = ['--web.listen-address=' ~ node_exporter_web_listen_address ~ ':' ~ (node_exporter_web_listen_port | string)] %}
+{% for collector in node_exporter_enabled_collectors %}
+{% set _ = node_exporter_args.append('--collector.' ~ collector) %}
+{% endfor %}
+{% for collector in node_exporter_disabled_collectors %}
+{% set _ = node_exporter_args.append('--no-collector.' ~ collector) %}
+{% endfor %}
+{% for arg in node_exporter_extra_args %}
+{% set _ = node_exporter_args.append(arg) %}
+{% endfor %}
+ExecStart={{ node_exporter_binary_path }} {{ node_exporter_args | join(' ') }}
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

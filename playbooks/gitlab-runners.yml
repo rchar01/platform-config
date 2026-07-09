@@ -1,0 +1,7 @@
+---
+- name: Configure GitLab runner hosts
+  hosts: gitlab_runners
+  become: true
+  roles:
+    - podman_host
+    - gitlab_runner

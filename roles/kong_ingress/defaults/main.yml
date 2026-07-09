@@ -1,0 +1,39 @@
+---
+kong_ingress_enabled: false
+
+kong_ingress_server_group: rke2_servers
+kong_ingress_worker_group: rke2_agents
+kong_ingress_bootstrap_host: "{{ groups[kong_ingress_server_group][0] }}"
+kong_ingress_manifest_dir: /var/lib/rancher/rke2/server/manifests
+kong_ingress_manifest_path: "{{ kong_ingress_manifest_dir }}/kong-ingress.yaml"
+
+kong_ingress_release_name: kong
+kong_ingress_namespace: kong
+kong_ingress_helmchart_namespace: kube-system
+kong_ingress_chart_name: ingress
+kong_ingress_chart_repo: https://charts.konghq.com
+kong_ingress_chart_version: ""
+
+kong_ingress_gateway_image_tag: ""
+kong_ingress_controller_image_tag: ""
+
+kong_ingress_class_name: kong
+kong_ingress_create_class: true
+kong_ingress_gateway_api_enabled: false
+
+kong_ingress_proxy_service_name: "{{ kong_ingress_release_name }}-gateway-proxy"
+kong_ingress_proxy_http_enabled: true
+kong_ingress_proxy_https_enabled: true
+kong_ingress_node_port_min: 30000
+kong_ingress_node_port_max: 32767
+kong_ingress_proxy_http_node_port: 30080
+kong_ingress_proxy_https_node_port: 30443
+
+kong_ingress_controller_deployment_name: "{{ kong_ingress_release_name }}-controller"
+kong_ingress_gateway_deployment_name: "{{ kong_ingress_release_name }}-gateway"
+kong_ingress_expected_nodeport_services:
+  - "{{ kong_ingress_proxy_service_name }}"
+kong_ingress_kubectl: /var/lib/rancher/rke2/bin/kubectl
+kong_ingress_kubeconfig: /etc/rancher/rke2/rke2.yaml
+
+kong_ingress_extra_values: {}

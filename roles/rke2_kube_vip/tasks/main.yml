@@ -1,0 +1,112 @@
+---
+- name: Assert RKE2 kube-vip inputs are configured
+  ansible.builtin.assert:
+    that:
+      - groups.get(rke2_kube_vip_server_group, []) | length > 0
+      - rke2_kube_vip_api_vip | length > 0
+      - rke2_kube_vip_interface | length > 0
+      - rke2_kube_vip_chart_repo | length > 0
+      - rke2_kube_vip_chart_name | length > 0
+      - rke2_kube_vip_chart_version | string | length > 0
+      - rke2_kube_vip_api_vip in rke2_tls_sans
+    fail_msg: >-
+      RKE2 kube-vip requires rke2 server hosts, rke2_kube_vip_api_vip,
+      rke2_kube_vip_interface, pinned chart settings, and the VIP in rke2_tls_sans.
+  when: rke2_kube_vip_enabled | bool
+
+- name: Discover route to kube-vip API VIP
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -o
+      - route
+      - get
+      - "{{ rke2_kube_vip_api_vip }}"
+  register: rke2_kube_vip_route
+  check_mode: false
+  changed_when: false
+  when: rke2_kube_vip_enabled | bool
+
+- name: Check configured kube-vip interface exists
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -o
+      - link
+      - show
+      - dev
+      - "{{ rke2_kube_vip_interface }}"
+  register: rke2_kube_vip_interface_link
+  check_mode: false
+  changed_when: false
+  when: rke2_kube_vip_enabled | bool
+
+- name: Assert configured kube-vip interface exists
+  ansible.builtin.assert:
+    that:
+      - rke2_kube_vip_interface_link.rc == 0
+    fail_msg: "Configured kube-vip interface does not exist on {{ inventory_hostname }}: {{ rke2_kube_vip_interface }}"
+  when: rke2_kube_vip_enabled | bool
+
+- name: Assert kube-vip API VIP uses the configured interface
+  ansible.builtin.assert:
+    that:
+      - >-
+        rke2_kube_vip_route.stdout is search(' dev ' ~ (rke2_kube_vip_interface | regex_escape) ~ ' ')
+        or rke2_kube_vip_route.stdout is search('^local ' ~ (rke2_kube_vip_api_vip | regex_escape) ~ ' dev lo ')
+    fail_msg: >-
+      Route to {{ rke2_kube_vip_api_vip }} must use {{ rke2_kube_vip_interface }} before
+      kube-vip ownership, or dev lo after this node owns the VIP. Route output on
+      {{ inventory_hostname }}: {{ rke2_kube_vip_route.stdout }}
+  when: rke2_kube_vip_enabled | bool
+
+- name: Check RKE2 kube-vip manifest directory on bootstrap server
+  ansible.builtin.stat:
+    path: "{{ rke2_kube_vip_manifest_dir }}"
+  register: rke2_kube_vip_manifest_dir_stat
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+
+- name: Assert RKE2 kube-vip manifest directory exists on bootstrap server
+  ansible.builtin.assert:
+    that:
+      - rke2_kube_vip_manifest_dir_stat.stat.exists
+      - rke2_kube_vip_manifest_dir_stat.stat.isdir
+    fail_msg: "RKE2 manifest directory does not exist: {{ rke2_kube_vip_manifest_dir }}"
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+
+- name: Check RKE2 server service on bootstrap server
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - rke2-server.service
+  register: rke2_kube_vip_server_service
+  check_mode: false
+  changed_when: false
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+
+- name: Assert RKE2 server service is active on bootstrap server
+  ansible.builtin.assert:
+    that:
+      - rke2_kube_vip_server_service.stdout == 'active'
+    fail_msg: "rke2-server.service must be active before installing kube-vip."
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+
+- name: Write RKE2 kube-vip HelmChart manifest on bootstrap server
+  ansible.builtin.template:
+    src: kube-vip-helmchart.yaml.j2
+    dest: "{{ rke2_kube_vip_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host

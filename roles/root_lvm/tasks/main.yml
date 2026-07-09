@@ -1,0 +1,136 @@
+---
+- name: Converge LVM-backed root filesystem
+  when: root_lvm_enabled | bool
+  block:
+    - name: Assert root LVM desired state is configured
+      ansible.builtin.assert:
+        that:
+          - root_lvm_disk | length > 0
+          - root_lvm_partition_number | int > 0
+          - root_lvm_pv_device | length > 0
+          - root_lvm_vg_name | length > 0
+          - root_lvm_lv_path | length > 0
+          - not root_lvm_require_stable_device | bool or root_lvm_disk is match('^/dev/disk/by-')
+          - not root_lvm_require_stable_device | bool or root_lvm_pv_device is match('^/dev/disk/by-')
+        fail_msg: "Root LVM desired state requires stable disk, partition, PV, VG, and LV inputs."
+
+    - name: Install root LVM management packages
+      ansible.builtin.package:
+        name: "{{ root_lvm_packages }}"
+        state: present
+      when: root_lvm_packages | length > 0
+
+    - name: Ensure root partition consumes declared boot disk capacity
+      ansible.builtin.command:
+        argv:
+          - growpart
+          - "{{ root_lvm_disk }}"
+          - "{{ root_lvm_partition_number | string }}"
+      register: root_lvm_partition_result
+      changed_when: >-
+        'changed:' in (
+          root_lvm_partition_result.stdout | default('')
+          ~ root_lvm_partition_result.stderr | default('')
+        ) | lower
+      failed_when: >-
+        root_lvm_partition_result.rc not in [0, 1]
+        or (
+          root_lvm_partition_result.rc == 1
+          and 'nochange:' not in (
+            root_lvm_partition_result.stdout | default('')
+            ~ root_lvm_partition_result.stderr | default('')
+          ) | lower
+        )
+      when: not ansible_check_mode
+
+    - name: Probe partition table after root partition update  # noqa: no-handler
+      ansible.builtin.command:
+        argv:
+          - partprobe
+          - "{{ root_lvm_disk }}"
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - root_lvm_partition_result is changed
+
+    - name: Check root partition byte size
+      ansible.builtin.command:
+        argv:
+          - blockdev
+          - --getsize64
+          - "{{ root_lvm_pv_device }}"
+      register: root_lvm_partition_bytes
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Check root physical volume byte size
+      ansible.builtin.command:
+        argv:
+          - pvs
+          - --noheadings
+          - --units
+          - b
+          - --nosuffix
+          - -o
+          - pv_size
+          - "{{ root_lvm_pv_device }}"
+      register: root_lvm_pv_bytes
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Ensure root physical volume matches root partition
+      ansible.builtin.command:
+        argv:
+          - pvresize
+          - "{{ root_lvm_pv_device }}"
+      register: root_lvm_pvresize_result
+      changed_when: >-
+        'changed' in (
+          root_lvm_pvresize_result.stdout | default('')
+          ~ root_lvm_pvresize_result.stderr | default('')
+        ) | lower
+        or 'resized' in (
+          root_lvm_pvresize_result.stdout | default('')
+          ~ root_lvm_pvresize_result.stderr | default('')
+        ) | lower
+        or 'updated' in (
+          root_lvm_pvresize_result.stdout | default('')
+          ~ root_lvm_pvresize_result.stderr | default('')
+        ) | lower
+      when: >-
+        not ansible_check_mode
+        and root_lvm_partition_bytes.stdout | trim | int
+          - root_lvm_pv_bytes.stdout | trim | float
+          > root_lvm_pv_resize_threshold_bytes | int
+
+    - name: Check root volume group free space
+      ansible.builtin.command:
+        argv:
+          - vgs
+          - --noheadings
+          - --units
+          - m
+          - --nosuffix
+          - -o
+          - vg_free
+          - "{{ root_lvm_vg_name }}"
+      register: root_lvm_vg_free
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Ensure root logical volume consumes free space
+      ansible.builtin.command:
+        argv:
+          - lvextend
+          - -r
+          - -l
+          - +100%FREE
+          - "{{ root_lvm_lv_path }}"
+      register: root_lvm_lvextend_result
+      changed_when: >-
+        'successfully resized' in root_lvm_lvextend_result.stdout
+        or 'Size of logical volume' in root_lvm_lvextend_result.stdout
+      when: >-
+        not ansible_check_mode
+        and root_lvm_consume_free | bool
+        and root_lvm_vg_free.stdout | trim | float > root_lvm_min_free_mb | float

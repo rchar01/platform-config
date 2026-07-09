@@ -1,0 +1,24 @@
+---
+- name: Install NFS client package
+  ansible.builtin.package:
+    name: "{{ nfs_client_package }}"
+    state: present
+  when: nfs_client_mounts | length > 0
+
+- name: Ensure NFS mount directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop: "{{ nfs_client_mounts }}"
+
+- name: Manage NFS mounts
+  ansible.posix.mount:
+    src: "{{ item.src }}"
+    path: "{{ item.path }}"
+    fstype: "{{ item.fstype | default('nfs') }}"
+    opts: "{{ item.opts | default('defaults') }}"
+    state: "{{ item.state | default('mounted') }}"
+  loop: "{{ nfs_client_mounts }}"

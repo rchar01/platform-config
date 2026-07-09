@@ -1,0 +1,7 @@
+---
+gitlab_ce_hostname: gitlab.example.test
+gitlab_ce_external_url: https://gitlab.example.test
+gitlab_ce_tls_cert_src: /path/outside/git/gitlab/tls.crt
+gitlab_ce_tls_key_src: /path/outside/git/gitlab/tls.key
+gitlab_ce_ssh_host_port: 2222
+gitlab_ce_smoke_validate_certs: false

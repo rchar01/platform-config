@@ -1,0 +1,153 @@
+---
+- name: Assert GitLab Runner registration inputs are configured
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_gitlab_url | length > 0
+      - gitlab_runner_token_src | length > 0
+      - gitlab_runner_name | length > 0
+    fail_msg: "gitlab_runner_gitlab_url, gitlab_runner_token_src, and gitlab_runner_name are required."
+
+- name: Check GitLab Runner token source on control node
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_token_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: gitlab_runner_token_src_stat
+
+- name: Assert GitLab Runner token source exists on control node
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_token_src_stat.stat.exists
+      - gitlab_runner_token_src_stat.stat.isreg
+    fail_msg: "GitLab Runner token file does not exist on the control node: {{ gitlab_runner_token_src }}"
+
+- name: Assert GitLab Runner token source permissions are private
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_token_src_stat.stat.mode is match('^0?[46]00$')
+    fail_msg: "GitLab Runner token file should be readable only by its owner: {{ gitlab_runner_token_src }}"
+  when: gitlab_runner_token_src_stat.stat.exists
+
+- name: Assert GitLab Runner TLS CA source exists when configured
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_tls_ca_cert_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: gitlab_runner_tls_ca_cert_src_stat
+  when: gitlab_runner_tls_ca_cert_src | length > 0
+
+- name: Validate GitLab Runner TLS CA source
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_tls_ca_cert_src_stat.stat.exists
+      - gitlab_runner_tls_ca_cert_src_stat.stat.isreg
+    fail_msg: "GitLab Runner TLS CA certificate file does not exist on the control node: {{ gitlab_runner_tls_ca_cert_src }}"
+  when: gitlab_runner_tls_ca_cert_src | length > 0
+
+- name: Ensure GitLab Runner directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ gitlab_runner_config_dir }}"
+      mode: "0750"
+    - path: "{{ gitlab_runner_certs_dir }}"
+      mode: "0750"
+    - path: "{{ gitlab_runner_data_dir }}"
+      mode: "0755"
+
+- name: Copy GitLab Runner TLS CA certificate
+  ansible.builtin.copy:
+    src: "{{ gitlab_runner_tls_ca_cert_src }}"
+    dest: "{{ gitlab_runner_tls_ca_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart GitLab Runner
+  when: gitlab_runner_tls_ca_cert_src | length > 0
+
+- name: Check GitLab Runner configuration file
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_config_path }}"
+  register: gitlab_runner_config_stat
+
+- name: Stop GitLab Runner before forced re-registration
+  ansible.builtin.systemd_service:
+    name: "{{ gitlab_runner_service_name }}"
+    state: stopped
+  failed_when: false
+  when:
+    - gitlab_runner_force_register | bool
+    - gitlab_runner_config_stat.stat.exists
+    - not ansible_check_mode
+
+- name: Remove GitLab Runner configuration before forced re-registration
+  ansible.builtin.file:
+    path: "{{ gitlab_runner_config_path }}"
+    state: absent
+  when:
+    - gitlab_runner_force_register | bool
+    - gitlab_runner_config_stat.stat.exists
+
+- name: Refresh GitLab Runner configuration file state
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_config_path }}"
+  register: gitlab_runner_config_stat_after_force
+
+- name: Register GitLab Runner with pre-created token
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'podman', 'run', '--rm',
+          '--entrypoint', 'gitlab-runner',
+          '--volume', gitlab_runner_config_dir ~ ':/etc/gitlab-runner:' ~ gitlab_runner_quadlet_volume_label,
+          '--volume', gitlab_runner_data_dir ~ ':/home/gitlab-runner:' ~ gitlab_runner_quadlet_volume_label,
+          gitlab_runner_image,
+          'register',
+          '--non-interactive',
+          '--url', gitlab_runner_gitlab_url,
+          '--token', lookup('ansible.builtin.file', gitlab_runner_token_src) | trim,
+          '--name', gitlab_runner_name,
+          '--executor', gitlab_runner_executor
+        ]
+        + ([ '--tls-ca-file', gitlab_runner_container_tls_ca_cert_path ] if gitlab_runner_tls_ca_cert_src | length > 0 else [])
+        + gitlab_runner_registration_extra_args
+      }}
+  no_log: true
+  changed_when: true
+  when:
+    - not gitlab_runner_config_stat_after_force.stat.exists
+    - not ansible_check_mode
+
+- name: Write GitLab Runner Quadlet unit
+  ansible.builtin.template:
+    src: gitlab-runner.container.j2
+    dest: "{{ gitlab_runner_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: gitlab_runner_quadlet_result
+  notify:
+    - Reload systemd
+    - Restart GitLab Runner
+
+- name: Reload systemd manager configuration
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Manage GitLab Runner service
+  ansible.builtin.systemd_service:
+    name: "{{ gitlab_runner_service_name }}"
+    enabled: "{{ gitlab_runner_service_enabled }}"
+    state: "{{ gitlab_runner_service_state }}"
+  when: not (ansible_check_mode and gitlab_runner_quadlet_result is changed)

@@ -1,0 +1,12 @@
+---
+bastion_host_base_packages:
+  - bash-completion
+  - curl
+  - git
+  - jq
+  - tmux
+  - vim
+  - wget
+  - yq
+
+bastion_host_platform_dir: /opt/platform

@@ -1,0 +1,160 @@
+---
+- name: Check Kubernetes bastion runtime source
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_runtime_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: k8s_bastion_runtime_src_stat
+
+- name: Fail if Kubernetes bastion runtime source is missing
+  ansible.builtin.fail:
+    msg: "Kubernetes bastion runtime source not found: {{ k8s_bastion_runtime_src }}. Add platform-k8s-bastion under vendor/ or override k8s_bastion_runtime_src."
+  when: not k8s_bastion_runtime_src_stat.stat.exists
+
+- name: Check Kubernetes bastion install manifest
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_runtime_src }}/install-manifest.yml"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: k8s_bastion_install_manifest_stat
+
+- name: Fail if Kubernetes bastion install manifest is missing
+  ansible.builtin.fail:
+    msg: "Kubernetes bastion install manifest not found: {{ k8s_bastion_runtime_src }}/install-manifest.yml"
+  when: not k8s_bastion_install_manifest_stat.stat.exists
+
+- name: Check Kubernetes bastion runtime version file
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_runtime_src }}/VERSION"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: k8s_bastion_runtime_version_stat
+  when: k8s_bastion_runtime_expected_version | length > 0
+
+- name: Fail if Kubernetes bastion runtime version file is missing
+  ansible.builtin.fail:
+    msg: "Kubernetes bastion runtime VERSION not found: {{ k8s_bastion_runtime_src }}/VERSION"
+  when:
+    - k8s_bastion_runtime_expected_version | length > 0
+    - not k8s_bastion_runtime_version_stat.stat.exists
+
+- name: Read Kubernetes bastion runtime version
+  ansible.builtin.set_fact:
+    k8s_bastion_runtime_actual_version: "{{ lookup('file', k8s_bastion_runtime_src + '/VERSION') | trim }}"
+  when: k8s_bastion_runtime_expected_version | length > 0
+
+- name: Validate Kubernetes bastion runtime version
+  ansible.builtin.assert:
+    that:
+      - k8s_bastion_runtime_actual_version == k8s_bastion_runtime_expected_version
+    fail_msg: >-
+      Kubernetes bastion runtime version mismatch at {{ k8s_bastion_runtime_src }}:
+      expected {{ k8s_bastion_runtime_expected_version }}, found {{ k8s_bastion_runtime_actual_version }}.
+      Update the runtime source or override k8s_bastion_runtime_expected_version intentionally.
+    quiet: true
+  when: k8s_bastion_runtime_expected_version | length > 0
+
+- name: Load Kubernetes bastion install manifest
+  ansible.builtin.set_fact:
+    k8s_bastion_install_manifest: "{{ lookup('file', k8s_bastion_runtime_src + '/install-manifest.yml') | from_yaml }}"
+
+- name: Build Kubernetes bastion required source directory list
+  ansible.builtin.set_fact:
+    k8s_bastion_required_source_dirs: >-
+      {{
+        (
+          [
+            k8s_bastion_install_manifest.publicCommands.sourceDir,
+            k8s_bastion_install_manifest.internalCommands.sourceDir,
+            k8s_bastion_install_manifest.adminCommands.sourceDir,
+            k8s_bastion_install_manifest.libraries.sourceDir,
+            k8s_bastion_install_manifest.pythonLibraries.sourceDir
+          ]
+          +
+          ([k8s_bastion_install_manifest.libexec.sourceDir]
+            if not (k8s_bastion_install_manifest.libexec.optional | default(false) | bool)
+            else [])
+        )
+      }}
+
+- name: Check Kubernetes bastion source subdirectories
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_runtime_src }}/{{ item }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  loop: "{{ k8s_bastion_required_source_dirs }}"
+  register: k8s_bastion_source_dirs
+
+- name: Fail if Kubernetes bastion source layout is incomplete
+  ansible.builtin.fail:
+    msg: "Kubernetes bastion runtime source is missing {{ item.item }}: {{ k8s_bastion_runtime_src }}"
+  loop: "{{ k8s_bastion_source_dirs.results }}"
+  when: not item.stat.exists
+
+- name: Validate Kubernetes bastion external tool types
+  ansible.builtin.assert:
+    that:
+      - item.type in ['raw', 'archive']
+    fail_msg: "Unsupported Kubernetes bastion external tool type for {{ item.name }}: {{ item.type }}"
+    quiet: true
+  loop: "{{ k8s_bastion_external_tools }}"
+
+- name: Validate Kubernetes bastion external tool metadata
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | length > 0
+      - item.filename is defined
+      - item.filename | length > 0
+      - item.url is defined
+      - item.url | length > 0
+      - item.type != 'raw' or (item.install_as is defined and item.install_as | length > 0)
+      - item.type != 'archive' or (item.binaries is defined and item.binaries | length > 0)
+    fail_msg: "Invalid Kubernetes bastion external tool metadata for {{ item.name | default('unnamed') }}"
+    quiet: true
+  loop: "{{ k8s_bastion_external_tools }}"
+
+- name: Validate Kubernetes bastion external tool checksums when required
+  ansible.builtin.assert:
+    that:
+      - item.checksum is defined
+      - item.checksum | length > 0
+      - item.checksum is match('^sha256:[0-9a-fA-F]{64}$')
+    fail_msg: "Kubernetes bastion external tool {{ item.name }} is missing a sha256:<64 hex> checksum"
+    quiet: true
+  loop: "{{ k8s_bastion_external_tools }}"
+  when: k8s_bastion_external_tools_require_checksums
+
+- name: Check private bastion input files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  loop:
+    - name: policy
+      path: "{{ k8s_bastion_policy_src }}"
+      required: "{{ k8s_bastion_policy_src | length > 0 }}"
+    - name: admin kubeconfig
+      path: "{{ k8s_bastion_admin_kubeconfig_src }}"
+      required: "{{ k8s_bastion_admin_kubeconfig_src | length > 0 }}"
+    - name: CA certificate
+      path: "{{ k8s_bastion_ca_src }}"
+      required: "{{ k8s_bastion_ca_src | length > 0 }}"
+  when: item.required | bool
+  register: k8s_bastion_private_inputs
+
+- name: Fail if a configured private bastion input is missing
+  ansible.builtin.fail:
+    msg: "Configured Kubernetes bastion {{ item.item.name }} file not found: {{ item.item.path }}"
+  loop: "{{ k8s_bastion_private_inputs.results | default([]) }}"
+  when: not item.stat.exists

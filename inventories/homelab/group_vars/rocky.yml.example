@@ -1,0 +1,8 @@
+---
+platform_os_family: rocky
+
+ssh_server_package: openssh-server
+ssh_service_name: sshd
+
+chrony_service_name: chronyd
+nfs_client_package: nfs-utils

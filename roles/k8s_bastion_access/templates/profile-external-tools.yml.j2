@@ -1,0 +1,10 @@
+---
+{% for tool in k8s_bastion_external_tools %}
+{% if tool.type == 'raw' %}
+- {{ tool.install_as }}
+{% elif tool.type == 'archive' %}
+{% for binary in tool.binaries %}
+- {{ binary.dest }}
+{% endfor %}
+{% endif %}
+{% endfor %}

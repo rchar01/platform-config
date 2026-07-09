@@ -1,0 +1,6 @@
+---
+- name: Install platform base packages
+  ansible.builtin.package:
+    name: "{{ platform_base_packages }}"
+    state: present
+  when: platform_base_packages | length > 0

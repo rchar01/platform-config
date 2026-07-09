@@ -1,0 +1,5 @@
+---
+zot_registry_host_port: 443
+zot_registry_tls_cert_src: /path/outside/git/registry/tls.crt
+zot_registry_tls_key_src: /path/outside/git/registry/tls.key
+zot_registry_smoke_validate_certs: false

@@ -1,0 +1,6 @@
+---
+- name: Install Kubernetes bastion OS packages
+  ansible.builtin.package:
+    name: "{{ k8s_bastion_os_packages }}"
+    state: present
+  when: k8s_bastion_os_packages | length > 0

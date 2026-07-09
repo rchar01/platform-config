@@ -1,0 +1,344 @@
+# Managed by Ansible role k8s_bastion_access
+
+if [ -z "${BASH_VERSION:-}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+BASTION_USER_TOOLS="{{ k8s_bastion_user_tools | join(' ') }}"
+BASTION_ADMIN_TOOLS="{{ k8s_bastion_admin_tools | join(' ') }}"
+BASTION_ADMIN_GROUP="{{ k8s_bastion_admin_group }}"
+BASTION_HELPERS="{{ k8s_bastion_helper_tools | join(' ') }}"
+BASTION_CLUSTER_STATUS_CACHE="{{ k8s_bastion_cluster_status_cache }}"
+BASTION_CLUSTER_STATUS_STALE_SECONDS="{{ k8s_bastion_cluster_status_stale_seconds }}"
+
+_bastion_notice_add() {
+  local level="$1"
+  local message="$2"
+
+  BASTION_NOTICE_TOTAL=$((BASTION_NOTICE_TOTAL + 1))
+  if ((BASTION_NOTICE_TOTAL <= 4)); then
+    if [[ -n "$BASTION_NOTICES" ]]; then
+      BASTION_NOTICES="${BASTION_NOTICES}"$'\n'"${level}: ${message}"
+    else
+      BASTION_NOTICES="${level}: ${message}"
+    fi
+  fi
+}
+
+_bastion_regular_tools() {
+  local out=""
+  local t
+  for t in $BASTION_USER_TOOLS; do
+    [[ "$t" == bastion-* ]] && continue
+    out="$out $t"
+  done
+  printf '%s\n' "${out# }"
+}
+
+_bastion_resolve_user_kubeconfig() {
+  local p
+
+  if [[ -n "${KUBECONFIG:-}" ]]; then
+    IFS=':' read -r -a _kc_parts <<< "$KUBECONFIG"
+    for p in "${_kc_parts[@]}"; do
+      if [[ -f "$p" ]]; then
+        printf '%s\n' "$p"
+        return 0
+      fi
+    done
+    printf '%s\n' "${_kc_parts[0]:-$HOME/.kube/config}"
+    return 0
+  fi
+
+  printf '%s\n' "$HOME/.kube/config"
+}
+
+_bastion_cert_remaining_seconds() {
+  local cert_file="$1"
+  local endline not_after exp now
+
+  endline="$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null || true)"
+  [[ -n "$endline" ]] || {
+    printf '%s\n' ""
+    return 0
+  }
+
+  not_after="${endline#notAfter=}"
+  exp="$(date -d "$not_after" +%s 2>/dev/null || true)"
+  now="$(date +%s)"
+  [[ -n "$exp" ]] || {
+    printf '%s\n' ""
+    return 0
+  }
+
+  printf '%s\n' "$((exp - now))"
+}
+
+_bastion_set_cert_state() {
+  local remaining="$1"
+  local days hours
+
+  if [[ -z "$remaining" ]]; then
+    BASTION_USER_CERT_DISPLAY="-"
+    BASTION_USER_CERT_STATE="UNKNOWN"
+    return 0
+  fi
+
+  if ((remaining <= 0)); then
+    BASTION_USER_CERT_DISPLAY="expired"
+    BASTION_USER_CERT_STATE="EXPIRED"
+    _bastion_notice_add "CRIT" "Client cert expired. Run: bastion-renew-cert"
+    return 0
+  fi
+
+  days="$((remaining / 86400))"
+  hours="$((remaining / 3600))"
+  if ((days >= 1)); then
+    BASTION_USER_CERT_DISPLAY="${days}d"
+  else
+    BASTION_USER_CERT_DISPLAY="${hours}h"
+  fi
+
+  if ((remaining > 3 * 86400)); then
+    BASTION_USER_CERT_STATE="OK"
+  elif ((remaining >= 86400)); then
+    BASTION_USER_CERT_STATE="WARN"
+    _bastion_notice_add "WARN" "Client cert expires in ${BASTION_USER_CERT_DISPLAY}. Run: bastion-renew-cert"
+  else
+    BASTION_USER_CERT_STATE="CRIT"
+    _bastion_notice_add "CRIT" "Client cert expires in ${BASTION_USER_CERT_DISPLAY}. Run: bastion-renew-cert"
+  fi
+}
+
+_bastion_collect_user_status() {
+  local kubeconfig json context user_ref cluster_ref namespace cert_data cert_file tmp_file cert_seconds
+  kubeconfig="$(_bastion_resolve_user_kubeconfig)"
+
+  BASTION_USER_KUBECONFIG="NOT FOUND / INVALID"
+  BASTION_USER_CONTEXT="-"
+  BASTION_USER_NAMESPACE="-"
+  BASTION_USER_CLUSTER=""
+  BASTION_USER_CERT_DISPLAY="-"
+  BASTION_USER_CERT_STATE="-"
+
+  if [[ ! -f "$kubeconfig" ]]; then
+    if [[ -f "$HOME/.kube/bootstrap" ]]; then
+      _bastion_notice_add "WARN" "No active kubeconfig. Bootstrap found - run: bastion-renew-cert"
+    else
+      _bastion_notice_add "CRIT" "No kubeconfig or bootstrap. Ask admin: sudo bastion-bootstrap-kubeconfig --user $USER"
+    fi
+    return 0
+  fi
+
+  json="$(kubectl config view --raw --kubeconfig "$kubeconfig" -o json 2>/dev/null || true)"
+  context="$(jq -r '.["current-context"] // ""' <<< "$json")"
+
+  if [[ -z "$json" || -z "$context" ]]; then
+    _bastion_notice_add "CRIT" "User kubeconfig is invalid. Run: bastion-renew-cert"
+    return 0
+  fi
+
+  BASTION_USER_KUBECONFIG="$kubeconfig"
+  BASTION_USER_CONTEXT="$context"
+  user_ref="$(jq -r --arg ctx "$context" '.contexts[]? | select(.name == $ctx) | .context.user // ""' <<< "$json" | head -n1)"
+  cluster_ref="$(jq -r --arg ctx "$context" '.contexts[]? | select(.name == $ctx) | .context.cluster // ""' <<< "$json" | head -n1)"
+  namespace="$(jq -r --arg ctx "$context" '.contexts[]? | select(.name == $ctx) | .context.namespace // "default"' <<< "$json" | head -n1)"
+  cert_data="$(jq -r --arg user "$user_ref" '.users[]? | select(.name == $user) | .user["client-certificate-data"] // ""' <<< "$json" | head -n1)"
+  cert_file="$(jq -r --arg user "$user_ref" '.users[]? | select(.name == $user) | .user["client-certificate"] // ""' <<< "$json" | head -n1)"
+
+  BASTION_USER_CLUSTER="$cluster_ref"
+  BASTION_USER_NAMESPACE="${namespace:-default}"
+
+  if [[ -n "$cert_data" ]]; then
+    tmp_file="$(mktemp)"
+    if printf '%s' "$cert_data" | base64 -d > "$tmp_file" 2>/dev/null; then
+      cert_seconds="$(_bastion_cert_remaining_seconds "$tmp_file")"
+      _bastion_set_cert_state "$cert_seconds"
+    else
+      BASTION_USER_CERT_DISPLAY="-"
+      BASTION_USER_CERT_STATE="UNKNOWN"
+    fi
+    rm -f "$tmp_file"
+  elif [[ -n "$cert_file" ]]; then
+    if [[ "$cert_file" != /* ]]; then
+      cert_file="$(cd "$(dirname "$kubeconfig")" && readlink -f "$cert_file" 2>/dev/null || true)"
+    fi
+    if [[ -f "$cert_file" ]]; then
+      cert_seconds="$(_bastion_cert_remaining_seconds "$cert_file")"
+      _bastion_set_cert_state "$cert_seconds"
+    else
+      BASTION_USER_CERT_DISPLAY="-"
+      BASTION_USER_CERT_STATE="UNKNOWN"
+    fi
+  else
+    BASTION_USER_CERT_DISPLAY="-"
+    BASTION_USER_CERT_STATE="UNKNOWN"
+    if [[ -f "$HOME/.kube/bootstrap" ]]; then
+      _bastion_notice_add "WARN" "No user client certificate. Run: bastion-renew-cert"
+    fi
+  fi
+}
+
+_bastion_collect_cluster_status() {
+  local cache_json cluster_name server health ready total latency error generated_at generated_epoch now age
+
+  BASTION_CLUSTER_NAME="-"
+  BASTION_CLUSTER_SERVER="-"
+  BASTION_CLUSTER_HEALTH="UNKNOWN"
+  BASTION_CLUSTER_STATUS_TIME="-"
+  BASTION_CLUSTER_STATUS_AGE="-"
+
+  if [[ ! -s "$BASTION_CLUSTER_STATUS_CACHE" ]]; then
+    BASTION_CLUSTER_HEALTH="DOWN (status cache unavailable)"
+    _bastion_notice_add "WARN" "Cluster status cache unavailable"
+    return 0
+  fi
+
+  cache_json="$(cat "$BASTION_CLUSTER_STATUS_CACHE" 2>/dev/null || true)"
+  if [[ -z "$cache_json" ]]; then
+    BASTION_CLUSTER_HEALTH="DOWN (status cache unreadable)"
+    _bastion_notice_add "WARN" "Cluster status cache unreadable"
+    return 0
+  fi
+
+  cluster_name="$(jq -r '.cluster_name // "-"' <<< "$cache_json" 2>/dev/null || echo "-")"
+  server="$(jq -r '.api_server // "-"' <<< "$cache_json" 2>/dev/null || echo "-")"
+  health="$(jq -r '.health // "DOWN"' <<< "$cache_json" 2>/dev/null || echo "DOWN")"
+  ready="$(jq -r '.ready_nodes // 0' <<< "$cache_json" 2>/dev/null || echo 0)"
+  total="$(jq -r '.total_nodes // 0' <<< "$cache_json" 2>/dev/null || echo 0)"
+  latency="$(jq -r '.api_latency_ms // 0' <<< "$cache_json" 2>/dev/null || echo 0)"
+  error="$(jq -r '.error // ""' <<< "$cache_json" 2>/dev/null || echo "")"
+  generated_at="$(jq -r '.generated_at // "-"' <<< "$cache_json" 2>/dev/null || echo "-")"
+  generated_epoch="$(jq -r '.generated_at_epoch // 0' <<< "$cache_json" 2>/dev/null || echo 0)"
+
+  BASTION_CLUSTER_NAME="${cluster_name:--}"
+  BASTION_CLUSTER_SERVER="${server:--}"
+  BASTION_CLUSTER_STATUS_TIME="${generated_at:--}"
+
+  now="$(date +%s)"
+  if [[ "$generated_epoch" =~ ^[0-9]+$ ]] && ((generated_epoch > 0)); then
+    age="$((now - generated_epoch))"
+    ((age < 0)) && age=0
+    BASTION_CLUSTER_STATUS_AGE="${age}s"
+    if ((age > BASTION_CLUSTER_STATUS_STALE_SECONDS)); then
+      _bastion_notice_add "WARN" "Cluster status cache is stale (${age}s old)"
+    fi
+  else
+    _bastion_notice_add "WARN" "Cluster status cache has invalid timestamp"
+  fi
+
+  case "$health" in
+    OK)
+      BASTION_CLUSTER_HEALTH="OK | Nodes ${ready}/${total} | API ${latency}ms"
+      ;;
+    DEGRADED)
+      BASTION_CLUSTER_HEALTH="DEGRADED | Nodes ${ready}/${total} | API ${latency}ms"
+      _bastion_notice_add "WARN" "Cluster has NotReady nodes (${ready}/${total} Ready)"
+      ;;
+    DOWN)
+      if [[ -n "$error" ]]; then
+        BASTION_CLUSTER_HEALTH="DOWN ($error)"
+        _bastion_notice_add "CRIT" "$error"
+      else
+        BASTION_CLUSTER_HEALTH="DOWN"
+        _bastion_notice_add "CRIT" "Cluster status probe reports DOWN"
+      fi
+      ;;
+    *)
+      BASTION_CLUSTER_HEALTH="$health"
+      ;;
+  esac
+
+  if [[ -n "$BASTION_USER_CLUSTER" && "$cluster_name" != "-" && "$BASTION_USER_CLUSTER" != "$cluster_name" ]]; then
+    _bastion_notice_add "WARN" "User context cluster differs from admin probe cluster"
+  fi
+
+  if [[ "${cluster_name,,}" =~ (prod|live|main) ]]; then
+    _bastion_notice_add "WARN" "PRODUCTION cluster - actions are audited"
+  elif [[ "${cluster_name,,}" =~ (preprod|stage|staging) ]]; then
+    _bastion_notice_add "INFO" "PREPROD cluster - validate target before changes"
+  fi
+}
+
+_bastion_print_notices() {
+  if [[ -n "$BASTION_NOTICES" ]]; then
+    printf '%s\n' "$BASTION_NOTICES" >&2
+  fi
+
+  if ((BASTION_NOTICE_TOTAL > 4)); then
+    echo "INFO: Additional notices: $((BASTION_NOTICE_TOTAL - 4))" >&2
+  fi
+}
+
+_bastion_enable_kubectl_completion() {
+  [[ -n "${BASH_VERSION:-}" ]] || return 0
+  [[ -n "${BASTION_KUBECTL_COMPLETION_LOADED:-}" ]] && return 0
+  export BASTION_KUBECTL_COMPLETION_LOADED=1
+
+  command -v kubectl >/dev/null 2>&1 || return 0
+
+  if ! declare -F _init_completion >/dev/null 2>&1; then
+    if [[ -r /etc/profile.d/bash_completion.sh ]]; then
+      source /etc/profile.d/bash_completion.sh >/dev/null 2>&1 || true
+    elif [[ -r /usr/share/bash-completion/bash_completion ]]; then
+      source /usr/share/bash-completion/bash_completion >/dev/null 2>&1 || true
+    fi
+  fi
+
+  source <(kubectl completion bash) >/dev/null 2>&1 || true
+}
+
+case $- in
+  *i*)
+    _bastion_enable_kubectl_completion
+
+    if [[ -n "${SSH_CONNECTION:-}" && -z "${BASTION_NOTICE_SHOWN:-}" ]]; then
+      export BASTION_NOTICE_SHOWN=1
+      BASTION_NOTICES=""
+      BASTION_NOTICE_TOTAL=0
+
+      if [[ -z "${BASTION_BOOTSTRAP_DONE:-}" ]]; then
+        export BASTION_BOOTSTRAP_DONE=1
+        if [[ -x {{ k8s_bastion_internal_bin_dir }}/bastion-login-bootstrap ]]; then
+          {{ k8s_bastion_internal_bin_dir }}/bastion-login-bootstrap --quiet >/dev/null 2>&1 || true
+        fi
+      fi
+
+      _bastion_collect_user_status
+      _bastion_collect_cluster_status
+
+      echo >&2
+      echo "============================================================" >&2
+      echo " Kubernetes Bastion: $(hostname -f 2>/dev/null || hostname)" >&2
+      echo " Version: $(bastion-version 2>/dev/null || echo unknown)" >&2
+      echo "============================================================" >&2
+      echo >&2
+
+      echo "User kubeconfig : $BASTION_USER_KUBECONFIG" >&2
+      echo "Context         : $BASTION_USER_CONTEXT" >&2
+      echo "Namespace       : $BASTION_USER_NAMESPACE" >&2
+      echo "Client cert     : $BASTION_USER_CERT_DISPLAY ($BASTION_USER_CERT_STATE)" >&2
+      echo >&2
+
+      echo "Cluster         : $BASTION_CLUSTER_NAME" >&2
+      echo "API Server      : $BASTION_CLUSTER_SERVER" >&2
+      echo "Health          : $BASTION_CLUSTER_HEALTH" >&2
+      echo "Status time     : $BASTION_CLUSTER_STATUS_TIME ($BASTION_CLUSTER_STATUS_AGE old)" >&2
+
+      if ((BASTION_NOTICE_TOTAL > 0)); then
+        echo >&2
+        _bastion_print_notices
+      fi
+
+      echo >&2
+      echo "Tools: $(_bastion_regular_tools)" >&2
+      echo "Bastion: $BASTION_HELPERS" >&2
+      echo >&2
+      echo "============================================================" >&2
+      echo >&2
+    fi
+    ;;
+esac
+
+unset -f _bastion_cert_remaining_seconds _bastion_collect_cluster_status _bastion_collect_user_status _bastion_enable_kubectl_completion _bastion_notice_add _bastion_print_notices _bastion_regular_tools _bastion_resolve_user_kubeconfig _bastion_set_cert_state
+unset BASTION_ADMIN_GROUP BASTION_ADMIN_TOOLS BASTION_CLUSTER_STATUS_CACHE BASTION_CLUSTER_STATUS_STALE_SECONDS BASTION_HELPERS BASTION_NOTICE_TOTAL BASTION_NOTICES BASTION_USER_TOOLS

@@ -1,0 +1,42 @@
+global
+  log /dev/log local0
+  maxconn {{ haproxy_workload_lb_maxconn }}
+  user {{ haproxy_workload_lb_user }}
+  group {{ haproxy_workload_lb_group }}
+
+defaults
+  log global
+  option dontlognull
+  timeout connect {{ haproxy_workload_lb_timeout_connect }}
+  timeout client {{ haproxy_workload_lb_timeout_client }}
+  timeout server {{ haproxy_workload_lb_timeout_server }}
+
+{% if haproxy_workload_lb_http_enabled | bool %}
+frontend {{ haproxy_workload_lb_http_frontend_name }}
+  bind {{ haproxy_workload_lb_http_bind }}
+  mode tcp
+  option tcplog
+  default_backend {{ haproxy_workload_lb_http_backend_name }}
+
+backend {{ haproxy_workload_lb_http_backend_name }}
+  mode tcp
+  balance {{ haproxy_workload_lb_backend_balance }}
+{% for backend in haproxy_workload_lb_backends %}
+  server {{ backend.name }} {{ backend.address }}:{{ backend.http_port | default(haproxy_workload_lb_http_backend_port) }}{{ ' check' if haproxy_workload_lb_backend_check_enabled | bool else '' }}
+{% endfor %}
+
+{% endif %}
+{% if haproxy_workload_lb_https_enabled | bool %}
+frontend {{ haproxy_workload_lb_https_frontend_name }}
+  bind {{ haproxy_workload_lb_https_bind }}
+  mode tcp
+  option tcplog
+  default_backend {{ haproxy_workload_lb_https_backend_name }}
+
+backend {{ haproxy_workload_lb_https_backend_name }}
+  mode tcp
+  balance {{ haproxy_workload_lb_backend_balance }}
+{% for backend in haproxy_workload_lb_backends %}
+  server {{ backend.name }} {{ backend.address }}:{{ backend.https_port | default(haproxy_workload_lb_https_backend_port) }}{{ ' check' if haproxy_workload_lb_backend_check_enabled | bool else '' }}
+{% endfor %}
+{% endif %}

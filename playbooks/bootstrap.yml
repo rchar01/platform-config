@@ -1,0 +1,7 @@
+---
+- name: Bootstrap platform hosts
+  hosts: all
+  become: true
+  roles:
+    - users
+    - ssh

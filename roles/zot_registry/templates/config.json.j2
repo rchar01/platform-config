@@ -1,0 +1,32 @@
+{% set http_config = {
+  'address': zot_registry_address,
+  'port': zot_registry_container_port | string,
+  'realm': zot_registry_realm,
+  'compat': zot_registry_compat
+} %}
+{% if zot_registry_tls_enabled | bool %}
+{% set _ = http_config.update({'tls': {'cert': zot_registry_tls_cert_path, 'key': zot_registry_tls_key_path}}) %}
+{% endif %}
+{% if zot_registry_auth_enabled | bool %}
+{% set _ = http_config.update({'auth': {'htpasswd': {'path': zot_registry_auth_htpasswd_path}, 'failDelay': zot_registry_auth_fail_delay}}) %}
+{% endif %}
+{% set zot_config = {
+  'distSpecVersion': zot_registry_dist_spec_version,
+  'storage': {
+    'rootDirectory': zot_registry_container_data_dir
+  },
+  'http': http_config,
+  'log': {
+    'level': zot_registry_log_level
+  }
+} %}
+{% set zot_effective_extensions = zot_registry_extensions %}
+{% if zot_registry_ui_enabled | bool %}
+{% set zot_search_config = {'enable': true} | combine(zot_registry_search_config, recursive=True) %}
+{% set zot_ui_config = {'enable': true} | combine(zot_registry_ui_config, recursive=True) %}
+{% set zot_effective_extensions = zot_effective_extensions | combine({'search': zot_search_config, 'ui': zot_ui_config}, recursive=True) %}
+{% endif %}
+{% if zot_effective_extensions | length > 0 %}
+{% set _ = zot_config.update({'extensions': zot_effective_extensions}) %}
+{% endif %}
+{{ zot_config | combine(zot_registry_extra_config, recursive=True) | to_nice_json }}

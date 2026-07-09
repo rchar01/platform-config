@@ -1,0 +1,13 @@
+---
+exclude_paths:
+  - .venv/
+  - vendor/
+  - .ansible/
+
+skip_list:
+  # Existing public variable names intentionally match inventory-facing names.
+  - var-naming
+  # site.yml imports named playbooks; the imported plays themselves are named.
+  - name[play]
+  # Long URL templates are clearer than deeply split strings in role defaults.
+  - yaml[line-length]

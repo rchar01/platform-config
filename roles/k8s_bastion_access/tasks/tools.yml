@@ -1,0 +1,101 @@
+---
+- name: Ensure Kubernetes bastion tool cache exists
+  ansible.builtin.file:
+    path: "{{ k8s_bastion_tool_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure Kubernetes bastion state directory exists
+  ansible.builtin.file:
+    path: "{{ k8s_bastion_var_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Ensure Kubernetes bastion external tool install directory exists
+  ansible.builtin.file:
+    path: "{{ k8s_bastion_bin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check previous Kubernetes bastion managed external tools manifest
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_external_tools_managed_manifest_path }}"
+  register: k8s_bastion_previous_external_tools_manifest_stat
+
+- name: Read previous Kubernetes bastion managed external tools manifest
+  ansible.builtin.slurp:
+    path: "{{ k8s_bastion_external_tools_managed_manifest_path }}"
+  register: k8s_bastion_previous_external_tools_manifest_slurp
+  when: k8s_bastion_previous_external_tools_manifest_stat.stat.exists
+
+- name: Start Kubernetes bastion external tool managed path list
+  ansible.builtin.set_fact:
+    k8s_bastion_previous_external_tool_paths: >-
+      {{
+        (
+          k8s_bastion_previous_external_tools_manifest_slurp.content
+          | b64decode
+          | from_yaml
+        ).managedPaths | default([])
+        if k8s_bastion_previous_external_tools_manifest_stat.stat.exists
+        else []
+      }}
+    k8s_bastion_current_external_tool_paths: []
+
+- name: Track managed raw external tool paths
+  ansible.builtin.set_fact:
+    k8s_bastion_current_external_tool_paths: >-
+      {{
+        k8s_bastion_current_external_tool_paths
+        + [k8s_bastion_bin_dir + '/' + item.install_as]
+      }}
+  loop: "{{ k8s_bastion_external_tools }}"
+  when: item.type == 'raw'
+
+- name: Track managed archive external tool paths
+  ansible.builtin.set_fact:
+    k8s_bastion_current_external_tool_paths: >-
+      {{
+        k8s_bastion_current_external_tool_paths
+        + [k8s_bastion_bin_dir + '/' + item.1.dest]
+      }}
+  loop: "{{ k8s_bastion_external_tools | subelements('binaries', skip_missing=True) }}"
+  when: item.0.type == 'archive'
+
+- name: Install configured external Kubernetes bastion tools
+  ansible.builtin.include_tasks: install_external_tool.yml
+  loop: "{{ k8s_bastion_external_tools }}"
+  loop_control:
+    loop_var: k8s_bastion_tool
+    label: "{{ k8s_bastion_tool.name }}"
+  when: not ansible_check_mode
+
+- name: Remove stale managed Kubernetes bastion external tools
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{
+      k8s_bastion_previous_external_tool_paths
+      | difference(k8s_bastion_current_external_tool_paths)
+    }}
+  when: k8s_bastion_prune_stale_external_tools
+
+- name: Write Kubernetes bastion managed external tools manifest
+  ansible.builtin.copy:
+    dest: "{{ k8s_bastion_external_tools_managed_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'managedPaths': k8s_bastion_current_external_tool_paths | unique | sort
+        } | to_nice_yaml
+      }}

@@ -1,0 +1,28 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart Prometheus
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_stack_prometheus_service_name }}"
+    state: restarted
+  when:
+    - monitoring_stack_service_enabled | bool
+    - not ansible_check_mode
+
+- name: Restart Loki
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_stack_loki_service_name }}"
+    state: restarted
+  when:
+    - monitoring_stack_service_enabled | bool
+    - not ansible_check_mode
+
+- name: Restart Grafana
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_stack_grafana_service_name }}"
+    state: restarted
+  when:
+    - monitoring_stack_service_enabled | bool
+    - not ansible_check_mode

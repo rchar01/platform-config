@@ -1,0 +1,413 @@
+---
+- name: Smoke test OCI registry hosts
+  hosts: registry
+  become: true
+  gather_facts: false
+  vars:
+    zot_registry_smoke_effective_scheme: "{{ zot_registry_scheme | default('https') }}"
+    zot_registry_smoke_effective_port: "{{ zot_registry_host_port | default(443) }}"
+    zot_registry_smoke_effective_port_suffix: >-
+      {{ '' if zot_registry_smoke_effective_port | int == 443 and zot_registry_smoke_effective_scheme == 'https' else ':' ~ (zot_registry_smoke_effective_port | string) }}
+    zot_registry_smoke_effective_url: >-
+      {{ zot_registry_smoke_url | default(zot_registry_smoke_effective_scheme ~ '://' ~ (ansible_host | default(inventory_hostname)) ~ zot_registry_smoke_effective_port_suffix ~ '/v2/') }}
+    zot_registry_smoke_effective_base_url: >-
+      {{ zot_registry_smoke_effective_url | regex_replace('/v2/?$', '') }}
+    zot_registry_smoke_effective_status_codes: "{{ zot_registry_smoke_status_codes | default([200, 401]) }}"
+  tasks:
+    - name: Check Zot service active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ zot_registry_service_name | default('zot.service') }}"
+      register: zot_registry_smoke_service_active
+      changed_when: false
+
+    - name: Assert Zot service is active
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_service_active.stdout == 'active'
+        fail_msg: "Zot registry service is not active."
+
+    - name: Check Zot registry API
+      ansible.builtin.uri:
+        url: "{{ zot_registry_smoke_effective_url }}"
+        method: GET
+        validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        status_code: "{{ zot_registry_smoke_effective_status_codes }}"
+      register: zot_registry_smoke_api
+
+    - name: Assert Zot registry API responded
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_api.status in zot_registry_smoke_effective_status_codes
+        fail_msg: "Zot registry API did not return an expected status code."
+
+    - name: Check permanent firewalld registry port
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-port
+          - "{{ zot_registry_firewalld_port | default((zot_registry_host_port | default(443) | string) ~ '/tcp') }}"
+      register: zot_registry_smoke_firewalld_port
+      changed_when: false
+      failed_when: zot_registry_smoke_firewalld_port.rc not in [0, 1]
+      when:
+        - zot_registry_firewalld_manage | default(true) | bool
+        - zot_registry_firewalld_allowed_sources | default([]) | length == 0
+
+    - name: Assert permanent firewalld registry port is open
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_firewalld_port.rc == 0
+        fail_msg: "Registry port is not present in permanent firewalld configuration."
+      when:
+        - zot_registry_firewalld_manage | default(true) | bool
+        - zot_registry_firewalld_allowed_sources | default([]) | length == 0
+
+    - name: Check broad firewalld registry port is closed
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-port
+          - "{{ zot_registry_firewalld_port | default((zot_registry_host_port | default(443) | string) ~ '/tcp') }}"
+      register: zot_registry_smoke_firewalld_closed_port
+      changed_when: false
+      failed_when: zot_registry_smoke_firewalld_closed_port.rc not in [0, 1]
+      when:
+        - zot_registry_firewalld_manage | default(true) | bool
+        - zot_registry_firewalld_allowed_sources | default([]) | length > 0
+
+    - name: Assert broad firewalld registry port is closed
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_firewalld_closed_port.rc == 1
+        fail_msg: "Registry port is still broadly open in permanent firewalld configuration."
+      when:
+        - zot_registry_firewalld_manage | default(true) | bool
+        - zot_registry_firewalld_allowed_sources | default([]) | length > 0
+
+    - name: Check permanent firewalld registry rich rules
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-rich-rule
+          - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ zot_registry_host_port | default(443) }}\" protocol=\"tcp\" accept"
+      loop: "{{ zot_registry_firewalld_allowed_sources | default([]) }}"
+      register: zot_registry_smoke_firewalld_rich_rules
+      changed_when: false
+      failed_when: zot_registry_smoke_firewalld_rich_rules.rc not in [0, 1]
+      when:
+        - zot_registry_firewalld_manage | default(true) | bool
+        - zot_registry_firewalld_allowed_sources | default([]) | length > 0
+
+    - name: Assert permanent firewalld registry rich rules are open
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+        fail_msg: "Registry rich rule is not present in permanent firewalld configuration."
+      loop: "{{ zot_registry_smoke_firewalld_rich_rules.results | default([]) }}"
+      when:
+        - zot_registry_firewalld_manage | default(true) | bool
+        - zot_registry_firewalld_allowed_sources | default([]) | length > 0
+
+    - name: Check Zot UI root endpoint
+      ansible.builtin.uri:
+        url: "{{ zot_registry_smoke_effective_base_url }}/"
+        method: GET
+        validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        status_code: 200
+      when: zot_registry_ui_enabled | default(false) | bool
+
+- name: Smoke test OCI registry from clients
+  hosts: registry_clients
+  gather_facts: false
+  vars:
+    zot_registry_smoke_repository: platform-smoke/empty
+    zot_registry_smoke_tag: ansible-smoke
+    zot_registry_smoke_config_body: "{}"
+    zot_registry_smoke_config_digest: "sha256:{{ zot_registry_smoke_config_body | hash('sha256') }}"
+    zot_registry_smoke_config_size: "{{ zot_registry_smoke_config_body | length }}"
+    zot_registry_smoke_manifest_media_type: application/vnd.oci.image.manifest.v1+json
+    zot_registry_smoke_manifest_body: >-
+      {{ {
+        'schemaVersion': 2,
+        'mediaType': zot_registry_smoke_manifest_media_type,
+        'config': {
+          'mediaType': 'application/vnd.oci.image.config.v1+json',
+          'digest': zot_registry_smoke_config_digest,
+          'size': zot_registry_smoke_config_size | int
+        },
+        'layers': []
+      } | to_json }}
+  tasks:
+    - name: Assert registry smoke base URL is configured
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_base_url is defined
+          - zot_registry_smoke_base_url | length > 0
+        fail_msg: "zot_registry_smoke_base_url is required for registry client smoke checks."
+
+    - name: Start OCI config blob upload
+      ansible.builtin.uri:
+        url: "{{ zot_registry_smoke_base_url }}/v2/{{ zot_registry_smoke_repository }}/blobs/uploads/"
+        method: POST
+        validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        status_code: 202
+      register: zot_registry_smoke_config_upload
+
+    - name: Build OCI config blob upload URL
+      ansible.builtin.set_fact:
+        zot_registry_smoke_config_upload_url: >-
+          {{
+            zot_registry_smoke_config_upload.location
+            if zot_registry_smoke_config_upload.location is match('^https?://')
+            else zot_registry_smoke_base_url ~ zot_registry_smoke_config_upload.location
+          }}
+
+    - name: Push OCI config blob
+      ansible.builtin.uri:
+        url: "{{ zot_registry_smoke_config_upload_url }}{{ '&' if '?' in zot_registry_smoke_config_upload_url else '?' }}digest={{ zot_registry_smoke_config_digest }}"
+        method: PUT
+        body: "{{ zot_registry_smoke_config_body }}"
+        validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        status_code: 201
+
+    - name: Push OCI smoke manifest
+      ansible.builtin.uri:
+        url: "{{ zot_registry_smoke_base_url }}/v2/{{ zot_registry_smoke_repository }}/manifests/{{ zot_registry_smoke_tag }}"
+        method: PUT
+        headers:
+          Content-Type: "{{ zot_registry_smoke_manifest_media_type }}"
+        body: "{{ zot_registry_smoke_manifest_body }}"
+        validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        status_code: 201
+
+    - name: Pull OCI smoke manifest
+      ansible.builtin.uri:
+        url: "{{ zot_registry_smoke_base_url }}/v2/{{ zot_registry_smoke_repository }}/manifests/{{ zot_registry_smoke_tag }}"
+        method: GET
+        headers:
+          Accept: "{{ zot_registry_smoke_manifest_media_type }}"
+        validate_certs: "{{ zot_registry_smoke_validate_certs | default(true) }}"
+        status_code: 200
+      register: zot_registry_smoke_pulled_manifest
+
+    - name: Assert OCI smoke manifest was pulled
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_pulled_manifest.status == 200
+          - zot_registry_smoke_pulled_manifest.json.config.digest == zot_registry_smoke_config_digest
+        fail_msg: "OCI smoke manifest push/pull verification failed."
+
+- name: Smoke test OCI registry with client tools
+  hosts: registry_clients
+  gather_facts: false
+  vars:
+    zot_registry_smoke_tool_registry: "{{ zot_registry_smoke_base_url | regex_replace('^https?://', '') | regex_replace('/+$', '') }}"
+    zot_registry_smoke_tool_tls_args: "{{ [] if (zot_registry_smoke_validate_certs | default(true) | bool) else ['--tls-verify=false'] }}"
+    zot_registry_smoke_helm_tls_args: "{{ [] if (zot_registry_smoke_validate_certs | default(true) | bool) else ['--insecure-skip-tls-verify'] }}"
+    zot_registry_smoke_helm_bin: /usr/local/bin/helm
+    zot_registry_smoke_image_source: docker.io/library/hello-world:latest
+    zot_registry_smoke_image_repository: platform-smoke/hello-world
+    zot_registry_smoke_image_tag: podman-smoke
+    zot_registry_smoke_image_ref: "{{ zot_registry_smoke_tool_registry }}/{{ zot_registry_smoke_image_repository }}:{{ zot_registry_smoke_image_tag }}"
+    zot_registry_smoke_helm_chart_name: platform-smoke-chart
+    zot_registry_smoke_helm_chart_version: 0.1.0
+    zot_registry_smoke_helm_repository: platform-smoke/charts
+    zot_registry_smoke_helm_package_path: >-
+      {{ zot_registry_smoke_helm_tmp.path }}/{{ zot_registry_smoke_helm_chart_name }}-{{ zot_registry_smoke_helm_chart_version }}.tgz
+    zot_registry_smoke_helm_oci_repository_ref: >-
+      oci://{{ zot_registry_smoke_tool_registry }}/{{ zot_registry_smoke_helm_repository }}
+    zot_registry_smoke_helm_oci_chart_ref: >-
+      {{ zot_registry_smoke_helm_oci_repository_ref }}/{{ zot_registry_smoke_helm_chart_name }}
+  tasks:
+    - name: Assert registry smoke base URL is configured for tool checks
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_base_url is defined
+          - zot_registry_smoke_base_url | length > 0
+        fail_msg: "zot_registry_smoke_base_url is required for registry client tool smoke checks."
+      when: zot_registry_smoke_image_enabled | default(false) | bool or zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Check Podman client command
+      ansible.builtin.command:
+        argv:
+          - podman
+          - --version
+      register: zot_registry_smoke_podman_version
+      changed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Pull source hello-world image
+      ansible.builtin.command:
+        argv:
+          - podman
+          - pull
+          - "{{ zot_registry_smoke_image_source }}"
+      changed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Tag hello-world image for Zot
+      ansible.builtin.command:
+        argv:
+          - podman
+          - tag
+          - "{{ zot_registry_smoke_image_source }}"
+          - "{{ zot_registry_smoke_image_ref }}"
+      changed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Push hello-world image to Zot
+      ansible.builtin.command:
+        argv: "{{ ['podman', 'push'] + zot_registry_smoke_tool_tls_args + [zot_registry_smoke_image_ref] }}"
+      changed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Remove local hello-world Zot image before pull
+      ansible.builtin.command:
+        argv:
+          - podman
+          - image
+          - rm
+          - --force
+          - "{{ zot_registry_smoke_image_ref }}"
+      changed_when: false
+      failed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Pull hello-world image back from Zot
+      ansible.builtin.command:
+        argv: "{{ ['podman', 'pull'] + zot_registry_smoke_tool_tls_args + [zot_registry_smoke_image_ref] }}"
+      changed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Run hello-world image from Zot
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --rm
+          - "{{ zot_registry_smoke_image_ref }}"
+      register: zot_registry_smoke_hello_world_run
+      changed_when: false
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Assert hello-world image ran successfully
+      ansible.builtin.assert:
+        that:
+          - "'Hello from Docker!' in zot_registry_smoke_hello_world_run.stdout"
+        fail_msg: "hello-world image did not run successfully after Zot push/pull."
+      when: zot_registry_smoke_image_enabled | default(false) | bool
+
+    - name: Check Helm client command
+      ansible.builtin.command:
+        argv:
+          - "{{ zot_registry_smoke_helm_bin }}"
+          - version
+          - --short
+      register: zot_registry_smoke_helm_version
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Create temporary Helm smoke workspace
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: zot-helm-smoke-
+      register: zot_registry_smoke_helm_tmp
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Create temporary Helm smoke chart directory
+      ansible.builtin.file:
+        path: "{{ zot_registry_smoke_helm_tmp.path }}/{{ zot_registry_smoke_helm_chart_name }}/templates"
+        state: directory
+        mode: "0755"
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Write temporary Helm smoke chart metadata
+      ansible.builtin.copy:
+        dest: "{{ zot_registry_smoke_helm_tmp.path }}/{{ zot_registry_smoke_helm_chart_name }}/Chart.yaml"
+        mode: "0644"
+        content: |
+          apiVersion: v2
+          name: {{ zot_registry_smoke_helm_chart_name }}
+          description: Zot registry Helm OCI smoke chart
+          type: application
+          version: {{ zot_registry_smoke_helm_chart_version }}
+          appVersion: "1.0.0"
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Write temporary Helm smoke chart template
+      ansible.builtin.copy:
+        dest: "{{ zot_registry_smoke_helm_tmp.path }}/{{ zot_registry_smoke_helm_chart_name }}/templates/configmap.yaml"
+        mode: "0644"
+        content: |
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: {{ zot_registry_smoke_helm_chart_name }}
+          data:
+            message: hello
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Package temporary Helm smoke chart
+      ansible.builtin.command:
+        argv:
+          - "{{ zot_registry_smoke_helm_bin }}"
+          - package
+          - "{{ zot_registry_smoke_helm_tmp.path }}/{{ zot_registry_smoke_helm_chart_name }}"
+          - --destination
+          - "{{ zot_registry_smoke_helm_tmp.path }}"
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Push temporary Helm smoke chart to Zot
+      ansible.builtin.command:
+        argv: >-
+          {{ [zot_registry_smoke_helm_bin, 'push', zot_registry_smoke_helm_package_path,
+              zot_registry_smoke_helm_oci_repository_ref] + zot_registry_smoke_helm_tls_args }}
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Create temporary Helm pull destination
+      ansible.builtin.file:
+        path: "{{ zot_registry_smoke_helm_tmp.path }}/pulled"
+        state: directory
+        mode: "0755"
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Pull temporary Helm smoke chart from Zot
+      ansible.builtin.command:
+        argv: >-
+          {{ [zot_registry_smoke_helm_bin, 'pull', zot_registry_smoke_helm_oci_chart_ref,
+              '--version', zot_registry_smoke_helm_chart_version, '--destination',
+              zot_registry_smoke_helm_tmp.path ~ '/pulled'] + zot_registry_smoke_helm_tls_args }}
+      changed_when: false
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Check pulled temporary Helm smoke chart
+      ansible.builtin.stat:
+        path: "{{ zot_registry_smoke_helm_tmp.path }}/pulled/{{ zot_registry_smoke_helm_chart_name }}-{{ zot_registry_smoke_helm_chart_version }}.tgz"
+      register: zot_registry_smoke_helm_pulled_chart
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Assert temporary Helm smoke chart was pulled
+      ansible.builtin.assert:
+        that:
+          - zot_registry_smoke_helm_pulled_chart.stat.exists
+        fail_msg: "Helm chart was not pulled from Zot after push."
+      when: zot_registry_smoke_helm_enabled | default(false) | bool
+
+    - name: Remove temporary Helm smoke workspace
+      ansible.builtin.file:
+        path: "{{ zot_registry_smoke_helm_tmp.path }}"
+        state: absent
+      changed_when: false
+      when:
+        - zot_registry_smoke_helm_enabled | default(false) | bool
+        - zot_registry_smoke_helm_tmp.path is defined

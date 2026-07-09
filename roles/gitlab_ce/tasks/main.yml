@@ -1,0 +1,118 @@
+---
+- name: Assert GitLab CE TLS source files are configured
+  ansible.builtin.assert:
+    that:
+      - gitlab_ce_tls_cert_src | length > 0
+      - gitlab_ce_tls_key_src | length > 0
+    fail_msg: "gitlab_ce_tls_cert_src and gitlab_ce_tls_key_src are required when TLS is enabled."
+  when: gitlab_ce_tls_enabled | bool
+
+- name: Ensure GitLab CE directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ gitlab_ce_root_dir }}"
+      mode: "0755"
+    - path: "{{ gitlab_ce_config_dir }}"
+      mode: "0755"
+    - path: "{{ gitlab_ce_logs_dir }}"
+      mode: "0755"
+    - path: "{{ gitlab_ce_data_dir }}"
+      mode: "0755"
+    - path: "{{ gitlab_ce_tls_dir }}"
+      mode: "0750"
+
+- name: Copy GitLab CE TLS certificate
+  ansible.builtin.copy:
+    src: "{{ gitlab_ce_tls_cert_src }}"
+    dest: "{{ gitlab_ce_tls_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart GitLab CE
+  when: gitlab_ce_tls_enabled | bool
+
+- name: Copy GitLab CE TLS private key
+  ansible.builtin.copy:
+    src: "{{ gitlab_ce_tls_key_src }}"
+    dest: "{{ gitlab_ce_tls_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart GitLab CE
+  when: gitlab_ce_tls_enabled | bool
+
+- name: Copy GitLab CE initial root password
+  ansible.builtin.copy:
+    src: "{{ gitlab_ce_initial_root_password_src }}"
+    dest: "{{ gitlab_ce_initial_root_password_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart GitLab CE
+  when: gitlab_ce_initial_root_password_src | length > 0
+
+- name: Write GitLab CE omnibus configuration
+  ansible.builtin.template:
+    src: gitlab.rb.j2
+    dest: "{{ gitlab_ce_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart GitLab CE
+
+- name: Write GitLab CE Quadlet unit
+  ansible.builtin.template:
+    src: gitlab.container.j2
+    dest: "{{ gitlab_ce_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: gitlab_ce_quadlet_result
+  notify:
+    - Reload systemd
+    - Restart GitLab CE
+
+- name: Reload systemd manager configuration
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Manage GitLab CE service
+  ansible.builtin.systemd_service:
+    name: "{{ gitlab_ce_service_name }}"
+    enabled: "{{ gitlab_ce_service_enabled }}"
+    state: "{{ gitlab_ce_service_state }}"
+  when: not (ansible_check_mode and gitlab_ce_quadlet_result is changed)
+
+- name: Check permanent GitLab CE firewalld ports
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --query-port
+      - "{{ item }}"
+  loop: "{{ gitlab_ce_firewalld_ports }}"
+  register: gitlab_ce_firewalld_port_checks
+  check_mode: false
+  changed_when: false
+  failed_when: gitlab_ce_firewalld_port_checks.rc not in [0, 1]
+  when: gitlab_ce_firewalld_manage | bool
+
+- name: Add permanent GitLab CE firewalld ports
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --add-port
+      - "{{ item.item }}"
+  loop: "{{ gitlab_ce_firewalld_port_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
+  changed_when: true
+  when:
+    - gitlab_ce_firewalld_manage | bool
+    - not ansible_check_mode

@@ -1,0 +1,61 @@
+---
+zot_registry_image: ghcr.io/project-zot/zot:v2.1.17
+zot_registry_container_name: zot
+zot_registry_quadlet_name: zot.container
+zot_registry_service_name: zot.service
+
+zot_registry_config_dir: /etc/zot
+zot_registry_tls_dir: "{{ zot_registry_config_dir }}/tls"
+zot_registry_config_path: "{{ zot_registry_config_dir }}/config.json"
+zot_registry_data_dir: /var/lib/zot/data
+zot_registry_container_data_dir: /var/lib/registry
+
+zot_registry_address: 0.0.0.0
+zot_registry_host_port: 443
+zot_registry_container_port: 5000
+zot_registry_realm: zot
+zot_registry_log_level: info
+zot_registry_dist_spec_version: "1.1.1"
+zot_registry_compat:
+  - docker2s2
+
+zot_registry_tls_enabled: true
+zot_registry_tls_cert_src: ""
+zot_registry_tls_key_src: ""
+zot_registry_tls_cert_path: "{{ zot_registry_tls_dir }}/tls.crt"
+zot_registry_tls_key_path: "{{ zot_registry_tls_dir }}/tls.key"
+
+zot_registry_auth_enabled: false
+zot_registry_auth_htpasswd_src: ""
+zot_registry_auth_htpasswd_path: "{{ zot_registry_config_dir }}/htpasswd"
+zot_registry_auth_fail_delay: 5
+
+zot_registry_ui_enabled: false
+zot_registry_ui_config: {}
+zot_registry_search_config: {}
+zot_registry_extensions: {}
+zot_registry_extra_config: {}
+
+zot_registry_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+zot_registry_quadlet_path: "{{ zot_registry_quadlet_dir }}/{{ zot_registry_quadlet_name }}"
+zot_registry_quadlet_wants: network-online.target
+zot_registry_quadlet_after: network-online.target
+zot_registry_quadlet_restart_policy: always
+zot_registry_quadlet_volume_label: Z
+
+zot_registry_service_enabled: true
+zot_registry_service_state: started
+
+zot_registry_firewalld_manage: true
+zot_registry_firewalld_port: "{{ zot_registry_host_port }}/tcp"
+zot_registry_firewalld_allowed_sources: []
+zot_registry_firewalld_immediate: false
+
+zot_registry_scheme: "{{ 'https' if zot_registry_tls_enabled else 'http' }}"
+zot_registry_smoke_port_suffix: >-
+  {{ '' if zot_registry_host_port | int == 443 and zot_registry_scheme == 'https' else ':' ~ (zot_registry_host_port | string) }}
+zot_registry_smoke_url: "{{ zot_registry_scheme }}://{{ ansible_host | default(inventory_hostname) }}{{ zot_registry_smoke_port_suffix }}/v2/"
+zot_registry_smoke_validate_certs: true
+zot_registry_smoke_status_codes:
+  - 200
+  - 401

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run bastion CSR approver periodically
+
+[Timer]
+OnBootSec={{ k8s_bastion_csr_approver_on_boot }}
+OnUnitActiveSec={{ k8s_bastion_csr_approver_on_active }}
+Unit=bastion-csr-approver.service
+
+[Install]
+WantedBy=timers.target

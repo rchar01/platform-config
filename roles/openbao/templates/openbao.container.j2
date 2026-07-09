@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenBao Secret Management Service
+Wants={{ openbao_quadlet_wants }}
+After={{ openbao_quadlet_after }}
+
+[Container]
+Image={{ openbao_image }}
+ContainerName={{ openbao_container_name }}
+User={{ openbao_container_uid }}:{{ openbao_container_gid }}
+PublishPort={{ openbao_host_port }}:{{ openbao_container_port }}
+Volume={{ openbao_config_dir }}:/etc/openbao:ro,{{ openbao_quadlet_volume_label }}
+Volume={{ openbao_data_dir }}:{{ openbao_container_data_dir }}:{{ openbao_quadlet_volume_label }}
+Exec=server -config={{ openbao_config_path }}
+
+[Service]
+Restart={{ openbao_quadlet_restart_policy }}
+MemorySwapMax={{ openbao_quadlet_memory_swap_max }}
+
+[Install]
+WantedBy=multi-user.target

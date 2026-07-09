@@ -1,0 +1,25 @@
+[Unit]
+Description=GitLab CE
+Wants={{ gitlab_ce_quadlet_wants }}
+After={{ gitlab_ce_quadlet_after }}
+
+[Container]
+Image={{ gitlab_ce_image }}
+ContainerName={{ gitlab_ce_container_name }}
+HostName={{ gitlab_ce_hostname }}
+PublishPort={{ gitlab_ce_https_host_port }}:{{ gitlab_ce_container_https_port }}
+{% if gitlab_ce_publish_http | bool %}
+PublishPort={{ gitlab_ce_http_host_port }}:{{ gitlab_ce_container_http_port }}
+{% endif %}
+PublishPort={{ gitlab_ce_ssh_host_port }}:{{ gitlab_ce_container_ssh_port }}
+Volume={{ gitlab_ce_config_dir }}:/etc/gitlab:{{ gitlab_ce_quadlet_volume_label }}
+Volume={{ gitlab_ce_logs_dir }}:/var/log/gitlab:{{ gitlab_ce_quadlet_volume_label }}
+Volume={{ gitlab_ce_data_dir }}:/var/opt/gitlab:{{ gitlab_ce_quadlet_volume_label }}
+ShmSize={{ gitlab_ce_quadlet_shm_size }}
+
+[Service]
+Restart={{ gitlab_ce_quadlet_restart_policy }}
+TimeoutStartSec={{ gitlab_ce_quadlet_timeout_start_sec }}
+
+[Install]
+WantedBy=multi-user.target

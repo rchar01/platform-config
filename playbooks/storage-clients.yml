@@ -1,0 +1,6 @@
+---
+- name: Configure storage clients
+  hosts: storage_clients
+  become: true
+  roles:
+    - nfs_client

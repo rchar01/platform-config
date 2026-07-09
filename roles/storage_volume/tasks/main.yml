@@ -1,0 +1,13 @@
+---
+- name: Install storage volume packages
+  ansible.builtin.package:
+    name: "{{ storage_volume_packages }}"
+    state: present
+  when: storage_volumes | length > 0
+
+- name: Manage storage volumes
+  ansible.builtin.include_tasks: volume.yml
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume
+    label: "{{ storage_volume.name | default(storage_volume.mountpoint | default(storage_volume.lv_name | default('volume'))) }}"

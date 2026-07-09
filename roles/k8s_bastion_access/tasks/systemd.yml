@@ -1,0 +1,46 @@
+---
+- name: Install Kubernetes bastion systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ k8s_bastion_systemd_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - bastion-bootstrapd.service
+    - bastion-csr-approver.service
+    - bastion-csr-approver.timer
+    - bastion-csr-cleanup.service
+    - bastion-csr-cleanup.timer
+    - bastion-cert-renew.service
+    - bastion-cert-renew.timer
+    - bastion-cluster-status.service
+    - bastion-cluster-status.timer
+  notify: Reload systemd
+  register: k8s_bastion_systemd_units_result
+
+- name: Flush systemd reload before enabling units
+  ansible.builtin.meta: flush_handlers
+
+- name: Manage Kubernetes bastion bootstrap daemon
+  ansible.builtin.systemd:
+    name: bastion-bootstrapd.service
+    enabled: "{{ k8s_bastion_enable_bootstrapd }}"
+    state: "{{ 'started' if k8s_bastion_enable_bootstrapd else 'stopped' }}"
+  when: not (ansible_check_mode and k8s_bastion_systemd_units_result is changed)
+
+- name: Manage Kubernetes bastion timers
+  ansible.builtin.systemd:
+    name: "{{ item.name }}"
+    enabled: "{{ item.enabled }}"
+    state: "{{ 'started' if item.enabled else 'stopped' }}"
+  loop:
+    - name: bastion-csr-approver.timer
+      enabled: "{{ k8s_bastion_enable_csr_timers }}"
+    - name: bastion-csr-cleanup.timer
+      enabled: "{{ k8s_bastion_enable_csr_timers }}"
+    - name: bastion-cert-renew.timer
+      enabled: "{{ k8s_bastion_enable_cert_renew_timer }}"
+    - name: bastion-cluster-status.timer
+      enabled: "{{ k8s_bastion_enable_cluster_status_timer }}"
+  when: not (ansible_check_mode and k8s_bastion_systemd_units_result is changed)

@@ -1,0 +1,24 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: {{ rke2_kube_vip_release_name | to_json }}
+  namespace: {{ rke2_kube_vip_namespace | to_json }}
+spec:
+  chart: {{ rke2_kube_vip_chart_name | to_json }}
+  repo: {{ rke2_kube_vip_chart_repo | to_json }}
+  version: {{ rke2_kube_vip_chart_version | string | to_json }}
+  targetNamespace: {{ rke2_kube_vip_namespace | to_json }}
+  valuesContent: |-
+    config:
+      address: {{ rke2_kube_vip_api_vip | to_json }}
+    env:
+{% for key, value in rke2_kube_vip_env.items() %}
+      {{ key }}: {{ value | string | to_json }}
+{% endfor %}
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: {{ rke2_kube_vip_node_selector_label | to_json }}
+                  operator: Exists

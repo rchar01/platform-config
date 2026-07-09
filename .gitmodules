@@ -1,0 +1,3 @@
+[submodule "vendor/platform-k8s-bastion"]
+	path = vendor/platform-k8s-bastion
+	url = https://codeberg.org/rch/platform-k8s-bastion.git

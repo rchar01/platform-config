@@ -1,0 +1,74 @@
+---
+- name: Set platform timezone
+  community.general.timezone:
+    name: "{{ platform_timezone }}"
+  when: platform_timezone | length > 0
+
+- name: Ensure common platform directories exist
+  ansible.builtin.file:
+    path: "{{ item.path | default(item) }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop: "{{ platform_common_directories }}"
+
+- name: Manage platform host aliases
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+    marker: "# {mark} ANSIBLE MANAGED PLATFORM HOST ALIASES"
+    block: |
+      {% for alias in platform_host_aliases %}
+      {{ alias.address }} {{ alias.names | join(' ') }}
+      {% endfor %}
+  when: platform_host_aliases | length > 0
+
+- name: Remove platform host aliases when none are configured
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    create: false
+    marker: "# {mark} ANSIBLE MANAGED PLATFORM HOST ALIASES"
+    state: absent
+  when: platform_host_aliases | length == 0
+
+- name: Enable logrotate compression
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.conf
+    regexp: '^#?compress$'
+    line: "compress"
+  when:
+    - platform_logrotate_manage
+    - platform_logrotate_compress
+
+- name: Disable logrotate compression when requested
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.conf
+    regexp: '^compress$'
+    line: "#compress"
+  when:
+    - platform_logrotate_manage
+    - not platform_logrotate_compress
+
+- name: Configure message of the day
+  ansible.builtin.copy:
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ platform_motd }}\n"
+  when:
+    - platform_motd_manage
+    - platform_motd | length > 0
+
+- name: Remove message of the day when managed content is empty
+  ansible.builtin.file:
+    path: /etc/motd
+    state: absent
+  when:
+    - platform_motd_manage
+    - platform_motd_remove_when_empty
+    - platform_motd | length == 0

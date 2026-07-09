@@ -1,0 +1,7 @@
+---
+- name: Configure OpenBao hosts
+  hosts: vault
+  become: true
+  roles:
+    - podman_host
+    - openbao

@@ -1,0 +1,6 @@
+---
+- name: Configure container hosts
+  hosts: container_hosts
+  become: true
+  roles:
+    - podman_host

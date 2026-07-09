@@ -1,0 +1,95 @@
+---
+- name: Smoke test container runtime hosts
+  hosts: container_hosts
+  become: true
+  gather_facts: false
+  vars:
+    podman_host_quadlet_generator_candidates:
+      - /usr/lib/systemd/system-generators/podman-system-generator
+      - /usr/lib/systemd/system-generators/podman-generator
+      - /usr/libexec/podman/quadlet
+      - /usr/lib/podman/quadlet
+    podman_host_socket_non_enabled_states:
+      - disabled
+      - indirect
+      - static
+  tasks:
+    - name: Check Podman version
+      ansible.builtin.command:
+        argv:
+          - podman
+          - --version
+      register: podman_host_smoke_version
+      changed_when: false
+
+    - name: Check system Quadlet directory
+      ansible.builtin.stat:
+        path: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+      register: podman_host_smoke_quadlet_dir
+
+    - name: Assert system Quadlet directory exists
+      ansible.builtin.assert:
+        that:
+          - podman_host_smoke_quadlet_dir.stat.isdir | default(false)
+        fail_msg: "System Quadlet directory is missing."
+
+    - name: Check Podman Quadlet generator candidates
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ podman_host_quadlet_generator_candidates }}"
+      register: podman_host_smoke_quadlet_generators
+
+    - name: Assert Podman Quadlet generator is available
+      ansible.builtin.assert:
+        that:
+          - >-
+            podman_host_smoke_quadlet_generators.results
+            | selectattr('stat.exists')
+            | list
+            | length > 0
+        fail_msg: "No known Podman Quadlet generator path exists."
+
+    - name: Reload systemd manager configuration
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      changed_when: false
+
+    - name: Check Podman socket enabled state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - "{{ podman_host_socket_name | default('podman.socket') }}"
+      register: podman_host_smoke_socket_enabled
+      changed_when: false
+      failed_when: podman_host_smoke_socket_enabled.rc not in [0, 1]
+      when: podman_host_socket_manage | default(true) | bool
+
+    - name: Check Podman socket active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ podman_host_socket_name | default('podman.socket') }}"
+      register: podman_host_smoke_socket_active
+      changed_when: false
+      failed_when: podman_host_smoke_socket_active.rc not in [0, 3]
+      when: podman_host_socket_manage | default(true) | bool
+
+    - name: Assert Podman socket state matches inventory
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              podman_host_socket_enabled | default(false) | bool
+              and podman_host_smoke_socket_enabled.stdout == 'enabled'
+              and podman_host_smoke_socket_active.stdout == 'active'
+            )
+            or
+            (
+              not (podman_host_socket_enabled | default(false) | bool)
+              and podman_host_smoke_socket_enabled.stdout in podman_host_socket_non_enabled_states
+              and podman_host_smoke_socket_active.stdout == 'inactive'
+            )
+        fail_msg: "Podman socket state does not match inventory."
+      when: podman_host_socket_manage | default(true) | bool

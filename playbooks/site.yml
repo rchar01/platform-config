@@ -1,0 +1,17 @@
+---
+- import_playbook: bootstrap.yml
+- import_playbook: base-os.yml
+- import_playbook: storage-volumes.yml
+- import_playbook: storage-clients.yml
+- import_playbook: container-runtime.yml
+- import_playbook: registry.yml
+- import_playbook: openbao.yml
+- import_playbook: gitlab.yml
+- import_playbook: gitlab-runners.yml
+- import_playbook: monitoring.yml
+- import_playbook: rke2.yml
+- import_playbook: rke2-kube-vip.yml
+- import_playbook: kong-ingress.yml
+- import_playbook: workload-lb.yml
+- import_playbook: bastion-host.yml
+- import_playbook: k8s-bastion-access.yml

@@ -1,0 +1,29 @@
+node-name: {{ rke2_node_name | to_json }}
+node-ip: {{ rke2_node_ip | to_json }}
+token-file: {{ rke2_token_path | to_json }}
+selinux: {{ rke2_selinux | bool | to_json }}
+{% if rke2_node_role == 'server' %}
+advertise-address: {{ rke2_node_ip | to_json }}
+write-kubeconfig-mode: {{ rke2_write_kubeconfig_mode | to_json }}
+cni: {{ rke2_cni | to_json }}
+{% if inventory_hostname != rke2_bootstrap_host %}
+server: {{ rke2_server_url | to_json }}
+{% endif %}
+{% if rke2_disable | length > 0 %}
+disable:
+{% for addon in rke2_disable %}
+  - {{ addon | to_json }}
+{% endfor %}
+{% endif %}
+{% if rke2_tls_sans | length > 0 %}
+tls-san:
+{% for san in rke2_tls_sans %}
+  - {{ san | to_json }}
+{% endfor %}
+{% endif %}
+{% else %}
+server: {{ rke2_server_url | to_json }}
+{% endif %}
+{% for key, value in rke2_extra_config.items() %}
+{{ key }}: {{ value | to_json }}
+{% endfor %}

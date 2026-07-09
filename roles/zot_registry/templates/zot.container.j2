@@ -1,0 +1,17 @@
+[Unit]
+Description=Zot OCI Registry
+Wants={{ zot_registry_quadlet_wants }}
+After={{ zot_registry_quadlet_after }}
+
+[Container]
+Image={{ zot_registry_image }}
+ContainerName={{ zot_registry_container_name }}
+PublishPort={{ zot_registry_host_port }}:{{ zot_registry_container_port }}
+Volume={{ zot_registry_config_dir }}:/etc/zot:ro,{{ zot_registry_quadlet_volume_label }}
+Volume={{ zot_registry_data_dir }}:{{ zot_registry_container_data_dir }}:{{ zot_registry_quadlet_volume_label }}
+
+[Service]
+Restart={{ zot_registry_quadlet_restart_policy }}
+
+[Install]
+WantedBy=multi-user.target

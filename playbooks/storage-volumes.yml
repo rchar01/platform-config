@@ -1,0 +1,6 @@
+---
+- name: Configure persistent storage volumes
+  hosts: storage_volume_hosts
+  become: true
+  roles:
+    - storage_volume

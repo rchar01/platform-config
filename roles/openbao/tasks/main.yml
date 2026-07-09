@@ -1,0 +1,128 @@
+---
+- name: Assert OpenBao TLS source files are configured
+  ansible.builtin.assert:
+    that:
+      - openbao_tls_cert_src | length > 0
+      - openbao_tls_key_src | length > 0
+    fail_msg: "openbao_tls_cert_src and openbao_tls_key_src are required when TLS is enabled."
+  when: openbao_tls_enabled | bool
+
+- name: Ensure OpenBao directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(omit) }}"
+    group: "{{ item.group | default(omit) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ openbao_config_dir }}"
+      mode: "0755"
+      owner: root
+      group: root
+    - path: "{{ openbao_tls_dir }}"
+      mode: "0750"
+      owner: root
+      group: "{{ openbao_container_gid }}"
+    - path: "{{ openbao_data_dir }}"
+      mode: "0750"
+
+- name: Check OpenBao data directory ownership
+  ansible.builtin.stat:
+    path: "{{ openbao_data_dir }}"
+  register: openbao_data_dir_stat
+
+- name: Set OpenBao data directory ownership
+  ansible.builtin.command:
+    argv:
+      - chown
+      - "{{ openbao_container_uid }}:{{ openbao_container_gid }}"
+      - "{{ openbao_data_dir }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - openbao_data_dir_stat.stat.exists
+    - >-
+      openbao_data_dir_stat.stat.uid | string != openbao_container_uid | string
+      or openbao_data_dir_stat.stat.gid | string != openbao_container_gid | string
+
+- name: Copy OpenBao TLS certificate
+  ansible.builtin.copy:
+    src: "{{ openbao_tls_cert_src }}"
+    dest: "{{ openbao_tls_cert_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart OpenBao
+  when: openbao_tls_enabled | bool
+
+- name: Copy OpenBao TLS private key
+  ansible.builtin.copy:
+    src: "{{ openbao_tls_key_src }}"
+    dest: "{{ openbao_tls_key_path }}"
+    owner: root
+    group: "{{ openbao_container_gid }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart OpenBao
+  when: openbao_tls_enabled | bool
+
+- name: Write OpenBao configuration
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart OpenBao
+
+- name: Write OpenBao Quadlet unit
+  ansible.builtin.template:
+    src: openbao.container.j2
+    dest: "{{ openbao_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: openbao_quadlet_result
+  notify:
+    - Reload systemd
+    - Restart OpenBao
+
+- name: Reload systemd manager configuration
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Manage OpenBao service
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_service_name }}"
+    enabled: "{{ openbao_service_enabled }}"
+    state: "{{ openbao_service_state }}"
+  when: not (ansible_check_mode and openbao_quadlet_result is changed)
+
+- name: Check permanent OpenBao firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --query-rich-rule
+      - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ openbao_host_port }}\" protocol=\"tcp\" accept"
+  loop: "{{ openbao_firewalld_allowed_sources }}"
+  register: openbao_firewalld_rich_rule_checks
+  check_mode: false
+  changed_when: false
+  failed_when: openbao_firewalld_rich_rule_checks.rc not in [0, 1]
+  when:
+    - openbao_firewalld_manage | bool
+    - openbao_firewalld_allowed_sources | length > 0
+
+- name: Add permanent OpenBao firewalld rich rules
+  ansible.builtin.command:
+    argv:
+      - firewall-offline-cmd
+      - --add-rich-rule
+      - "{{ item.cmd[2] }}"
+  loop: "{{ openbao_firewalld_rich_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
+  changed_when: true
+  when:
+    - openbao_firewalld_manage | bool
+    - not ansible_check_mode

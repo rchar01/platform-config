@@ -1,0 +1,76 @@
+---
+- name: Ensure external tool extraction directory exists
+  ansible.builtin.file:
+    path: "{{ k8s_bastion_tool_cache_dir }}/{{ k8s_bastion_tool.name }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: k8s_bastion_tool.type == 'archive'
+
+- name: Check installed external archive tool binaries
+  ansible.builtin.stat:
+    path: "{{ k8s_bastion_bin_dir }}/{{ item.dest }}"
+  loop: "{{ k8s_bastion_tool.binaries | default([]) }}"
+  register: k8s_bastion_archive_binary_stats
+  when: k8s_bastion_tool.type == 'archive'
+
+- name: Track whether archive tool extraction is needed
+  ansible.builtin.set_fact:
+    k8s_bastion_archive_extract_needed: >-
+      {{
+        k8s_bastion_archive_binary_stats.results
+        | selectattr('stat.exists', 'equalto', false)
+        | list
+        | length > 0
+      }}
+  when: k8s_bastion_tool.type == 'archive'
+
+- name: Download external tool artifact
+  ansible.builtin.get_url:
+    url: "{{ k8s_bastion_tool.url }}"
+    dest: "{{ k8s_bastion_tool_cache_dir }}/{{ k8s_bastion_tool.filename }}"
+    mode: "0644"
+    checksum: "{{ k8s_bastion_tool.checksum | default(omit) }}"
+    force: "{{ k8s_bastion_force_install_external_tools }}"
+    use_proxy: "{{ k8s_bastion_download_use_proxy }}"
+  environment: "{{ k8s_bastion_download_environment }}"
+  register: k8s_bastion_tool_download
+
+- name: Install raw external tool binary
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_tool_cache_dir }}/{{ k8s_bastion_tool.filename }}"
+    dest: "{{ k8s_bastion_bin_dir }}/{{ k8s_bastion_tool.install_as }}"
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  when: k8s_bastion_tool.type == 'raw'
+
+- name: Extract external tool archive
+  ansible.builtin.unarchive:
+    src: "{{ k8s_bastion_tool_cache_dir }}/{{ k8s_bastion_tool.filename }}"
+    dest: "{{ k8s_bastion_tool_cache_dir }}/{{ k8s_bastion_tool.name }}"
+    remote_src: true
+  when:
+    - k8s_bastion_tool.type == 'archive'
+    - >-
+      k8s_bastion_tool_download.changed
+      or k8s_bastion_force_install_external_tools
+      or k8s_bastion_archive_extract_needed | default(true)
+
+- name: Install external tool binaries from archive
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_tool_cache_dir }}/{{ k8s_bastion_tool.name }}/{{ item.src }}"
+    dest: "{{ k8s_bastion_bin_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  loop: "{{ k8s_bastion_tool.binaries | default([]) }}"
+  when:
+    - k8s_bastion_tool.type == 'archive'
+    - >-
+      k8s_bastion_tool_download.changed
+      or k8s_bastion_force_install_external_tools
+      or k8s_bastion_archive_extract_needed | default(true)

@@ -1,0 +1,9 @@
+---
+ssh_server_package: openssh-server
+ssh_service_name: sshd
+ssh_service_enabled: true
+ssh_service_state: started
+ssh_config_dropins: []
+ssh_config_dropins_prune_managed: true
+ssh_managed_state_dir: /var/lib/platform-config
+ssh_config_dropins_managed_manifest_path: "{{ ssh_managed_state_dir }}/ssh-dropins.yml"

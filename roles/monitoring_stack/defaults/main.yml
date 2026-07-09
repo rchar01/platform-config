@@ -1,0 +1,77 @@
+---
+monitoring_stack_root_dir: /var/lib/monitoring
+monitoring_stack_config_dir: /etc/monitoring-stack
+
+monitoring_stack_prometheus_image: quay.io/prometheus/prometheus:v2.55.1
+monitoring_stack_prometheus_container_name: prometheus
+monitoring_stack_prometheus_quadlet_name: prometheus.container
+monitoring_stack_prometheus_service_name: prometheus.service
+monitoring_stack_prometheus_config_dir: "{{ monitoring_stack_config_dir }}/prometheus"
+monitoring_stack_prometheus_config_path: "{{ monitoring_stack_prometheus_config_dir }}/prometheus.yml"
+monitoring_stack_prometheus_data_dir: "{{ monitoring_stack_root_dir }}/prometheus"
+monitoring_stack_prometheus_container_data_dir: /prometheus
+monitoring_stack_prometheus_user: "65534"
+monitoring_stack_prometheus_group: "65534"
+monitoring_stack_prometheus_web_listen_address: 127.0.0.1
+monitoring_stack_prometheus_web_listen_port: 9091
+monitoring_stack_prometheus_scrape_interval: 15s
+monitoring_stack_prometheus_evaluation_interval: 15s
+monitoring_stack_prometheus_node_exporter_job_name: dev-vms
+monitoring_stack_prometheus_targets: []
+
+monitoring_stack_loki_image: docker.io/grafana/loki:3.5.1
+monitoring_stack_loki_container_name: loki
+monitoring_stack_loki_quadlet_name: loki.container
+monitoring_stack_loki_service_name: loki.service
+monitoring_stack_loki_config_dir: "{{ monitoring_stack_config_dir }}/loki"
+monitoring_stack_loki_config_path: "{{ monitoring_stack_loki_config_dir }}/loki.yml"
+monitoring_stack_loki_data_dir: "{{ monitoring_stack_root_dir }}/loki"
+monitoring_stack_loki_container_data_dir: /loki
+monitoring_stack_loki_user: "10001"
+monitoring_stack_loki_group: "10001"
+monitoring_stack_loki_http_listen_address: 0.0.0.0
+monitoring_stack_loki_http_listen_port: 3100
+
+monitoring_stack_grafana_image: docker.io/grafana/grafana:11.3.1
+monitoring_stack_grafana_container_name: grafana
+monitoring_stack_grafana_quadlet_name: grafana.container
+monitoring_stack_grafana_service_name: grafana.service
+monitoring_stack_grafana_config_dir: "{{ monitoring_stack_config_dir }}/grafana"
+monitoring_stack_grafana_provisioning_dir: "{{ monitoring_stack_grafana_config_dir }}/provisioning"
+monitoring_stack_grafana_datasources_dir: "{{ monitoring_stack_grafana_provisioning_dir }}/datasources"
+monitoring_stack_grafana_datasource_path: "{{ monitoring_stack_grafana_datasources_dir }}/prometheus.yml"
+monitoring_stack_grafana_datasource_uid: prometheus
+monitoring_stack_grafana_loki_datasource_uid: loki
+monitoring_stack_grafana_loki_url: "http://127.0.0.1:{{ monitoring_stack_loki_http_listen_port }}"
+monitoring_stack_grafana_dashboards_dir: "{{ monitoring_stack_grafana_provisioning_dir }}/dashboards"
+monitoring_stack_grafana_dashboard_provider_path: "{{ monitoring_stack_grafana_dashboards_dir }}/platform.yml"
+monitoring_stack_grafana_dashboard_provider_name: Platform
+monitoring_stack_grafana_dashboard_folder: Platform
+monitoring_stack_grafana_platform_dashboards_dir: "{{ monitoring_stack_grafana_dashboards_dir }}/platform"
+monitoring_stack_grafana_vm_overview_dashboard_path: "{{ monitoring_stack_grafana_platform_dashboards_dir }}/dev-vm-overview.json"
+monitoring_stack_grafana_vm_overview_dashboard_uid: dev-vm-overview
+monitoring_stack_grafana_vm_overview_dashboard_title: Dev VM Overview
+monitoring_stack_grafana_logs_dashboard_path: "{{ monitoring_stack_grafana_platform_dashboards_dir }}/dev-logs-overview.json"
+monitoring_stack_grafana_logs_dashboard_uid: dev-logs-overview
+monitoring_stack_grafana_logs_dashboard_title: Dev Logs Overview
+monitoring_stack_grafana_data_dir: "{{ monitoring_stack_root_dir }}/grafana"
+monitoring_stack_grafana_admin_password_src: ""
+monitoring_stack_grafana_admin_password_path: "{{ monitoring_stack_grafana_config_dir }}/admin-password"
+monitoring_stack_grafana_user: "472"
+monitoring_stack_grafana_group: "472"
+monitoring_stack_grafana_http_addr: 0.0.0.0
+monitoring_stack_grafana_http_port: 3000
+monitoring_stack_grafana_prometheus_url: "http://127.0.0.1:{{ monitoring_stack_prometheus_web_listen_port }}"
+
+monitoring_stack_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+monitoring_stack_quadlet_wants: network-online.target
+monitoring_stack_quadlet_after: network-online.target
+monitoring_stack_quadlet_restart_policy: always
+monitoring_stack_quadlet_volume_label: Z
+
+monitoring_stack_service_enabled: true
+monitoring_stack_service_state: started
+
+monitoring_stack_firewalld_manage: true
+monitoring_stack_grafana_firewalld_allowed_sources: []
+monitoring_stack_loki_firewalld_allowed_sources: []

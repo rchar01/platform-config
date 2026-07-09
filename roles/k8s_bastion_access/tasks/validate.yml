@@ -1,0 +1,6 @@
+---
+- name: Validate Kubernetes bastion commands
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  changed_when: false
+  loop: "{{ k8s_bastion_validate_commands }}"

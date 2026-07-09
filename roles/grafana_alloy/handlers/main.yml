@@ -1,0 +1,12 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart Grafana Alloy
+  ansible.builtin.systemd_service:
+    name: "{{ grafana_alloy_service_name }}"
+    state: restarted
+  when:
+    - grafana_alloy_service_enabled | bool
+    - not ansible_check_mode

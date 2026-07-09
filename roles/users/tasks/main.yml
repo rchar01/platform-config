@@ -1,0 +1,211 @@
+---
+- name: Ensure Ansible automation user exists
+  ansible.builtin.user:
+    name: "{{ users_ansible_user_name }}"
+    shell: /bin/bash
+    create_home: true
+  when: users_manage_ansible_user
+
+- name: Install Ansible automation authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ users_ansible_user_name }}"
+    key: "{{ users_ansible_authorized_keys | join('\n') }}"
+    state: present
+    exclusive: "{{ users_ansible_authorized_keys_exclusive }}"
+  when:
+    - users_manage_ansible_user
+    - users_ansible_authorized_keys | length > 0
+
+- name: Configure Ansible automation sudo policy
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ users_ansible_user_name }}"
+    owner: root
+    group: root
+    mode: "0440"
+    content: "{{ users_ansible_user_name }} ALL=(ALL) NOPASSWD: ALL\n"
+    validate: /usr/sbin/visudo -cf %s
+  when:
+    - users_manage_ansible_user
+    - users_ansible_passwordless_sudo
+
+- name: Remove Ansible automation sudo policy when disabled
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/{{ users_ansible_user_name }}"
+    state: absent
+  when:
+    - users_manage_ansible_user
+    - not users_ansible_passwordless_sudo
+
+- name: Ensure platform admin managed state directory exists
+  ansible.builtin.file:
+    path: "{{ platform_admin_managed_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: platform_admin_prune_managed_access
+
+- name: Check previous platform admin managed manifest
+  ansible.builtin.stat:
+    path: "{{ platform_admin_managed_manifest_path }}"
+  register: platform_admin_previous_manifest_stat
+  when: platform_admin_prune_managed_access
+
+- name: Read previous platform admin managed manifest
+  ansible.builtin.slurp:
+    path: "{{ platform_admin_managed_manifest_path }}"
+  register: platform_admin_previous_manifest_slurp
+  when:
+    - platform_admin_prune_managed_access
+    - platform_admin_previous_manifest_stat.stat.exists
+
+- name: Start platform admin managed user tracking
+  ansible.builtin.set_fact:
+    platform_admin_previous_sudo_users: >-
+      {{
+        (
+          platform_admin_previous_manifest_slurp.content
+          | b64decode
+          | from_yaml
+        ).sudoUsers | default([])
+        if platform_admin_prune_managed_access
+        and platform_admin_previous_manifest_stat.stat.exists
+        else []
+      }}
+    platform_admin_previous_authorized_key_records: >-
+      {{
+        (
+          platform_admin_previous_manifest_slurp.content
+          | b64decode
+          | from_yaml
+        ).authorizedKeyRecords | default([])
+        if platform_admin_prune_managed_access
+        and platform_admin_previous_manifest_stat.stat.exists
+        else []
+      }}
+    platform_admin_current_sudo_users: []
+    platform_admin_current_authorized_key_records: []
+  when: platform_admin_prune_managed_access
+
+- name: Track current platform admin sudo users
+  ansible.builtin.set_fact:
+    platform_admin_current_sudo_users: >-
+      {{ platform_admin_current_sudo_users + [item.name] }}
+  loop: "{{ platform_admin_users }}"
+  when:
+    - platform_admin_prune_managed_access
+    - item.state | default('present') == 'present'
+    - item.sudo | default(false)
+
+- name: Track current platform admin authorized key records
+  ansible.builtin.set_fact:
+    platform_admin_current_authorized_key_records: >-
+      {{
+        platform_admin_current_authorized_key_records
+        + [({'user': item.0.name, 'key': item.1} | to_json)]
+      }}
+  loop: "{{ platform_admin_users | subelements('authorized_keys', skip_missing=True) }}"
+  when:
+    - platform_admin_prune_managed_access
+    - item.0.state | default('present') == 'present'
+
+- name: Ensure platform admin users exist
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    groups: "{{ item.groups | default(omit) }}"
+    append: "{{ item.append_groups | default(platform_admin_append_groups_default) }}"
+    create_home: "{{ item.create_home | default(true) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ platform_admin_users }}"
+
+- name: Install platform admin authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ item.name }}"
+    key: "{{ item.authorized_keys | default([]) | join('\n') }}"
+    state: present
+    exclusive: "{{ item.authorized_keys_exclusive | default(platform_admin_authorized_keys_exclusive) }}"
+  loop: "{{ platform_admin_users }}"
+  when:
+    - item.state | default('present') == 'present'
+    - item.authorized_keys | default([]) | length > 0
+
+- name: Configure platform admin sudo policy
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0440"
+    content: "{{ item.name }} ALL=(ALL) {{ 'NOPASSWD: ' if item.passwordless_sudo | default(false) else '' }}ALL\n"
+    validate: /usr/sbin/visudo -cf %s
+  loop: "{{ platform_admin_users }}"
+  when:
+    - item.state | default('present') == 'present'
+    - item.sudo | default(false)
+
+- name: Remove platform admin sudo policy when disabled or absent
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/{{ item.name }}"
+    state: absent
+  loop: "{{ platform_admin_users }}"
+  when: >-
+    not (item.sudo | default(false))
+    or item.state | default('present') != 'present'
+
+- name: Remove stale managed platform admin sudo policy
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/{{ item }}"
+    state: absent
+  loop: >-
+    {{
+      platform_admin_previous_sudo_users | default([])
+      | difference(platform_admin_current_sudo_users | default([]))
+    }}
+  when: platform_admin_prune_managed_access
+
+- name: Track stale managed platform admin authorized key records
+  ansible.builtin.set_fact:
+    platform_admin_stale_authorized_key_records: >-
+      {{
+        platform_admin_previous_authorized_key_records | default([])
+        | difference(platform_admin_current_authorized_key_records | default([]))
+      }}
+  when: platform_admin_prune_managed_access
+
+- name: Check stale managed platform admin authorized key users exist
+  ansible.builtin.command:
+    cmd: "getent passwd {{ (item | from_json).user | quote }}"
+  register: platform_admin_stale_authorized_key_user_checks
+  changed_when: false
+  failed_when: false
+  loop: >-
+    {{ platform_admin_stale_authorized_key_records | default([]) }}
+  when:
+    - platform_admin_prune_managed_access
+    - platform_admin_prune_stale_authorized_keys
+
+- name: Remove stale managed platform admin authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ (item.item | from_json).user }}"
+    key: "{{ (item.item | from_json).key }}"
+    state: absent
+  loop: "{{ platform_admin_stale_authorized_key_user_checks.results | default([]) }}"
+  when:
+    - platform_admin_prune_managed_access
+    - platform_admin_prune_stale_authorized_keys
+    - item.rc == 0
+
+- name: Write platform admin managed manifest
+  ansible.builtin.copy:
+    dest: "{{ platform_admin_managed_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'sudoUsers': platform_admin_current_sudo_users | default([]) | unique | sort,
+          'authorizedKeyRecords': platform_admin_current_authorized_key_records | default([]) | unique | sort
+        } | to_nice_yaml
+      }}
+  when: platform_admin_prune_managed_access

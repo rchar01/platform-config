@@ -1,0 +1,12 @@
+---
+firewalld_package: firewalld
+firewalld_service_name: firewalld
+firewalld_enabled: true
+firewalld_service_enabled: "{{ firewalld_enabled }}"
+firewalld_service_state: "{{ 'started' if firewalld_enabled else 'stopped' }}"
+firewalld_manage_rules: "{{ firewalld_service_state in ['started', 'restarted', 'reloaded'] }}"
+firewalld_services: []
+firewalld_ports: []
+firewalld_prune_managed: true
+firewalld_managed_state_dir: /var/lib/platform-config
+firewalld_managed_manifest_path: "{{ firewalld_managed_state_dir }}/firewalld.yml"

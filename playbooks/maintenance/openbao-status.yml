@@ -1,0 +1,67 @@
+---
+- name: Check OpenBao status
+  hosts: vault
+  become: true
+  gather_facts: false
+  vars:
+    openbao_status_effective_scheme: "{{ openbao_scheme | default('https') }}"
+    openbao_status_effective_port: "{{ openbao_host_port | default(8200) }}"
+    openbao_status_effective_url: >-
+      {{ openbao_status_url | default(openbao_status_effective_scheme ~ '://127.0.0.1:' ~ (openbao_status_effective_port | string) ~ '/v1/sys/health') }}
+    openbao_status_effective_codes: "{{ openbao_status_codes | default([200, 429, 472, 473, 501, 503]) }}"
+  tasks:
+    - name: Check OpenBao service active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ openbao_service_name | default('openbao.service') }}"
+      register: openbao_status_service_active
+      changed_when: false
+
+    - name: Assert OpenBao service is active
+      ansible.builtin.assert:
+        that:
+          - openbao_status_service_active.stdout == 'active'
+        fail_msg: "OpenBao service is not active."
+
+    - name: Check OpenBao health endpoint
+      ansible.builtin.uri:
+        url: "{{ openbao_status_effective_url }}"
+        method: GET
+        validate_certs: "{{ openbao_status_validate_certs | default(false) }}"
+        status_code: "{{ openbao_status_effective_codes }}"
+      register: openbao_status_health
+
+    - name: Report OpenBao health
+      ansible.builtin.debug:
+        msg:
+          status: "{{ openbao_status_health.status }}"
+          initialized: "{{ openbao_status_health.json.initialized | default('unknown') }}"
+          sealed: "{{ openbao_status_health.json.sealed | default('unknown') }}"
+          standby: "{{ openbao_status_health.json.standby | default('unknown') }}"
+
+    - name: Check permanent OpenBao firewalld rich rules
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --query-rich-rule
+          - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ openbao_host_port | default(8200) }}\" protocol=\"tcp\" accept"
+      loop: "{{ openbao_firewalld_allowed_sources | default([]) }}"
+      register: openbao_status_firewalld_rules
+      changed_when: false
+      failed_when: openbao_status_firewalld_rules.rc not in [0, 1]
+      when: openbao_firewalld_manage | default(true) | bool
+
+    - name: Assert permanent OpenBao firewalld rich rules are present
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_firewalld_rules.results
+            | selectattr('rc', 'ne', 0)
+            | list
+            | length == 0
+        fail_msg: "An expected OpenBao firewalld rich rule is missing."
+      when:
+        - openbao_firewalld_manage | default(true) | bool
+        - openbao_firewalld_allowed_sources | default([]) | length > 0

@@ -1,0 +1,6 @@
+---
+podman_host_packages:
+  - podman
+  - podman-compose
+
+podman_host_socket_enabled: false

@@ -1,0 +1,206 @@
+---
+- name: Set storage volume facts
+  ansible.builtin.set_fact:
+    storage_volume_device: "{{ storage_volume.device }}"
+    storage_volume_partition_number: "{{ storage_volume.partition_number | default(storage_volume_default_partition_number) }}"
+    storage_volume_vg_name: "{{ storage_volume.vg_name }}"
+    storage_volume_lv_name: "{{ storage_volume.lv_name }}"
+    storage_volume_lv_size: "{{ storage_volume.lv_size | default(storage_volume_default_lv_size) }}"
+    storage_volume_mountpoint: "{{ storage_volume.mountpoint }}"
+    storage_volume_fstype: "{{ storage_volume.fstype | default(storage_volume_default_fstype) }}"
+    storage_volume_mount_options: "{{ storage_volume.mount_options | default(storage_volume_default_mount_options) }}"
+    storage_volume_mount_state: "{{ storage_volume.state | default(storage_volume_default_mount_state) }}"
+    storage_volume_owner: "{{ storage_volume.owner | default(storage_volume_default_owner) }}"
+    storage_volume_group: "{{ storage_volume.group | default(storage_volume_default_group) }}"
+    storage_volume_mode: "{{ storage_volume.mode | default(storage_volume_default_mode) }}"
+    storage_volume_initialize: "{{ storage_volume.initialize | default(false) }}"
+
+- name: Set storage volume derived device facts
+  ansible.builtin.set_fact:
+    storage_volume_pv_device: >-
+      {{ storage_volume.pv_device | default(storage_volume_device ~ '-part' ~ storage_volume_partition_number) }}
+    storage_volume_lv_device: "/dev/{{ storage_volume_vg_name }}/{{ storage_volume_lv_name }}"
+
+- name: Validate storage volume configuration
+  ansible.builtin.assert:
+    that:
+      - storage_volume_device | length > 0
+      - storage_volume_vg_name | length > 0
+      - storage_volume_lv_name | length > 0
+      - storage_volume_mountpoint | length > 0
+      - not storage_volume_require_stable_device or storage_volume_device is match('^/dev/disk/by-')
+      - storage_volume_mountpoint is match('^/')
+    fail_msg: "Storage volume definitions must use explicit stable devices, VG/LV names, and absolute mountpoints."
+
+- name: Check storage volume source disk
+  ansible.builtin.stat:
+    path: "{{ storage_volume_device }}"
+  register: storage_volume_device_stat
+
+- name: Check storage volume PV partition
+  ansible.builtin.stat:
+    path: "{{ storage_volume_pv_device }}"
+  register: storage_volume_pv_device_stat
+
+- name: Require storage volume source disk to exist
+  ansible.builtin.assert:
+    that:
+      - storage_volume_device_stat.stat.exists
+    fail_msg: "Storage source disk {{ storage_volume_device }} does not exist."
+
+- name: Inspect storage volume source disk topology
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -nr
+      - -o
+      - TYPE
+      - "{{ storage_volume_device }}"
+  register: storage_volume_device_topology
+  changed_when: false
+  check_mode: false
+
+- name: Inspect storage volume source disk signatures
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - "{{ storage_volume_device }}"
+  register: storage_volume_device_blkid
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_device_blkid.rc not in [0, 2]
+
+- name: Require explicit initialization for new storage volume disks
+  ansible.builtin.assert:
+    that:
+      - storage_volume_initialize | bool
+    fail_msg: "Refusing to initialize {{ storage_volume_device }} without initialize: true."
+  when: not storage_volume_pv_device_stat.stat.exists
+
+- name: Refuse to initialize non-empty storage volume disks
+  ansible.builtin.assert:
+    that:
+      - storage_volume_device_topology.stdout_lines | length == 1
+      - storage_volume_device_topology.stdout_lines[0] == 'disk'
+      - storage_volume_device_blkid.rc == 2
+    fail_msg: "Refusing to initialize {{ storage_volume_device }} because it already has children or signatures."
+  when: not storage_volume_pv_device_stat.stat.exists
+
+- name: Create LVM partition for storage volume
+  community.general.parted:
+    device: "{{ storage_volume_device }}"
+    number: "{{ storage_volume_partition_number }}"
+    label: gpt
+    flags:
+      - lvm
+    part_start: 1MiB
+    part_end: 100%
+    state: present
+  when: not storage_volume_pv_device_stat.stat.exists
+
+- name: Wait for storage volume partition device
+  ansible.builtin.command:
+    argv:
+      - udevadm
+      - settle
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - not storage_volume_pv_device_stat.stat.exists
+
+- name: Refresh storage volume PV partition state
+  ansible.builtin.stat:
+    path: "{{ storage_volume_pv_device }}"
+  register: storage_volume_pv_device_after_partition_stat
+
+- name: Track storage volume check-mode initialization state
+  ansible.builtin.set_fact:
+    storage_volume_skip_lvm_tasks: >-
+      {{ ansible_check_mode and not storage_volume_pv_device_after_partition_stat.stat.exists }}
+
+- name: Create storage volume group
+  community.general.lvg:
+    vg: "{{ storage_volume_vg_name }}"
+    pvs: "{{ storage_volume_pv_device }}"
+    state: present
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Create storage logical volume
+  community.general.lvol:
+    vg: "{{ storage_volume_vg_name }}"
+    lv: "{{ storage_volume_lv_name }}"
+    size: "{{ storage_volume_lv_size }}"
+    shrink: false
+    state: present
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Inspect storage logical volume filesystem
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - -o
+      - value
+      - -s
+      - TYPE
+      - "{{ storage_volume_lv_device }}"
+  register: storage_volume_lv_fstype
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_lv_fstype.rc not in [0, 2]
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Refuse unexpected storage logical volume filesystem
+  ansible.builtin.assert:
+    that:
+      - storage_volume_lv_fstype.rc == 2 or storage_volume_lv_fstype.stdout == storage_volume_fstype
+    fail_msg: "{{ storage_volume_lv_device }} has filesystem {{ storage_volume_lv_fstype.stdout }}, expected {{ storage_volume_fstype }}."
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Create storage logical volume filesystem
+  community.general.filesystem:
+    dev: "{{ storage_volume_lv_device }}"
+    fstype: "{{ storage_volume_fstype }}"
+    force: false
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Ensure storage volume mountpoint exists
+  ansible.builtin.file:
+    path: "{{ storage_volume_mountpoint }}"
+    state: directory
+    owner: "{{ storage_volume_owner }}"
+    group: "{{ storage_volume_group }}"
+    mode: "{{ storage_volume_mode }}"
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Read storage logical volume UUID
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - -o
+      - value
+      - -s
+      - UUID
+      - "{{ storage_volume_lv_device }}"
+  register: storage_volume_lv_uuid
+  changed_when: false
+  check_mode: false
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Mount storage volume by UUID
+  ansible.posix.mount:
+    path: "{{ storage_volume_mountpoint }}"
+    src: "UUID={{ storage_volume_lv_uuid.stdout }}"
+    fstype: "{{ storage_volume_fstype }}"
+    opts: "{{ storage_volume_mount_options }}"
+    state: "{{ storage_volume_mount_state }}"
+  notify: Reload systemd units
+  when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Ensure mounted storage volume ownership
+  ansible.builtin.file:
+    path: "{{ storage_volume_mountpoint }}"
+    state: directory
+    owner: "{{ storage_volume_owner }}"
+    group: "{{ storage_volume_group }}"
+    mode: "{{ storage_volume_mode }}"
+  when: not storage_volume_skip_lvm_tasks | bool

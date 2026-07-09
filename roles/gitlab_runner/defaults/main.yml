@@ -1,0 +1,32 @@
+---
+gitlab_runner_image: docker.io/gitlab/gitlab-runner:alpine-v18.11.3
+gitlab_runner_container_name: gitlab-runner
+gitlab_runner_quadlet_name: gitlab-runner.container
+gitlab_runner_service_name: gitlab-runner.service
+
+gitlab_runner_config_dir: /etc/gitlab-runner
+gitlab_runner_config_path: "{{ gitlab_runner_config_dir }}/config.toml"
+gitlab_runner_certs_dir: "{{ gitlab_runner_config_dir }}/certs"
+gitlab_runner_data_dir: /var/lib/gitlab-runner
+
+gitlab_runner_gitlab_url: ""
+gitlab_runner_token_src: ""
+gitlab_runner_name: "{{ inventory_hostname }}"
+gitlab_runner_executor: shell
+gitlab_runner_tags: []
+gitlab_runner_registration_extra_args: []
+gitlab_runner_force_register: false
+
+gitlab_runner_tls_ca_cert_src: ""
+gitlab_runner_tls_ca_cert_path: "{{ gitlab_runner_certs_dir }}/gitlab-ca.crt"
+gitlab_runner_container_tls_ca_cert_path: /etc/gitlab-runner/certs/gitlab-ca.crt
+
+gitlab_runner_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+gitlab_runner_quadlet_path: "{{ gitlab_runner_quadlet_dir }}/{{ gitlab_runner_quadlet_name }}"
+gitlab_runner_quadlet_wants: network-online.target
+gitlab_runner_quadlet_after: network-online.target
+gitlab_runner_quadlet_restart_policy: always
+gitlab_runner_quadlet_volume_label: Z
+
+gitlab_runner_service_enabled: true
+gitlab_runner_service_state: started

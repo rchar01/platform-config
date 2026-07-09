@@ -1,0 +1,125 @@
+---
+- name: Install firewalld
+  ansible.builtin.package:
+    name: "{{ firewalld_package }}"
+    state: present
+  register: firewalld_package_result
+
+- name: Ensure firewalld service state
+  ansible.builtin.service:
+    name: "{{ firewalld_service_name }}"
+    enabled: "{{ firewalld_service_enabled }}"
+    state: "{{ firewalld_service_state }}"
+  when: not (ansible_check_mode and firewalld_package_result is changed)
+
+- name: Ensure firewalld managed state directory exists
+  ansible.builtin.file:
+    path: "{{ firewalld_managed_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: firewalld_prune_managed
+
+- name: Check previous firewalld managed manifest
+  ansible.builtin.stat:
+    path: "{{ firewalld_managed_manifest_path }}"
+  register: firewalld_previous_managed_manifest_stat
+  when: firewalld_prune_managed
+
+- name: Read previous firewalld managed manifest
+  ansible.builtin.slurp:
+    path: "{{ firewalld_managed_manifest_path }}"
+  register: firewalld_previous_managed_manifest_slurp
+  when:
+    - firewalld_prune_managed
+    - firewalld_previous_managed_manifest_stat.stat.exists
+
+- name: Track firewalld managed entries
+  ansible.builtin.set_fact:
+    firewalld_previous_managed_services: >-
+      {{
+        (
+          firewalld_previous_managed_manifest_slurp.content
+          | b64decode
+          | from_yaml
+        ).services | default([])
+        if firewalld_prune_managed
+        and firewalld_previous_managed_manifest_stat.stat.exists
+        else []
+      }}
+    firewalld_previous_managed_ports: >-
+      {{
+        (
+          firewalld_previous_managed_manifest_slurp.content
+          | b64decode
+          | from_yaml
+        ).ports | default([])
+        if firewalld_prune_managed
+        and firewalld_previous_managed_manifest_stat.stat.exists
+        else []
+      }}
+  when: firewalld_prune_managed
+
+- name: Open configured firewalld services
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewalld_services }}"
+  when:
+    - firewalld_manage_rules
+    - not (ansible_check_mode and firewalld_package_result is changed)
+
+- name: Open configured firewalld ports
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewalld_ports }}"
+  when:
+    - firewalld_manage_rules
+    - not (ansible_check_mode and firewalld_package_result is changed)
+
+- name: Close stale managed firewalld services
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: disabled
+  loop: "{{ firewalld_previous_managed_services | default([]) | difference(firewalld_services) }}"
+  when:
+    - firewalld_prune_managed
+    - firewalld_manage_rules
+    - not (ansible_check_mode and firewalld_package_result is changed)
+
+- name: Close stale managed firewalld ports
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: disabled
+  loop: "{{ firewalld_previous_managed_ports | default([]) | difference(firewalld_ports) }}"
+  when:
+    - firewalld_prune_managed
+    - firewalld_manage_rules
+    - not (ansible_check_mode and firewalld_package_result is changed)
+
+- name: Write firewalld managed manifest
+  ansible.builtin.copy:
+    dest: "{{ firewalld_managed_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'services': firewalld_services | unique | sort,
+          'ports': firewalld_ports | unique | sort
+        } | to_nice_yaml
+      }}
+  when:
+    - firewalld_prune_managed
+    - firewalld_manage_rules

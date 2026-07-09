@@ -1,0 +1,23 @@
+[Unit]
+Description=Grafana Monitoring UI
+Wants={{ monitoring_stack_quadlet_wants }}
+After={{ monitoring_stack_quadlet_after }} prometheus.service
+
+[Container]
+Image={{ monitoring_stack_grafana_image }}
+ContainerName={{ monitoring_stack_grafana_container_name }}
+Network=host
+User={{ monitoring_stack_grafana_user }}:{{ monitoring_stack_grafana_group }}
+Environment=GF_SERVER_HTTP_ADDR={{ monitoring_stack_grafana_http_addr }}
+Environment=GF_SERVER_HTTP_PORT={{ monitoring_stack_grafana_http_port }}
+Environment=GF_SECURITY_ADMIN_PASSWORD__FILE={{ monitoring_stack_grafana_admin_password_path }}
+Environment=GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+Volume={{ monitoring_stack_grafana_data_dir }}:/var/lib/grafana:{{ monitoring_stack_quadlet_volume_label }}
+Volume={{ monitoring_stack_grafana_config_dir }}:/etc/monitoring-stack/grafana:ro,{{ monitoring_stack_quadlet_volume_label }}
+Volume={{ monitoring_stack_grafana_provisioning_dir }}:/etc/grafana/provisioning:ro,{{ monitoring_stack_quadlet_volume_label }}
+
+[Service]
+Restart={{ monitoring_stack_quadlet_restart_policy }}
+
+[Install]
+WantedBy=multi-user.target

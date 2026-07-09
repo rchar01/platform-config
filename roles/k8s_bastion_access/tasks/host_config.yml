@@ -1,0 +1,41 @@
+---
+- name: Ensure Kubernetes bastion configuration directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ k8s_bastion_etc_dir }}"
+      mode: "0755"
+    - path: "{{ k8s_bastion_var_dir }}"
+      mode: "0750"
+
+- name: Install Kubernetes bastion access policy
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_policy_src }}"
+    dest: "{{ k8s_bastion_policy_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: k8s_bastion_policy_src | length > 0
+
+- name: Install Kubernetes bastion admin kubeconfig
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_admin_kubeconfig_src }}"
+    dest: "{{ k8s_bastion_admin_kubeconfig_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  diff: false
+  when: k8s_bastion_admin_kubeconfig_src | length > 0
+
+- name: Install Kubernetes bastion cluster CA certificate
+  ansible.builtin.copy:
+    src: "{{ k8s_bastion_ca_src }}"
+    dest: "{{ k8s_bastion_ca_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: k8s_bastion_ca_src | length > 0

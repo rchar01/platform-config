@@ -1,0 +1,13 @@
+---
+- name: Configure OCI registry hosts
+  hosts: registry
+  become: true
+  roles:
+    - podman_host
+    - zot_registry
+
+- name: Configure OCI registry client hosts
+  hosts: registry_clients
+  become: true
+  roles:
+    - registry_client_tools

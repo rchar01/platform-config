@@ -1,0 +1,15 @@
+---
+k8s_bastion_runtime_src: "{{ playbook_dir }}/../vendor/platform-k8s-bastion/runtime"
+k8s_bastion_install_dir: /usr/local/lib/bastion
+k8s_bastion_bin_dir: /usr/local/bin
+k8s_bastion_sbin_dir: /usr/local/sbin
+
+k8s_bastion_policy_src: ../platform-private/config/files/k8s-bastion/homelab/access-policy.yaml
+k8s_bastion_admin_kubeconfig_src: "{{ k8s_bastion_local_secret_config_dir }}/k8s-bastion/homelab/admin.kubeconfig"
+k8s_bastion_ca_src: ../platform-private/config/files/k8s-bastion/homelab/ca.crt
+
+# Override k8s_bastion_external_tools or k8s_bastion_download_environment
+# in platform-private when using a corporate proxy or internal artifact mirror.
+k8s_bastion_download_environment: {}
+
+k8s_bastion_symlinks: []

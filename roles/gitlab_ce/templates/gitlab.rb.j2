@@ -1,0 +1,14 @@
+external_url '{{ gitlab_ce_external_url }}'
+gitlab_rails['time_zone'] = '{{ gitlab_ce_time_zone }}'
+gitlab_rails['gitlab_shell_ssh_port'] = {{ gitlab_ce_ssh_host_port }}
+letsencrypt['enable'] = false
+{% if gitlab_ce_tls_enabled | bool %}
+nginx['ssl_certificate'] = '/etc/gitlab/ssl/{{ gitlab_ce_tls_cert_name }}'
+nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/{{ gitlab_ce_tls_key_name }}'
+{% endif %}
+{% if gitlab_ce_initial_root_password_src | length > 0 %}
+gitlab_rails['initial_root_password'] = File.read('{{ gitlab_ce_initial_root_password_container_path }}').strip
+{% endif %}
+{% if gitlab_ce_extra_omnibus_config | length > 0 %}
+{{ gitlab_ce_extra_omnibus_config }}
+{% endif %}

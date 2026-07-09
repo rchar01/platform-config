@@ -1,0 +1,18 @@
+---
+root_lvm_enabled: false
+
+root_lvm_packages:
+  - cloud-utils-growpart
+  - lvm2
+  - parted
+  - xfsprogs
+
+root_lvm_disk: ""
+root_lvm_partition_number: 0
+root_lvm_pv_device: ""
+root_lvm_vg_name: ""
+root_lvm_lv_path: ""
+root_lvm_consume_free: true
+root_lvm_min_free_mb: 1
+root_lvm_pv_resize_threshold_bytes: 67108864
+root_lvm_require_stable_device: true

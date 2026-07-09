@@ -1,0 +1,30 @@
+# Roles
+
+Roles are intentionally variable-driven. Real environment values come from `platform-private`; public role defaults must remain non-secret. Software installed directly by a role must be version-pinned through role variables unless an explicit one-off discovery override exists. OS package roles accept configurable package specs; reproducible OS package versions require pinned repositories, snapshots, or versionlock outside individual role defaults.
+
+- `common`: shared OS defaults such as timezone, platform directories, optional managed `/etc/hosts` aliases, baseline logrotate compression, and optional MOTD. MOTD removal is explicit through `platform_motd_remove_when_empty`.
+- `users`: optional automation and admin users from inventory variables. When keys or groups are configured, defaults favor exact managed state rather than additive access, and previously managed admin sudo/key entries are pruned from a host manifest.
+- `ssh`: SSH server installation, service management, and managed drop-ins. Previously managed drop-ins are pruned when `ssh_config_dropins_prune_managed` is true.
+- `packages`: additive common package installation from `platform_base_packages`. Package removal is intentionally not automatic. The public examples keep the shared baseline small; role-specific runtime packages belong in role variables, not the global base package list.
+- `root_lvm`: optional desired-state management for an LVM-backed root filesystem. It can converge template-created root partitions, PVs, LVs, and filesystems to consume the declared boot disk capacity. It is disabled by default and requires explicit private inventory variables for the target disk, partition, PV, VG, and LV.
+- `firewalld`: baseline firewalld installation, systemd enabled/state management, and managed open services or ports when running. Previously managed entries are pruned when `firewalld_prune_managed` is true.
+- `chrony`: chrony installation and service management.
+- `storage_volume`: LVM-backed persistent storage volume management. It uses stable private disk paths, creates XFS filesystems by default, and mounts by filesystem UUID.
+- `nfs_client`: client-side NFS mount management from `nfs_client_mounts`.
+- `podman_host`: Podman host foundation for service containers. It installs Podman, creates the system Quadlet directory, and manages the Podman socket when `podman_host_socket_manage` is true.
+- `registry_client_tools`: Pinned client tooling for registry smoke tests on `registry_clients`, currently Helm for OCI chart push/pull checks.
+- `zot_registry`: Zot OCI registry deployment as a system Podman Quadlet service with TLS, optional UI, persistent storage, service lifecycle, and broad or source-scoped firewalld management.
+- `openbao`: OpenBao deployment as a system Podman Quadlet service with TLS, persistent Raft storage, service lifecycle, and source-scoped permanent firewalld rules. Init and unseal are intentionally excluded from normal convergence.
+- `gitlab_ce`: GitLab CE deployment as a system Podman Quadlet service with HTTPS, persistent storage, Git-over-SSH port mapping, service lifecycle, and permanent firewalld port management.
+- `gitlab_runner`: GitLab Runner deployment as a system Podman Quadlet service. It registers with a pre-created runner authentication token stored outside Git and starts with the shell executor, no privileged image-build support, and no container runtime socket mount.
+- `node_exporter`: Prometheus Node Exporter installation as a host systemd service for VM-level metrics without requiring Podman on Kubernetes nodes.
+- `grafana_alloy`: pinned Grafana Alloy installation as a host systemd service for VM journald log shipping to Loki without requiring Podman on Kubernetes nodes.
+- `monitoring_stack`: Prometheus, Loki, and Grafana deployment as system Podman Quadlet services on the monitoring host. It scrapes labeled VM node exporters, receives VM journald logs, provisions baseline dashboards, and keeps Grafana credentials outside Git.
+- `rke2`: RKE2 Kubernetes base cluster installation for server and agent nodes. It requires an explicit `rke2_version` pin by default, manages required kernel modules and sysctls, and supports Calico, disabled packaged ingress, external token files, registry CA configuration, and permanent firewalld rules; kube-vip and workload ingress remain separate Kubernetes-layer phases.
+- `rke2_kube_vip`: RKE2 kube-vip API HA add-on. It writes a pinned kube-vip HelmChart manifest to the RKE2 bootstrap server, keeps service LoadBalancer support disabled by default, and verifies the API VIP routes through the configured server interface.
+- `kong_ingress`: RKE2 HelmChart-based Kong Gateway and Kong Ingress Controller add-on for classic Kubernetes `Ingress`. It exposes fixed HTTP/HTTPS NodePorts for external load balancers and intentionally defers Gateway API CRDs to a later platform phase.
+- `haproxy_workload_lb`: native HAProxy workload load balancer for external VM-to-worker NodePort traffic. It models the production F5 pattern by forwarding `80/tcp` and `443/tcp` to Kubernetes worker NodePorts while keeping workload load balancing outside the base RKE2 role.
+- `bastion_host`: base package installation and `/opt/platform` layout creation.
+- `k8s_bastion_access`: installs external Kubernetes CLI tools, copies the vendored `platform-k8s-bastion` runtime, writes `/etc/bastion` files from private inputs, installs the login profile, configures policy-driven users, and manages bastion systemd services/timers.
+
+See [Kubernetes Bastion](k8s-bastion.md) for the detailed bastion role workflow.

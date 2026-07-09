@@ -1,0 +1,12 @@
+[Unit]
+Description=Run bastion certificate renewal periodically
+
+[Timer]
+OnBootSec={{ k8s_bastion_cert_renew_on_boot }}
+OnUnitActiveSec={{ k8s_bastion_cert_renew_on_active }}
+RandomizedDelaySec={{ k8s_bastion_cert_renew_jitter }}
+Persistent=true
+Unit=bastion-cert-renew.service
+
+[Install]
+WantedBy=timers.target

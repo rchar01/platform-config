@@ -1,0 +1,76 @@
+---
+- name: Load Kubernetes bastion policy for cluster RBAC
+  ansible.builtin.set_fact:
+    k8s_bastion_policy_data: "{{ lookup('file', k8s_bastion_policy_src) | from_yaml }}"
+
+- name: Initialize Kubernetes bastion policy RBAC group lists
+  ansible.builtin.set_fact:
+    k8s_bastion_cluster_admin_groups: []
+    k8s_bastion_namespace_scoped_groups: []
+
+- name: Collect Kubernetes bastion cluster admin policy groups
+  ansible.builtin.set_fact:
+    k8s_bastion_cluster_admin_groups: >-
+      {{ k8s_bastion_cluster_admin_groups + [item.key] }}
+  loop: "{{ k8s_bastion_policy_data.groups | default({}) | dict2items }}"
+  when: "'all' in (item.value.namespaces | default([]))"
+
+- name: Collect unsupported Kubernetes bastion namespace-scoped policy groups
+  ansible.builtin.set_fact:
+    k8s_bastion_namespace_scoped_groups: >-
+      {{ k8s_bastion_namespace_scoped_groups + [item.key] }}
+  loop: "{{ k8s_bastion_policy_data.groups | default({}) | dict2items }}"
+  when:
+    - "'all' not in (item.value.namespaces | default([]))"
+    - item.value.namespaces | default([]) | length > 0
+
+- name: Assert Kubernetes bastion policy RBAC scope is supported
+  ansible.builtin.assert:
+    that:
+      - k8s_bastion_namespace_scoped_groups | length == 0
+    fail_msg: >-
+      Namespace-scoped bastion RBAC is not implemented yet. Unsupported groups:
+      {{ k8s_bastion_namespace_scoped_groups | join(', ') }}
+
+- name: Check Kubernetes bastion cluster admin RBAC binding drift
+  ansible.builtin.shell: |
+    set -o pipefail
+    group={{ item | quote }}
+    role={{ k8s_bastion_cluster_admin_role | quote }}
+    binding_group_name="$(printf '%s' "$group" | tr '_' '-')"
+    name="bastion-${binding_group_name}-cluster-admin"
+    kubectl --kubeconfig {{ k8s_bastion_admin_kubeconfig_path | quote }} \
+      get clusterrolebinding "$name" -o json \
+      | jq -e --arg role "$role" --arg group "$group" '
+          .roleRef.kind == "ClusterRole"
+          and .roleRef.name == $role
+          and any(.subjects[]?; .kind == "Group" and .name == $group)
+        '
+  args:
+    executable: /bin/bash
+  loop: "{{ k8s_bastion_cluster_admin_groups }}"
+  register: k8s_bastion_cluster_rbac_drift
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Apply Kubernetes bastion cluster admin RBAC bindings
+  ansible.builtin.shell: |
+    set -o pipefail
+    group={{ item.item | quote }}
+    binding_group_name="$(printf '%s' "$group" | tr '_' '-')"
+    name="bastion-${binding_group_name}-cluster-admin"
+    kubectl --kubeconfig {{ k8s_bastion_admin_kubeconfig_path | quote }} \
+      create clusterrolebinding "$name" \
+      --clusterrole={{ k8s_bastion_cluster_admin_role | quote }} \
+      --group="$group" \
+      --dry-run=client \
+      -o yaml \
+      | kubectl --kubeconfig {{ k8s_bastion_admin_kubeconfig_path | quote }} apply -f -
+  args:
+    executable: /bin/bash
+  loop: "{{ k8s_bastion_cluster_rbac_drift.results }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - item.rc != 0

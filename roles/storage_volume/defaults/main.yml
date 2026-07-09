@@ -1,0 +1,20 @@
+---
+storage_volume_packages:
+  - lvm2
+  - parted
+  - xfsprogs
+
+storage_volumes: []
+
+storage_volume_default_fstype: xfs
+storage_volume_default_mount_options: defaults,rw,nosuid,nodev,relatime
+storage_volume_default_mount_state: mounted
+storage_volume_default_owner: root
+storage_volume_default_group: root
+storage_volume_default_mode: "0755"
+storage_volume_default_partition_number: 1
+storage_volume_default_lv_size: 100%FREE
+
+# Require private inventories to identify disks with stable udev paths instead
+# of kernel-assigned names such as /dev/sdb.
+storage_volume_require_stable_device: true

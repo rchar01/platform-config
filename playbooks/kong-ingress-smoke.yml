@@ -1,0 +1,154 @@
+---
+- name: Smoke test Kong ingress controller
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    kong_ingress_smoke_bootstrap_host: "{{ (groups.get('rke2_servers', []) | first) | default('') }}"
+    kong_ingress_smoke_is_bootstrap: "{{ inventory_hostname == kong_ingress_smoke_bootstrap_host }}"
+    kong_ingress_smoke_kubectl: "{{ kong_ingress_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+    kong_ingress_smoke_kubeconfig: "{{ kong_ingress_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+    kong_ingress_smoke_worker_hosts: >-
+      {{
+        groups.get(kong_ingress_worker_group | default('rke2_agents'), [])
+        | map('extract', hostvars, 'ansible_host')
+        | list
+      }}
+  tasks:
+    - name: Confirm Kong ingress HelmChart exists
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - -n
+          - "{{ kong_ingress_helmchart_namespace | default('kube-system') }}"
+          - get
+          - helmchart
+          - "{{ kong_ingress_release_name | default('kong') }}"
+      register: kong_ingress_smoke_helmchart
+      retries: 60
+      delay: 5
+      until: kong_ingress_smoke_helmchart.rc == 0
+      changed_when: false
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Wait for Kong controller rollout
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - -n
+          - "{{ kong_ingress_namespace | default('kong') }}"
+          - rollout
+          - status
+          - deployment/{{ kong_ingress_controller_deployment_name | default('kong-controller') }}
+          - --timeout=300s
+      changed_when: false
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Wait for Kong gateway rollout
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - -n
+          - "{{ kong_ingress_namespace | default('kong') }}"
+          - rollout
+          - status
+          - deployment/{{ kong_ingress_gateway_deployment_name | default('kong-gateway') }}
+          - --timeout=300s
+      changed_when: false
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Read Kong proxy service NodePorts
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - -n
+          - "{{ kong_ingress_namespace | default('kong') }}"
+          - get
+          - service
+          - "{{ kong_ingress_proxy_service_name | default('kong-gateway-proxy') }}"
+          - -o=jsonpath={.spec.type}{" "}{range .spec.ports[*]}{.name}:{.nodePort}{" "}{end}
+      register: kong_ingress_smoke_proxy_service
+      changed_when: false
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Assert Kong proxy service uses fixed NodePorts
+      ansible.builtin.assert:
+        that:
+          - kong_ingress_smoke_proxy_service.stdout is search('^NodePort ')
+          - kong_ingress_smoke_proxy_service.stdout is search('kong-proxy:' ~ (kong_ingress_proxy_http_node_port | default(30080) | string))
+          - kong_ingress_smoke_proxy_service.stdout is search('kong-proxy-tls:' ~ (kong_ingress_proxy_https_node_port | default(30443) | string))
+        fail_msg: "Kong proxy service does not expose the expected fixed NodePorts."
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Read Kong NodePort services
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - -n
+          - "{{ kong_ingress_namespace | default('kong') }}"
+          - get
+          - service
+          - -o=jsonpath={range .items[?(@.spec.type=="NodePort")]}{.metadata.name}{" "}{end}
+      register: kong_ingress_smoke_nodeport_services
+      changed_when: false
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Assert Kong exposes only expected NodePort services
+      ansible.builtin.assert:
+        that:
+          - >-
+            kong_ingress_smoke_nodeport_services.stdout.split() | sort
+            == kong_ingress_expected_nodeport_services | default([kong_ingress_proxy_service_name | default('kong-gateway-proxy')]) | sort
+        fail_msg: "Kong exposes unexpected NodePort services."
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Probe Kong HTTP NodePorts on worker nodes
+      ansible.builtin.uri:
+        url: "http://{{ item }}:{{ kong_ingress_proxy_http_node_port | default(30080) }}/"
+        method: GET
+        status_code:
+          - 404
+        return_content: true
+      loop: "{{ kong_ingress_smoke_worker_hosts }}"
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_proxy_http_enabled | default(true) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Probe Kong HTTPS NodePorts on worker nodes
+      ansible.builtin.uri:
+        url: "https://{{ item }}:{{ kong_ingress_proxy_https_node_port | default(30443) }}/"
+        method: GET
+        validate_certs: false
+        status_code:
+          - 404
+        return_content: true
+      loop: "{{ kong_ingress_smoke_worker_hosts }}"
+      when:
+        - kong_ingress_enabled | default(false) | bool
+        - kong_ingress_proxy_https_enabled | default(true) | bool
+        - kong_ingress_smoke_is_bootstrap | bool

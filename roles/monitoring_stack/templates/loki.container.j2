@@ -1,0 +1,18 @@
+[Unit]
+Description=Loki Log Store
+Wants={{ monitoring_stack_quadlet_wants }}
+After={{ monitoring_stack_quadlet_after }}
+
+[Container]
+Image={{ monitoring_stack_loki_image }}
+ContainerName={{ monitoring_stack_loki_container_name }}
+Network=host
+Volume={{ monitoring_stack_loki_config_dir }}:/etc/loki:ro,{{ monitoring_stack_quadlet_volume_label }}
+Volume={{ monitoring_stack_loki_data_dir }}:{{ monitoring_stack_loki_container_data_dir }}:{{ monitoring_stack_quadlet_volume_label }}
+Exec=-config.file=/etc/loki/loki.yml
+
+[Service]
+Restart={{ monitoring_stack_quadlet_restart_policy }}
+
+[Install]
+WantedBy=multi-user.target

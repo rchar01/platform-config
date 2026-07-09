@@ -1,0 +1,16 @@
+[Unit]
+Description=GitLab Runner
+Wants={{ gitlab_runner_quadlet_wants }}
+After={{ gitlab_runner_quadlet_after }}
+
+[Container]
+Image={{ gitlab_runner_image }}
+ContainerName={{ gitlab_runner_container_name }}
+Volume={{ gitlab_runner_config_dir }}:/etc/gitlab-runner:{{ gitlab_runner_quadlet_volume_label }}
+Volume={{ gitlab_runner_data_dir }}:/home/gitlab-runner:{{ gitlab_runner_quadlet_volume_label }}
+
+[Service]
+Restart={{ gitlab_runner_quadlet_restart_policy }}
+
+[Install]
+WantedBy=multi-user.target

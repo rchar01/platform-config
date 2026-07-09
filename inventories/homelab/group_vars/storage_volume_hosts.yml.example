@@ -1,0 +1,10 @@
+---
+# Real device paths belong in private inventories. Use stable paths such as
+# /dev/disk/by-id/... or /dev/disk/by-path/..., not /dev/sdb.
+storage_volumes:
+  - name: registry_data
+    device: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1
+    vg_name: data
+    lv_name: zot
+    mountpoint: /var/lib/zot
+    initialize: true

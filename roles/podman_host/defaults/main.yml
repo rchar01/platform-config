@@ -1,0 +1,12 @@
+---
+podman_host_packages:
+  - podman
+
+podman_host_quadlet_dir: /etc/containers/systemd
+podman_host_quadlet_dir_owner: root
+podman_host_quadlet_dir_group: root
+podman_host_quadlet_dir_mode: "0755"
+
+podman_host_socket_manage: true
+podman_host_socket_enabled: false
+podman_host_socket_name: podman.socket
