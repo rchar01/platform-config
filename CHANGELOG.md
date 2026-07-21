@@ -12,6 +12,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added an all-Rocky firewalld smoke check for package availability, Python
   binding imports, disabled boot state, inactive runtime state, and permanent
   configuration validity.
+- Added a focused firewalld baseline playbook for targeted convergence without
+  applying unrelated base OS roles.
 
 ### Changed
 

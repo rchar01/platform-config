@@ -18,3 +18,11 @@ Open services and ports declared through this baseline role are managed only
 when `firewalld_manage_rules` is true. Service roles use permanent,
 offline-capable module operations while the daemon is stopped and apply the
 same rules immediately when inventory opts into active enforcement.
+
+Run only this baseline with:
+
+```bash
+make check ENV=dev PLAYBOOK=playbooks/firewalld.yml
+make apply ENV=dev PLAYBOOK=playbooks/firewalld.yml
+make smoke-firewalld ENV=dev
+```

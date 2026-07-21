@@ -1,0 +1,6 @@
+---
+- name: Configure firewalld baseline
+  hosts: rocky
+  become: true
+  roles:
+    - firewalld
