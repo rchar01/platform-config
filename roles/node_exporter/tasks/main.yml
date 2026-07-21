@@ -104,29 +104,15 @@
     state: "{{ node_exporter_service_state }}"
   when: not (ansible_check_mode and node_exporter_unit_result is changed)
 
-- name: Check permanent node_exporter firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --query-rich-rule
-      - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ node_exporter_web_listen_port }}\" protocol=\"tcp\" accept"
+- name: Manage node_exporter firewalld rich rules
+  ansible.posix.firewalld:
+    rich_rule: "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ node_exporter_web_listen_port }}\" protocol=\"tcp\" accept"
+    permanent: true
+    immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+    offline: true
+    state: enabled
   loop: "{{ node_exporter_firewalld_allowed_sources }}"
-  register: node_exporter_firewalld_rich_rule_checks
-  check_mode: false
-  changed_when: false
-  failed_when: node_exporter_firewalld_rich_rule_checks.rc not in [0, 1]
   when:
     - node_exporter_firewalld_manage | bool
     - node_exporter_firewalld_allowed_sources | length > 0
-
-- name: Add permanent node_exporter firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --add-rich-rule
-      - "{{ item.cmd[2] }}"
-  loop: "{{ node_exporter_firewalld_rich_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
-  changed_when: true
-  when:
-    - node_exporter_firewalld_manage | bool
-    - not ansible_check_mode
+    - firewalld_dependencies_ready | default(true)

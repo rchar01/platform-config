@@ -1,16 +1,32 @@
 ---
-- name: Install firewalld
+- name: Install firewalld packages
   ansible.builtin.package:
-    name: "{{ firewalld_package }}"
+    name:
+      - "{{ firewalld_package }}"
+      - "{{ firewalld_python_package }}"
     state: present
   register: firewalld_package_result
+
+- name: Track firewalld dependency readiness
+  ansible.builtin.set_fact:
+    firewalld_dependencies_ready: >-
+      {{ not (ansible_check_mode and firewalld_package_result is changed) }}
+
+- name: Verify firewalld Python bindings
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - import firewall
+  changed_when: false
+  when: firewalld_dependencies_ready
 
 - name: Ensure firewalld service state
   ansible.builtin.service:
     name: "{{ firewalld_service_name }}"
     enabled: "{{ firewalld_service_enabled }}"
     state: "{{ firewalld_service_state }}"
-  when: not (ansible_check_mode and firewalld_package_result is changed)
+  when: firewalld_dependencies_ready
 
 - name: Ensure firewalld managed state directory exists
   ansible.builtin.file:
@@ -66,46 +82,50 @@
     service: "{{ item }}"
     permanent: true
     immediate: true
+    offline: true
     state: enabled
   loop: "{{ firewalld_services }}"
   when:
     - firewalld_manage_rules
-    - not (ansible_check_mode and firewalld_package_result is changed)
+    - firewalld_dependencies_ready
 
 - name: Open configured firewalld ports
   ansible.posix.firewalld:
     port: "{{ item }}"
     permanent: true
     immediate: true
+    offline: true
     state: enabled
   loop: "{{ firewalld_ports }}"
   when:
     - firewalld_manage_rules
-    - not (ansible_check_mode and firewalld_package_result is changed)
+    - firewalld_dependencies_ready
 
 - name: Close stale managed firewalld services
   ansible.posix.firewalld:
     service: "{{ item }}"
     permanent: true
     immediate: true
+    offline: true
     state: disabled
   loop: "{{ firewalld_previous_managed_services | default([]) | difference(firewalld_services) }}"
   when:
     - firewalld_prune_managed
     - firewalld_manage_rules
-    - not (ansible_check_mode and firewalld_package_result is changed)
+    - firewalld_dependencies_ready
 
 - name: Close stale managed firewalld ports
   ansible.posix.firewalld:
     port: "{{ item }}"
     permanent: true
     immediate: true
+    offline: true
     state: disabled
   loop: "{{ firewalld_previous_managed_ports | default([]) | difference(firewalld_ports) }}"
   when:
     - firewalld_prune_managed
     - firewalld_manage_rules
-    - not (ansible_check_mode and firewalld_package_result is changed)
+    - firewalld_dependencies_ready
 
 - name: Write firewalld managed manifest
   ansible.builtin.copy:

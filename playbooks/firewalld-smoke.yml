@@ -1,0 +1,64 @@
+---
+- name: Verify inactive firewalld baseline
+  hosts: rocky
+  become: true
+  tasks:
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Assert firewalld packages are installed
+      ansible.builtin.assert:
+        that:
+          - (firewalld_package | default('firewalld')) in ansible_facts.packages
+          - (firewalld_python_package | default('python3-firewall')) in ansible_facts.packages
+        fail_msg: "Firewalld and its Python bindings must be installed."
+
+    - name: Verify firewalld Python bindings
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts.python.executable }}"
+          - -c
+          - import firewall
+      changed_when: false
+
+    - name: Check firewalld boot state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - firewalld.service
+      register: firewalld_smoke_enabled
+      changed_when: false
+      failed_when: firewalld_smoke_enabled.rc not in [0, 1]
+
+    - name: Assert firewalld is disabled at boot
+      ansible.builtin.assert:
+        that:
+          - firewalld_smoke_enabled.rc == 1
+          - firewalld_smoke_enabled.stdout == 'disabled'
+        fail_msg: "Firewalld must be disabled at boot."
+
+    - name: Check firewalld runtime state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - firewalld.service
+      register: firewalld_smoke_active
+      changed_when: false
+      failed_when: firewalld_smoke_active.rc not in [0, 3]
+
+    - name: Assert firewalld is inactive at runtime
+      ansible.builtin.assert:
+        that:
+          - firewalld_smoke_active.rc == 3
+          - firewalld_smoke_active.stdout == 'inactive'
+        fail_msg: "Firewalld must be stopped at runtime."
+
+    - name: Validate permanent firewalld configuration
+      ansible.builtin.command:
+        argv:
+          - firewall-offline-cmd
+          - --check-config
+      changed_when: false

@@ -79,6 +79,7 @@ make check ENV=dev
 make lint
 make yamllint
 make verify
+make smoke-firewalld ENV=dev
 make smoke-k8s-bastion ENV=dev
 ```
 

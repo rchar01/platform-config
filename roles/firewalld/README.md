@@ -1,7 +1,20 @@
 # firewalld
 
-Installs firewalld and manages its systemd enabled/state settings. Open services and ports are controlled by inventory variables when `firewalld_service_state` is `started`.
+Installs firewalld and its managed-host Python bindings, verifies that Ansible's
+Python interpreter can import them, and manages the systemd enabled/runtime
+state. The default baseline keeps firewalld disabled at boot and stopped at
+runtime while service roles maintain permanent rules offline.
 
-Use `firewalld_service_enabled` and `firewalld_service_state` when the boot enabled state and runtime state must differ. The older `firewalld_enabled` variable remains the default source for both values.
+Use `firewalld_service_enabled` and `firewalld_service_state` when the boot
+enabled state and runtime state must differ. The older `firewalld_enabled`
+variable remains the default source for both values.
 
-Inventory values for `firewalld_service_enabled` and `firewalld_service_state` override the derived defaults from `firewalld_enabled`.
+Inventory values for `firewalld_service_enabled` and
+`firewalld_service_state` override the derived defaults from
+`firewalld_enabled`. Set both to an active policy only after all required live
+rules and reload behavior have been validated.
+
+Open services and ports declared through this baseline role are managed only
+when `firewalld_manage_rules` is true. Service roles use permanent,
+offline-capable module operations while the daemon is stopped and apply the
+same rules immediately when inventory opts into active enforcement.

@@ -1,7 +1,8 @@
 ---
 firewalld_package: firewalld
+firewalld_python_package: python3-firewall
 firewalld_service_name: firewalld
-firewalld_enabled: true
+firewalld_enabled: false
 firewalld_service_enabled: "{{ firewalld_enabled }}"
 firewalld_service_state: "{{ 'started' if firewalld_enabled else 'stopped' }}"
 firewalld_manage_rules: "{{ firewalld_service_state in ['started', 'restarted', 'reloaded'] }}"

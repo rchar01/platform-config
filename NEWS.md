@@ -4,7 +4,10 @@ This file gives a short, release-oriented view of what changed between versions.
 
 ## Unreleased
 
-No user-visible changes yet.
+- Firewalld and its Python bindings are now installed as an explicit baseline,
+  while the daemon remains disabled at boot and stopped at runtime by default.
+- Focused service playbooks prepare firewalld tooling before managing permanent
+  offline rules, and `make smoke-firewalld` verifies the inactive baseline.
 
 ## v1.0.0 - 2026-07-09
 

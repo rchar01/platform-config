@@ -187,58 +187,29 @@
     - not ansible_check_mode
     - rke2_node_role == 'server'
 
-- name: Check permanent RKE2 cluster firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --query-rich-rule
-      - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" accept"
+- name: Manage RKE2 cluster firewalld rich rules
+  ansible.posix.firewalld:
+    rich_rule: "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" accept"
+    permanent: true
+    immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+    offline: true
+    state: enabled
   loop: "{{ rke2_firewalld_cluster_sources }}"
-  register: rke2_firewalld_cluster_rule_checks
-  check_mode: false
-  changed_when: false
-  failed_when: rke2_firewalld_cluster_rule_checks.rc not in [0, 1]
   when:
     - rke2_firewalld_manage | bool
     - rke2_firewalld_cluster_sources | length > 0
+    - firewalld_dependencies_ready | default(true)
 
-- name: Add permanent RKE2 cluster firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --add-rich-rule
-      - "{{ item.cmd[2] }}"
-  loop: "{{ rke2_firewalld_cluster_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
-  changed_when: true
-  when:
-    - rke2_firewalld_manage | bool
-    - not ansible_check_mode
-
-- name: Check permanent RKE2 API firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --query-rich-rule
-      - "rule family=\"{{ 'ipv6' if ':' in item.0 else 'ipv4' }}\" source address=\"{{ item.0 }}\" port port=\"{{ item.1 }}\" protocol=\"tcp\" accept"
+- name: Manage RKE2 API firewalld rich rules
+  ansible.posix.firewalld:
+    rich_rule: "rule family=\"{{ 'ipv6' if ':' in item.0 else 'ipv4' }}\" source address=\"{{ item.0 }}\" port port=\"{{ item.1 }}\" protocol=\"tcp\" accept"
+    permanent: true
+    immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+    offline: true
+    state: enabled
   loop: "{{ rke2_firewalld_api_sources | product(rke2_firewalld_api_ports) | list }}"
-  register: rke2_firewalld_api_rule_checks
-  check_mode: false
-  changed_when: false
-  failed_when: rke2_firewalld_api_rule_checks.rc not in [0, 1]
   when:
     - rke2_firewalld_manage | bool
     - rke2_node_role == 'server'
     - rke2_firewalld_api_sources | length > 0
-
-- name: Add permanent RKE2 API firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --add-rich-rule
-      - "{{ item.cmd[2] }}"
-  loop: "{{ rke2_firewalld_api_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
-  changed_when: true
-  when:
-    - rke2_firewalld_manage | bool
-    - not ansible_check_mode
-    - rke2_node_role == 'server'
+    - firewalld_dependencies_ready | default(true)

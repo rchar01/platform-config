@@ -3,5 +3,6 @@
   hosts: gitlab
   become: true
   roles:
+    - firewalld
     - podman_host
     - gitlab_ce

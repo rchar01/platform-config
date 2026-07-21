@@ -2,7 +2,7 @@
 
 Deploys a Zot OCI registry as a system Podman Quadlet service.
 
-The role owns Zot configuration, TLS, optional htpasswd deployment from private source paths, optional Zot UI extension configuration, the `zot.container` Quadlet unit, service lifecycle, and firewalld registry access. It expects `podman_host` to prepare Podman and `/etc/containers/systemd`; `playbooks/registry.yml` applies both roles.
+The role owns Zot configuration, TLS, optional htpasswd deployment from private source paths, optional Zot UI extension configuration, the `zot.container` Quadlet unit, service lifecycle, and firewalld registry access. `playbooks/registry.yml` applies the `firewalld` and `podman_host` foundations before this role.
 
 Default behavior listens on host port `443/tcp`, forwards to Zot's container port `5000`, stores registry blobs under `/var/lib/zot/data`, keeps the Zot UI disabled, and requires TLS source files when `zot_registry_tls_enabled` is true.
 
@@ -12,7 +12,7 @@ Set `zot_registry_ui_enabled: true` to enable Zot's web UI on the same HTTPS lis
 
 Certificate private keys, htpasswd files, and any real CA material must stay outside public Git. Public examples should use documentation-safe paths and values only.
 
-When `zot_registry_firewalld_manage` is true and firewalld is installed but stopped, the role manages permanent rules only. Smoke checks use `firewall-offline-cmd`, so hosts need the standard firewalld offline tooling installed.
+When `zot_registry_firewalld_manage` is true and firewalld is installed but stopped, the role manages permanent rules offline. The focused registry playbook installs the standard firewalld tooling and Python bindings before this role runs.
 
 Example:
 

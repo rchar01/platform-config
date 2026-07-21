@@ -19,7 +19,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file
 
 ## Show available commands
 help:
@@ -48,6 +48,7 @@ help:
 	@printf '  %s\n' 'make inventory ENV=dev'
 	@printf '  %s\n' 'make check ENV=homelab PLAYBOOK=playbooks/gitlab.yml'
 	@printf '  %s\n' 'make apply ENV=dev PLAYBOOK=playbooks/registry.yml LIMIT=registry-01'
+	@printf '  %s\n' 'make smoke-firewalld ENV=dev'
 	@printf '  %s\n' 'make smoke-gitlab'
 	@printf '  %s\n' 'make smoke-runners ENV=dev'
 	@printf '  %s\n' 'make smoke-monitoring ENV=dev'
@@ -102,6 +103,10 @@ test:
 
 ## Run all local static checks
 verify: yamllint lint test
+
+## Smoke test inactive firewalld baseline
+smoke-firewalld:
+	@$(MAKE) apply PLAYBOOK=playbooks/firewalld-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ## Smoke test container runtime hosts
 smoke-container:

@@ -4,6 +4,7 @@
   become: true
   serial: 1
   roles:
+    - firewalld
     - rke2
 
 - name: Configure RKE2 agent nodes
@@ -11,4 +12,5 @@
   become: true
   serial: 1
   roles:
+    - firewalld
     - rke2

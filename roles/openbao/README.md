@@ -6,7 +6,9 @@ The role owns OpenBao configuration, TLS deployment from private source paths, p
 
 The official OpenBao image runs the server as UID `100` and GID `1000`, so the role pins the Quadlet user and grants that identity access to data and TLS key files through `openbao_container_uid` and `openbao_container_gid`. The generated systemd service sets `MemorySwapMax=0` as container-level hardening.
 
-When `openbao_firewalld_manage` is true, the role manages permanent source-scoped rich rules with `firewall-offline-cmd` so it works with the repository's current firewalld-installed-but-stopped baseline. It does not change the live daemon state.
+When `openbao_firewalld_manage` is true, the role manages permanent
+source-scoped rich rules with offline-capable module operations. Rules are also
+applied immediately when inventory explicitly configures firewalld to run.
 
 This role intentionally does not initialize or unseal OpenBao. Initialization and unseal operations require explicit operator action and must not be imported from `playbooks/site.yml`.
 

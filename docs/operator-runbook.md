@@ -466,6 +466,7 @@ make ping ENV=homelab
 make check ENV=homelab PLAYBOOK=playbooks/base-os.yml
 make apply ENV=homelab PLAYBOOK=playbooks/base-os.yml
 make apply ENV=homelab PLAYBOOK=playbooks/base-os.yml
+make smoke-firewalld ENV=homelab
 make check ENV=homelab PLAYBOOK=playbooks/storage-volumes.yml
 make apply ENV=homelab PLAYBOOK=playbooks/storage-volumes.yml
 make apply ENV=homelab PLAYBOOK=playbooks/storage-volumes.yml
@@ -531,6 +532,7 @@ make ping ENV=dev
 make check ENV=dev PLAYBOOK=playbooks/base-os.yml
 make apply ENV=dev PLAYBOOK=playbooks/base-os.yml
 make apply ENV=dev PLAYBOOK=playbooks/base-os.yml
+make smoke-firewalld ENV=dev
 make check ENV=dev PLAYBOOK=playbooks/storage-volumes.yml
 make apply ENV=dev PLAYBOOK=playbooks/storage-volumes.yml
 make apply ENV=dev PLAYBOOK=playbooks/storage-volumes.yml

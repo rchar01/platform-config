@@ -3,6 +3,7 @@
   hosts: registry
   become: true
   roles:
+    - firewalld
     - podman_host
     - zot_registry
 

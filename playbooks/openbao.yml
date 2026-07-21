@@ -3,5 +3,6 @@
   hosts: vault
   become: true
   roles:
+    - firewalld
     - podman_host
     - openbao

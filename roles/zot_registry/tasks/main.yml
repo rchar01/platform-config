@@ -30,6 +30,7 @@
     port: "{{ zot_registry_firewalld_port }}"
     permanent: true
     immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
+    offline: true
     state: disabled
   failed_when: false
   when:
@@ -37,6 +38,7 @@
     - zot_registry_firewalld_allowed_sources | length == 0
     - not (zot_registry_auth_enabled | bool)
     - not (zot_registry_allow_insecure_anonymous_access | bool)
+    - firewalld_dependencies_ready | default(true)
 
 - name: Assert Zot registry exposure is protected
   ansible.builtin.assert:
@@ -141,58 +143,35 @@
     port: "{{ zot_registry_firewalld_port }}"
     permanent: true
     immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
+    offline: true
     state: enabled
   when:
     - zot_registry_firewalld_manage | bool
     - zot_registry_firewalld_allowed_sources | length == 0
     - zot_registry_auth_enabled | bool or zot_registry_allow_insecure_anonymous_access | bool
+    - firewalld_dependencies_ready | default(true)
 
 - name: Close broad Zot registry firewalld port when source allowlist is configured
   ansible.posix.firewalld:
     port: "{{ zot_registry_firewalld_port }}"
     permanent: true
     immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
+    offline: true
     state: disabled
   when:
     - zot_registry_firewalld_manage | bool
     - zot_registry_firewalld_allowed_sources | length > 0
+    - firewalld_dependencies_ready | default(true)
 
-- name: Check permanent Zot registry firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --query-rich-rule
-      - "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ zot_registry_host_port }}\" protocol=\"tcp\" accept"
+- name: Manage Zot registry firewalld rich rules
+  ansible.posix.firewalld:
+    rich_rule: "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ zot_registry_host_port }}\" protocol=\"tcp\" accept"
+    permanent: true
+    immediate: "{{ (zot_registry_firewalld_immediate | bool) or (zot_registry_firewalld_active.rc | default(1) == 0) }}"
+    offline: true
+    state: enabled
   loop: "{{ zot_registry_firewalld_allowed_sources }}"
-  register: zot_registry_firewalld_rich_rule_checks
-  check_mode: false
-  changed_when: false
-  failed_when: zot_registry_firewalld_rich_rule_checks.rc not in [0, 1]
   when:
     - zot_registry_firewalld_manage | bool
     - zot_registry_firewalld_allowed_sources | length > 0
-
-- name: Add permanent Zot registry firewalld rich rules
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --add-rich-rule
-      - "{{ item.cmd[2] }}"
-  loop: "{{ zot_registry_firewalld_rich_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
-  changed_when: true
-  when:
-    - zot_registry_firewalld_manage | bool
-    - not ansible_check_mode
-
-- name: Reload active firewalld after Zot registry rich rule changes
-  ansible.builtin.command:
-    argv:
-      - firewall-cmd
-      - --reload
-  changed_when: true
-  when:
-    - zot_registry_firewalld_manage | bool
-    - zot_registry_firewalld_allowed_sources | length > 0
-    - not ansible_check_mode
-    - zot_registry_firewalld_active.rc | default(1) == 0
-    - zot_registry_firewalld_rich_rule_checks.results | default([]) | selectattr('rc', 'eq', 1) | list | length > 0
+    - firewalld_dependencies_ready | default(true)

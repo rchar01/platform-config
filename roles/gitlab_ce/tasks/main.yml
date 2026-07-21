@@ -92,27 +92,14 @@
     state: "{{ gitlab_ce_service_state }}"
   when: not (ansible_check_mode and gitlab_ce_quadlet_result is changed)
 
-- name: Check permanent GitLab CE firewalld ports
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --query-port
-      - "{{ item }}"
+- name: Manage GitLab CE firewalld ports
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+    offline: true
+    state: enabled
   loop: "{{ gitlab_ce_firewalld_ports }}"
-  register: gitlab_ce_firewalld_port_checks
-  check_mode: false
-  changed_when: false
-  failed_when: gitlab_ce_firewalld_port_checks.rc not in [0, 1]
-  when: gitlab_ce_firewalld_manage | bool
-
-- name: Add permanent GitLab CE firewalld ports
-  ansible.builtin.command:
-    argv:
-      - firewall-offline-cmd
-      - --add-port
-      - "{{ item.item }}"
-  loop: "{{ gitlab_ce_firewalld_port_checks.results | default([]) | selectattr('rc', 'eq', 1) | list }}"
-  changed_when: true
   when:
     - gitlab_ce_firewalld_manage | bool
-    - not ansible_check_mode
+    - firewalld_dependencies_ready | default(true)

@@ -3,4 +3,5 @@
   hosts: load_balancers
   become: true
   roles:
+    - firewalld
     - haproxy_workload_lb

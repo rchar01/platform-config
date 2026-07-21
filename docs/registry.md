@@ -77,6 +77,11 @@ zot_registry_firewalld_allowed_sources:
 
 When this allowlist is non-empty, the broad permanent registry port is closed and only the listed CIDRs are allowed.
 
+The focused registry playbook installs firewalld and its Python bindings before
+configuring these rules. The current platform baseline keeps the daemon disabled
+and stopped, so rules are stored permanently but are not actively enforced.
+Run `make smoke-firewalld ENV=<environment>` to verify that baseline.
+
 The role refuses to deploy a broadly reachable anonymous registry by default. A
 deployment must enable htpasswd authentication, configure a source allowlist
 that this role manages with firewalld, or explicitly set

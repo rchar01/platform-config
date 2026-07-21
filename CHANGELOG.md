@@ -7,6 +7,19 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added an all-Rocky firewalld smoke check for package availability, Python
+  binding imports, disabled boot state, inactive runtime state, and permanent
+  configuration validity.
+
+### Changed
+
+- Changed the firewalld baseline to install its Python bindings explicitly and
+  remain disabled at boot and stopped at runtime by default.
+- Made focused service playbooks establish firewalld tooling before managing
+  permanent firewall configuration, with offline and active-runtime support.
+
 ## [1.0.0] - 2026-07-09
 
 ### Added

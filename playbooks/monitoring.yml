@@ -3,12 +3,14 @@
   hosts: monitoring_targets
   become: true
   roles:
+    - firewalld
     - node_exporter
 
 - name: Configure monitoring stack
   hosts: monitoring
   become: true
   roles:
+    - firewalld
     - podman_host
     - monitoring_stack
 
