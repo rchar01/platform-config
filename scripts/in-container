@@ -3,11 +3,21 @@ set -euo pipefail
 
 image="${PLATFORM_CONFIG_DEV_IMAGE:-platform-config-dev:latest}"
 containerfile="${PLATFORM_CONFIG_DEV_CONTAINERFILE:-Containerfile.dev}"
+ansible_ssh_common_args="${ANSIBLE_SSH_COMMON_ARGS:-}"
+ansible_ssh_common_args="${ansible_ssh_common_args:+$ansible_ssh_common_args }-o UserKnownHostsFile=/tmp/platform-home/.ssh/known_hosts"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 repo_parent="$(dirname "$repo_root")"
 private_root="${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_parent/platform-private}"
 secret_root="${PLATFORM_CONFIG_SECRET_ROOT:-$HOME/.config/platform-infrastructure}"
+tmp_home="$(mktemp -d "${TMPDIR:-/tmp}/platform-config-home.XXXXXXXX")"
+
+cleanup() {
+  rm -rf "$tmp_home"
+}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$tmp_home/.ansible/tmp" "$tmp_home/.config" "$tmp_home/Projects/public"
 
 if [[ $# -eq 0 ]]; then
   set -- bash
@@ -21,14 +31,18 @@ podman_args=(
   run
   --rm
   --userns=keep-id
+  --user "$(id -u):$(id -g)"
   --workdir /workspace
   --env HOME=/tmp/platform-home
   --env ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.ansible/collections
+  --env "ANSIBLE_SSH_COMMON_ARGS=$ansible_ssh_common_args"
   --volume "$repo_root:/workspace"
+  --volume "$tmp_home:/tmp/platform-home:rw"
 )
 
 if [[ -d "$private_root" ]]; then
   podman_args+=(--volume "$private_root:/platform-private:ro")
+  podman_args+=(--volume "$private_root:/tmp/platform-home/Projects/public/platform-private:ro")
 fi
 
 if [[ -d "$HOME/.ssh" ]]; then
