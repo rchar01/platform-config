@@ -9,6 +9,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added a task-oriented documentation index for setup, configuration, security,
+  services, operations, and development references.
 - Added a public firewalld readiness and enablement guide covering rule
   ownership, offline staging, canary activation, validation, rollout, rollback,
   and known readiness gaps.

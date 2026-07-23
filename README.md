@@ -111,6 +111,7 @@ platform-docs documents the design and operations across all repositories.
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Private workflow](docs/private-workflow.md)
 - [Operator runbook](docs/operator-runbook.md)
 - [Firewalld readiness and enablement](docs/firewalld.md)
