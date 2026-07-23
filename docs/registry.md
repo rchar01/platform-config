@@ -80,7 +80,9 @@ When this allowlist is non-empty, the broad permanent registry port is closed an
 The focused registry playbook installs firewalld and its Python bindings before
 configuring these rules. The current platform baseline keeps the daemon disabled
 and stopped, so rules are stored permanently but are not actively enforced.
-Run `make smoke-firewalld ENV=<environment>` to verify that baseline.
+Run `make smoke-firewalld ENV=<environment>` to verify that baseline. See
+[Firewalld Readiness And Enablement](firewalld.md) before enabling active
+enforcement.
 
 The role refuses to deploy a broadly reachable anonymous registry by default. A
 deployment must enable htpasswd authentication, configure a source allowlist

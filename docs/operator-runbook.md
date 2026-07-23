@@ -431,6 +431,10 @@ make smoke-registry ENV=dev
 make smoke-openbao ENV=dev
 ```
 
+The `smoke-firewalld` target verifies the disabled and inactive baseline. See
+[Firewalld Readiness And Enablement](firewalld.md) before defining a live
+policy or enabling enforcement on a canary host.
+
 Use the Make `LIMIT` variable with an example host such as `gitlab-01` when a
 run should target only one host.
 

@@ -26,3 +26,7 @@ make check ENV=dev PLAYBOOK=playbooks/firewalld.yml
 make apply ENV=dev PLAYBOOK=playbooks/firewalld.yml
 make smoke-firewalld ENV=dev
 ```
+
+See [Firewalld Readiness And Enablement](../../docs/firewalld.md) for public
+rule examples, the readiness checklist, canary activation, validation,
+fleet rollout, rollback, and known gaps.

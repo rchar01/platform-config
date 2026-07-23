@@ -113,6 +113,7 @@ platform-docs documents the design and operations across all repositories.
 
 - [Private workflow](docs/private-workflow.md)
 - [Operator runbook](docs/operator-runbook.md)
+- [Firewalld readiness and enablement](docs/firewalld.md)
 - [Kubernetes bastion](docs/k8s-bastion.md)
 - [Kubernetes bastion smoke test](playbooks/k8s-bastion-smoke.yml)
 - [Registry](docs/registry.md)

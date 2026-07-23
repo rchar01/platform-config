@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Added a public firewalld readiness and enablement guide covering rule
+  ownership, offline staging, canary activation, validation, rollout, rollback,
+  and known readiness gaps.
 - Added an all-Rocky firewalld smoke check for package availability, Python
   binding imports, disabled boot state, inactive runtime state, and permanent
   configuration validity.
