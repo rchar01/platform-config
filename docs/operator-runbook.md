@@ -612,6 +612,14 @@ The first monitoring iteration monitors VMs only. It installs Node Exporter on `
 ~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password
 ```
 
+Keep the password file readable only by its owner. The monitoring role accepts
+source-file modes `0400` and `0600`; `0600` is recommended:
+
+```bash
+chmod 700 ~/.config/platform-infrastructure/config/monitoring/dev
+chmod 600 ~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password
+```
+
 RKE2 uses a shared cluster token stored outside Git:
 
 ```text
