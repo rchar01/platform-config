@@ -112,19 +112,9 @@ platform-docs documents the design and operations across all repositories.
 ## Documentation
 
 - [Documentation index](docs/README.md)
-- [Private workflow](docs/private-workflow.md)
 - [Operator runbook](docs/operator-runbook.md)
-- [Firewalld readiness and enablement](docs/firewalld.md)
-- [Kubernetes bastion](docs/k8s-bastion.md)
-- [Kubernetes bastion smoke test](playbooks/k8s-bastion-smoke.yml)
-- [Registry](docs/registry.md)
-- [Migrations](migrations/README.md)
-- [Maintenance playbooks](playbooks/maintenance/README.md)
-- [Rebuild](docs/rebuild.md)
-- [Inventories](docs/inventories.md)
-- [Roles](docs/roles.md)
+- [Private workflow](docs/private-workflow.md)
 - [Development](docs/development.md)
-- [Platform workflow](docs/workflow.md)
 
 ## License
 
