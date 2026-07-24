@@ -8,10 +8,27 @@
       - rke2_kube_vip_chart_repo | length > 0
       - rke2_kube_vip_chart_name | length > 0
       - rke2_kube_vip_chart_version | string | length > 0
+      - rke2_kube_vip_image_tag | length > 0
+      - >-
+        (rke2_kube_vip_env.get('vip_leaseduration', '') | string)
+        is match('^[1-9][0-9]*$')
+      - >-
+        (rke2_kube_vip_env.get('vip_renewdeadline', '') | string)
+        is match('^[1-9][0-9]*$')
+      - >-
+        (rke2_kube_vip_env.get('vip_retryperiod', '') | string)
+        is match('^[1-9][0-9]*$')
+      - >-
+        (rke2_kube_vip_env.get('vip_leaseduration', '0') | int)
+        > (rke2_kube_vip_env.get('vip_renewdeadline', '0') | int)
+      - >-
+        (rke2_kube_vip_env.get('vip_renewdeadline', '0') | float)
+        > ((rke2_kube_vip_env.get('vip_retryperiod', '0') | float) * 1.2)
       - rke2_kube_vip_api_vip in rke2_tls_sans
     fail_msg: >-
       RKE2 kube-vip requires rke2 server hosts, rke2_kube_vip_api_vip,
-      rke2_kube_vip_interface, pinned chart settings, and the VIP in rke2_tls_sans.
+      rke2_kube_vip_interface, pinned chart and image settings, valid leader
+      election timings, and the VIP in rke2_tls_sans.
   when: rke2_kube_vip_enabled | bool
 
 - name: Discover route to kube-vip API VIP

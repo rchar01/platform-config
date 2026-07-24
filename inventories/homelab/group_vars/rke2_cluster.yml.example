@@ -7,12 +7,16 @@ rke2_kube_vip_enabled: true
 rke2_kube_vip_api_vip: 192.0.2.72
 rke2_kube_vip_interface: eth0
 rke2_kube_vip_chart_version: 0.9.9
+rke2_kube_vip_image_tag: v1.2.1
 rke2_kube_vip_env:
   cp_enable: "true"
   svc_enable: "false"
   vip_arp: "true"
   vip_subnet: "32"
   vip_leaderelection: "true"
+  vip_leaseduration: "15"
+  vip_renewdeadline: "10"
+  vip_retryperiod: "2"
   lb_enable: "true"
   lb_port: "6443"
   vip_interface: "{{ rke2_kube_vip_interface }}"

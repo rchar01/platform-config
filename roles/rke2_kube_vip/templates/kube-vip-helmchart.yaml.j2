@@ -9,6 +9,8 @@ spec:
   version: {{ rke2_kube_vip_chart_version | string | to_json }}
   targetNamespace: {{ rke2_kube_vip_namespace | to_json }}
   valuesContent: |-
+    image:
+      tag: {{ rke2_kube_vip_image_tag | to_json }}
     config:
       address: {{ rke2_kube_vip_api_vip | to_json }}
     env:

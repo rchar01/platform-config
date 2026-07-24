@@ -639,7 +639,7 @@ make apply ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml
 make smoke-rke2-kube-vip ENV=dev
 ```
 
-The private environment must set the API VIP, the server interface that reaches that VIP, and the pinned kube-vip chart version. The kube-vip role verifies the VIP is already in `rke2_tls_sans` and that each RKE2 server routes the VIP through the configured interface.
+The private environment must set the API VIP, the server interface that reaches that VIP, and pinned kube-vip chart and application image versions. The role explicitly configures the upstream `15/10/2`-second lease duration, renewal deadline, and retry period to tolerate transient API or etcd latency. It verifies the VIP is already in `rke2_tls_sans`, validates the leader-election timing relationships, and confirms that each RKE2 server routes the VIP through the configured interface.
 
 The Kong ingress controller is installed after kube-vip as a separate RKE2 HelmChart-based add-on. This first phase supports classic Kubernetes `Ingress` only; Gateway API CRDs and `Gateway`/`HTTPRoute` resources are deferred. Kong exposes fixed proxy NodePorts so external load balancers can target worker node IPs.
 

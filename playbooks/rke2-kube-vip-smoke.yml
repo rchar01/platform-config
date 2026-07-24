@@ -9,6 +9,7 @@
     rke2_kube_vip_smoke_kubectl: "{{ rke2_kube_vip_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
     rke2_kube_vip_smoke_kubeconfig: "{{ rke2_kube_vip_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
     rke2_kube_vip_smoke_expected_servers: "{{ groups.get('rke2_servers', []) | length }}"
+    rke2_kube_vip_smoke_expected_image: "ghcr.io/kube-vip/kube-vip:{{ rke2_kube_vip_image_tag }}"
   tasks:
     - name: Confirm kube-vip HelmChart exists
       ansible.builtin.command:
@@ -59,12 +60,58 @@
       changed_when: false
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 
+    - name: Read kube-vip DaemonSet configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_kube_vip_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_kube_vip_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_kube_vip_namespace | default('kube-system') }}"
+          - get
+          - daemonset
+          - "{{ rke2_kube_vip_release_name | default('kube-vip') }}"
+          - -o=json
+      register: rke2_kube_vip_smoke_daemonset_config
+      changed_when: false
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
     - name: Assert kube-vip is ready on all RKE2 server nodes
       ansible.builtin.assert:
         that:
           - (rke2_kube_vip_smoke_daemonset.stdout.split()[0] | int) == (rke2_kube_vip_smoke_expected_servers | int)
           - (rke2_kube_vip_smoke_daemonset.stdout.split()[1] | int) == (rke2_kube_vip_smoke_expected_servers | int)
         fail_msg: "kube-vip DaemonSet is not ready on all RKE2 server nodes."
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+    - name: Assert kube-vip image and leader-election policy
+      vars:
+        rke2_kube_vip_smoke_daemonset_object: "{{ rke2_kube_vip_smoke_daemonset_config.stdout | from_json }}"
+        rke2_kube_vip_smoke_container: >-
+          {{
+            rke2_kube_vip_smoke_daemonset_object.spec.template.spec.containers
+            | selectattr('name', 'equalto', rke2_kube_vip_release_name | default('kube-vip'))
+            | first
+          }}
+      ansible.builtin.assert:
+        that:
+          - rke2_kube_vip_smoke_container.image == rke2_kube_vip_smoke_expected_image
+          - >-
+            (rke2_kube_vip_smoke_container.env
+            | selectattr('name', 'equalto', 'vip_leaseduration')
+            | map(attribute='value') | first)
+            == (rke2_kube_vip_env.vip_leaseduration | string)
+          - >-
+            (rke2_kube_vip_smoke_container.env
+            | selectattr('name', 'equalto', 'vip_renewdeadline')
+            | map(attribute='value') | first)
+            == (rke2_kube_vip_env.vip_renewdeadline | string)
+          - >-
+            (rke2_kube_vip_smoke_container.env
+            | selectattr('name', 'equalto', 'vip_retryperiod')
+            | map(attribute='value') | first)
+            == (rke2_kube_vip_env.vip_retryperiod | string)
+        fail_msg: "kube-vip image or leader-election settings do not match inventory."
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 
     - name: Verify Kubernetes API reachability through kube-vip
