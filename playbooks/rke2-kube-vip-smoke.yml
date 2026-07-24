@@ -29,6 +29,69 @@
       changed_when: false
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 
+    - name: Wait for kube-vip DaemonSet configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_kube_vip_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_kube_vip_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_kube_vip_namespace | default('kube-system') }}"
+          - get
+          - daemonset
+          - "{{ rke2_kube_vip_release_name | default('kube-vip') }}"
+          - -o=json
+      register: rke2_kube_vip_smoke_daemonset_config
+      retries: 60
+      delay: 5
+      until: >-
+        rke2_kube_vip_smoke_daemonset_config.rc == 0
+        and
+        (
+          (rke2_kube_vip_smoke_daemonset_config.stdout | from_json).spec.template.spec.containers
+          | selectattr('name', 'equalto', rke2_kube_vip_release_name | default('kube-vip'))
+          | map(attribute='image')
+          | first
+        ) == rke2_kube_vip_smoke_expected_image
+        and
+        (
+          (
+            (rke2_kube_vip_smoke_daemonset_config.stdout | from_json).spec.template.spec.containers
+            | selectattr('name', 'equalto', rke2_kube_vip_release_name | default('kube-vip'))
+            | map(attribute='env')
+            | first
+          )
+          | selectattr('name', 'equalto', 'vip_leaseduration')
+          | map(attribute='value')
+          | first
+        ) == (rke2_kube_vip_env.vip_leaseduration | string)
+        and
+        (
+          (
+            (rke2_kube_vip_smoke_daemonset_config.stdout | from_json).spec.template.spec.containers
+            | selectattr('name', 'equalto', rke2_kube_vip_release_name | default('kube-vip'))
+            | map(attribute='env')
+            | first
+          )
+          | selectattr('name', 'equalto', 'vip_renewdeadline')
+          | map(attribute='value')
+          | first
+        ) == (rke2_kube_vip_env.vip_renewdeadline | string)
+        and
+        (
+          (
+            (rke2_kube_vip_smoke_daemonset_config.stdout | from_json).spec.template.spec.containers
+            | selectattr('name', 'equalto', rke2_kube_vip_release_name | default('kube-vip'))
+            | map(attribute='env')
+            | first
+          )
+          | selectattr('name', 'equalto', 'vip_retryperiod')
+          | map(attribute='value')
+          | first
+        ) == (rke2_kube_vip_env.vip_retryperiod | string)
+      changed_when: false
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
     - name: Wait for kube-vip DaemonSet rollout
       ansible.builtin.command:
         argv:
@@ -60,7 +123,7 @@
       changed_when: false
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 
-    - name: Read kube-vip DaemonSet configuration
+    - name: Read reconciled kube-vip DaemonSet configuration
       ansible.builtin.command:
         argv:
           - "{{ rke2_kube_vip_smoke_kubectl }}"
