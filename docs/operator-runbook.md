@@ -686,7 +686,7 @@ make apply ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml
 make apply ENV=dev PLAYBOOK=playbooks/k8s-bastion-smoke.yml
 ```
 
-Use the Make `LIMIT` variable with the example bastion host `k8s-bastion-example`
+Use the Make `LIMIT` variable with the target host's private inventory name
 when the run should target only that bastion host.
 
 See [Kubernetes Bastion](k8s-bastion.md) for the role-specific workflow and safety notes.

@@ -9,7 +9,10 @@ inventories/homelab/
 inventories/dev/
 ```
 
-Committed files use the `.example` suffix. They document shape only. Real inventory files belong in `platform-private`, normally under:
+Committed files use the `.example` suffix. They document shape only. Fictional
+example hostnames are independent of site-specific names used by commands
+against private inventories. Real inventory files belong in `platform-private`,
+normally under:
 
 ```text
 ../platform-private/config/inventories/<environment>/

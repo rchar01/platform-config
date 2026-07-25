@@ -37,6 +37,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pinned kube-vip application `v1.2.1` independently from chart `0.9.9`,
   explicitly preserved the upstream `15/10/2`-second leader-election policy,
   and added deployed image and policy assertions to smoke checks.
+- Aligned the public `dev` and `homelab` inventory examples with their current
+  role topologies using fictional hosts, supported role inputs, and outside-Git
+  placeholders.
 - Documented required monitoring password source-file permissions and
   simplified root documentation links around the task-oriented index.
 

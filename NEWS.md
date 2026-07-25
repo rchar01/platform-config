@@ -24,7 +24,11 @@ readiness, and improves Kubernetes API HA and containerized development.
   writable runtime state.
 - Pin kube-vip `v1.2.1`, preserve the upstream `15/10/2`-second
   leader-election policy, and verify reconciliation, readiness, and API access
-  in smoke checks without overwriting RKE2-managed `spec.set` values.
+  in smoke checks while retaining RKE2-managed `spec.set` values when
+  Ansible-owned fields already match.
+- Align the public examples around thirteen fictional dev service and cluster
+  hosts plus one fictional homelab GitLab host, with matching group and host
+  variable shapes.
 - Add a task-oriented documentation index and clarify monitoring credential
   file permissions.
 
