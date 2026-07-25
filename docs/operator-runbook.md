@@ -435,7 +435,7 @@ The `smoke-firewalld` target verifies the disabled and inactive baseline. See
 [Firewalld Readiness And Enablement](firewalld.md) before defining a live
 policy or enabling enforcement on a canary host.
 
-Use the Make `LIMIT` variable with an example host such as `gitlab-01` when a
+Use the Make `LIMIT` variable with an example host such as `gitlab-example` when a
 run should target only one host.
 
 Native equivalents remain supported:

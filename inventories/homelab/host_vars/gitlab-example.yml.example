@@ -1,0 +1,18 @@
+---
+platform_host_description: Example GitLab service
+
+root_lvm_enabled: true
+root_lvm_disk: /dev/disk/by-path/example-gitlab-root-disk
+root_lvm_partition_number: 4
+root_lvm_pv_device: /dev/disk/by-path/example-gitlab-root-disk-part4
+root_lvm_vg_name: rocky
+root_lvm_lv_path: /dev/rocky/lvroot
+root_lvm_consume_free: true
+
+storage_volumes:
+  - name: gitlab_data
+    device: /dev/disk/by-id/example-gitlab-data
+    vg_name: data
+    lv_name: gitlab
+    mountpoint: /var/lib/gitlab
+    initialize: false

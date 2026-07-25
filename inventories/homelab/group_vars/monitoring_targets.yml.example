@@ -1,4 +1,0 @@
----
-node_exporter_firewalld_allowed_sources:
-  - 192.0.2.64/32
-grafana_alloy_loki_url: http://192.0.2.64:3100/loki/api/v1/push

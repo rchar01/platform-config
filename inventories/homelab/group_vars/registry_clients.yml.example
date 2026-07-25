@@ -1,3 +1,0 @@
----
-zot_registry_smoke_base_url: "{{ platform_registry_url }}"
-zot_registry_smoke_validate_certs: false

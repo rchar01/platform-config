@@ -3,71 +3,56 @@ all:
   children:
     rocky:
       hosts:
-        k8s-bastion-01:
-          ansible_host: 192.0.2.110
-        runner-01:
-          ansible_host: 192.0.2.120
-        zot-01:
-          ansible_host: 192.0.2.130
-        vault-01:
-          ansible_host: 192.0.2.140
-        gitlab-01:
-          ansible_host: 192.0.2.150
-        lb-01:
-          ansible_host: 192.0.2.160
-
-    bastion:
-      hosts:
-        k8s-bastion-01:
-
-    k8s_bastion:
-      hosts:
-        k8s-bastion-01:
+        gitlab-example:
+          ansible_host: 192.0.2.51
 
     container_hosts:
       hosts:
-        runner-01:
-        zot-01:
-        vault-01:
-        gitlab-01:
-
-    storage_clients:
-      hosts:
-        k8s-bastion-01:
-        runner-01:
-        zot-01:
-        vault-01:
-        gitlab-01:
+        gitlab-example:
 
     storage_volume_hosts:
       hosts:
-        zot-01:
-        vault-01:
-
-    runners:
-      hosts:
-        runner-01:
-
-    registry:
-      hosts:
-        zot-01:
-
-    vault:
-      hosts:
-        vault-01:
+        gitlab-example:
 
     gitlab:
       hosts:
-        gitlab-01:
+        gitlab-example:
 
-    registry_clients:
-      hosts:
-        runner-01:
+    gitlab_runners:
+      hosts: {}
+
+    monitoring:
+      hosts: {}
+
+    monitoring_targets:
+      hosts: {}
+
+    rke2_cluster:
+      hosts: {}
+
+    rke2_servers:
+      hosts: {}
+
+    rke2_agents:
+      hosts: {}
+
+    bastion:
+      hosts: {}
+
+    k8s_bastion:
+      hosts: {}
+
+    storage_clients:
+      hosts: {}
+
+    registry:
+      hosts: {}
+
+    vault:
+      hosts: {}
 
     load_balancers:
-      hosts:
-        lb-01:
+      hosts: {}
 
     haproxy:
-      hosts:
-        lb-01:
+      hosts: {}

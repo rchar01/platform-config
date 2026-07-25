@@ -1,5 +1,0 @@
----
-# Example host-specific values only. Put real values in platform-private.
-platform_host_description: Kubernetes bastion host example
-
-k8s_bastion_symlinks: []

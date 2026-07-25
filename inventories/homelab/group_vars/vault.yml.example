@@ -1,6 +1,0 @@
----
-openbao_tls_cert_src: /path/outside/git/openbao/tls.crt
-openbao_tls_key_src: /path/outside/git/openbao/tls.key
-openbao_status_validate_certs: false
-openbao_firewalld_allowed_sources:
-  - 192.0.2.110/32

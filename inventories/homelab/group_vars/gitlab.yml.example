@@ -1,7 +1,10 @@
 ---
 gitlab_ce_hostname: gitlab.example.test
 gitlab_ce_external_url: https://gitlab.example.test
-gitlab_ce_tls_cert_src: /path/outside/git/gitlab/tls.crt
-gitlab_ce_tls_key_src: /path/outside/git/gitlab/tls.key
+gitlab_ce_tls_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/gitlab-example/fullchain.crt"
+gitlab_ce_tls_key_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/gitlab-example/tls.key"
+gitlab_ce_tls_cert_name: gitlab.example.test.crt
+gitlab_ce_tls_key_name: gitlab.example.test.key
 gitlab_ce_ssh_host_port: 2222
+# Remove this override after installing the platform root CA on smoke clients.
 gitlab_ce_smoke_validate_certs: false
