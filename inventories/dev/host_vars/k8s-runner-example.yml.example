@@ -1,0 +1,17 @@
+---
+platform_host_description: Example Kubernetes CI runner
+
+storage_volumes:
+  - name: runner_data
+    device: /dev/disk/by-id/example-k8s-runner-data
+    vg_name: data
+    lv_name: gitlab_runner
+    mountpoint: /var/lib/gitlab-runner
+    initialize: false
+
+gitlab_runner_name: k8s-runner-example
+gitlab_runner_token_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/gitlab-runners/dev/k8s-runner-example.token"
+gitlab_runner_tags:
+  - dev
+  - linux-amd64
+  - k8s

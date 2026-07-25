@@ -1,0 +1,10 @@
+---
+platform_host_description: Example OpenBao service
+
+storage_volumes:
+  - name: openbao_data
+    device: /dev/disk/by-id/example-openbao-data
+    vg_name: data
+    lv_name: openbao
+    mountpoint: /var/lib/openbao
+    initialize: false

@@ -1,0 +1,17 @@
+---
+platform_host_description: Example registry CI runner
+
+storage_volumes:
+  - name: runner_data
+    device: /dev/disk/by-id/example-registry-runner-data
+    vg_name: data
+    lv_name: gitlab_runner
+    mountpoint: /var/lib/gitlab-runner
+    initialize: false
+
+gitlab_runner_name: registry-runner-example
+gitlab_runner_token_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/gitlab-runners/dev/registry-runner-example.token"
+gitlab_runner_tags:
+  - dev
+  - registry
+  - linux-amd64

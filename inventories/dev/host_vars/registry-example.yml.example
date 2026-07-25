@@ -1,0 +1,10 @@
+---
+platform_host_description: Example Zot registry
+
+storage_volumes:
+  - name: registry_data
+    device: /dev/disk/by-id/example-registry-data
+    vg_name: data
+    lv_name: zot
+    mountpoint: /var/lib/zot
+    initialize: false

@@ -1,0 +1,10 @@
+---
+platform_host_description: Example RKE2 agent 2
+
+storage_volumes:
+  - name: rke2_data
+    device: /dev/disk/by-id/example-rke2-agent-02-data
+    vg_name: data
+    lv_name: rke2
+    mountpoint: /var/lib/rancher/rke2
+    initialize: false

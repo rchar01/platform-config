@@ -1,0 +1,33 @@
+---
+zot_registry_host_port: 443
+zot_registry_tls_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/registry-example/fullchain.crt"
+zot_registry_tls_key_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/registry-example/tls.key"
+zot_registry_ui_enabled: true
+zot_registry_auth_enabled: true
+zot_registry_auth_htpasswd_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/registry/dev/htpasswd"
+zot_registry_firewalld_allowed_sources:
+  - 192.0.2.0/24
+zot_registry_extra_config:
+  http:
+    accessControl:
+      repositories:
+        "**":
+          policies:
+            - users:
+                - registry-admin
+              actions:
+                - read
+                - create
+                - update
+                - delete
+      adminPolicy:
+        users:
+          - registry-admin
+        actions:
+          - read
+          - create
+          - update
+          - delete
+zot_registry_smoke_url: https://registry.example.test
+# The first dev iteration skips validation until clients trust the registry CA.
+zot_registry_smoke_validate_certs: false

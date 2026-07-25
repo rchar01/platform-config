@@ -35,7 +35,7 @@ This runbook is complete for the currently implemented homelab and dev services.
 | kube-vip API HA | dev | implemented | RKE2 HelmChart-based API VIP commands and smoke checks |
 | Kong ingress controller | dev | implemented | RKE2 HelmChart-based classic Ingress controller with fixed NodePorts |
 | External workload load balancer | dev | implemented | native HAProxy VM commands and smoke checks through Kong NodePorts |
-| Kubernetes bastion live integration | dev | not implemented yet | placeholder and existing bastion docs only |
+| Kubernetes bastion live integration | dev | implemented | cluster access workflow and smoke checks |
 
 ## Template Prerequisite
 
@@ -580,8 +580,8 @@ chmod 600 ~/.config/platform-infrastructure/config/gitlab-runners/dev/*.token
 Expected token paths:
 
 ```text
-~/.config/platform-infrastructure/config/gitlab-runners/dev/registry-runner-01.token
-~/.config/platform-infrastructure/config/gitlab-runners/dev/k8s-runner.token
+~/.config/platform-infrastructure/config/gitlab-runners/dev/registry-runner-example.token
+~/.config/platform-infrastructure/config/gitlab-runners/dev/k8s-runner-example.token
 ```
 
 Configure dev GitLab runners:
@@ -666,15 +666,9 @@ After the cluster exists, copy or extract the admin kubeconfig to the outside-Gi
 ~/.config/platform-infrastructure/config/k8s-bastion/dev/admin.kubeconfig
 ```
 
-## Future Phases
+## Dev Kubernetes Bastion Integration
 
-The following sections define the expected workflow shape for planned phases. They are not executable until the named roles and playbooks exist.
-
-### Dev Kubernetes Bastion Integration
-
-Status: not implemented yet.
-
-Real bastion integration waits for the RKE2 cluster and real cluster inputs.
+Apply bastion integration after the RKE2 cluster and its access inputs exist.
 
 Required inputs:
 
@@ -692,7 +686,7 @@ make apply ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml
 make apply ENV=dev PLAYBOOK=playbooks/k8s-bastion-smoke.yml
 ```
 
-Use the Make `LIMIT` variable with the example bastion host `k8s-bastion-01`
+Use the Make `LIMIT` variable with the example bastion host `k8s-bastion-example`
 when the run should target only that bastion host.
 
 See [Kubernetes Bastion](k8s-bastion.md) for the role-specific workflow and safety notes.
@@ -739,8 +733,8 @@ Backup automation is not implemented in `platform-config` yet. Until a dedicated
 | GitLab CE | `gitlab.example.test` | `/var/lib/gitlab` |
 | Zot registry | `registry.example.test` | `/var/lib/zot` |
 | OpenBao | `openbao.example.test` | `/var/lib/openbao` |
-| future monitoring | `monitoring.example.test` | `/var/lib/monitoring` |
-| future RKE2 | `k8s-node-01..06.example.test` | `/var/lib/rancher` |
+| Monitoring | `monitoring-example.example.test` | `/var/lib/monitoring` |
+| RKE2 | `rke2-server-example-01..03.example.test`, `rke2-agent-example-01..03.example.test` | `/var/lib/rancher/rke2` |
 
 Do not assume service data can be recreated from Ansible alone. For stateful services, validate backups before destructive rebuilds.
 

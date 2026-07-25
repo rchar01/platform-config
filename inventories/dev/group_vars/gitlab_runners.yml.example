@@ -1,0 +1,6 @@
+---
+gitlab_runner_gitlab_url: https://gitlab.example.test
+gitlab_runner_tls_ca_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
+
+# Create runner tokens in GitLab and store each token outside Git.
+# Configure gitlab_runner_token_src in the matching host-vars file.

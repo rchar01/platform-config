@@ -3,19 +3,131 @@ all:
   children:
     rocky:
       hosts:
-        k8s-bastion-01:
-          ansible_host: 192.0.2.210
+        k8s-bastion-example:
+          ansible_host: 192.0.2.60
+        registry-example:
+          ansible_host: 192.0.2.61
+        registry-runner-example:
+          ansible_host: 192.0.2.62
+        openbao-example:
+          ansible_host: 192.0.2.63
+        monitoring-example:
+          ansible_host: 192.0.2.64
+        k8s-runner-example:
+          ansible_host: 192.0.2.65
+        rke2-server-example-01:
+          ansible_host: 192.0.2.66
+        rke2-server-example-02:
+          ansible_host: 192.0.2.67
+        rke2-server-example-03:
+          ansible_host: 192.0.2.68
+        rke2-agent-example-01:
+          ansible_host: 192.0.2.69
+        rke2-agent-example-02:
+          ansible_host: 192.0.2.70
+        rke2-agent-example-03:
+          ansible_host: 192.0.2.71
+        workload-lb-example:
+          ansible_host: 192.0.2.73
 
     bastion:
       hosts:
-        k8s-bastion-01:
+        k8s-bastion-example:
 
     k8s_bastion:
       hosts:
-        k8s-bastion-01:
+        k8s-bastion-example:
 
     container_hosts:
+      hosts:
+        registry-example:
+        registry-runner-example:
+        openbao-example:
+        monitoring-example:
+        k8s-runner-example:
+
+    registry:
+      hosts:
+        registry-example:
+
+    registry_clients:
+      hosts:
+        registry-runner-example:
+
+    vault:
+      hosts:
+        openbao-example:
+
+    gitlab:
       hosts: {}
+
+    gitlab_runners:
+      hosts:
+        registry-runner-example:
+        k8s-runner-example:
+
+    monitoring:
+      hosts:
+        monitoring-example:
+
+    load_balancers:
+      hosts:
+        workload-lb-example:
+
+    haproxy:
+      hosts:
+        workload-lb-example:
+
+    monitoring_targets:
+      hosts:
+        k8s-bastion-example:
+        registry-example:
+        registry-runner-example:
+        openbao-example:
+        monitoring-example:
+        k8s-runner-example:
+        rke2-server-example-01:
+        rke2-server-example-02:
+        rke2-server-example-03:
+        rke2-agent-example-01:
+        rke2-agent-example-02:
+        rke2-agent-example-03:
+        workload-lb-example:
+
+    rke2_cluster:
+      hosts:
+        rke2-server-example-01:
+        rke2-server-example-02:
+        rke2-server-example-03:
+        rke2-agent-example-01:
+        rke2-agent-example-02:
+        rke2-agent-example-03:
+
+    rke2_servers:
+      hosts:
+        rke2-server-example-01:
+        rke2-server-example-02:
+        rke2-server-example-03:
+
+    rke2_agents:
+      hosts:
+        rke2-agent-example-01:
+        rke2-agent-example-02:
+        rke2-agent-example-03:
 
     storage_clients:
       hosts: {}
+
+    storage_volume_hosts:
+      hosts:
+        registry-example:
+        registry-runner-example:
+        openbao-example:
+        monitoring-example:
+        k8s-runner-example:
+        rke2-server-example-01:
+        rke2-server-example-02:
+        rke2-server-example-03:
+        rke2-agent-example-01:
+        rke2-agent-example-02:
+        rke2-agent-example-03:

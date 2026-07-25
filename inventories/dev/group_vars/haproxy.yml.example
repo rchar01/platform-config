@@ -1,0 +1,14 @@
+---
+haproxy_workload_lb_enabled: true
+haproxy_workload_lb_http_backend_port: 30080
+haproxy_workload_lb_https_backend_port: 30443
+haproxy_workload_lb_backends:
+  - name: rke2-agent-example-01
+    address: 192.0.2.69
+  - name: rke2-agent-example-02
+    address: 192.0.2.70
+  - name: rke2-agent-example-03
+    address: 192.0.2.71
+haproxy_workload_lb_smoke_probe_urls:
+  - http://workloads.example.test
+  - https://workloads.example.test

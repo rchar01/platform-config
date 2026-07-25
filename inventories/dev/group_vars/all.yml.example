@@ -1,17 +1,21 @@
 ---
 platform_environment: dev
-platform_domain: dev.example
+platform_domain: dev.example.test
 
 ansible_user: ansible
 ansible_become: true
 
 platform_timezone: UTC
 
+platform_registry_hostname: registry.example.test
+platform_registry_ip: 192.0.2.61
+platform_registry_url: "https://{{ platform_registry_hostname }}"
+
 platform_host_aliases:
-  - address: 192.0.2.61
+  - address: "{{ platform_registry_ip }}"
     names:
-      - registry.example.test
-      - registry-01.example.test
+      - "{{ platform_registry_hostname }}"
+      - registry-example
 
 platform_base_packages:
   - bash-completion
