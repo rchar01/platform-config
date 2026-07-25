@@ -7,8 +7,14 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-25
+
 ### Added
 
+- Added a Podman development container and helper scripts for isolated Ansible
+  and lint tooling.
+- Added authenticated Zot registry smoke coverage for container image push,
+  pull, and execution plus Helm OCI chart push and pull workflows.
 - Added a task-oriented documentation index for setup, configuration, security,
   services, operations, and development references.
 - Added a public firewalld readiness and enablement guide covering rule
@@ -22,10 +28,36 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Moved Make-based Ansible and lint commands from a host virtual environment to
+  the Podman development container; `make deps` now builds the container image.
 - Changed the firewalld baseline to install its Python bindings explicitly and
   remain disabled at boot and stopped at runtime by default.
 - Made focused service playbooks establish firewalld tooling before managing
   permanent firewall configuration, with offline and active-runtime support.
+- Pinned kube-vip application `v1.2.1` independently from chart `0.9.9`,
+  explicitly preserved the upstream `15/10/2`-second leader-election policy,
+  and added deployed image and policy assertions to smoke checks.
+- Documented required monitoring password source-file permissions and
+  simplified root documentation links around the task-oriented index.
+
+### Fixed
+
+- Fixed containerized Ansible runs to use isolated writable home and runtime
+  directories while preserving read-only SSH and private configuration mounts.
+- Fixed kube-vip smoke checks that could accept an already-complete DaemonSet
+  rollout before RKE2 Helm Controller had reconciled the desired image and
+  lease policy.
+- Fixed recurring kube-vip manifest drift by preserving RKE2-managed `spec.set`
+  values when all Ansible-owned fields already match, while retaining repair
+  behavior for invalid content and file metadata.
+
+### Security
+
+- Added a Zot registry exposure guard requiring authentication, managed source
+  restrictions, or an explicit isolated-development override before broad
+  anonymous access.
+- Hardened the public Zot registry example with htpasswd authentication,
+  source-scoped firewalld access, and an access-control policy example.
 
 ## [1.0.0] - 2026-07-09
 
@@ -39,10 +71,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registry, and Kubernetes bastion access.
 - Safe example inventories and private environment file examples for named
   environments such as `dev` and `homelab`.
-- Makefile workflow for containerized dependency setup, inventory inspection,
-  syntax checks, check-mode runs, apply runs, linting, repository tests, and
-  service smoke playbooks.
-- Podman development container for Ansible and lint tooling.
+- Makefile workflow for dependency setup, inventory inspection, syntax checks,
+  check-mode runs, apply runs, linting, repository tests, and service smoke
+  playbooks.
 - Kubernetes bastion runtime submodule pinned under
   `vendor/platform-k8s-bastion`.
 - Public documentation for development, inventories, roles, private workflow,
@@ -65,7 +96,3 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added ignore rules for private inventories, env files, access policies,
   kubeconfigs, certificate/key material, vault files, and private working
   plans.
-- Added a Zot registry exposure guard so broad anonymous access requires an
-  explicit isolated-development override.
-- Hardened the public Zot registry example with htpasswd authentication,
-  source-scoped firewalld access, and an access-control policy example.

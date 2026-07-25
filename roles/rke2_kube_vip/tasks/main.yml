@@ -95,6 +95,61 @@
     - rke2_kube_vip_enabled | bool
     - inventory_hostname == rke2_kube_vip_bootstrap_host
 
+- name: Check existing RKE2 kube-vip manifest on bootstrap server
+  ansible.builtin.stat:
+    path: "{{ rke2_kube_vip_manifest_path }}"
+  register: rke2_kube_vip_manifest_stat
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+
+- name: Read existing RKE2 kube-vip manifest on bootstrap server
+  ansible.builtin.slurp:
+    path: "{{ rke2_kube_vip_manifest_path }}"
+  register: rke2_kube_vip_manifest_content
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+    - rke2_kube_vip_manifest_stat.stat.exists
+
+- name: Initialize existing RKE2 kube-vip manifest validation
+  ansible.builtin.set_fact:
+    rke2_kube_vip_existing_manifest_valid: false
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+
+- name: Parse Ansible-owned fields from existing RKE2 kube-vip manifest
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+    - rke2_kube_vip_manifest_stat.stat.exists
+  block:
+    - name: Parse existing RKE2 kube-vip manifest
+      ansible.builtin.set_fact:
+        rke2_kube_vip_existing_manifest: >-
+          {{ rke2_kube_vip_manifest_content.content | b64decode | from_yaml }}
+
+    - name: Remove RKE2-managed fields from existing kube-vip manifest
+      ansible.builtin.set_fact:
+        # RKE2 injects cluster-global spec.set values into HelmChart files.
+        rke2_kube_vip_existing_ansible_fields: >-
+          {{
+            rke2_kube_vip_existing_manifest
+            | combine({
+              'spec': rke2_kube_vip_existing_manifest.get('spec', {})
+              | dict2items
+              | rejectattr('key', 'equalto', 'set')
+              | items2dict
+            })
+          }}
+        rke2_kube_vip_existing_manifest_valid: true
+
+  rescue:
+    - name: Mark invalid RKE2 kube-vip manifest for repair
+      ansible.builtin.set_fact:
+        rke2_kube_vip_existing_manifest_valid: false
+
 - name: Check RKE2 server service on bootstrap server
   ansible.builtin.command:
     argv:
@@ -117,7 +172,10 @@
     - rke2_kube_vip_enabled | bool
     - inventory_hostname == rke2_kube_vip_bootstrap_host
 
-- name: Write RKE2 kube-vip HelmChart manifest on bootstrap server
+- name: Write RKE2 kube-vip HelmChart manifest when Ansible-owned fields differ
+  vars:
+    rke2_kube_vip_desired_manifest: >-
+      {{ lookup('ansible.builtin.template', 'kube-vip-helmchart.yaml.j2') | from_yaml }}
   ansible.builtin.template:
     src: kube-vip-helmchart.yaml.j2
     dest: "{{ rke2_kube_vip_manifest_path }}"
@@ -127,3 +185,19 @@
   when:
     - rke2_kube_vip_enabled | bool
     - inventory_hostname == rke2_kube_vip_bootstrap_host
+    - >-
+      not rke2_kube_vip_manifest_stat.stat.exists
+      or not rke2_kube_vip_existing_manifest_valid
+      or rke2_kube_vip_existing_ansible_fields != rke2_kube_vip_desired_manifest
+
+- name: Enforce RKE2 kube-vip manifest metadata on bootstrap server
+  ansible.builtin.file:
+    path: "{{ rke2_kube_vip_manifest_path }}"
+    state: file
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+    - rke2_kube_vip_manifest_stat.stat.exists or not ansible_check_mode
