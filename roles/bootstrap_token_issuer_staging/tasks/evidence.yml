@@ -1,0 +1,123 @@
+---
+- name: Record bootstrap token issuer staging completion time
+  ansible.builtin.command:
+    argv: [date, -u, +%Y-%m-%dT%H:%M:%SZ]
+  register: bootstrap_token_issuer_staging_completed_command
+  changed_when: false
+
+- name: Determine bootstrap token issuer staging outcome
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_outcome: >-
+      {{ 'pass' if bootstrap_token_issuer_staging_mode == 'validate'
+        and not bootstrap_token_issuer_staging_workflow_failed
+        and (bootstrap_token_issuer_staging_assertions.values() | difference(['pass']) | length == 0)
+        and bootstrap_token_issuer_staging_credential_cleanup == 'pass'
+        and bootstrap_token_issuer_staging_temporary_cleanup == 'pass'
+        and not bootstrap_token_issuer_staging_rollback_triggered else 'fail' }}
+
+- name: Assemble redacted bootstrap token issuer staging evidence
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_result:
+      schemaVersion: v1
+      outcome: "{{ bootstrap_token_issuer_staging_outcome }}"
+      run:
+        id: "{{ bootstrap_token_issuer_staging_run_id }}"
+        workflowCommit: "{{ bootstrap_token_issuer_staging_workflow_commit }}"
+        startedAt: "{{ bootstrap_token_issuer_staging_started_at }}"
+        completedAt: "{{ bootstrap_token_issuer_staging_completed_command.stdout }}"
+      candidate:
+        sourceCommit: "{{ bootstrap_token_issuer_staging_source_commit }}"
+        imageRef: "{{ bootstrap_token_issuer_staging_image_ref }}"
+        imageDigest: "{{ bootstrap_token_issuer_staging_image_digest }}"
+        imageRevision: "{{ bootstrap_token_issuer_staging_image_revision }}"
+        runtimeCommit: "{{ bootstrap_token_issuer_staging_runtime_commit }}"
+        chartRef: "{{ bootstrap_token_issuer_staging_chart_ref }}"
+        chartDigest: "{{ bootstrap_token_issuer_staging_chart_digest }}"
+        chartVersion: "{{ bootstrap_token_issuer_staging_version }}"
+        chartSourceCommit: "{{ bootstrap_token_issuer_staging_chart_source_commit }}"
+      cluster:
+        environmentLabel: "{{ bootstrap_token_issuer_staging_environment_label }}"
+        kubernetesMinor: "{{ bootstrap_token_issuer_staging_kubernetes_minor }}"
+        namespace: "{{ bootstrap_token_issuer_staging_namespace }}"
+      assertions: "{{ bootstrap_token_issuer_staging_assertions }}"
+      cleanup:
+        credentialCleanup: "{{ bootstrap_token_issuer_staging_credential_cleanup }}"
+        temporaryFilesRemoved: "{{ bootstrap_token_issuer_staging_temporary_cleanup }}"
+      rollback:
+        mutationApplied: "{{ bootstrap_token_issuer_staging_mutation_applied | bool }}"
+        triggered: "{{ bootstrap_token_issuer_staging_rollback_triggered | bool }}"
+        strategy: "{{ bootstrap_token_issuer_staging_rollback_strategy }}"
+        result: "{{ bootstrap_token_issuer_staging_rollback_result }}"
+        previousHelmRevision: "{{ bootstrap_token_issuer_staging_previous_revision }}"
+        previousImageDigest: "{{ bootstrap_token_issuer_staging_previous_image_digest }}"
+        rolloutHealthy: "{{ bootstrap_token_issuer_staging_rollback_rollout }}"
+        runningImageMatchesTarget: "{{ bootstrap_token_issuer_staging_rollback_image }}"
+        candidateResourcesAbsent: "{{ bootstrap_token_issuer_staging_rollback_resources }}"
+
+- name: Create local bootstrap token issuer evidence directory
+  ansible.builtin.file:
+    path: "{{ bootstrap_token_issuer_staging_evidence_path | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+
+- name: Write redacted bootstrap token issuer staging evidence
+  ansible.builtin.copy:
+    content: "{{ bootstrap_token_issuer_staging_result | to_nice_json }}\n"
+    dest: "{{ bootstrap_token_issuer_staging_evidence_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+
+- name: Write exact upstream bootstrap token issuer evidence schema temporarily
+  ansible.builtin.copy:
+    content: "{{ bootstrap_token_issuer_staging_schema_source.content | b64decode }}"
+    dest: "{{ bootstrap_token_issuer_staging_evidence_path }}.schema.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+
+- name: Validate redacted bootstrap token issuer evidence against exact upstream schema
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - >-
+        import json, sys; import jsonschema;
+        schema=json.load(open(sys.argv[1], encoding='utf-8'));
+        instance=json.load(open(sys.argv[2], encoding='utf-8'));
+        jsonschema.Draft202012Validator(schema,
+        format_checker=jsonschema.FormatChecker()).validate(instance)
+      - "{{ bootstrap_token_issuer_staging_evidence_path }}.schema.json"
+      - "{{ bootstrap_token_issuer_staging_evidence_path }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: bootstrap_token_issuer_staging_schema_validation
+  changed_when: false
+  failed_when: false
+
+- name: Remove temporary bootstrap token issuer evidence schema
+  ansible.builtin.file:
+    path: "{{ bootstrap_token_issuer_staging_evidence_path }}.schema.json"
+    state: absent
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+
+- name: Record bootstrap token issuer evidence validation result
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_evidence_valid: "{{ bootstrap_token_issuer_staging_schema_validation.rc == 0 }}"
+    bootstrap_token_issuer_staging_workflow_failed: >-
+      {{ bootstrap_token_issuer_staging_workflow_failed or bootstrap_token_issuer_staging_schema_validation.rc != 0 }}
+    bootstrap_token_issuer_staging_failure_stage: >-
+      {{ 'evidence' if bootstrap_token_issuer_staging_schema_validation.rc != 0 else bootstrap_token_issuer_staging_failure_stage }}

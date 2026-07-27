@@ -1,0 +1,29 @@
+---
+- name: Remove bootstrap token issuer staging temporary directory
+  ansible.builtin.file:
+    path: "{{ bootstrap_token_issuer_staging_temp_dir }}"
+    state: absent
+  register: bootstrap_token_issuer_staging_temp_remove
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_temp_dir | length > 0
+
+- name: Check bootstrap token issuer staging temporary directory removal
+  ansible.builtin.stat:
+    path: "{{ bootstrap_token_issuer_staging_temp_dir }}"
+  register: bootstrap_token_issuer_staging_temp_after
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_temp_dir | length > 0
+
+- name: Record bootstrap token issuer temporary-file cleanup result
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_temporary_cleanup: >-
+      {{
+        'pass'
+        if bootstrap_token_issuer_staging_temp_dir | length > 0
+        and not bootstrap_token_issuer_staging_temp_after.stat.exists
+        and bootstrap_token_issuer_staging_test_resource_cleanup == 'pass'
+        else 'fail'
+      }}
+  no_log: true

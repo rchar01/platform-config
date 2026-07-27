@@ -192,6 +192,117 @@ Also test an SSH login to confirm `/etc/profile.d/bastion-login.sh` shows kubeco
 
 For user credential flow, validate the expected bootstrap or renewal path for one non-admin test user before handing the host to operators.
 
+## Bootstrap Token Issuer Staging Validation
+
+`playbooks/bootstrap-token-issuer-staging.yml` is an operator-triggered release
+gate. It is intentionally excluded from `site.yml` and must never be used as
+routine convergence. The workflow runs on exactly one `k8s_bastion` host and
+has three explicit modes:
+
+- `preflight` verifies identifiable workflow and exact source, public image and
+  OCI chart provenance, private values rendering, cluster version, API access,
+  existing release rollback state, and ServiceAccount/RBAC readiness. It does
+  not invoke Helm mutation and may run from a dirty workflow checkout for review.
+- `rollback_rehearsal` deploys the candidate, verifies rollout, running digest,
+  and runtime commit, then injects a controlled failure. It restores the
+  captured Helm revision and digest or uninstalls a first installation. The
+  play returns failure after writing rejected-run evidence; this is expected.
+- `validate` deploys and leaves the candidate only after all upstream staging
+  assertions and cleanup checks pass. A post-mutation failure enters explicit
+  rollback.
+
+Both mutating modes require a clean committed `platform-config` checkout so the
+recorded workflow revision identifies the code that changed staging.
+
+The private inventory must provide every environment-specific input. Required
+candidate inputs include the exact source repository, tag and commit; public
+image reference, digest, and revision label; public chart reference and digest;
+release manifest URL and version; expected Kubernetes minor; namespace and
+release name; kubeconfig path and context; private values source; and an
+immutable negative-test image containing `sh`, `getent`, and `curl`. The
+candidate values must provide the real bootstrap API URL, cluster name,
+NetworkPolicy CIDRs, and the selected ServiceAccount/RBAC ownership model.
+
+The fixed public v0.3.0 inputs are:
+
+```yaml
+bootstrap_token_issuer_staging_source_repo: https://codeberg.org/rch/bootstrap-token-issuer.git
+bootstrap_token_issuer_staging_source_tag: v0.3.0
+bootstrap_token_issuer_staging_source_commit: 057447891612b521d872d35cf90c9b73b6596789
+bootstrap_token_issuer_staging_version: 0.3.0
+bootstrap_token_issuer_staging_image_ref: codeberg.org/rch/bootstrap-token-issuer:0.3.0
+bootstrap_token_issuer_staging_image_digest: sha256:36726a708466663d8513e50e61ec1919d735d4d7e68a1f8bdb2b3ee4079d25cd
+bootstrap_token_issuer_staging_image_revision: 057447891612b521d872d35cf90c9b73b6596789
+bootstrap_token_issuer_staging_chart_ref: codeberg.org/rch/charts/bootstrap-token-issuer:0.3.0
+bootstrap_token_issuer_staging_chart_digest: sha256:5919aa1f98afd5a013a62f63636a0c9e33e35db2c7e9effb5f5d5b6424f8df76
+bootstrap_token_issuer_staging_chart_source_commit: 057447891612b521d872d35cf90c9b73b6596789
+bootstrap_token_issuer_staging_release_manifest_url: https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.0/release-manifest.json
+```
+
+Private inventory supplies
+`bootstrap_token_issuer_staging_environment_label`,
+`bootstrap_token_issuer_staging_expected_kubernetes_minor`,
+`bootstrap_token_issuer_staging_namespace`,
+`bootstrap_token_issuer_staging_release_name`,
+`bootstrap_token_issuer_staging_admin_kubeconfig`,
+`bootstrap_token_issuer_staging_kube_context`,
+`bootstrap_token_issuer_staging_private_values_src`, and, for mutating modes,
+`bootstrap_token_issuer_staging_negative_test_image`.
+
+The bastion `kubectl` client must match the selected Kubernetes test lane. The
+public role retains the 1.29 default; a 1.35 environment must override both
+`k8s_bastion_kubectl_version` and its pinned
+`k8s_bastion_kubectl_checksum`.
+
+Keep the admin kubeconfig outside Git. Keep real values under
+`platform-private`; the role copies them into a mode-0700 remote temporary
+directory and suppresses all tasks that can expose values, endpoints, logs,
+token IDs, Secrets, bearer tokens, or kubeconfigs. The public v0.3.0 source,
+image, chart, release manifest, and digests are immutable release inputs, not
+private configuration.
+
+Run non-mutating preflight first:
+
+```bash
+make deploy-bootstrap-token-issuer-staging \
+  ENV=dev \
+  LIMIT=k8s-bastion-01 \
+  STAGING_MODE=preflight
+```
+
+After separate authorization for cluster mutation, rehearse rollback and then
+run the accepting validation:
+
+```bash
+make deploy-bootstrap-token-issuer-staging \
+  ENV=dev \
+  LIMIT=k8s-bastion-01 \
+  STAGING_MODE=rollback_rehearsal
+
+make deploy-bootstrap-token-issuer-staging \
+  ENV=dev \
+  LIMIT=k8s-bastion-01 \
+  STAGING_MODE=validate
+```
+
+Before Helm is invoked, the role captures release presence, Helm revision,
+rendered resources, running image digest, and the bootstrap-token Secret set.
+Cleanup removes only the exact credential, CSR, Pod namespace, and temporary
+files created by the run. Existing releases use `helm rollback` and verify both
+rollout health and the restored image digest. First installs use `helm
+uninstall` and verify that the release and every resource in the rendered
+candidate manifest are absent. Shared ServiceAccounts and RBAC omitted from the
+candidate manifest are preserved.
+
+Redacted JSON evidence is written by default to
+`.artifacts/bootstrap-token-issuer-staging-result.json`, an ignored local path.
+The role validates it with the checksum-pinned schema and confirms the exact
+acquired source commit contains the same schema.
+Move environment-specific evidence and execution notes to the private
+`platform-plans` workspace; do not commit them here. A successful `preflight`
+produces a schema-valid non-accepting result because runtime assertions are
+`not_run`. Only `validate` can produce an accepting `pass` result.
+
 ## Idempotency
 
 The role is designed for repeated Ansible runs:

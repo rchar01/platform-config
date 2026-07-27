@@ -1,0 +1,107 @@
+---
+- name: Check secret-safe credential cleanup helper presence
+  ansible.builtin.stat:
+    path: "{{ bootstrap_token_issuer_staging_temp_dir }}/credential-contract.sh"
+  register: bootstrap_token_issuer_staging_cleanup_helper
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_temp_dir | length > 0
+    - bootstrap_token_issuer_staging_mutation_applied | bool
+
+- name: Run exact bootstrap token issuer credential cleanup
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/credential-contract.sh"
+      - cleanup
+  environment:
+    KUBECTL_BIN: kubectl
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    KUBE_CONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+    STAGING_NAMESPACE: "{{ bootstrap_token_issuer_staging_namespace }}"
+    STAGING_SERVICE_NAME: "{{ bootstrap_token_issuer_staging_service_name }}"
+    STAGING_SERVICE_PORT_NAME: "{{ bootstrap_token_issuer_staging_service_port_name }}"
+    STAGING_BOOTSTRAP_GROUP: "{{ bootstrap_token_issuer_staging_bootstrap_group }}"
+    STAGING_TTL_SECONDS: "{{ bootstrap_token_issuer_staging_issue_ttl_seconds }}"
+    STAGING_REQUEST_TIMEOUT_SECONDS: "{{ bootstrap_token_issuer_staging_request_timeout_seconds }}"
+    STAGING_REVOKE_PROPAGATION_SECONDS: "{{ bootstrap_token_issuer_staging_revoke_propagation_seconds }}"
+    STAGING_STATE_DIR: "{{ bootstrap_token_issuer_staging_credential_dir }}"
+    STAGING_RUN_ID: "{{ bootstrap_token_issuer_staging_run_id }}"
+  register: bootstrap_token_issuer_staging_exact_cleanup_command
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_temp_dir | length > 0
+    - bootstrap_token_issuer_staging_mutation_applied | bool
+    - bootstrap_token_issuer_staging_cleanup_helper.stat.exists | default(false)
+
+- name: Delete exact negative NetworkPolicy test namespace
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - delete
+      - namespace
+      - "{{ bootstrap_token_issuer_staging_negative_namespace }}"
+      - --ignore-not-found
+      - --wait=true
+      - --timeout=120s
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_negative_cleanup_command
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_temp_dir | length > 0
+    - bootstrap_token_issuer_staging_mutation_applied | bool
+
+- name: Record exact bootstrap token issuer test-resource cleanup
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_test_resource_cleanup: >-
+      {{
+        'pass'
+        if not bootstrap_token_issuer_staging_mutation_applied
+        or ((bootstrap_token_issuer_staging_cleanup_helper.stat.exists | default(false))
+        and (bootstrap_token_issuer_staging_exact_cleanup_command.rc | default(1)) == 0
+        and (bootstrap_token_issuer_staging_negative_cleanup_command.rc | default(0)) == 0)
+        else 'fail'
+      }}
+  no_log: true
+
+- name: Capture final bootstrap token Secret set
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && kubectl --context {{ bootstrap_token_issuer_staging_kube_context | quote }}
+      -n kube-system get secrets -o json |
+      jq -c '[.items[] | select(.type == "bootstrap.kubernetes.io/token") | .metadata.name] | sort'
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_secrets_after_command
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_secrets_before is defined
+
+- name: Record bootstrap token credential cleanup result
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_credential_cleanup: >-
+      {{
+        'pass'
+        if bootstrap_token_issuer_staging_secrets_after_command.rc == 0
+        and (bootstrap_token_issuer_staging_secrets_after_command.stdout | from_json)
+        == bootstrap_token_issuer_staging_secrets_before
+        else 'fail'
+      }}
+  no_log: true
+  when: bootstrap_token_issuer_staging_secrets_before is defined
+
+- name: Record bootstrap token credential cleanup without a captured baseline
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_credential_cleanup: >-
+      {{ 'pass' if not bootstrap_token_issuer_staging_mutation_applied else 'fail' }}
+  when: bootstrap_token_issuer_staging_secrets_before is not defined

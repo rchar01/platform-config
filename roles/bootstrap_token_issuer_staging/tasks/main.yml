@@ -1,0 +1,135 @@
+---
+- name: Initialize bootstrap token issuer staging state
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions:
+      kubernetes_minor_supported: not_run
+      source_checkout_exact: not_run
+      image_digest_resolved: not_run
+      image_revision_matches: not_run
+      runtime_commit_matches: not_run
+      chart_digest_resolved: not_run
+      chart_source_matches: not_run
+      deployment_available: not_run
+      running_image_matches: not_run
+      service_contract: not_run
+      service_endpoints_ready: not_run
+      network_policy_enabled: not_run
+      network_policy_present: not_run
+      network_policy_positive_path: not_run
+      network_policy_negative_path: not_run
+      health_proxy: not_run
+      ready_proxy: not_run
+      issue_contract: not_run
+      bootstrap_identity: not_run
+      bootstrap_group: not_run
+      token_secret_present: not_run
+      revoke_contract: not_run
+      token_secret_absent: not_run
+      credential_rejected: not_run
+      admin_auth_healthy: not_run
+      redaction_enforced: not_run
+    bootstrap_token_issuer_staging_workflow_failed: false
+    bootstrap_token_issuer_staging_failure_stage: none
+    bootstrap_token_issuer_staging_mutation_applied: false
+    bootstrap_token_issuer_staging_rollback_triggered: false
+    bootstrap_token_issuer_staging_rollback_strategy: not_required
+    bootstrap_token_issuer_staging_rollback_result: not_required
+    bootstrap_token_issuer_staging_rollback_rollout: not_run
+    bootstrap_token_issuer_staging_rollback_image: not_run
+    bootstrap_token_issuer_staging_rollback_resources: not_run
+    bootstrap_token_issuer_staging_previous_revision: null
+    bootstrap_token_issuer_staging_previous_image_digest: null
+    bootstrap_token_issuer_staging_runtime_commit: "0000000000000000000000000000000000000000"
+    bootstrap_token_issuer_staging_credential_cleanup: not_run
+    bootstrap_token_issuer_staging_test_resource_cleanup: not_run
+    bootstrap_token_issuer_staging_temporary_cleanup: not_run
+    bootstrap_token_issuer_staging_evidence_valid: false
+    bootstrap_token_issuer_staging_temp_dir: ""
+
+- name: Run guarded bootstrap token issuer staging workflow
+  block:
+    - name: Run bootstrap token issuer staging preflight
+      ansible.builtin.include_tasks: preflight.yml
+
+    - name: Deploy bootstrap token issuer candidate
+      ansible.builtin.include_tasks: deploy.yml
+      when: bootstrap_token_issuer_staging_mode != 'preflight'
+
+    - name: Inject controlled rollback rehearsal failure
+      ansible.builtin.fail:
+        msg: Controlled post-rollout failure requested for rollback rehearsal.
+      when:
+        - bootstrap_token_issuer_staging_mode == 'rollback_rehearsal'
+        - bootstrap_token_issuer_staging_controlled_failure | bool
+
+    - name: Run bootstrap token issuer staging assertions
+      ansible.builtin.include_tasks: validate.yml
+      when: bootstrap_token_issuer_staging_mode == 'validate'
+  rescue:
+    - name: Record failed stable bootstrap token issuer assertions
+      ansible.builtin.set_fact:
+        bootstrap_token_issuer_staging_assertions: >-
+          {{
+            bootstrap_token_issuer_staging_assertions
+            | combine(bootstrap_token_issuer_staging_failure_assertions.get(ansible_failed_task.name, {}))
+          }}
+
+    - name: Record sanitized bootstrap token issuer workflow failure
+      ansible.builtin.set_fact:
+        bootstrap_token_issuer_staging_workflow_failed: true
+        bootstrap_token_issuer_staging_failure_stage: >-
+          {{ 'post_mutation' if bootstrap_token_issuer_staging_mutation_applied else 'preflight' }}
+
+    - name: Roll back failed bootstrap token issuer candidate
+      ansible.builtin.include_tasks: rollback.yml
+      when: bootstrap_token_issuer_staging_mutation_applied | bool
+  always:
+    - name: Clean bootstrap token issuer staging test state
+      ansible.builtin.include_tasks: cleanup.yml
+
+- name: Roll back candidate after cleanup failure
+  ansible.builtin.include_tasks: rollback.yml
+  when:
+    - bootstrap_token_issuer_staging_mutation_applied | bool
+    - not bootstrap_token_issuer_staging_rollback_triggered | bool
+    - bootstrap_token_issuer_staging_credential_cleanup == 'fail' or bootstrap_token_issuer_staging_test_resource_cleanup == 'fail'
+
+- name: Remove bootstrap token issuer staging temporary files
+  ansible.builtin.include_tasks: cleanup-temp.yml
+
+- name: Roll back candidate after temporary-file cleanup failure
+  ansible.builtin.include_tasks: rollback.yml
+  when:
+    - bootstrap_token_issuer_staging_mutation_applied | bool
+    - not bootstrap_token_issuer_staging_rollback_triggered | bool
+    - bootstrap_token_issuer_staging_temporary_cleanup == 'fail'
+
+- name: Write bootstrap token issuer staging evidence
+  ansible.builtin.include_tasks: evidence.yml
+  when:
+    - bootstrap_token_issuer_staging_workflow_commit is defined
+    - bootstrap_token_issuer_staging_schema_source is defined
+
+- name: Roll back candidate after evidence validation failure
+  ansible.builtin.include_tasks: rollback.yml
+  when:
+    - bootstrap_token_issuer_staging_mutation_applied | bool
+    - not bootstrap_token_issuer_staging_rollback_triggered | bool
+    - not bootstrap_token_issuer_staging_evidence_valid | bool
+
+- name: Rewrite evidence after evidence-triggered rollback
+  ansible.builtin.include_tasks: evidence.yml
+  when:
+    - bootstrap_token_issuer_staging_rollback_triggered | bool
+    - bootstrap_token_issuer_staging_failure_stage == 'evidence'
+    - bootstrap_token_issuer_staging_schema_source is defined
+
+- name: Reject incomplete or failed bootstrap token issuer staging workflow
+  ansible.builtin.assert:
+    that:
+      - not bootstrap_token_issuer_staging_workflow_failed | bool
+      - bootstrap_token_issuer_staging_mode in ['preflight', 'validate']
+      - bootstrap_token_issuer_staging_evidence_valid | bool
+    fail_msg: >-
+      Bootstrap token issuer staging did not produce an accepting validation result;
+      inspect the redacted evidence file.

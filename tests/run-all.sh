@@ -13,6 +13,7 @@ run_test() {
 
 main() {
   run_test "Kubernetes bastion access reconciliation" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-access-reconciliation.sh"
+  run_test "Bootstrap token issuer staging workflow" "${SCRIPT_DIR}/scenarios/test-bootstrap-token-issuer-staging.sh"
 }
 
 main "$@"

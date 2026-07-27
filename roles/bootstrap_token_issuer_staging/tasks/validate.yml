@@ -1,0 +1,286 @@
+---
+- name: Read bootstrap token issuer Service contract
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - service
+      - "{{ bootstrap_token_issuer_staging_service_name }}"
+      - -o
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_service_command
+  changed_when: false
+  no_log: true
+
+- name: Read bootstrap token issuer ready endpoints
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - endpoints
+      - "{{ bootstrap_token_issuer_staging_service_name }}"
+      - -o
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_endpoints_command
+  changed_when: false
+  no_log: true
+
+- name: Record observed bootstrap token issuer Service port
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_service_port: >-
+      {{
+        ((bootstrap_token_issuer_staging_service_command.stdout | from_json).spec.ports
+        | selectattr('name', 'equalto', bootstrap_token_issuer_staging_service_port_name)
+        | first).port
+      }}
+  no_log: true
+
+- name: Assert bootstrap token issuer Service and endpoints contract
+  ansible.builtin.assert:
+    that:
+      - (bootstrap_token_issuer_staging_service_command.stdout | from_json).metadata.name == bootstrap_token_issuer_staging_service_name
+      - ((bootstrap_token_issuer_staging_service_command.stdout | from_json).spec.ports | selectattr('name', 'equalto', bootstrap_token_issuer_staging_service_port_name) | list | length) == 1
+      - ((bootstrap_token_issuer_staging_endpoints_command.stdout | from_json).subsets | default([]) | map(attribute='addresses') | flatten | length) > 0
+    fail_msg: Issuer Service name, port name, or ready endpoints do not match the contract.
+
+- name: Record bootstrap token issuer Service assertions
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({
+        'service_contract': 'pass',
+        'service_endpoints_ready': 'pass'
+      }) }}
+
+- name: Check bootstrap token issuer NetworkPolicy presence
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - networkpolicy
+      - "{{ bootstrap_token_issuer_staging_network_policy_name }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+  no_log: true
+
+- name: Record bootstrap token issuer NetworkPolicy presence
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'network_policy_present': 'pass'}) }}
+
+- name: Check bootstrap token issuer health through API server proxy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - get
+      - "--raw=/api/v1/namespaces/{{ bootstrap_token_issuer_staging_namespace }}/services/{{ bootstrap_token_issuer_staging_service_name }}:{{ bootstrap_token_issuer_staging_service_port_name }}/proxy/healthz"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_health_command
+  changed_when: false
+  no_log: true
+
+- name: Check bootstrap token issuer readiness through API server proxy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - get
+      - "--raw=/api/v1/namespaces/{{ bootstrap_token_issuer_staging_namespace }}/services/{{ bootstrap_token_issuer_staging_service_name }}:{{ bootstrap_token_issuer_staging_service_port_name }}/proxy/readyz"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_ready_command
+  changed_when: false
+  no_log: true
+
+- name: Assert bootstrap token issuer proxy health and readiness
+  ansible.builtin.assert:
+    that:
+      - (bootstrap_token_issuer_staging_health_command.stdout | from_json).status == 'ok'
+      - (bootstrap_token_issuer_staging_ready_command.stdout | from_json).status == 'ready'
+    fail_msg: Issuer health or readiness failed through the exact API-server Service proxy path.
+
+- name: Record bootstrap token issuer positive proxy assertions
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({
+        'network_policy_positive_path': 'pass',
+        'health_proxy': 'pass',
+        'ready_proxy': 'pass'
+      }) }}
+
+- name: Create exact negative NetworkPolicy test namespace
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - create
+      - namespace
+      - "{{ bootstrap_token_issuer_staging_negative_namespace }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_negative_namespace_create
+  changed_when: bootstrap_token_issuer_staging_negative_namespace_create.rc == 0
+  failed_when: bootstrap_token_issuer_staging_negative_namespace_create.rc != 0
+  no_log: true
+
+- name: Start direct-Service negative NetworkPolicy test Pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_negative_namespace }}"
+      - run
+      - "{{ bootstrap_token_issuer_staging_negative_pod }}"
+      - "--image={{ bootstrap_token_issuer_staging_negative_test_image }}"
+      - --restart=Never
+      - --command
+      - --
+      - sh
+      - -ec
+      - >-
+        target={{ bootstrap_token_issuer_staging_service_name }}.{{ bootstrap_token_issuer_staging_namespace }}.svc;
+        getent hosts "$target" >/dev/null;
+        rc=0; curl --silent --show-error --connect-timeout 5 --max-time 10
+        "http://$target:{{ bootstrap_token_issuer_staging_service_port }}/healthz" >/dev/null || rc=$?;
+        test "$rc" = 28
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: true
+  no_log: true
+
+- name: Wait for denied direct-Service test to succeed
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_negative_namespace }}"
+      - wait
+      - "pod/{{ bootstrap_token_issuer_staging_negative_pod }}"
+      - --for=jsonpath={.status.phase}=Succeeded
+      - --timeout=120s
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+  no_log: true
+
+- name: Record denied direct-Service NetworkPolicy assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'network_policy_negative_path': 'pass'}) }}
+
+- name: Install secret-safe bootstrap token issuer credential validator
+  ansible.builtin.copy:
+    src: credential-contract.sh
+    dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/credential-contract.sh"
+    mode: "0700"
+
+- name: Create protected bootstrap token issuer credential state directory
+  ansible.builtin.file:
+    path: "{{ bootstrap_token_issuer_staging_credential_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Run secret-safe bootstrap token issue, authentication, and revoke checks
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/credential-contract.sh"
+      - validate
+  environment:
+    KUBECTL_BIN: kubectl
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    KUBE_CONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+    STAGING_NAMESPACE: "{{ bootstrap_token_issuer_staging_namespace }}"
+    STAGING_SERVICE_NAME: "{{ bootstrap_token_issuer_staging_service_name }}"
+    STAGING_SERVICE_PORT_NAME: "{{ bootstrap_token_issuer_staging_service_port_name }}"
+    STAGING_BOOTSTRAP_GROUP: "{{ bootstrap_token_issuer_staging_bootstrap_group }}"
+    STAGING_TTL_SECONDS: "{{ bootstrap_token_issuer_staging_issue_ttl_seconds }}"
+    STAGING_REQUEST_TIMEOUT_SECONDS: "{{ bootstrap_token_issuer_staging_request_timeout_seconds }}"
+    STAGING_REVOKE_PROPAGATION_SECONDS: "{{ bootstrap_token_issuer_staging_revoke_propagation_seconds }}"
+    STAGING_STATE_DIR: "{{ bootstrap_token_issuer_staging_credential_dir }}"
+    STAGING_RUN_ID: "{{ bootstrap_token_issuer_staging_run_id }}"
+    STAGING_RUN_CSR_CHECK: "{{ bootstrap_token_issuer_staging_run_csr_check | bool | ternary('true', 'false') }}"
+  register: bootstrap_token_issuer_staging_credential_command
+  changed_when: true
+  failed_when: false
+  no_log: true
+
+- name: Parse secret-safe bootstrap token issuer credential results
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_credential_results: "{{ bootstrap_token_issuer_staging_credential_command.stdout | from_json }}"
+  no_log: true
+
+- name: Record separately tracked bootstrap token issuer credential assertions
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({
+        'issue_contract': bootstrap_token_issuer_staging_credential_results.issue_contract,
+        'bootstrap_identity': bootstrap_token_issuer_staging_credential_results.bootstrap_identity,
+        'bootstrap_group': bootstrap_token_issuer_staging_credential_results.bootstrap_group,
+        'token_secret_present': bootstrap_token_issuer_staging_credential_results.token_secret_present,
+        'revoke_contract': bootstrap_token_issuer_staging_credential_results.revoke_contract,
+        'token_secret_absent': bootstrap_token_issuer_staging_credential_results.token_secret_absent,
+        'credential_rejected': bootstrap_token_issuer_staging_credential_results.credential_rejected,
+        'admin_auth_healthy': bootstrap_token_issuer_staging_credential_results.admin_auth_healthy,
+        'redaction_enforced': bootstrap_token_issuer_staging_credential_results.redaction_enforced
+      }) }}
+  no_log: true
+
+- name: Require all bootstrap token issuer credential assertions
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_credential_command.rc == 0
+      - bootstrap_token_issuer_staging_credential_results.issue_contract == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.bootstrap_identity == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.bootstrap_group == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.token_secret_present == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.revoke_contract == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.token_secret_absent == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.credential_rejected == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.admin_auth_healthy == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.redaction_enforced == 'pass'
+      - bootstrap_token_issuer_staging_credential_results.csr_check == 'pass'
+    fail_msg: A secret-safe issue, authentication, revoke, idempotency, or redaction assertion failed.
+
+- name: Run verified upstream aggregate staging validator
+  ansible.builtin.command:
+    argv:
+      - "{{ bootstrap_token_issuer_staging_source_dir }}/hack/staging-validate.sh"
+  environment:
+    KUBECTL_BIN: kubectl
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    KUBE_CONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+    STAGING_NAMESPACE: "{{ bootstrap_token_issuer_staging_namespace }}"
+    STAGING_SERVICE_NAME: "{{ bootstrap_token_issuer_staging_service_name }}"
+    STAGING_SERVICE_PORT_NAME: "{{ bootstrap_token_issuer_staging_service_port_name }}"
+    STAGING_BOOTSTRAP_GROUP: "{{ bootstrap_token_issuer_staging_bootstrap_group }}"
+    STAGING_TTL_SECONDS: "{{ bootstrap_token_issuer_staging_issue_ttl_seconds }}"
+    STAGING_REQUEST_TIMEOUT_SECONDS: "{{ bootstrap_token_issuer_staging_request_timeout_seconds }}"
+    STAGING_REVOKE_PROPAGATION_SECONDS: "{{ bootstrap_token_issuer_staging_revoke_propagation_seconds }}"
+  changed_when: true
+  no_log: true
+  when: bootstrap_token_issuer_staging_run_upstream_validator | bool

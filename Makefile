@@ -9,6 +9,7 @@ INVENTORY ?= $(PRIVATE_CONFIG_ROOT)/inventories/$(ENV)/hosts.yml
 PLAYBOOK ?= playbooks/site.yml
 LIMIT ?=
 EXTRA_ARGS ?=
+STAGING_MODE ?= preflight
 DEV_IMAGE ?= platform-config-dev:latest
 IN_CONTAINER ?= ./scripts/in-container
 ANSIBLE ?= ansible
@@ -19,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test deploy-bootstrap-token-issuer-staging smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -42,6 +43,7 @@ help:
 	@printf '  %-24s %s\n' 'PLAYBOOK' 'Playbook for syntax/check/apply, default: playbooks/site.yml'
 	@printf '  %-24s %s\n' 'LIMIT' 'Optional Ansible --limit value'
 	@printf '  %-24s %s\n' 'EXTRA_ARGS' 'Extra arguments passed to Ansible commands'
+	@printf '  %-24s %s\n' 'STAGING_MODE' 'Issuer workflow mode: preflight, rollback_rehearsal, or validate'
 	@printf '\n%s\n' 'Examples:'
 	@printf '  %s\n' 'make deps'
 	@printf '  %s\n' 'make shell'
@@ -57,6 +59,7 @@ help:
 	@printf '  %s\n' 'make smoke-kong-ingress ENV=dev'
 	@printf '  %s\n' 'make smoke-workload-lb ENV=dev'
 	@printf '  %s\n' 'make smoke-k8s-bastion ENV=dev'
+	@printf '  %s\n' 'make deploy-bootstrap-token-issuer-staging ENV=dev LIMIT=k8s-bastion-01 STAGING_MODE=preflight'
 
 ## Build the development container image
 container-build:
@@ -103,6 +106,10 @@ test:
 
 ## Run all local static checks
 verify: yamllint lint test
+
+## Deploy and validate the bootstrap token issuer staging candidate
+deploy-bootstrap-token-issuer-staging: _guard-staging-mode
+	@$(MAKE) apply PLAYBOOK=playbooks/bootstrap-token-issuer-staging.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS) -e bootstrap_token_issuer_staging_mode=$(STAGING_MODE) $(if $(filter rollback_rehearsal,$(STAGING_MODE)),-e bootstrap_token_issuer_staging_controlled_failure=true,)"
 
 ## Smoke test inactive firewalld baseline
 smoke-firewalld:
@@ -161,3 +168,6 @@ _guard-env-file:
 
 _guard-inventory:
 	@test -f "$(INVENTORY)" || { printf 'Inventory not found: %s\n' "$(INVENTORY)" >&2; exit 1; }
+
+_guard-staging-mode:
+	@case "$(STAGING_MODE)" in preflight|rollback_rehearsal|validate) ;; *) printf 'Invalid STAGING_MODE: %s\n' "$(STAGING_MODE)" >&2; exit 1 ;; esac

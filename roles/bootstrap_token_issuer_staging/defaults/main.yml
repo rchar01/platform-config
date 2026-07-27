@@ -1,0 +1,130 @@
+---
+bootstrap_token_issuer_staging_mode: ""
+bootstrap_token_issuer_staging_controlled_failure: false
+
+bootstrap_token_issuer_staging_source_repo: ""
+bootstrap_token_issuer_staging_source_tag: ""
+bootstrap_token_issuer_staging_source_commit: ""
+bootstrap_token_issuer_staging_version: ""
+bootstrap_token_issuer_staging_image_ref: ""
+bootstrap_token_issuer_staging_image_digest: ""
+bootstrap_token_issuer_staging_image_revision: ""
+bootstrap_token_issuer_staging_chart_ref: ""
+bootstrap_token_issuer_staging_chart_digest: ""
+bootstrap_token_issuer_staging_chart_source_commit: ""
+bootstrap_token_issuer_staging_release_manifest_url: ""
+
+bootstrap_token_issuer_staging_environment_label: ""
+bootstrap_token_issuer_staging_expected_kubernetes_minor: ""
+bootstrap_token_issuer_staging_namespace: ""
+bootstrap_token_issuer_staging_release_name: ""
+bootstrap_token_issuer_staging_admin_kubeconfig: ""
+bootstrap_token_issuer_staging_kube_context: ""
+bootstrap_token_issuer_staging_private_values_src: ""
+bootstrap_token_issuer_staging_negative_test_image: ""
+
+bootstrap_token_issuer_staging_service_name: bastion-token-issuer
+bootstrap_token_issuer_staging_service_port_name: http
+bootstrap_token_issuer_staging_deployment_name: bastion-token-issuer
+bootstrap_token_issuer_staging_network_policy_name: bastion-token-issuer
+bootstrap_token_issuer_staging_bootstrap_group: system:bootstrappers:platform-users
+bootstrap_token_issuer_staging_issue_ttl_seconds: 60
+bootstrap_token_issuer_staging_request_timeout_seconds: 30
+bootstrap_token_issuer_staging_revoke_propagation_seconds: 120
+bootstrap_token_issuer_staging_rollout_timeout: 300s
+bootstrap_token_issuer_staging_run_upstream_validator: true
+bootstrap_token_issuer_staging_run_csr_check: true
+
+bootstrap_token_issuer_staging_workflow_repo: "{{ playbook_dir }}/.."
+bootstrap_token_issuer_staging_evidence_path: >-
+  {{ playbook_dir }}/../.artifacts/bootstrap-token-issuer-staging-result.json
+
+bootstrap_token_issuer_staging_failure_assertions:
+  Acquire exact bootstrap token issuer source tag:
+    source_checkout_exact: fail
+  Assert exact clean bootstrap token issuer source checkout:
+    source_checkout_exact: fail
+  Inspect public bootstrap token issuer image:
+    image_digest_resolved: fail
+    image_revision_matches: fail
+  Assert public bootstrap token issuer image provenance:
+    image_digest_resolved: fail
+    image_revision_matches: fail
+  Parse public bootstrap token issuer image metadata:
+    image_digest_resolved: fail
+    image_revision_matches: fail
+  Resolve public bootstrap token issuer chart manifest:
+    chart_digest_resolved: fail
+  Assert public bootstrap token issuer chart digest:
+    chart_digest_resolved: fail
+  Pull exact public bootstrap token issuer OCI chart:
+    chart_digest_resolved: fail
+  Assert bootstrap token issuer chart release provenance:
+    chart_source_matches: fail
+  Download bootstrap token issuer release manifest:
+    chart_source_matches: fail
+  Read bootstrap token issuer chart metadata:
+    chart_source_matches: fail
+  Read bootstrap token issuer release chart metadata:
+    chart_source_matches: fail
+  Parse bootstrap token issuer chart provenance:
+    chart_source_matches: fail
+  Require rendered bootstrap token issuer NetworkPolicy:
+    network_policy_enabled: fail
+  Assert supported matching Kubernetes lane:
+    kubernetes_minor_supported: fail
+  Check Kubernetes client and server versions:
+    kubernetes_minor_supported: fail
+  Parse Kubernetes client and server versions:
+    kubernetes_minor_supported: fail
+  Check Kubernetes administrative authentication:
+    admin_auth_healthy: fail
+  Wait for bootstrap token issuer candidate rollout:
+    deployment_available: fail
+  Require successful bootstrap token issuer Helm apply:
+    deployment_available: fail
+  Assert candidate bootstrap token issuer running image digest:
+    running_image_matches: fail
+  Read candidate bootstrap token issuer running image ID:
+    running_image_matches: fail
+  Assert bootstrap token issuer runtime commit:
+    runtime_commit_matches: fail
+  Read bootstrap token issuer startup commit:
+    runtime_commit_matches: fail
+  Assert bootstrap token issuer Service and endpoints contract:
+    service_contract: fail
+    service_endpoints_ready: fail
+  Read bootstrap token issuer Service contract:
+    service_contract: fail
+  Read bootstrap token issuer ready endpoints:
+    service_endpoints_ready: fail
+  Record observed bootstrap token issuer Service port:
+    service_contract: fail
+  Check bootstrap token issuer NetworkPolicy presence:
+    network_policy_present: fail
+  Check bootstrap token issuer health through API server proxy:
+    network_policy_positive_path: fail
+    health_proxy: fail
+  Check bootstrap token issuer readiness through API server proxy:
+    network_policy_positive_path: fail
+    ready_proxy: fail
+  Assert bootstrap token issuer proxy health and readiness:
+    network_policy_positive_path: fail
+    health_proxy: fail
+    ready_proxy: fail
+  Start direct-Service negative NetworkPolicy test Pod:
+    network_policy_negative_path: fail
+  Wait for denied direct-Service test to succeed:
+    network_policy_negative_path: fail
+  Create exact negative NetworkPolicy test namespace:
+    network_policy_negative_path: fail
+  Parse secret-safe bootstrap token issuer credential results:
+    issue_contract: fail
+    bootstrap_identity: fail
+    bootstrap_group: fail
+    token_secret_present: fail
+    revoke_contract: fail
+    token_secret_absent: fail
+    credential_rejected: fail
+    admin_auth_healthy: fail
+    redaction_enforced: fail

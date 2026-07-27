@@ -79,6 +79,7 @@ make check ENV=dev
 make lint
 make yamllint
 make verify
+make deploy-bootstrap-token-issuer-staging ENV=dev LIMIT=k8s-bastion-01 STAGING_MODE=preflight
 make smoke-firewalld ENV=dev
 make smoke-k8s-bastion ENV=dev
 ```
@@ -114,6 +115,7 @@ platform-docs documents the design and operations across all repositories.
 - [Documentation index](docs/README.md)
 - [Operator runbook](docs/operator-runbook.md)
 - [Private workflow](docs/private-workflow.md)
+- [Kubernetes bastion and issuer staging validation](docs/k8s-bastion.md)
 - [Development](docs/development.md)
 
 ## License

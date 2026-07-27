@@ -1,0 +1,7 @@
+---
+- name: Validate the bootstrap token issuer staging release
+  hosts: k8s_bastion
+  become: true
+  gather_facts: false
+  roles:
+    - bootstrap_token_issuer_staging

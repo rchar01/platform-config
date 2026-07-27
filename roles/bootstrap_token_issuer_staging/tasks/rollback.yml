@@ -1,0 +1,170 @@
+---
+- name: Select bootstrap token issuer rollback strategy
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_rollback_triggered: true
+    bootstrap_token_issuer_staging_rollback_strategy: >-
+      {{ 'helm_rollback' if bootstrap_token_issuer_staging_release_existed else 'uninstall_candidate' }}
+    bootstrap_token_issuer_staging_failure_stage: >-
+      {{ bootstrap_token_issuer_staging_failure_stage if bootstrap_token_issuer_staging_failure_stage != 'none' else 'post_mutation' }}
+    bootstrap_token_issuer_staging_workflow_failed: true
+
+- name: Roll back existing bootstrap token issuer Helm release
+  ansible.builtin.command:
+    argv:
+      - helm
+      - rollback
+      - "{{ bootstrap_token_issuer_staging_release_name }}"
+      - "{{ bootstrap_token_issuer_staging_previous_revision | string }}"
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_rollback_command
+  changed_when: bootstrap_token_issuer_staging_rollback_command.rc == 0
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Wait for restored bootstrap token issuer rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - rollout
+      - status
+      - "deployment/{{ bootstrap_token_issuer_staging_deployment_name }}"
+      - "--timeout={{ bootstrap_token_issuer_staging_rollout_timeout }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_rollback_rollout_command
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Read restored bootstrap token issuer image digest
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && kubectl --context {{ bootstrap_token_issuer_staging_kube_context | quote }}
+      -n {{ bootstrap_token_issuer_staging_namespace | quote }} get pods
+      -l app.kubernetes.io/name={{ bootstrap_token_issuer_staging_service_name | quote }} -o json |
+      jq -r '[.items[].status.containerStatuses[]? | select(.name == "issuer" and .ready == true) | .imageID][0] // ""'
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_rollback_image_command
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Record existing release rollback evidence
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_rollback_rollout: >-
+      {{ 'pass' if bootstrap_token_issuer_staging_rollback_rollout_command.rc == 0 else 'fail' }}
+    bootstrap_token_issuer_staging_rollback_image: >-
+      {{ 'pass' if bootstrap_token_issuer_staging_previous_image_digest in bootstrap_token_issuer_staging_rollback_image_command.stdout else 'fail' }}
+    bootstrap_token_issuer_staging_rollback_resources: not_run
+    bootstrap_token_issuer_staging_rollback_result: >-
+      {{
+        'pass'
+        if bootstrap_token_issuer_staging_rollback_command.rc == 0
+        and bootstrap_token_issuer_staging_rollback_rollout_command.rc == 0
+        and bootstrap_token_issuer_staging_previous_image_digest in bootstrap_token_issuer_staging_rollback_image_command.stdout
+        else 'fail'
+      }}
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Uninstall first bootstrap token issuer candidate release
+  ansible.builtin.command:
+    argv:
+      - helm
+      - uninstall
+      - "{{ bootstrap_token_issuer_staging_release_name }}"
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_uninstall_command
+  changed_when: bootstrap_token_issuer_staging_uninstall_command.rc == 0
+  failed_when: false
+  no_log: true
+  when: not bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Check first bootstrap token issuer release absence
+  ansible.builtin.command:
+    argv:
+      - helm
+      - list
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - --filter
+      - "^{{ bootstrap_token_issuer_staging_release_name }}$"
+      - --output
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_uninstall_release_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: not bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Check every rendered first-install resource is absent
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ item.split('\t')[1] }}"
+      - get
+      - "{{ item.split('\t')[0] }}"
+      - "{{ item.split('\t')[2] }}"
+      - --ignore-not-found
+      - --output
+      - name
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_uninstall_resources_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+  loop: "{{ bootstrap_token_issuer_staging_candidate_resources }}"
+  when: not bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Record first-install uninstall evidence
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_rollback_rollout: not_run
+    bootstrap_token_issuer_staging_rollback_image: not_run
+    bootstrap_token_issuer_staging_rollback_resources: >-
+      {{
+        'pass'
+        if (bootstrap_token_issuer_staging_uninstall_resources_check.results
+        | rejectattr('rc', 'equalto', 0) | list | length == 0)
+        and (bootstrap_token_issuer_staging_uninstall_resources_check.results
+        | selectattr('stdout', 'ne', '') | list | length == 0)
+        else 'fail'
+      }}
+    bootstrap_token_issuer_staging_rollback_result: >-
+      {{
+        'pass'
+        if bootstrap_token_issuer_staging_uninstall_command.rc == 0
+        and bootstrap_token_issuer_staging_uninstall_release_check.rc == 0
+        and (bootstrap_token_issuer_staging_uninstall_release_check.stdout | from_json | length) == 0
+        and (bootstrap_token_issuer_staging_uninstall_resources_check.results
+        | rejectattr('rc', 'equalto', 0) | list | length == 0)
+        and (bootstrap_token_issuer_staging_uninstall_resources_check.results
+        | selectattr('stdout', 'ne', '') | list | length == 0)
+        else 'fail'
+      }}
+  no_log: true
+  when: not bootstrap_token_issuer_staging_release_existed | bool

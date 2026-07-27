@@ -1,0 +1,110 @@
+---
+- name: Apply exact public bootstrap token issuer candidate
+  ansible.builtin.command:
+    argv:
+      - helm
+      - upgrade
+      - --install
+      - "{{ bootstrap_token_issuer_staging_release_name }}"
+      - "{{ bootstrap_token_issuer_staging_chart_archive }}"
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - --values
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/candidate-values.yaml"
+      - --set-string
+      - "image.repository=codeberg.org/rch/bootstrap-token-issuer"
+      - --set-string
+      - "image.tag={{ bootstrap_token_issuer_staging_version }}@{{ bootstrap_token_issuer_staging_image_digest }}"
+      - --history-max
+      - "10"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_helm_apply
+  changed_when: true
+  failed_when: false
+  no_log: true
+
+- name: Arm bootstrap token issuer rollback after Helm invocation
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_mutation_applied: true
+
+- name: Require successful bootstrap token issuer Helm apply
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_helm_apply.rc == 0
+    fail_msg: Candidate Helm apply failed; cleanup and rollback are armed.
+
+- name: Wait for bootstrap token issuer candidate rollout
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - rollout
+      - status
+      - "deployment/{{ bootstrap_token_issuer_staging_deployment_name }}"
+      - "--timeout={{ bootstrap_token_issuer_staging_rollout_timeout }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+
+- name: Record available bootstrap token issuer deployment assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'deployment_available': 'pass'}) }}
+
+- name: Read candidate bootstrap token issuer running image ID
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && kubectl --context {{ bootstrap_token_issuer_staging_kube_context | quote }}
+      -n {{ bootstrap_token_issuer_staging_namespace | quote }} get pods
+      -l app.kubernetes.io/name={{ bootstrap_token_issuer_staging_service_name | quote }} -o json |
+      jq -r '[.items[].status.containerStatuses[]? | select(.name == "issuer" and .ready == true) | .imageID][0] // ""'
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_running_image_command
+  changed_when: false
+  no_log: true
+
+- name: Assert candidate bootstrap token issuer running image digest
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_running_image_command.stdout is search(bootstrap_token_issuer_staging_image_digest)
+    fail_msg: Running issuer container does not use the candidate image digest.
+
+- name: Record matching running image assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'running_image_matches': 'pass'}) }}
+
+- name: Read bootstrap token issuer startup commit
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && kubectl --context {{ bootstrap_token_issuer_staging_kube_context | quote }}
+      -n {{ bootstrap_token_issuer_staging_namespace | quote }} logs
+      deployment/{{ bootstrap_token_issuer_staging_deployment_name | quote }} --all-containers=false |
+      jq -r 'select(.msg == "starting bootstrap-token-issuer") | .git_commit' | tail -n 1
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_runtime_commit_command
+  changed_when: false
+  no_log: true
+
+- name: Assert bootstrap token issuer runtime commit
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_runtime_commit_command.stdout == bootstrap_token_issuer_staging_source_commit
+    fail_msg: Issuer startup commit does not match the candidate source commit.
+
+- name: Record matching bootstrap token issuer runtime commit
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_runtime_commit: "{{ bootstrap_token_issuer_staging_runtime_commit_command.stdout }}"
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'runtime_commit_matches': 'pass'}) }}

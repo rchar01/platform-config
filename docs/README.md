@@ -39,7 +39,8 @@ and other secrets belong outside Git.
 - [Registry](registry.md): Zot registry access, authentication, OCI smoke tests,
   client tools, Kubernetes pulls, and image-signing considerations.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
-  access configuration, installation, smoke tests, and reconciliation.
+  access configuration, installation, issuer staging validation, smoke tests,
+  and reconciliation.
 
 ## Operations
 

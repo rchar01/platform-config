@@ -14,6 +14,7 @@ inventories/**/host_vars/*.yaml
 *.retry
 .ansible/
 ansible.log
+.artifacts/
 
 # Python
 __pycache__/

@@ -42,8 +42,11 @@ k8s_bastion_arch: amd64
 k8s_bastion_archive_arch: amd64
 k8s_bastion_archive_arch_x86_64: x86_64
 
+k8s_bastion_kubectl_version: v1.29.15
+k8s_bastion_kubectl_checksum: sha256:3473e14c7b024a6e5403c6401b273b3faff8e5b1fed022d633815eb3168e4516
+
 k8s_bastion_versions:
-  kubectl: v1.29.15
+  kubectl: "{{ k8s_bastion_kubectl_version }}"
   helm: v4.1.1
   k9s: v0.50.18
   stern: v1.33.1
@@ -59,7 +62,7 @@ k8s_bastion_external_tools:
     type: raw
     filename: kubectl
     url: "https://dl.k8s.io/release/{{ k8s_bastion_versions.kubectl }}/bin/linux/{{ k8s_bastion_arch }}/kubectl"
-    checksum: sha256:3473e14c7b024a6e5403c6401b273b3faff8e5b1fed022d633815eb3168e4516
+    checksum: "{{ k8s_bastion_kubectl_checksum }}"
     install_as: kubectl
   - name: helm
     type: archive

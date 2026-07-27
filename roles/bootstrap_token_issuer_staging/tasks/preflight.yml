@@ -1,0 +1,709 @@
+---
+- name: Validate bootstrap token issuer staging inputs
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | length == 1
+      - bootstrap_token_issuer_staging_mode in ['preflight', 'rollback_rehearsal', 'validate']
+      - bootstrap_token_issuer_staging_source_repo == 'https://codeberg.org/rch/bootstrap-token-issuer.git'
+      - bootstrap_token_issuer_staging_source_tag == 'v0.3.0'
+      - bootstrap_token_issuer_staging_source_commit is match('^[0-9a-f]{40}$')
+      - bootstrap_token_issuer_staging_version == '0.3.0'
+      - bootstrap_token_issuer_staging_image_ref == 'codeberg.org/rch/bootstrap-token-issuer:0.3.0'
+      - bootstrap_token_issuer_staging_image_digest is match('^sha256:[0-9a-f]{64}$')
+      - bootstrap_token_issuer_staging_image_revision is match('^[0-9a-f]{40}$')
+      - bootstrap_token_issuer_staging_image_revision == bootstrap_token_issuer_staging_source_commit
+      - bootstrap_token_issuer_staging_chart_ref == 'codeberg.org/rch/charts/bootstrap-token-issuer:0.3.0'
+      - bootstrap_token_issuer_staging_chart_digest is match('^sha256:[0-9a-f]{64}$')
+      - bootstrap_token_issuer_staging_chart_source_commit == bootstrap_token_issuer_staging_source_commit
+      - bootstrap_token_issuer_staging_release_manifest_url == 'https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.0/release-manifest.json'
+      - bootstrap_token_issuer_staging_environment_label is match('^[A-Za-z0-9._-]+$')
+      - bootstrap_token_issuer_staging_expected_kubernetes_minor in ['1.29', '1.35']
+      - bootstrap_token_issuer_staging_namespace == 'bastion-system'
+      - bootstrap_token_issuer_staging_release_name | length > 0
+      - bootstrap_token_issuer_staging_admin_kubeconfig | length > 0
+      - bootstrap_token_issuer_staging_kube_context | length > 0
+      - bootstrap_token_issuer_staging_private_values_src | length > 0
+      - bootstrap_token_issuer_staging_mode == 'preflight' or bootstrap_token_issuer_staging_negative_test_image is match('^.+@sha256:[0-9a-f]{64}$')
+      - bootstrap_token_issuer_staging_mode != 'validate' or bootstrap_token_issuer_staging_run_csr_check | bool
+      - bootstrap_token_issuer_staging_mode != 'validate' or bootstrap_token_issuer_staging_run_upstream_validator | bool
+      - not bootstrap_token_issuer_staging_image_ref is search('dev-test')
+      - not bootstrap_token_issuer_staging_chart_ref is search('dev-test')
+      - (bootstrap_token_issuer_staging_mode == 'rollback_rehearsal') == (bootstrap_token_issuer_staging_controlled_failure | bool)
+    fail_msg: Bootstrap token issuer staging requires exact public v0.3.0 inputs and one execution host.
+
+- name: Check private bootstrap token issuer values source
+  ansible.builtin.stat:
+    path: "{{ bootstrap_token_issuer_staging_private_values_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: bootstrap_token_issuer_staging_private_values_stat
+  no_log: true
+
+- name: Require a regular private bootstrap token issuer values file
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_private_values_stat.stat.exists
+      - bootstrap_token_issuer_staging_private_values_stat.stat.isreg
+    fail_msg: The private candidate values source is unavailable.
+  no_log: true
+
+- name: Read bootstrap token issuer workflow revision
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ bootstrap_token_issuer_staging_workflow_repo }}"
+      - rev-parse
+      - HEAD
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: bootstrap_token_issuer_staging_workflow_revision_command
+  changed_when: false
+
+- name: Check bootstrap token issuer workflow source cleanliness
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ bootstrap_token_issuer_staging_workflow_repo }}"
+      - status
+      - --porcelain
+      - --untracked-files=normal
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: bootstrap_token_issuer_staging_workflow_status
+  changed_when: false
+  no_log: true
+
+- name: Require identifiable bootstrap token issuer workflow source
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_workflow_revision_command.stdout is match('^[0-9a-f]{40}$')
+      - >-
+        bootstrap_token_issuer_staging_mode == 'preflight'
+        or bootstrap_token_issuer_staging_workflow_status.stdout | length == 0
+    fail_msg: The platform-config workflow must be committed and clean before staging mutation.
+
+- name: Record bootstrap token issuer staging start time
+  ansible.builtin.command:
+    argv: [date, -u, +%Y-%m-%dT%H:%M:%SZ]
+  register: bootstrap_token_issuer_staging_started_command
+  changed_when: false
+
+- name: Create bootstrap token issuer staging temporary directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: bootstrap-token-issuer-staging.
+  register: bootstrap_token_issuer_staging_temp
+
+- name: Protect bootstrap token issuer staging temporary directory
+  ansible.builtin.file:
+    path: "{{ bootstrap_token_issuer_staging_temp.path }}"
+    state: directory
+    mode: "0700"
+
+- name: Initialize bootstrap token issuer staging run facts
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_workflow_commit: "{{ bootstrap_token_issuer_staging_workflow_revision_command.stdout }}"
+    bootstrap_token_issuer_staging_started_at: "{{ bootstrap_token_issuer_staging_started_command.stdout }}"
+    bootstrap_token_issuer_staging_run_id: >-
+      bti-v030-{{ bootstrap_token_issuer_staging_started_command.stdout | regex_replace('[-:]', '') }}
+    bootstrap_token_issuer_staging_temp_dir: "{{ bootstrap_token_issuer_staging_temp.path }}"
+    bootstrap_token_issuer_staging_source_dir: "{{ bootstrap_token_issuer_staging_temp.path }}/source"
+    bootstrap_token_issuer_staging_chart_archive: "{{ bootstrap_token_issuer_staging_temp.path }}/bootstrap-token-issuer-0.3.0.tgz"
+    bootstrap_token_issuer_staging_candidate_manifest: "{{ bootstrap_token_issuer_staging_temp.path }}/candidate-manifest.yaml"
+    bootstrap_token_issuer_staging_credential_dir: "{{ bootstrap_token_issuer_staging_temp.path }}/credential"
+    bootstrap_token_issuer_staging_negative_namespace: >-
+      bti-negative-{{ bootstrap_token_issuer_staging_started_command.stdout | regex_replace('[^0-9]', '') }}
+    bootstrap_token_issuer_staging_negative_pod: direct-service-denied
+    bootstrap_token_issuer_staging_kubernetes_minor: "{{ bootstrap_token_issuer_staging_expected_kubernetes_minor }}"
+
+- name: Download pinned bootstrap token issuer staging evidence schema
+  ansible.builtin.get_url:
+    url: https://codeberg.org/rch/bootstrap-token-issuer/raw/tag/v0.3.0/docs/staging-validation-result.schema.json
+    dest: "{{ bootstrap_token_issuer_staging_temp.path }}/staging-validation-result.schema.json"
+    checksum: sha256:7422bc6450820671c126b65bac716ba3c488e2ff4557ae1d0c72aefa118f2582
+    mode: "0600"
+
+- name: Read pinned bootstrap token issuer staging evidence schema
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_token_issuer_staging_temp.path }}/staging-validation-result.schema.json"
+  register: bootstrap_token_issuer_staging_schema_source
+
+- name: Check bootstrap token issuer staging command prerequisites
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - 'command -v "$1" >/dev/null'
+      - prerequisite
+      - "{{ item }}"
+  loop:
+    - git
+    - base64
+    - helm
+    - jq
+    - kubectl
+    - sha256sum
+    - skopeo
+    - tar
+    - timeout
+    - yq
+  changed_when: false
+
+- name: Check optional CSR command prerequisite
+  ansible.builtin.command:
+    argv: [sh, -c, 'command -v openssl >/dev/null']
+  changed_when: false
+  when: bootstrap_token_issuer_staging_run_csr_check | bool
+
+- name: Acquire exact bootstrap token issuer source tag
+  ansible.builtin.command:
+    argv:
+      - git
+      - clone
+      - --branch
+      - "{{ bootstrap_token_issuer_staging_source_tag }}"
+      - --depth
+      - "1"
+      - --no-tags
+      - "{{ bootstrap_token_issuer_staging_source_repo }}"
+      - "{{ bootstrap_token_issuer_staging_source_dir }}"
+  changed_when: true
+
+- name: Read acquired bootstrap token issuer source revision
+  ansible.builtin.command:
+    argv: [git, -C, "{{ bootstrap_token_issuer_staging_source_dir }}", rev-parse, HEAD]
+  register: bootstrap_token_issuer_staging_source_revision
+  changed_when: false
+
+- name: Check acquired bootstrap token issuer source cleanliness
+  ansible.builtin.command:
+    argv: [git, -C, "{{ bootstrap_token_issuer_staging_source_dir }}", status, --porcelain]
+  register: bootstrap_token_issuer_staging_source_status
+  changed_when: false
+
+- name: Check acquired bootstrap token issuer staging schema checksum
+  ansible.builtin.command:
+    argv:
+      - sha256sum
+      - "{{ bootstrap_token_issuer_staging_source_dir }}/docs/staging-validation-result.schema.json"
+  register: bootstrap_token_issuer_staging_source_schema_checksum
+  changed_when: false
+
+- name: Assert exact clean bootstrap token issuer source checkout
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_source_revision.stdout == bootstrap_token_issuer_staging_source_commit
+      - bootstrap_token_issuer_staging_source_status.stdout | length == 0
+      - bootstrap_token_issuer_staging_source_schema_checksum.stdout.split()[0] == '7422bc6450820671c126b65bac716ba3c488e2ff4557ae1d0c72aefa118f2582'
+    fail_msg: Acquired bootstrap token issuer source is not the exact clean candidate.
+
+- name: Record exact source checkout assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'source_checkout_exact': 'pass'}) }}
+
+- name: Inspect public bootstrap token issuer image
+  ansible.builtin.command:
+    argv:
+      - skopeo
+      - inspect
+      - --override-os
+      - linux
+      - --override-arch
+      - amd64
+      - "docker://{{ bootstrap_token_issuer_staging_image_ref }}"
+  register: bootstrap_token_issuer_staging_image_inspect_command
+  changed_when: false
+
+- name: Parse public bootstrap token issuer image metadata
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_image_inspect: "{{ bootstrap_token_issuer_staging_image_inspect_command.stdout | from_json }}"
+
+- name: Assert public bootstrap token issuer image provenance
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_image_inspect.Digest == bootstrap_token_issuer_staging_image_digest
+      - bootstrap_token_issuer_staging_image_inspect.Os == 'linux'
+      - bootstrap_token_issuer_staging_image_inspect.Architecture == 'amd64'
+      - bootstrap_token_issuer_staging_image_inspect.Labels['org.opencontainers.image.version'] == bootstrap_token_issuer_staging_version
+      - bootstrap_token_issuer_staging_image_inspect.Labels['org.opencontainers.image.revision'] == bootstrap_token_issuer_staging_source_commit
+    fail_msg: Public image digest, platform, version, or revision does not identify the candidate.
+
+- name: Record public image provenance assertions
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({
+        'image_digest_resolved': 'pass',
+        'image_revision_matches': 'pass'
+      }) }}
+
+- name: Resolve public bootstrap token issuer chart manifest
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      skopeo inspect --raw "docker://{{ bootstrap_token_issuer_staging_chart_ref }}"
+      > "{{ bootstrap_token_issuer_staging_temp_dir }}/chart-manifest.json" &&
+      sha256sum "{{ bootstrap_token_issuer_staging_temp_dir }}/chart-manifest.json"
+  args:
+    executable: /bin/bash
+  register: bootstrap_token_issuer_staging_chart_digest_command
+  changed_when: false
+
+- name: Assert public bootstrap token issuer chart digest
+  ansible.builtin.assert:
+    that:
+      - ('sha256:' + bootstrap_token_issuer_staging_chart_digest_command.stdout.split()[0]) == bootstrap_token_issuer_staging_chart_digest
+    fail_msg: Public OCI chart does not resolve to the candidate digest.
+
+- name: Pull exact public bootstrap token issuer OCI chart
+  ansible.builtin.command:
+    argv:
+      - helm
+      - pull
+      - oci://codeberg.org/rch/charts/bootstrap-token-issuer
+      - --version
+      - "{{ bootstrap_token_issuer_staging_version }}"
+      - --destination
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}"
+  changed_when: true
+
+- name: Download bootstrap token issuer release manifest
+  ansible.builtin.get_url:
+    url: "{{ bootstrap_token_issuer_staging_release_manifest_url }}"
+    dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/release-manifest.json"
+    mode: "0600"
+
+- name: Read bootstrap token issuer chart metadata
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      tar -xOf "{{ bootstrap_token_issuer_staging_chart_archive }}"
+      bootstrap-token-issuer/Chart.yaml | yq -o=json
+  args:
+    executable: /bin/bash
+  register: bootstrap_token_issuer_staging_chart_metadata_command
+  changed_when: false
+
+- name: Read bootstrap token issuer release chart metadata
+  ansible.builtin.command:
+    argv:
+      - jq
+      - -c
+      - '.release as $r | .artifacts.helm_charts[] | select(.name == "bootstrap-token-issuer") | {tag: $r.tag, version: .version, oci_ref: .oci_ref, oci_digest: .oci_digest, sha256: .sha256}'
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/release-manifest.json"
+  register: bootstrap_token_issuer_staging_release_chart_command
+  changed_when: false
+
+- name: Calculate pulled bootstrap token issuer chart checksum
+  ansible.builtin.command:
+    argv: [sha256sum, "{{ bootstrap_token_issuer_staging_chart_archive }}"]
+  register: bootstrap_token_issuer_staging_chart_checksum_command
+  changed_when: false
+
+- name: Parse bootstrap token issuer chart provenance
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_chart_metadata: "{{ bootstrap_token_issuer_staging_chart_metadata_command.stdout | from_json }}"
+    bootstrap_token_issuer_staging_release_chart: "{{ bootstrap_token_issuer_staging_release_chart_command.stdout | from_json }}"
+
+- name: Assert bootstrap token issuer chart release provenance
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_chart_metadata.version == bootstrap_token_issuer_staging_version
+      - bootstrap_token_issuer_staging_chart_metadata.appVersion == bootstrap_token_issuer_staging_version
+      - bootstrap_token_issuer_staging_release_chart.tag == bootstrap_token_issuer_staging_source_tag
+      - bootstrap_token_issuer_staging_release_chart.version == bootstrap_token_issuer_staging_version
+      - bootstrap_token_issuer_staging_release_chart.oci_ref == bootstrap_token_issuer_staging_chart_ref
+      - bootstrap_token_issuer_staging_release_chart.oci_digest == bootstrap_token_issuer_staging_chart_digest
+      - bootstrap_token_issuer_staging_chart_checksum_command.stdout.split()[0] == bootstrap_token_issuer_staging_release_chart.sha256
+      - bootstrap_token_issuer_staging_chart_source_commit == bootstrap_token_issuer_staging_source_commit
+    fail_msg: Chart metadata, release manifest, package, and source do not identify one release.
+
+- name: Record public chart provenance assertions
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({
+        'chart_digest_resolved': 'pass',
+        'chart_source_matches': 'pass'
+      }) }}
+
+- name: Copy private bootstrap token issuer candidate values
+  ansible.builtin.copy:
+    src: "{{ bootstrap_token_issuer_staging_private_values_src }}"
+    dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/candidate-values.yaml"
+    mode: "0600"
+  no_log: true
+
+- name: Render bootstrap token issuer candidate manifest
+  ansible.builtin.command:
+    argv:
+      - helm
+      - template
+      - "{{ bootstrap_token_issuer_staging_release_name }}"
+      - "{{ bootstrap_token_issuer_staging_chart_archive }}"
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - --values
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/candidate-values.yaml"
+      - --set-string
+      - "image.repository=codeberg.org/rch/bootstrap-token-issuer"
+      - --set-string
+      - "image.tag={{ bootstrap_token_issuer_staging_version }}@{{ bootstrap_token_issuer_staging_image_digest }}"
+  register: bootstrap_token_issuer_staging_render_command
+  changed_when: false
+  no_log: true
+
+- name: Store rendered bootstrap token issuer candidate manifest
+  ansible.builtin.copy:
+    content: "{{ bootstrap_token_issuer_staging_render_command.stdout }}"
+    dest: "{{ bootstrap_token_issuer_staging_candidate_manifest }}"
+    mode: "0600"
+  no_log: true
+
+- name: Extract exact rendered bootstrap token issuer resource identities
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && yq ea -r 'select(.kind != null) |
+      [.kind, (.metadata.namespace // "{{ bootstrap_token_issuer_staging_namespace }}"), .metadata.name] | @tsv'
+      {{ bootstrap_token_issuer_staging_candidate_manifest | quote }}
+  args:
+    executable: /bin/bash
+  register: bootstrap_token_issuer_staging_candidate_resources_command
+  changed_when: false
+  no_log: true
+
+- name: Retain exact rendered resource identities for rollback verification
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_candidate_resources: >-
+      {{ bootstrap_token_issuer_staging_candidate_resources_command.stdout_lines }}
+  no_log: true
+
+- name: Inspect rendered bootstrap token issuer ownership and policy
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      yq ea -o=json -I=0 '.' {{ bootstrap_token_issuer_staging_candidate_manifest | quote }} |
+      jq -sc '. as $docs |
+      ([$docs[] | select(.kind == "Role" and .metadata.namespace == "kube-system")][0] // {}) as $role |
+      ([$docs[] | select(.kind == "RoleBinding" and .metadata.namespace == "kube-system")][0] // {}) as $binding |
+      ([.[] | select(.kind == "Deployment")][0].spec.template.spec.serviceAccountName // "") as $service_account |
+      {
+      service_account_name: $service_account,
+      service_account_count: ([$docs[] | select(.kind == "ServiceAccount")] | length),
+      role_count: ([$docs[] | select(.kind == "Role" and .metadata.namespace == "kube-system")] | length),
+      role_binding_count: ([$docs[] | select(.kind == "RoleBinding" and .metadata.namespace == "kube-system")] | length),
+      role_rules: ($role.rules // []),
+      role_grants_required_secrets: (any(($role.rules // [])[];
+        ((.apiGroups // []) | index("") != null) and
+        ((.resources // []) | index("secrets") != null) and
+        ((.verbs // []) | index("create") != null) and
+        ((.verbs // []) | index("delete") != null))),
+      role_binding_matches: (($binding.roleRef.kind // "") == "Role" and
+        ($binding.roleRef.name // "") == ($role.metadata.name // "")),
+      role_binding_subject_matches: (any(($binding.subjects // [])[];
+        .kind == "ServiceAccount" and .name == $service_account and
+        .namespace == "{{ bootstrap_token_issuer_staging_namespace }}")),
+      network_policy_count: ([$docs[] | select(.kind == "NetworkPolicy")] | length)}'
+  args:
+    executable: /bin/bash
+  register: bootstrap_token_issuer_staging_render_contract_command
+  changed_when: false
+  no_log: true
+
+- name: Parse rendered bootstrap token issuer ownership and policy
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_render_contract: >-
+      {{ bootstrap_token_issuer_staging_render_contract_command.stdout | from_json }}
+  no_log: true
+
+- name: Require rendered bootstrap token issuer NetworkPolicy
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_render_contract.network_policy_count | int == 1
+      - >-
+        (bootstrap_token_issuer_staging_render_contract.role_count | int == 0
+        and bootstrap_token_issuer_staging_render_contract.role_binding_count | int == 0)
+        or
+        (bootstrap_token_issuer_staging_render_contract.role_count | int == 1
+        and bootstrap_token_issuer_staging_render_contract.role_binding_count | int == 1)
+    fail_msg: Private candidate values must enable exactly one NetworkPolicy.
+
+- name: Record enabled bootstrap token issuer NetworkPolicy assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'network_policy_enabled': 'pass'}) }}
+
+- name: Check existing bootstrap token issuer ServiceAccount
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - serviceaccount
+      - "{{ bootstrap_token_issuer_staging_render_contract.service_account_name }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_render_contract.service_account_count | int == 0
+
+- name: Check existing bootstrap token issuer Secret RBAC
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - auth
+      - can-i
+      - "{{ item }}"
+      - secrets
+      - --namespace
+      - kube-system
+      - --as
+      - "system:serviceaccount:{{ bootstrap_token_issuer_staging_namespace }}:{{ bootstrap_token_issuer_staging_render_contract.service_account_name }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  loop: [create, delete]
+  register: bootstrap_token_issuer_staging_existing_rbac
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_render_contract.role_count | int == 0
+
+- name: Assert existing bootstrap token issuer Secret RBAC
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_existing_rbac.results | length == 2
+      - bootstrap_token_issuer_staging_existing_rbac.results | rejectattr('rc', 'equalto', 0) | list | length == 0
+      - bootstrap_token_issuer_staging_existing_rbac.results | rejectattr('stdout', 'equalto', 'yes') | list | length == 0
+    fail_msg: Existing issuer ServiceAccount must be allowed to create and delete kube-system Secrets.
+  when: bootstrap_token_issuer_staging_render_contract.role_count | int == 0
+
+- name: Assert rendered bootstrap token issuer RBAC contract
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_render_contract.role_count | int == 1
+      - bootstrap_token_issuer_staging_render_contract.role_binding_count | int == 1
+      - bootstrap_token_issuer_staging_render_contract.role_grants_required_secrets | bool
+      - bootstrap_token_issuer_staging_render_contract.role_binding_matches | bool
+      - bootstrap_token_issuer_staging_render_contract.role_binding_subject_matches | bool
+    fail_msg: Rendered candidate RBAC does not grant the selected ServiceAccount exact Secret capabilities.
+  when: bootstrap_token_issuer_staging_render_contract.role_count | int > 0
+
+- name: Check Kubernetes client and server versions
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - version
+      - -o
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_kubernetes_version_command
+  changed_when: false
+  no_log: true
+
+- name: Parse Kubernetes client and server versions
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_kubernetes_version: "{{ bootstrap_token_issuer_staging_kubernetes_version_command.stdout | from_json }}"
+    bootstrap_token_issuer_staging_kubernetes_minor: >-
+      {{
+        (bootstrap_token_issuer_staging_kubernetes_version_command.stdout | from_json).serverVersion.major
+      }}.{{
+        (bootstrap_token_issuer_staging_kubernetes_version_command.stdout | from_json).serverVersion.minor
+        | regex_replace('[^0-9].*$', '')
+      }}
+  no_log: true
+
+- name: Assert supported matching Kubernetes lane
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_kubernetes_minor == bootstrap_token_issuer_staging_expected_kubernetes_minor
+      - bootstrap_token_issuer_staging_kubernetes_minor in ['1.29', '1.35']
+      - bootstrap_token_issuer_staging_kubernetes_version.clientVersion.major == bootstrap_token_issuer_staging_kubernetes_version.serverVersion.major
+      - (bootstrap_token_issuer_staging_kubernetes_version.clientVersion.minor | regex_replace('[^0-9].*$', '')) == (bootstrap_token_issuer_staging_kubernetes_version.serverVersion.minor | regex_replace('[^0-9].*$', ''))
+    fail_msg: Kubernetes client and server must match the selected tested lane.
+
+- name: Record supported Kubernetes minor assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'kubernetes_minor_supported': 'pass'}) }}
+
+- name: Check Kubernetes API readiness
+  ansible.builtin.command:
+    argv: [kubectl, --context, "{{ bootstrap_token_issuer_staging_kube_context }}", get, --raw=/readyz]
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+  no_log: true
+
+- name: Check bootstrap token issuer staging namespace
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - get
+      - namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+  no_log: true
+
+- name: Check Kubernetes administrative authentication
+  ansible.builtin.command:
+    argv: [kubectl, --context, "{{ bootstrap_token_issuer_staging_kube_context }}", auth, whoami]
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: false
+  no_log: true
+
+- name: Record administrative authentication assertion
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_assertions: >-
+      {{ bootstrap_token_issuer_staging_assertions | combine({'admin_auth_healthy': 'pass'}) }}
+
+- name: Discover existing bootstrap token issuer Helm release
+  ansible.builtin.command:
+    argv:
+      - helm
+      - list
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - --filter
+      - "^{{ bootstrap_token_issuer_staging_release_name }}$"
+      - --output
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_existing_release_command
+  changed_when: false
+  no_log: true
+
+- name: Record existing bootstrap token issuer release presence
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_release_existed: >-
+      {{ (bootstrap_token_issuer_staging_existing_release_command.stdout | from_json | length) == 1 }}
+  no_log: true
+
+- name: Capture existing bootstrap token issuer Helm revision
+  ansible.builtin.command:
+    argv:
+      - helm
+      - status
+      - "{{ bootstrap_token_issuer_staging_release_name }}"
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - --output
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_previous_status_command
+  changed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Capture existing bootstrap token issuer rendered resources
+  ansible.builtin.command:
+    argv:
+      - helm
+      - get
+      - manifest
+      - "{{ bootstrap_token_issuer_staging_release_name }}"
+      - --namespace
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+    HELM_KUBECONTEXT: "{{ bootstrap_token_issuer_staging_kube_context }}"
+  register: bootstrap_token_issuer_staging_previous_manifest_command
+  changed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Capture existing bootstrap token issuer running image ID
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && kubectl --context {{ bootstrap_token_issuer_staging_kube_context | quote }}
+      -n {{ bootstrap_token_issuer_staging_namespace | quote }} get pods
+      -l app.kubernetes.io/name={{ bootstrap_token_issuer_staging_service_name | quote }} -o json |
+      jq -r '[.items[].status.containerStatuses[]? | select(.name == "issuer") | .imageID][0] // ""'
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_previous_image_command
+  changed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Check existing bootstrap token issuer rollback target health
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - rollout
+      - status
+      - "deployment/{{ bootstrap_token_issuer_staging_deployment_name }}"
+      - --timeout=15s
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_previous_rollout_command
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Store bootstrap token issuer rollback target
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_previous_revision: >-
+      {{ (bootstrap_token_issuer_staging_previous_status_command.stdout | from_json).version | int }}
+    bootstrap_token_issuer_staging_previous_image_digest: >-
+      {{ bootstrap_token_issuer_staging_previous_image_command.stdout | regex_search('sha256:[0-9a-f]{64}') }}
+  no_log: true
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Require complete bootstrap token issuer rollback target
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_previous_revision | int >= 1
+      - bootstrap_token_issuer_staging_previous_image_digest is match('^sha256:[0-9a-f]{64}$')
+      - bootstrap_token_issuer_staging_previous_rollout_command.rc == 0
+    fail_msg: Existing release rollback revision, running image digest, and healthy rollout must all be known.
+  when: bootstrap_token_issuer_staging_release_existed | bool
+
+- name: Capture existing bootstrap token Secret set
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && kubectl --context {{ bootstrap_token_issuer_staging_kube_context | quote }}
+      -n kube-system get secrets -o json |
+      jq -c '[.items[] | select(.type == "bootstrap.kubernetes.io/token") | .metadata.name] | sort'
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_secrets_before_command
+  changed_when: false
+  no_log: true
+
+- name: Store existing bootstrap token Secret set
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_secrets_before: "{{ bootstrap_token_issuer_staging_secrets_before_command.stdout | from_json }}"
+  no_log: true
