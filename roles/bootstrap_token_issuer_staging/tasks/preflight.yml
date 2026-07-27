@@ -407,13 +407,14 @@
       {{ (bootstrap_token_issuer_staging_temp_dir ~ '/supplemental-network-policy.yaml') | quote }} |
       jq -e --arg name {{ bootstrap_token_issuer_staging_supplemental_network_policy_name | quote }}
       --arg namespace {{ bootstrap_token_issuer_staging_namespace | quote }}
+      --arg app_name {{ bootstrap_token_issuer_staging_deployment_name | quote }}
       --argjson cidrs {{ bootstrap_token_issuer_staging_supplemental_network_policy_cidrs | to_json | quote }}
       --argjson port {{ bootstrap_token_issuer_staging_supplemental_network_policy_port | int }} -s '
       length == 1 and .[0].apiVersion == "networking.k8s.io/v1" and
       .[0].kind == "NetworkPolicy" and .[0].metadata.name == $name and
       .[0].metadata.namespace == $namespace and
       .[0].spec.policyTypes == ["Egress"] and
-      .[0].spec.podSelector == {"matchLabels":{"app.kubernetes.io/name":"bootstrap-token-issuer"}} and
+      .[0].spec.podSelector == {"matchLabels":{"app.kubernetes.io/name":$app_name}} and
       (.[0].spec | has("ingress") | not) and
       (.[0].spec.egress | length) == 1 and
       (.[0].spec.egress[0].to | length) == ($cidrs | length) and
@@ -560,8 +561,11 @@
       jq -sc '. as $docs |
       ([$docs[] | select(.kind == "Role" and .metadata.namespace == "kube-system")][0] // {}) as $role |
       ([$docs[] | select(.kind == "RoleBinding" and .metadata.namespace == "kube-system")][0] // {}) as $binding |
-      ([.[] | select(.kind == "Deployment")][0].spec.template.spec.serviceAccountName // "") as $service_account |
+      ([$docs[] | select(.kind == "Deployment")][0] // {}) as $deployment |
+      ($deployment.spec.template.spec.serviceAccountName // "") as $service_account |
       {
+      deployment_name: ($deployment.metadata.name // ""),
+      deployment_app_name: ($deployment.spec.template.metadata.labels["app.kubernetes.io/name"] // ""),
       service_account_name: $service_account,
       service_account_count: ([$docs[] | select(.kind == "ServiceAccount")] | length),
       role_count: ([$docs[] | select(.kind == "Role" and .metadata.namespace == "kube-system")] | length),
@@ -595,12 +599,19 @@
     that:
       - bootstrap_token_issuer_staging_render_contract.network_policy_count | int == 1
       - >-
+        bootstrap_token_issuer_staging_render_contract.deployment_name
+        == bootstrap_token_issuer_staging_deployment_name
+      - >-
+        bootstrap_token_issuer_staging_render_contract.deployment_app_name
+        == bootstrap_token_issuer_staging_deployment_name
+      - >-
         (bootstrap_token_issuer_staging_render_contract.role_count | int == 0
         and bootstrap_token_issuer_staging_render_contract.role_binding_count | int == 0)
         or
         (bootstrap_token_issuer_staging_render_contract.role_count | int == 1
         and bootstrap_token_issuer_staging_render_contract.role_binding_count | int == 1)
-    fail_msg: Private candidate values must enable exactly one NetworkPolicy.
+    fail_msg: >-
+      Private candidate values must render the expected Deployment identity and exactly one NetworkPolicy.
 
 - name: Record enabled bootstrap token issuer NetworkPolicy assertion
   ansible.builtin.set_fact:

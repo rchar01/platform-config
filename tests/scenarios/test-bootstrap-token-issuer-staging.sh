@@ -166,6 +166,28 @@ test_fail_closed_preflight_and_cleanup() {
     'Supplemental NetworkPolicy does not constrain its egress rule count'
   assert_contains "$PREFLIGHT_TASKS" 'spec.egress\[0\]\.to \| length' \
     'Supplemental NetworkPolicy does not reject unexpected egress peers'
+  assert_contains "$PREFLIGHT_TASKS" '--arg app_name.*bootstrap_token_issuer_staging_deployment_name' \
+    'Supplemental NetworkPolicy selector is not tied to the rendered workload identity'
+  assert_contains "$PREFLIGHT_TASKS" 'spec.podSelector == .*\$app_name' \
+    'Supplemental NetworkPolicy selector does not use the expected workload identity'
+  python3 - "$PREFLIGHT_TASKS" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    tasks = yaml.safe_load(stream)
+task = next(
+    item for item in tasks
+    if item.get("name") == "Require rendered bootstrap token issuer NetworkPolicy"
+)
+assertions = task["ansible.builtin.assert"]["that"]
+expected = (
+    "bootstrap_token_issuer_staging_render_contract.deployment_app_name "
+    "== bootstrap_token_issuer_staging_deployment_name"
+)
+if expected not in assertions:
+    raise SystemExit("Rendered Deployment label is not correlated with the supplemental policy selector")
+PY
   assert_contains "$PREFLIGHT_TASKS" 'Reject supplemental bootstrap token issuer NetworkPolicy identity collision' \
     'Supplemental NetworkPolicy can collide with a Helm-rendered resource'
   assert_contains "${ROLE_DIR}/tasks/cleanup.yml" 'cleanup_helper.stat.exists' \
