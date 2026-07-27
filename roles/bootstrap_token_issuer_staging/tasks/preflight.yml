@@ -549,15 +549,7 @@
 - name: Retain exact rendered resource identities for rollback verification
   ansible.builtin.set_fact:
     bootstrap_token_issuer_staging_candidate_resources: >-
-      {{
-        bootstrap_token_issuer_staging_candidate_resources_command.stdout_lines
-        + (
-          ['NetworkPolicy\t' ~ bootstrap_token_issuer_staging_namespace ~ '\t' ~ bootstrap_token_issuer_staging_supplemental_network_policy_name]
-          if bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
-          and not bootstrap_token_issuer_staging_supplemental_network_policy_existed
-          else []
-        )
-      }}
+      {{ bootstrap_token_issuer_staging_candidate_resources_command.stdout_lines }}
   no_log: true
 
 - name: Inspect rendered bootstrap token issuer ownership and policy
