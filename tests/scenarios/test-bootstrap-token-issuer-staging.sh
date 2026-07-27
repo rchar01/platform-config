@@ -20,6 +20,17 @@ assert_contains() {
   fi
 }
 
+assert_contains_fixed() {
+  local file="$1"
+  local pattern="$2"
+  local message="$3"
+
+  if ! grep -qF -- "$pattern" "$file"; then
+    printf '%s\n' "$message" >&2
+    exit 1
+  fi
+}
+
 test_modes_and_failure_lifecycle() {
   assert_contains "$PREFLIGHT_TASKS" "\['preflight', 'rollback_rehearsal', 'validate'\]" \
     'Staging workflow does not enforce all three explicit modes'
@@ -69,6 +80,61 @@ test_rollback_and_secret_safety() {
     'Credential validation does not persist the token ID for cleanup immediately after parsing'
   assert_contains "$CREDENTIAL_SCRIPT" 'cleanup_exact' \
     'Credential cleanup helper is not invoked'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" ':[0-9]{2}(\\.[0-9]{1,9})?Z\\z' \
+    'Credential validation does not accept RFC3339 fractional seconds'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" 'expires_parts="$(date -u --date="$expires_at" '\''+%s %N'\'' 2>/dev/null)" || fail_check issue_contract' \
+    'Credential validation does not preserve fractional seconds for time bounds'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" '[[ "$ttl_seconds" =~ ^[1-9][0-9]{0,8}$ ]]' \
+    'Credential validation does not bound TTL arithmetic'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" 'expires_ns=$((10#$expires_ns))' \
+    'Credential validation does not parse fractional seconds as base 10'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" 'expires_epoch > upper_epoch' \
+    'Credential validation does not bound expiration without nanosecond overflow'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" 'secret_expires_at="${secret_expires_at%%.*}Z"' \
+    'Credential validation does not normalize expiration for Secret comparison'
+  python3 <<'PY'
+import re
+
+pattern = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$"
+)
+valid = [
+    "2026-07-27T08:07:08Z",
+    "2026-07-27T08:07:08.1Z",
+    "2026-07-27T08:07:08.123456789Z",
+    "9999-12-31T23:59:59.999999999Z",
+]
+invalid = [
+    "2026-07-27T08:07:08.Z",
+    "2026-07-27T08:07:08.1234567890Z",
+    "2026-07-27T08:07:08.123+00:00",
+    "2026-07-27T08:07:08Z\n",
+]
+if not all(pattern.fullmatch(value) for value in valid):
+    raise SystemExit("Valid RFC3339Nano timestamp rejected")
+if any(pattern.fullmatch(value) for value in invalid):
+    raise SystemExit("Malformed RFC3339Nano timestamp accepted")
+PY
+  for timestamp in \
+    '2026-07-27T08:07:08Z' \
+    '2026-07-27T08:07:08.1Z' \
+    '2026-07-27T08:07:08.123456789Z' \
+    '9999-12-31T23:59:59.999999999Z'; do
+    date -u --date="$timestamp" +%s%N >/dev/null 2>&1 || {
+      printf 'Valid RFC3339Nano timestamp did not parse: %s\n' "$timestamp" >&2
+      exit 1
+    }
+  done
+  for timestamp in \
+    '2026-02-31T08:07:08Z' \
+    '2026-07-27T24:07:08Z' \
+    '2026-07-27T08:60:08Z' \
+    '2026-07-27T08:07:60Z'; do
+    if date -u --date="$timestamp" +%s%N >/dev/null 2>&1; then
+      printf 'Invalid RFC3339 timestamp parsed: %s\n' "$timestamp" >&2
+      exit 1
+    fi
+  done
   assert_contains "$CREDENTIAL_SCRIPT" 'exit \$\?' \
     'Credential cleanup does not propagate exact cleanup failures'
   assert_contains "$CREDENTIAL_SCRIPT" 'mapfile -t issuer_pod_rows' \

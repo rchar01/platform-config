@@ -106,7 +106,7 @@ expected_api_server="$(kctl -n "$namespace" get configmap "$service_name" \
 [[ -n "$expected_api_server" ]] || fail_check issue_contract
 ttl_seconds="$(kctl -n "$namespace" get configmap "$service_name" \
   -o jsonpath='{.data.ISSUER_MIN_TTL_SECONDS}' 2>/dev/null)" || fail_check issue_contract
-[[ "$ttl_seconds" =~ ^[1-9][0-9]*$ ]] || fail_check issue_contract
+[[ "$ttl_seconds" =~ ^[1-9][0-9]{0,8}$ ]] || fail_check issue_contract
 
 issue_body_file="$state_dir/issue.json"
 jq -n --arg user "staging-validation" --arg reason "manual-recovery" \
@@ -118,11 +118,27 @@ bootstrap_kubeconfig="$(jq -r '.bootstrapKubeconfig // ""' <<<"$issue_response" 
 [[ "$token_id" =~ ^[a-z0-9]{6}$ ]] || fail_check issue_contract
 printf '%s' "$token_id" >"$state_dir/token-id"
 chmod 0600 "$state_dir/token-id"
-jq -e '.expiresAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")' \
+jq -e '.expiresAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z\\z")' \
   <<<"$issue_response" >/dev/null 2>&1 || fail_check issue_contract
-jq -e --argjson ttl "$ttl_seconds" \
-  '(.expiresAt | fromdateiso8601) as $expires | $expires > now and $expires <= (now + $ttl + 5)' \
-  <<<"$issue_response" >/dev/null 2>&1 || fail_check issue_contract
+expires_parts="$(date -u --date="$expires_at" '+%s %N' 2>/dev/null)" || fail_check issue_contract
+now_parts="$(date -u '+%s %N')" || fail_check issue_contract
+read -r expires_epoch expires_ns <<<"$expires_parts" || fail_check issue_contract
+read -r now_epoch now_ns <<<"$now_parts" || fail_check issue_contract
+[[ "$expires_epoch" =~ ^[0-9]+$ && "$expires_ns" =~ ^[0-9]{9}$ ]] || fail_check issue_contract
+[[ "$now_epoch" =~ ^[0-9]+$ && "$now_ns" =~ ^[0-9]{9}$ ]] || fail_check issue_contract
+expires_ns=$((10#$expires_ns))
+now_ns=$((10#$now_ns))
+if ((expires_epoch < now_epoch || (expires_epoch == now_epoch && expires_ns <= now_ns))); then
+  fail_check issue_contract
+fi
+upper_epoch=$((now_epoch + ttl_seconds + 5))
+if ((expires_epoch > upper_epoch || (expires_epoch == upper_epoch && expires_ns > now_ns))); then
+  fail_check issue_contract
+fi
+secret_expires_at="$expires_at"
+if [[ "$secret_expires_at" == *.*Z ]]; then
+  secret_expires_at="${secret_expires_at%%.*}Z"
+fi
 [[ "$bootstrap_kubeconfig" == *"server: $expected_api_server"* ]] || fail_check issue_contract
 printf '%s\n' "$bootstrap_kubeconfig" >"$state_dir/bootstrap.kubeconfig"
 chmod 0600 "$state_dir/bootstrap.kubeconfig"
@@ -144,7 +160,7 @@ grep -Fxq "$bootstrap_group" <<<"$bootstrap_groups" || fail_check bootstrap_grou
 bootstrap_group_status=pass
 
 secret_json="$(kctl -n kube-system get secret "bootstrap-token-$token_id" -o json 2>/dev/null)" || fail_check token_secret_present
-jq -e --arg id "$token_id" --arg secret "${bearer_token#*.}" --arg expires "$expires_at" --arg group "$bootstrap_group" '
+jq -e --arg id "$token_id" --arg secret "${bearer_token#*.}" --arg expires "$secret_expires_at" --arg group "$bootstrap_group" '
   .type == "bootstrap.kubernetes.io/token" and
   (.data["token-id"] | @base64d) == $id and
   (.data["token-secret"] | @base64d) == $secret and
