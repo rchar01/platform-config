@@ -168,6 +168,18 @@
   changed_when: false
   when: bootstrap_token_issuer_staging_run_csr_check | bool
 
+- name: Install secret-safe bootstrap token issuer credential validator
+  ansible.builtin.copy:
+    src: credential-contract.sh
+    dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/credential-contract.sh"
+    mode: "0700"
+
+- name: Create protected bootstrap token issuer credential state directory
+  ansible.builtin.file:
+    path: "{{ bootstrap_token_issuer_staging_credential_dir }}"
+    state: directory
+    mode: "0700"
+
 - name: Acquire exact bootstrap token issuer source tag
   ansible.builtin.command:
     argv:

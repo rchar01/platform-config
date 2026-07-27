@@ -51,6 +51,8 @@ test_rollback_and_secret_safety() {
     'First-install rollback does not verify rendered resource absence'
   assert_contains "$PREFLIGHT_TASKS" 'Check existing bootstrap token issuer rollback target health' \
     'Existing release rollback target health is not checked before mutation'
+  assert_contains "$PREFLIGHT_TASKS" 'Install secret-safe bootstrap token issuer credential validator' \
+    'Cleanup helper is not armed before candidate mutation'
   assert_contains "$VALIDATE_TASKS" 'Run secret-safe bootstrap token issue, authentication, and revoke checks' \
     'Secret-safe credential contract task is missing'
   assert_contains "$VALIDATE_TASKS" '^  no_log: true$' \
