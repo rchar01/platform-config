@@ -45,6 +45,9 @@
     bootstrap_token_issuer_staging_temporary_cleanup: not_run
     bootstrap_token_issuer_staging_evidence_valid: false
     bootstrap_token_issuer_staging_temp_dir: ""
+    bootstrap_token_issuer_staging_supplemental_network_policy_existed: false
+    bootstrap_token_issuer_staging_supplemental_network_policy_applied: false
+    bootstrap_token_issuer_staging_supplemental_network_policy_rollback: not_required
 
 - name: Run guarded bootstrap token issuer staging workflow
   block:

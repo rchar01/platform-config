@@ -222,6 +222,12 @@ release name; kubeconfig path and context; private values source; and an
 immutable negative-test image containing `sh`, `getent`, and `curl`. The
 candidate values must provide the real bootstrap API URL, cluster name,
 NetworkPolicy CIDRs, and the selected ServiceAccount/RBAC ownership model.
+CNIs that enforce Kubernetes Service traffic after destination translation may
+also require a private supplemental NetworkPolicy allowing only the real API
+server endpoint CIDRs and port. Set
+`bootstrap_token_issuer_staging_supplemental_network_policy_src` and
+`bootstrap_token_issuer_staging_supplemental_network_policy_name`; rollback
+restores a previous policy or deletes a first-install policy.
 
 The fixed public v0.3.0 inputs are:
 

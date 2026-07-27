@@ -23,6 +23,14 @@
       - bootstrap_token_issuer_staging_admin_kubeconfig | length > 0
       - bootstrap_token_issuer_staging_kube_context | length > 0
       - bootstrap_token_issuer_staging_private_values_src | length > 0
+      - >-
+        bootstrap_token_issuer_staging_supplemental_network_policy_src | length == 0
+        or (
+          bootstrap_token_issuer_staging_supplemental_network_policy_name | length > 0
+          and bootstrap_token_issuer_staging_supplemental_network_policy_cidrs | length > 0
+          and bootstrap_token_issuer_staging_supplemental_network_policy_port | int > 0
+          and bootstrap_token_issuer_staging_supplemental_network_policy_port | int <= 65535
+        )
       - bootstrap_token_issuer_staging_mode == 'preflight' or bootstrap_token_issuer_staging_negative_test_image is match('^.+@sha256:[0-9a-f]{64}$')
       - bootstrap_token_issuer_staging_mode != 'validate' or bootstrap_token_issuer_staging_run_csr_check | bool
       - bootstrap_token_issuer_staging_mode != 'validate' or bootstrap_token_issuer_staging_run_upstream_validator | bool
@@ -48,6 +56,26 @@
       - bootstrap_token_issuer_staging_private_values_stat.stat.isreg
     fail_msg: The private candidate values source is unavailable.
   no_log: true
+
+- name: Check supplemental bootstrap token issuer NetworkPolicy source
+  ansible.builtin.stat:
+    path: "{{ bootstrap_token_issuer_staging_supplemental_network_policy_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_stat
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Require a regular supplemental bootstrap token issuer NetworkPolicy file
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_supplemental_network_policy_stat.stat.exists
+      - bootstrap_token_issuer_staging_supplemental_network_policy_stat.stat.isreg
+    fail_msg: The supplemental NetworkPolicy source is unavailable.
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
 
 - name: Read bootstrap token issuer workflow revision
   ansible.builtin.command:
@@ -363,6 +391,113 @@
     mode: "0600"
   no_log: true
 
+- name: Copy supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.copy:
+    src: "{{ bootstrap_token_issuer_staging_supplemental_network_policy_src }}"
+    dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/supplemental-network-policy.yaml"
+    mode: "0600"
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Validate supplemental bootstrap token issuer NetworkPolicy identity
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      yq ea -o=json -I=0 '.'
+      {{ (bootstrap_token_issuer_staging_temp_dir ~ '/supplemental-network-policy.yaml') | quote }} |
+      jq -e --arg name {{ bootstrap_token_issuer_staging_supplemental_network_policy_name | quote }}
+      --arg namespace {{ bootstrap_token_issuer_staging_namespace | quote }}
+      --argjson cidrs {{ bootstrap_token_issuer_staging_supplemental_network_policy_cidrs | to_json | quote }}
+      --argjson port {{ bootstrap_token_issuer_staging_supplemental_network_policy_port | int }} -s '
+      length == 1 and .[0].apiVersion == "networking.k8s.io/v1" and
+      .[0].kind == "NetworkPolicy" and .[0].metadata.name == $name and
+      .[0].metadata.namespace == $namespace and
+      .[0].spec.policyTypes == ["Egress"] and
+      .[0].spec.podSelector == {"matchLabels":{"app.kubernetes.io/name":"bootstrap-token-issuer"}} and
+      (.[0].spec | has("ingress") | not) and
+      (.[0].spec.egress | length) == 1 and
+      (.[0].spec.egress[0].to | length) == ($cidrs | length) and
+      all(.[0].spec.egress[0].to[];
+        (keys | sort) == ["ipBlock"] and (.ipBlock | keys) == ["cidr"]) and
+      (.[0].spec.egress[0].ports | length) == 1 and
+      .[0].spec.egress[0].ports[0] == {"protocol":"TCP","port":$port} and
+      ([.[0].spec.egress[0].to[] | select((keys | sort) == ["ipBlock"] and
+        (.ipBlock | keys) == ["cidr"]) | .ipBlock.cidr] | sort) == ($cidrs | sort)'
+  args:
+    executable: /bin/bash
+  changed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Check existing supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - networkpolicy
+      - "{{ bootstrap_token_issuer_staging_supplemental_network_policy_name }}"
+      - -o
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_get
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Require conclusive supplemental bootstrap token issuer NetworkPolicy state
+  ansible.builtin.assert:
+    that:
+      - bootstrap_token_issuer_staging_supplemental_network_policy_get.rc in [0, 1]
+      - >-
+        bootstrap_token_issuer_staging_supplemental_network_policy_get.rc == 0
+        or 'NotFound' in bootstrap_token_issuer_staging_supplemental_network_policy_get.stderr
+        or 'not found' in bootstrap_token_issuer_staging_supplemental_network_policy_get.stderr
+    fail_msg: Supplemental NetworkPolicy lookup must succeed or return an explicit NotFound.
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Record supplemental bootstrap token issuer NetworkPolicy state
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_supplemental_network_policy_existed: >-
+      {{ bootstrap_token_issuer_staging_supplemental_network_policy_get.rc == 0 }}
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Normalize existing supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - jq
+      - -cS
+      - >-
+        del(.metadata.creationTimestamp, .metadata.generation,
+        .metadata.managedFields, .metadata.resourceVersion, .metadata.uid,
+        .metadata.annotations."kubectl.kubernetes.io/last-applied-configuration",
+        .status)
+  args:
+    stdin: "{{ bootstrap_token_issuer_staging_supplemental_network_policy_get.stdout }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_previous
+  changed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+    - bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
+- name: Preserve normalized supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.copy:
+    content: "{{ bootstrap_token_issuer_staging_supplemental_network_policy_previous.stdout }}\n"
+    dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/supplemental-network-policy.previous.json"
+    mode: "0600"
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+    - bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
 - name: Render bootstrap token issuer candidate manifest
   ansible.builtin.command:
     argv:
@@ -401,10 +536,28 @@
   changed_when: false
   no_log: true
 
+- name: Reject supplemental bootstrap token issuer NetworkPolicy identity collision
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('NetworkPolicy\t' ~ bootstrap_token_issuer_staging_namespace ~ '\t'
+        ~ bootstrap_token_issuer_staging_supplemental_network_policy_name)
+        not in bootstrap_token_issuer_staging_candidate_resources_command.stdout_lines
+    fail_msg: Supplemental NetworkPolicy must not collide with a Helm-rendered resource.
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
 - name: Retain exact rendered resource identities for rollback verification
   ansible.builtin.set_fact:
     bootstrap_token_issuer_staging_candidate_resources: >-
-      {{ bootstrap_token_issuer_staging_candidate_resources_command.stdout_lines }}
+      {{
+        bootstrap_token_issuer_staging_candidate_resources_command.stdout_lines
+        + (
+          ['NetworkPolicy\t' ~ bootstrap_token_issuer_staging_namespace ~ '\t' ~ bootstrap_token_issuer_staging_supplemental_network_policy_name]
+          if bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+          and not bootstrap_token_issuer_staging_supplemental_network_policy_existed
+          else []
+        )
+      }}
   no_log: true
 
 - name: Inspect rendered bootstrap token issuer ownership and policy

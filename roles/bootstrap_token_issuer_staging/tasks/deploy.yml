@@ -35,6 +35,26 @@
       - bootstrap_token_issuer_staging_helm_apply.rc == 0
     fail_msg: Candidate Helm apply failed; cleanup and rollback are armed.
 
+- name: Arm supplemental bootstrap token issuer NetworkPolicy rollback
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_supplemental_network_policy_applied: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
+- name: Apply supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - apply
+      - -f
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/supplemental-network-policy.yaml"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  changed_when: true
+  no_log: true
+  when: bootstrap_token_issuer_staging_supplemental_network_policy_src | length > 0
+
 - name: Wait for bootstrap token issuer candidate rollout
   ansible.builtin.command:
     argv:

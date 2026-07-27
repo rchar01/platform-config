@@ -49,6 +49,12 @@ test_rollback_and_secret_safety() {
     'First-install uninstall strategy is missing'
   assert_contains "$ROLLBACK_TASKS" 'Check every rendered first-install resource is absent' \
     'First-install rollback does not verify rendered resource absence'
+  assert_contains "$ROLLBACK_TASKS" 'Delete first-install supplemental bootstrap token issuer NetworkPolicy' \
+    'First-install rollback does not delete its supplemental NetworkPolicy'
+  assert_contains "$ROLLBACK_TASKS" 'Restore previous supplemental bootstrap token issuer NetworkPolicy' \
+    'Existing-release rollback does not restore its supplemental NetworkPolicy'
+  assert_contains "$ROLLBACK_TASKS" 'Normalize restored supplemental bootstrap token issuer NetworkPolicy' \
+    'Existing supplemental NetworkPolicy rollback is not compared after normalization'
   assert_contains "$PREFLIGHT_TASKS" 'Check existing bootstrap token issuer rollback target health' \
     'Existing release rollback target health is not checked before mutation'
   assert_contains "$PREFLIGHT_TASKS" 'Install secret-safe bootstrap token issuer credential validator' \
@@ -154,6 +160,14 @@ test_fail_closed_preflight_and_cleanup() {
     'Rendered issuer RBAC does not verify exact Secret permissions'
   assert_contains "$PREFLIGHT_TASKS" 'role_binding_matches' \
     'Rendered issuer RBAC does not correlate RoleBinding roleRef'
+  assert_contains "$PREFLIGHT_TASKS" 'Require conclusive supplemental bootstrap token issuer NetworkPolicy state' \
+    'Supplemental NetworkPolicy lookup errors do not fail preflight closed'
+  assert_contains "$PREFLIGHT_TASKS" 'spec.egress \| length' \
+    'Supplemental NetworkPolicy does not constrain its egress rule count'
+  assert_contains "$PREFLIGHT_TASKS" 'spec.egress\[0\]\.to \| length' \
+    'Supplemental NetworkPolicy does not reject unexpected egress peers'
+  assert_contains "$PREFLIGHT_TASKS" 'Reject supplemental bootstrap token issuer NetworkPolicy identity collision' \
+    'Supplemental NetworkPolicy can collide with a Helm-rendered resource'
   assert_contains "${ROLE_DIR}/tasks/cleanup.yml" 'cleanup_helper.stat.exists' \
     'Post-mutation cleanup does not require the cleanup helper'
   assert_contains "${ROLE_DIR}/tasks/cleanup.yml" 'exact_cleanup_command.rc.*default\(1\)' \

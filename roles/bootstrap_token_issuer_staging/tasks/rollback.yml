@@ -8,6 +8,139 @@
       {{ bootstrap_token_issuer_staging_failure_stage if bootstrap_token_issuer_staging_failure_stage != 'none' else 'post_mutation' }}
     bootstrap_token_issuer_staging_workflow_failed: true
 
+- name: Restore previous supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - apply
+      - -f
+      - "{{ bootstrap_token_issuer_staging_temp_dir }}/supplemental-network-policy.previous.json"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_restore
+  changed_when: bootstrap_token_issuer_staging_supplemental_network_policy_restore.rc == 0
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_applied | bool
+    - bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
+- name: Delete first-install supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - delete
+      - networkpolicy
+      - "{{ bootstrap_token_issuer_staging_supplemental_network_policy_name }}"
+      - --ignore-not-found
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_delete
+  changed_when: bootstrap_token_issuer_staging_supplemental_network_policy_delete.rc == 0
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_applied | bool
+    - not bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
+- name: Read restored supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - networkpolicy
+      - "{{ bootstrap_token_issuer_staging_supplemental_network_policy_name }}"
+      - -o
+      - json
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_restored_get
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_applied | bool
+    - bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
+- name: Normalize restored supplemental bootstrap token issuer NetworkPolicy
+  ansible.builtin.command:
+    argv:
+      - jq
+      - -cS
+      - >-
+        del(.metadata.creationTimestamp, .metadata.generation,
+        .metadata.managedFields, .metadata.resourceVersion, .metadata.uid,
+        .metadata.annotations."kubectl.kubernetes.io/last-applied-configuration",
+        .status)
+  args:
+    stdin: "{{ bootstrap_token_issuer_staging_supplemental_network_policy_restored_get.stdout | default('{}') }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_restored
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_applied | bool
+    - bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
+- name: Check first-install supplemental bootstrap token issuer NetworkPolicy absence
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --context
+      - "{{ bootstrap_token_issuer_staging_kube_context }}"
+      - -n
+      - "{{ bootstrap_token_issuer_staging_namespace }}"
+      - get
+      - networkpolicy
+      - "{{ bootstrap_token_issuer_staging_supplemental_network_policy_name }}"
+  environment:
+    KUBECONFIG: "{{ bootstrap_token_issuer_staging_admin_kubeconfig }}"
+  register: bootstrap_token_issuer_staging_supplemental_network_policy_absence
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - bootstrap_token_issuer_staging_supplemental_network_policy_applied | bool
+    - not bootstrap_token_issuer_staging_supplemental_network_policy_existed | bool
+
+- name: Record supplemental bootstrap token issuer NetworkPolicy rollback
+  ansible.builtin.set_fact:
+    bootstrap_token_issuer_staging_supplemental_network_policy_rollback: >-
+      {{
+        'not_required'
+        if not bootstrap_token_issuer_staging_supplemental_network_policy_applied
+        else (
+          'pass'
+          if (
+            bootstrap_token_issuer_staging_supplemental_network_policy_existed
+            and (bootstrap_token_issuer_staging_supplemental_network_policy_restore.rc | default(1)) == 0
+            and (bootstrap_token_issuer_staging_supplemental_network_policy_restored_get.rc | default(1)) == 0
+            and (bootstrap_token_issuer_staging_supplemental_network_policy_restored.rc | default(1)) == 0
+            and bootstrap_token_issuer_staging_supplemental_network_policy_restored.stdout
+            == bootstrap_token_issuer_staging_supplemental_network_policy_previous.stdout
+          ) or (
+            not bootstrap_token_issuer_staging_supplemental_network_policy_existed
+            and (bootstrap_token_issuer_staging_supplemental_network_policy_delete.rc | default(1)) == 0
+            and (bootstrap_token_issuer_staging_supplemental_network_policy_absence.rc | default(0)) == 1
+            and (
+              'NotFound' in (bootstrap_token_issuer_staging_supplemental_network_policy_absence.stderr | default(''))
+              or 'not found' in (bootstrap_token_issuer_staging_supplemental_network_policy_absence.stderr | default(''))
+            )
+          )
+          else 'fail'
+        )
+      }}
+
 - name: Roll back existing bootstrap token issuer Helm release
   ansible.builtin.command:
     argv:
@@ -76,6 +209,7 @@
         if bootstrap_token_issuer_staging_rollback_command.rc == 0
         and bootstrap_token_issuer_staging_rollback_rollout_command.rc == 0
         and bootstrap_token_issuer_staging_previous_image_digest in bootstrap_token_issuer_staging_rollback_image_command.stdout
+        and bootstrap_token_issuer_staging_supplemental_network_policy_rollback in ['pass', 'not_required']
         else 'fail'
       }}
   no_log: true
@@ -164,6 +298,7 @@
         | rejectattr('rc', 'equalto', 0) | list | length == 0)
         and (bootstrap_token_issuer_staging_uninstall_resources_check.results
         | selectattr('stdout', 'ne', '') | list | length == 0)
+        and bootstrap_token_issuer_staging_supplemental_network_policy_rollback in ['pass', 'not_required']
         else 'fail'
       }}
   no_log: true

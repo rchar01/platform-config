@@ -22,6 +22,10 @@ bootstrap_token_issuer_staging_admin_kubeconfig: ""
 bootstrap_token_issuer_staging_kube_context: ""
 bootstrap_token_issuer_staging_private_values_src: ""
 bootstrap_token_issuer_staging_negative_test_image: ""
+bootstrap_token_issuer_staging_supplemental_network_policy_src: ""
+bootstrap_token_issuer_staging_supplemental_network_policy_name: ""
+bootstrap_token_issuer_staging_supplemental_network_policy_cidrs: []
+bootstrap_token_issuer_staging_supplemental_network_policy_port: 0
 
 bootstrap_token_issuer_staging_service_name: bastion-token-issuer
 bootstrap_token_issuer_staging_service_port_name: http
