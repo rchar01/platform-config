@@ -130,6 +130,11 @@
     dest: "{{ bootstrap_token_issuer_staging_temp.path }}/staging-validation-result.schema.json"
     checksum: sha256:7422bc6450820671c126b65bac716ba3c488e2ff4557ae1d0c72aefa118f2582
     mode: "0600"
+    timeout: 30
+  register: bootstrap_token_issuer_staging_schema_download
+  retries: 3
+  delay: 2
+  until: bootstrap_token_issuer_staging_schema_download is succeeded
 
 - name: Read pinned bootstrap token issuer staging evidence schema
   ansible.builtin.slurp:
@@ -280,6 +285,11 @@
     url: "{{ bootstrap_token_issuer_staging_release_manifest_url }}"
     dest: "{{ bootstrap_token_issuer_staging_temp_dir }}/release-manifest.json"
     mode: "0600"
+    timeout: 30
+  register: bootstrap_token_issuer_staging_release_manifest_download
+  retries: 3
+  delay: 2
+  until: bootstrap_token_issuer_staging_release_manifest_download is succeeded
 
 - name: Read bootstrap token issuer chart metadata
   ansible.builtin.shell:
