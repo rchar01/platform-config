@@ -153,10 +153,13 @@ bootstrap_username="$(timeout "${request_timeout}s" "$kubectl_bin" --request-tim
 [[ "$bootstrap_username" == "system:bootstrap:$token_id" ]] || fail_check bootstrap_identity
 bootstrap_identity=pass
 
-bootstrap_groups="$(timeout "${request_timeout}s" "$kubectl_bin" --request-timeout="${request_timeout}s" \
+bootstrap_groups_json="$(timeout "${request_timeout}s" "$kubectl_bin" --request-timeout="${request_timeout}s" \
   --kubeconfig "$state_dir/bootstrap.kubeconfig" auth whoami \
-  -o jsonpath='{range .status.userInfo.groups[*]}{.}{"\n"}{end}' 2>/dev/null)" || fail_check bootstrap_group_status
-grep -Fxq "$bootstrap_group" <<<"$bootstrap_groups" || fail_check bootstrap_group_status
+  -o json 2>/dev/null)" || fail_check bootstrap_group_status
+jq -e --arg group "$bootstrap_group" \
+  '(.status.userInfo.groups | type) == "array" and
+  (.status.userInfo.groups | index($group)) != null' <<<"$bootstrap_groups_json" \
+  >/dev/null 2>&1 || fail_check bootstrap_group_status
 bootstrap_group_status=pass
 
 secret_json="$(kctl -n kube-system get secret "bootstrap-token-$token_id" -o json 2>/dev/null)" || fail_check token_secret_present

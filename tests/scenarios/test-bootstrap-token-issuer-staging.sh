@@ -80,6 +80,10 @@ test_rollback_and_secret_safety() {
     'Credential validation does not persist the token ID for cleanup immediately after parsing'
   assert_contains "$CREDENTIAL_SCRIPT" 'cleanup_exact' \
     'Credential cleanup helper is not invoked'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" '(.status.userInfo.groups | type) == "array"' \
+    'Credential validation does not require a bootstrap group array'
+  assert_contains_fixed "$CREDENTIAL_SCRIPT" '(.status.userInfo.groups | index($group)) != null' \
+    'Credential validation does not parse bootstrap groups from whoami JSON'
   assert_contains_fixed "$CREDENTIAL_SCRIPT" ':[0-9]{2}(\\.[0-9]{1,9})?Z\\z' \
     'Credential validation does not accept RFC3339 fractional seconds'
   assert_contains_fixed "$CREDENTIAL_SCRIPT" 'expires_parts="$(date -u --date="$expires_at" '\''+%s %N'\'' 2>/dev/null)" || fail_check issue_contract' \
