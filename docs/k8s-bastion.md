@@ -229,21 +229,26 @@ server endpoint CIDRs and port. Set
 `bootstrap_token_issuer_staging_supplemental_network_policy_name`; rollback
 restores a previous policy or deletes a first-install policy.
 
-The fixed public v0.3.0 inputs are:
+The fixed public v0.3.1 inputs are:
 
 ```yaml
 bootstrap_token_issuer_staging_source_repo: https://codeberg.org/rch/bootstrap-token-issuer.git
-bootstrap_token_issuer_staging_source_tag: v0.3.0
-bootstrap_token_issuer_staging_source_commit: 057447891612b521d872d35cf90c9b73b6596789
-bootstrap_token_issuer_staging_version: 0.3.0
-bootstrap_token_issuer_staging_image_ref: codeberg.org/rch/bootstrap-token-issuer:0.3.0
-bootstrap_token_issuer_staging_image_digest: sha256:36726a708466663d8513e50e61ec1919d735d4d7e68a1f8bdb2b3ee4079d25cd
-bootstrap_token_issuer_staging_image_revision: 057447891612b521d872d35cf90c9b73b6596789
-bootstrap_token_issuer_staging_chart_ref: codeberg.org/rch/charts/bootstrap-token-issuer:0.3.0
-bootstrap_token_issuer_staging_chart_digest: sha256:5919aa1f98afd5a013a62f63636a0c9e33e35db2c7e9effb5f5d5b6424f8df76
-bootstrap_token_issuer_staging_chart_source_commit: 057447891612b521d872d35cf90c9b73b6596789
-bootstrap_token_issuer_staging_release_manifest_url: https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.0/release-manifest.json
+bootstrap_token_issuer_staging_source_tag: v0.3.1
+bootstrap_token_issuer_staging_source_commit: 4d5dc06fe485a5e33fceb49d1a195dac30ff4bb8
+bootstrap_token_issuer_staging_version: 0.3.1
+bootstrap_token_issuer_staging_image_ref: codeberg.org/rch/bootstrap-token-issuer:0.3.1
+bootstrap_token_issuer_staging_image_digest: sha256:54d261dd1c9534c496ef30c5b9d4e4e45cc7385ef1343a8230df65db921a1c9e
+bootstrap_token_issuer_staging_image_revision: 4d5dc06fe485a5e33fceb49d1a195dac30ff4bb8
+bootstrap_token_issuer_staging_chart_ref: codeberg.org/rch/charts/bootstrap-token-issuer:0.3.1
+bootstrap_token_issuer_staging_chart_digest: sha256:767c9ad9ef1e8ca58fa98f92f7f0890860778f4f72d43162eefaaa5e8ad41980
+bootstrap_token_issuer_staging_chart_source_commit: 4d5dc06fe485a5e33fceb49d1a195dac30ff4bb8
+bootstrap_token_issuer_staging_release_manifest_url: https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.1/release-manifest.json
 ```
+
+The workflow pins the tagged evidence schema checksum to
+`e8c4d616d147c4cb6ca0b5acbb235ee207fe3732c1a3dae5453db15307df222e`.
+The release manifest must report chart archive SHA-256
+`eeeb71042de519387c5e992b261b6b0842f463ef2cedfa71b3b950ebc10c1028`.
 
 Private inventory supplies
 `bootstrap_token_issuer_staging_environment_label`,
@@ -263,7 +268,7 @@ public role retains the 1.29 default; a 1.35 environment must override both
 Keep the admin kubeconfig outside Git. Keep real values under
 `platform-private`; the role copies them into a mode-0700 remote temporary
 directory and suppresses all tasks that can expose values, endpoints, logs,
-token IDs, Secrets, bearer tokens, or kubeconfigs. The public v0.3.0 source,
+token IDs, Secrets, bearer tokens, or kubeconfigs. The public v0.3.1 source,
 image, chart, release manifest, and digests are immutable release inputs, not
 private configuration.
 

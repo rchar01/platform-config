@@ -31,6 +31,17 @@ assert_contains_fixed() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local pattern="$2"
+  local message="$3"
+
+  if grep -qE -- "$pattern" "$file"; then
+    printf '%s\n' "$message" >&2
+    exit 1
+  fi
+}
+
 test_modes_and_failure_lifecycle() {
   assert_contains "$PREFLIGHT_TASKS" "\['preflight', 'rollback_rehearsal', 'validate'\]" \
     'Staging workflow does not enforce all three explicit modes'
@@ -43,10 +54,56 @@ test_modes_and_failure_lifecycle() {
 }
 
 test_immutable_public_artifacts() {
-  assert_contains "$PREFLIGHT_TASKS" "image_ref == 'codeberg.org/rch/bootstrap-token-issuer:0.3.0'" \
-    'Image input is not constrained to the public v0.3.0 artifact'
-  assert_contains "$PREFLIGHT_TASKS" "chart_ref == 'codeberg.org/rch/charts/bootstrap-token-issuer:0.3.0'" \
-    'Chart input is not constrained to the public v0.3.0 artifact'
+  python3 - "$PREFLIGHT_TASKS" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    tasks = yaml.safe_load(stream)
+
+input_task = next(
+    task for task in tasks
+    if task.get("name") == "Validate bootstrap token issuer staging inputs"
+)
+input_assertions = input_task["ansible.builtin.assert"]["that"]
+expected_inputs = {
+    "bootstrap_token_issuer_staging_source_tag == 'v0.3.1'",
+    "bootstrap_token_issuer_staging_source_commit == '4d5dc06fe485a5e33fceb49d1a195dac30ff4bb8'",
+    "bootstrap_token_issuer_staging_version == '0.3.1'",
+    "bootstrap_token_issuer_staging_image_ref == 'codeberg.org/rch/bootstrap-token-issuer:0.3.1'",
+    "bootstrap_token_issuer_staging_image_digest == 'sha256:54d261dd1c9534c496ef30c5b9d4e4e45cc7385ef1343a8230df65db921a1c9e'",
+    "bootstrap_token_issuer_staging_chart_ref == 'codeberg.org/rch/charts/bootstrap-token-issuer:0.3.1'",
+    "bootstrap_token_issuer_staging_chart_digest == 'sha256:767c9ad9ef1e8ca58fa98f92f7f0890860778f4f72d43162eefaaa5e8ad41980'",
+    "bootstrap_token_issuer_staging_release_manifest_url == 'https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.1/release-manifest.json'",
+}
+missing_inputs = expected_inputs.difference(input_assertions)
+if missing_inputs:
+    raise SystemExit(f"immutable v0.3.1 input assertions missing: {sorted(missing_inputs)}")
+
+schema_task = next(
+    task for task in tasks
+    if task.get("name") == "Download pinned bootstrap token issuer staging evidence schema"
+)
+schema_download = schema_task["ansible.builtin.get_url"]
+if schema_download["url"] != "https://codeberg.org/rch/bootstrap-token-issuer/raw/tag/v0.3.1/docs/staging-validation-result.schema.json":
+    raise SystemExit("evidence schema URL is not constrained to v0.3.1")
+if schema_download["checksum"] != "sha256:e8c4d616d147c4cb6ca0b5acbb235ee207fe3732c1a3dae5453db15307df222e":
+    raise SystemExit("evidence schema checksum is not constrained to v0.3.1")
+
+chart_task = next(
+    task for task in tasks
+    if task.get("name") == "Assert bootstrap token issuer chart release provenance"
+)
+chart_assertions = chart_task["ansible.builtin.assert"]["that"]
+archive_assertion = (
+    "bootstrap_token_issuer_staging_chart_checksum_command.stdout.split()[0] == "
+    "'eeeb71042de519387c5e992b261b6b0842f463ef2cedfa71b3b950ebc10c1028'"
+)
+if archive_assertion not in chart_assertions:
+    raise SystemExit("chart archive checksum is not constrained to v0.3.1")
+PY
+  assert_not_contains "$PREFLIGHT_TASKS" 'v?0\.3\.0' \
+    'Active preflight still references the superseded v0.3.0 artifact'
   assert_contains "$PREFLIGHT_TASKS" 'skopeo inspect --raw' \
     'OCI chart digest is not independently resolved'
   assert_contains "${ROLE_DIR}/tasks/deploy.yml" 'image.tag=.*image_digest' \
@@ -271,13 +328,28 @@ PY
 }
 
 test_cleanup_failure_semantics() {
-  local tmpdir fake_kubectl rc
+  local tmpdir fake_jq fake_jq_log fake_kubectl fake_kubectl_log rc
   mkdir -p "${ROOT_DIR}/.ansible/tests"
   tmpdir="$(mktemp -d "${ROOT_DIR}/.ansible/tests/credential-cleanup.XXXXXX")"
+  fake_jq="${tmpdir}/jq"
+  fake_jq_log="${tmpdir}/jq.log"
   fake_kubectl="${tmpdir}/kubectl"
+  fake_kubectl_log="${tmpdir}/kubectl.log"
+  cat >"$fake_jq" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FAKE_JQ_LOG:?}"
+if [[ "$#" -ne 5 || "$1" != -n || "$2" != --arg || "$3" != token_id || "$5" != '{tokenId: $token_id}' ]]; then
+  printf '%s\n' 'unexpected jq invocation' >&2
+  exit 2
+fi
+printf '{"tokenId":"%s"}\n' "$4"
+EOF
+  chmod 0755 "$fake_jq"
   cat >"$fake_kubectl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >>"${FAKE_KUBECTL_LOG:?}"
 case " ${*} " in
   *" delete secret "*) [[ "${FAKE_MODE:-}" != secret-delete-failure ]] ;;
   *" get secret "*) exit 1 ;;
@@ -288,7 +360,12 @@ EOF
   chmod 0755 "$fake_kubectl"
 
   run_cleanup() {
+    : >"$fake_jq_log"
+    : >"$fake_kubectl_log"
     env \
+      PATH="$tmpdir:$PATH" \
+      FAKE_JQ_LOG="$fake_jq_log" \
+      FAKE_KUBECTL_LOG="$fake_kubectl_log" \
       KUBECTL_BIN="$fake_kubectl" \
       KUBE_CONTEXT=test \
       STAGING_NAMESPACE=bastion-system \
@@ -314,6 +391,10 @@ EOF
   rc=$?
   set -e
   [[ "$rc" -ne 0 ]] || { printf '%s\n' 'Secret cleanup failure was masked' >&2; exit 1; }
+  assert_contains_fixed "$fake_jq_log" '-n --arg token_id abc123 {tokenId: $token_id}' \
+    'Token cleanup did not build the expected revoke request'
+  assert_contains_fixed "$fake_kubectl_log" 'delete secret bootstrap-token-abc123 --ignore-not-found' \
+    'Token cleanup did not reach the intended Secret deletion failure'
 
   mkdir -p "${tmpdir}/csr"
   printf '%s' staging-test-csr >"${tmpdir}/csr/csr-name"
@@ -322,6 +403,8 @@ EOF
   rc=$?
   set -e
   [[ "$rc" -ne 0 ]] || { printf '%s\n' 'CSR cleanup failure was masked' >&2; exit 1; }
+  assert_contains_fixed "$fake_kubectl_log" 'delete certificatesigningrequest staging-test-csr --ignore-not-found' \
+    'CSR cleanup did not reach the intended CSR deletion failure'
 
   rm -rf "$tmpdir"
 }

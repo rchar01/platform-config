@@ -5,17 +5,17 @@
       - ansible_play_hosts_all | length == 1
       - bootstrap_token_issuer_staging_mode in ['preflight', 'rollback_rehearsal', 'validate']
       - bootstrap_token_issuer_staging_source_repo == 'https://codeberg.org/rch/bootstrap-token-issuer.git'
-      - bootstrap_token_issuer_staging_source_tag == 'v0.3.0'
-      - bootstrap_token_issuer_staging_source_commit is match('^[0-9a-f]{40}$')
-      - bootstrap_token_issuer_staging_version == '0.3.0'
-      - bootstrap_token_issuer_staging_image_ref == 'codeberg.org/rch/bootstrap-token-issuer:0.3.0'
-      - bootstrap_token_issuer_staging_image_digest is match('^sha256:[0-9a-f]{64}$')
+      - bootstrap_token_issuer_staging_source_tag == 'v0.3.1'
+      - bootstrap_token_issuer_staging_source_commit == '4d5dc06fe485a5e33fceb49d1a195dac30ff4bb8'
+      - bootstrap_token_issuer_staging_version == '0.3.1'
+      - bootstrap_token_issuer_staging_image_ref == 'codeberg.org/rch/bootstrap-token-issuer:0.3.1'
+      - bootstrap_token_issuer_staging_image_digest == 'sha256:54d261dd1c9534c496ef30c5b9d4e4e45cc7385ef1343a8230df65db921a1c9e'
       - bootstrap_token_issuer_staging_image_revision is match('^[0-9a-f]{40}$')
       - bootstrap_token_issuer_staging_image_revision == bootstrap_token_issuer_staging_source_commit
-      - bootstrap_token_issuer_staging_chart_ref == 'codeberg.org/rch/charts/bootstrap-token-issuer:0.3.0'
-      - bootstrap_token_issuer_staging_chart_digest is match('^sha256:[0-9a-f]{64}$')
+      - bootstrap_token_issuer_staging_chart_ref == 'codeberg.org/rch/charts/bootstrap-token-issuer:0.3.1'
+      - bootstrap_token_issuer_staging_chart_digest == 'sha256:767c9ad9ef1e8ca58fa98f92f7f0890860778f4f72d43162eefaaa5e8ad41980'
       - bootstrap_token_issuer_staging_chart_source_commit == bootstrap_token_issuer_staging_source_commit
-      - bootstrap_token_issuer_staging_release_manifest_url == 'https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.0/release-manifest.json'
+      - bootstrap_token_issuer_staging_release_manifest_url == 'https://codeberg.org/rch/bootstrap-token-issuer/releases/download/v0.3.1/release-manifest.json'
       - bootstrap_token_issuer_staging_environment_label is match('^[A-Za-z0-9._-]+$')
       - bootstrap_token_issuer_staging_expected_kubernetes_minor in ['1.29', '1.35']
       - bootstrap_token_issuer_staging_namespace == 'bastion-system'
@@ -37,7 +37,7 @@
       - not bootstrap_token_issuer_staging_image_ref is search('dev-test')
       - not bootstrap_token_issuer_staging_chart_ref is search('dev-test')
       - (bootstrap_token_issuer_staging_mode == 'rollback_rehearsal') == (bootstrap_token_issuer_staging_controlled_failure | bool)
-    fail_msg: Bootstrap token issuer staging requires exact public v0.3.0 inputs and one execution host.
+    fail_msg: Bootstrap token issuer staging requires exact public v0.3.1 inputs and one execution host.
 
 - name: Check private bootstrap token issuer values source
   ansible.builtin.stat:
@@ -141,10 +141,10 @@
     bootstrap_token_issuer_staging_workflow_commit: "{{ bootstrap_token_issuer_staging_workflow_revision_command.stdout }}"
     bootstrap_token_issuer_staging_started_at: "{{ bootstrap_token_issuer_staging_started_command.stdout }}"
     bootstrap_token_issuer_staging_run_id: >-
-      bti-v030-{{ bootstrap_token_issuer_staging_started_command.stdout | regex_replace('[-:]', '') }}
+      bti-v031-{{ bootstrap_token_issuer_staging_started_command.stdout | regex_replace('[-:]', '') }}
     bootstrap_token_issuer_staging_temp_dir: "{{ bootstrap_token_issuer_staging_temp.path }}"
     bootstrap_token_issuer_staging_source_dir: "{{ bootstrap_token_issuer_staging_temp.path }}/source"
-    bootstrap_token_issuer_staging_chart_archive: "{{ bootstrap_token_issuer_staging_temp.path }}/bootstrap-token-issuer-0.3.0.tgz"
+    bootstrap_token_issuer_staging_chart_archive: "{{ bootstrap_token_issuer_staging_temp.path }}/bootstrap-token-issuer-0.3.1.tgz"
     bootstrap_token_issuer_staging_candidate_manifest: "{{ bootstrap_token_issuer_staging_temp.path }}/candidate-manifest.yaml"
     bootstrap_token_issuer_staging_credential_dir: "{{ bootstrap_token_issuer_staging_temp.path }}/credential"
     bootstrap_token_issuer_staging_negative_namespace: >-
@@ -154,9 +154,9 @@
 
 - name: Download pinned bootstrap token issuer staging evidence schema
   ansible.builtin.get_url:
-    url: https://codeberg.org/rch/bootstrap-token-issuer/raw/tag/v0.3.0/docs/staging-validation-result.schema.json
+    url: https://codeberg.org/rch/bootstrap-token-issuer/raw/tag/v0.3.1/docs/staging-validation-result.schema.json
     dest: "{{ bootstrap_token_issuer_staging_temp.path }}/staging-validation-result.schema.json"
-    checksum: sha256:7422bc6450820671c126b65bac716ba3c488e2ff4557ae1d0c72aefa118f2582
+    checksum: sha256:e8c4d616d147c4cb6ca0b5acbb235ee207fe3732c1a3dae5453db15307df222e
     mode: "0600"
     timeout: 30
   register: bootstrap_token_issuer_staging_schema_download
@@ -247,7 +247,7 @@
     that:
       - bootstrap_token_issuer_staging_source_revision.stdout == bootstrap_token_issuer_staging_source_commit
       - bootstrap_token_issuer_staging_source_status.stdout | length == 0
-      - bootstrap_token_issuer_staging_source_schema_checksum.stdout.split()[0] == '7422bc6450820671c126b65bac716ba3c488e2ff4557ae1d0c72aefa118f2582'
+      - bootstrap_token_issuer_staging_source_schema_checksum.stdout.split()[0] == 'e8c4d616d147c4cb6ca0b5acbb235ee207fe3732c1a3dae5453db15307df222e'
     fail_msg: Acquired bootstrap token issuer source is not the exact clean candidate.
 
 - name: Record exact source checkout assertion
@@ -373,6 +373,7 @@
       - bootstrap_token_issuer_staging_release_chart.oci_ref == bootstrap_token_issuer_staging_chart_ref
       - bootstrap_token_issuer_staging_release_chart.oci_digest == bootstrap_token_issuer_staging_chart_digest
       - bootstrap_token_issuer_staging_chart_checksum_command.stdout.split()[0] == bootstrap_token_issuer_staging_release_chart.sha256
+      - bootstrap_token_issuer_staging_chart_checksum_command.stdout.split()[0] == 'eeeb71042de519387c5e992b261b6b0842f463ef2cedfa71b3b950ebc10c1028'
       - bootstrap_token_issuer_staging_chart_source_commit == bootstrap_token_issuer_staging_source_commit
     fail_msg: Chart metadata, release manifest, package, and source do not identify one release.
 
