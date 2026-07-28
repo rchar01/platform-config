@@ -1,0 +1,15 @@
+---
+- name: Validate Kubernetes bastion Phase 1 bootstrap inputs
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    k8s_bastion_initial_user_bootstrap_mode: "{{ phase1_initial_mode | default('disabled') }}"
+    k8s_bastion_enable_automatic_user_bootstrap: "{{ phase1_automatic_bootstrap | default('false') }}"
+    k8s_bastion_enable_issuer_convergence: false
+    k8s_bastion_enable_controller_staging: false
+    k8s_bastion_enable_controller_convergence: false
+    k8s_bastion_enable_controller_cutover: false
+  tasks:
+    - name: Execute role bootstrap validation
+      ansible.builtin.import_tasks: ../../../roles/k8s_bastion_access/tasks/validate_bootstrap.yml

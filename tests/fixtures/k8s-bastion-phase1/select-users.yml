@@ -1,0 +1,37 @@
+---
+- name: Verify Kubernetes bastion eligible-user selection
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  environment:
+    BASH_ENV: "{{ playbook_dir }}/mock-getent.bash"
+    PHASE1_FIXTURE_ROOT: "{{ playbook_dir }}"
+  vars:
+    k8s_bastion_policy_path: "{{ playbook_dir }}/access-policy.yml"
+    k8s_bastion_admin_group: k8s-admin
+  tasks:
+    - name: Execute normal eligible-user selection
+      ansible.builtin.include_role:
+        name: k8s_bastion_access
+        tasks_from: select_bootstrap_users.yml
+      vars:
+        k8s_bastion_force_bootstrap_user_kubeconfigs: false
+
+    - name: Retain normal eligible-user selection
+      ansible.builtin.set_fact:
+        phase1_normal_users: "{{ k8s_bastion_users_needing_bootstrap.stdout_lines }}"
+
+    - name: Execute forced eligible-user selection
+      ansible.builtin.include_role:
+        name: k8s_bastion_access
+        tasks_from: select_bootstrap_users.yml
+      vars:
+        k8s_bastion_force_bootstrap_user_kubeconfigs: true
+
+    - name: Assert exact eligible-user selections
+      ansible.builtin.assert:
+        that:
+          - phase1_normal_users == ['eligible-user']
+          - >-
+            k8s_bastion_users_needing_bootstrap.stdout_lines
+            == ['eligible-user', 'config-user', 'bootstrap-user']

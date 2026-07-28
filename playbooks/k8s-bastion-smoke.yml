@@ -63,13 +63,33 @@
       ansible.builtin.command:
         cmd: systemctl is-enabled bastion-bootstrapd.service
       changed_when: false
-      when: k8s_bastion_enable_bootstrapd | default(true)
+      when: k8s_bastion_enable_automatic_user_bootstrap | default(false) | bool
 
     - name: Check bootstrap daemon is active when configured  # noqa: command-instead-of-module
       ansible.builtin.command:
         cmd: systemctl is-active bastion-bootstrapd.service
       changed_when: false
-      when: k8s_bastion_enable_bootstrapd | default(true)
+      when: k8s_bastion_enable_automatic_user_bootstrap | default(false) | bool
+
+    - name: Check bootstrap daemon is disabled by default  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-enabled bastion-bootstrapd.service
+      register: k8s_bastion_smoke_bootstrapd_disabled
+      changed_when: false
+      failed_when: >-
+        k8s_bastion_smoke_bootstrapd_disabled.rc == 0
+        or k8s_bastion_smoke_bootstrapd_disabled.stdout != 'disabled'
+      when: not (k8s_bastion_enable_automatic_user_bootstrap | default(false) | bool)
+
+    - name: Check bootstrap daemon is inactive by default  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-active bastion-bootstrapd.service
+      register: k8s_bastion_smoke_bootstrapd_inactive
+      changed_when: false
+      failed_when: >-
+        k8s_bastion_smoke_bootstrapd_inactive.rc == 0
+        or k8s_bastion_smoke_bootstrapd_inactive.stdout != 'inactive'
+      when: not (k8s_bastion_enable_automatic_user_bootstrap | default(false) | bool)
 
     - name: Check configured bastion timers are enabled  # noqa: command-instead-of-module
       ansible.builtin.command:

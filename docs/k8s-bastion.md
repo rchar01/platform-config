@@ -129,6 +129,91 @@ k8s_bastion_admin_kubeconfig_src: "{{ k8s_bastion_local_secret_config_dir }}/k8s
 k8s_bastion_ca_src: ../platform-private/config/files/k8s-bastion/homelab/ca.crt
 ```
 
+## User Bootstrap Modes
+
+User credential creation is inert by default. The role separates these modes and concerns:
+
+- `k8s_bastion_initial_user_bootstrap_mode: disabled` creates no normal user credential.
+- `online` asks the issuer for one initial credential per eligible non-admin policy user that lacks both `~/.kube/config` and `~/.kube/bootstrap`.
+- `offline` writes synthetic non-working scaffolding for eligible non-admin users without issuer or Kubernetes API calls.
+- `k8s_bastion_enable_automatic_user_bootstrap` is the future login-recovery and `bastion-bootstrapd` gate. It defaults to `false` and Phase 1 rejects every truthy value pending a compatible runtime release.
+- `k8s_bastion_bootstrap_admin_kubeconfigs` independently installs the outside-Git admin kubeconfig for policy users in `k8s_bastion_admin_group` and removes their stale bootstrap file.
+
+The role iterates selected non-admin users rather than invoking the runtime's
+all-user bootstrap path. This prevents policy admins from receiving an
+unnecessary normal bootstrap token before their admin kubeconfig is installed.
+Separating the initial and login modes prevents Ansible-issued and login-issued
+tokens from being an expected duplicate path. Forced initial bootstrap remains
+an explicit operator action through
+`k8s_bastion_force_bootstrap_user_kubeconfigs`.
+
+`k8s_bastion_enable_automatic_user_bootstrap` accepts booleans and the
+Ansible-compatible values `true`, `false`, `yes`, `no`, `on`, `off`, `1`, and
+`0`; every use is normalized with `bool`. Values outside that set fail
+preflight. A truthy value also fails the Phase 1 runtime dependency gate even
+when the initial mode is `disabled`: the pinned runtime's login recovery does
+not exclude policy admins. The current blocked baseline is runtime version
+`1.1.3` from submodule commit
+`bda8d23d8062f0589c69d18fd519624e356aa76a`. Automatic login bootstrap remains
+unavailable until a released `platform-k8s-bastion` runtime enforces that
+exclusion and `platform-config` deliberately updates the gate after consuming
+the release.
+
+Migrate legacy private inventory explicitly:
+
+| Legacy variable | Replacement | Migration |
+| --- | --- | --- |
+| `k8s_bastion_bootstrap_user_kubeconfigs: false` | `k8s_bastion_initial_user_bootstrap_mode: disabled` | Creates no initial normal-user credential. |
+| `k8s_bastion_bootstrap_user_kubeconfigs: true` with `k8s_bastion_offline_bootstrap: false` | `k8s_bastion_initial_user_bootstrap_mode: online` | Issues initial credentials only for eligible non-admin users. |
+| `k8s_bastion_bootstrap_user_kubeconfigs: true` with `k8s_bastion_offline_bootstrap: true` | `k8s_bastion_initial_user_bootstrap_mode: offline` | Writes synthetic non-working scaffolding only for eligible non-admin users. |
+| `k8s_bastion_enable_bootstrapd` | `k8s_bastion_enable_automatic_user_bootstrap: false` | Keep false during Phase 1; there is no safe truthy migration until the runtime dependency is released and consumed. |
+
+Preflight rejects any remaining legacy variable instead of silently applying a
+different mode.
+
+The bootstrap daemon retains `ProtectSystem=strict`. Its only writable systemd
+paths are `/run/bastion-bootstrapd`, `/home`, and the runtime contract's exact
+ownership directory `/var/lib/bastion/bootstrap-tokens`.
+
+## Integration Approval Model
+
+The bastion user-access work has three coordinated authorities:
+
+- the bootstrap token issuer release plan owns issuer source, chart, tests, and immutable release identities
+- the bootstrap certificate controller readiness plan owns controller source, chart, tests, and immutable release identities
+- the platform configuration integration plan owns public deployment interfaces, host safety, validation, controlled cutover, and durable convergence
+
+Acceptance of one component does not authorize cluster convergence, controller
+cutover, API-server trust changes, signing material installation, or automatic
+user bootstrap. Those are separate gates. Phase 1 reserves the following
+interfaces, all disabled by default and rejected if enabled before their
+implementation exists:
+
+- `k8s_bastion_enable_issuer_convergence`
+- `k8s_bastion_enable_controller_staging`
+- `k8s_bastion_enable_controller_convergence`
+- `k8s_bastion_enable_controller_cutover`
+
+Automatic login bootstrap wiring is installed on the host but cannot be
+activated during Phase 1. The sanitized public shape for later immutable
+artifact identities, external policy ConfigMap and signing Secret references,
+revisions, signer name, API networking, and inactive controller modes is in
+`inventories/dev/group_vars/k8s_bastion_user_access.yml.example`.
+
+### RBAC Separation
+
+Issuer bootstrap-token Secret verbs are exactly `create` and `delete`; issuer
+RBAC must not gain `get`, `list`, `watch`, `update`, or `patch`. The controller
+approver's ownership lookup requires separate Secret `get` permission and does
+not expand the issuer ServiceAccount. Approver, signer, and cleanup permissions
+remain split by ServiceAccount.
+
+The pinned `platform-k8s-bastion` contract document at the reviewed Phase 1
+baseline still describes broader issuer Secret access. That text is stale and
+must be corrected in a future external runtime release; this repository does not
+edit or fork the vendored runtime. Later issuer adoption must also enforce exact
+rendered and existing RBAC, not only document it.
+
 `k8s_bastion_policy_src` must reference the complete access policy that should be installed as `/etc/bastion/access-policy.yaml`. This role does not merge public base policy, private base policy, or environment overlays.
 
 Validate and render a private source policy before an Ansible run when needed:
@@ -181,7 +266,7 @@ After applying to a clean Rocky bastion host, `playbooks/k8s-bastion-smoke.yml` 
 bastion-version
 kubectl version --client
 helm version
-systemctl status bastion-bootstrapd.service
+systemctl status bastion-bootstrapd.service  # only when automatic bootstrap is enabled
 systemctl list-timers 'bastion-*'
 test -f /etc/bastion/access-policy.yaml
 test -f /etc/bastion/admin.kubeconfig
@@ -326,7 +411,8 @@ The role is designed for repeated Ansible runs:
 - user group bootstrap reports changed only when the runtime command creates groups or adds users to groups
 - stale policy-managed group memberships are removed when `k8s_bastion_reconcile_policy_access` is true; this includes groups removed from policy but still present in the previous managed
   policy access manifest
-- user bootstrap kubeconfigs are generated only for users that have neither `~/.kube/config` nor `~/.kube/bootstrap`, unless `k8s_bastion_force_bootstrap_user_kubeconfigs` is true
+- online or offline initial bootstrap applies only to non-admin policy users that have neither `~/.kube/config` nor `~/.kube/bootstrap`, unless `k8s_bastion_force_bootstrap_user_kubeconfigs` is true
+- automatic login bootstrap and the bootstrap daemon remain disabled; Phase 1 preflight rejects activation until a runtime release enforces policy-admin exclusion
 - admin kubeconfig bootstrap reports changed only when it installs an admin kubeconfig or removes a bootstrap kubeconfig
 - copied admin kubeconfigs are removed from users that no longer belong to `k8s_bastion_admin_group` in policy when `k8s_bastion_reconcile_policy_access` is true
 

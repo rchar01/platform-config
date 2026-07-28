@@ -199,31 +199,19 @@
     - k8s_bastion_installed_policy.stat.exists
     - k8s_bastion_reconcile_policy_access
 
-- name: Find users missing Kubernetes bastion bootstrap credentials
-  ansible.builtin.shell: |
-    set -o pipefail
-    yq -r '(.users // {}) | keys[]' {{ k8s_bastion_policy_path | quote }} | while IFS= read -r user; do
-      home_dir="$(getent passwd "$user" | cut -d: -f6 || true)"
-      if [[ -n "$home_dir" && ! -f "$home_dir/.kube/config" && ! -f "$home_dir/.kube/bootstrap" ]]; then
-        printf '%s\n' "$user"
-      fi
-    done
-  args:
-    executable: /bin/bash
-  register: k8s_bastion_users_needing_bootstrap
-  changed_when: false
+- name: Select Kubernetes bastion users needing initial bootstrap
+  ansible.builtin.import_tasks: select_bootstrap_users.yml
   when:
     - k8s_bastion_installed_policy.stat.exists
-    - k8s_bastion_bootstrap_user_kubeconfigs
-  check_mode: false
+    - k8s_bastion_initial_user_bootstrap_mode in ['online', 'offline']
 
 - name: Bootstrap Kubernetes bastion user kubeconfigs from policy
   ansible.builtin.command:
     cmd: >-
       {{ k8s_bastion_sbin_dir }}/bastion-bootstrap-kubeconfig
-      --all
+      --user {{ item }}
       --policy {{ k8s_bastion_policy_path }}
-      {{ '--offline-bootstrap' if k8s_bastion_offline_bootstrap else '' }}
+      {{ '--offline-bootstrap' if k8s_bastion_initial_user_bootstrap_mode == 'offline' else '' }}
   register: k8s_bastion_bootstrap_user_kubeconfigs_result
   changed_when: >-
     'Bootstrap kubeconfig installed for'
@@ -231,12 +219,12 @@
       k8s_bastion_bootstrap_user_kubeconfigs_result.stdout
       + k8s_bastion_bootstrap_user_kubeconfigs_result.stderr
     )
+  loop: "{{ k8s_bastion_users_needing_bootstrap.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
   when:
     - k8s_bastion_installed_policy.stat.exists
-    - k8s_bastion_bootstrap_user_kubeconfigs
-    - >-
-      k8s_bastion_force_bootstrap_user_kubeconfigs
-      or k8s_bastion_users_needing_bootstrap.stdout_lines | default([]) | length > 0
+    - k8s_bastion_initial_user_bootstrap_mode in ['online', 'offline']
 
 - name: Check Kubernetes bastion admin kubeconfig drift
   ansible.builtin.shell: |

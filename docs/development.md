@@ -32,10 +32,10 @@ make syntax ENV=dev
 make syntax ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml
 make lint
 make yamllint
-bash tests/run-all.sh
+make test
 ```
 
-`ansible-lint`, `yamllint`, and `tests/run-all.sh` are development checks. They are not required on managed hosts. Their local configuration excludes `.ansible/` and the vendored bastion runtime.
+`ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. The Make targets run tool-dependent checks in the development container, and their configuration excludes `.ansible/` and the vendored bastion runtime.
 
 The dev container mounts this repository at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at

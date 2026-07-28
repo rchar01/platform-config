@@ -297,12 +297,14 @@ case $- in
       BASTION_NOTICES=""
       BASTION_NOTICE_TOTAL=0
 
+{% if k8s_bastion_enable_automatic_user_bootstrap | bool %}
       if [[ -z "${BASTION_BOOTSTRAP_DONE:-}" ]]; then
         export BASTION_BOOTSTRAP_DONE=1
         if [[ -x {{ k8s_bastion_internal_bin_dir }}/bastion-login-bootstrap ]]; then
           {{ k8s_bastion_internal_bin_dir }}/bastion-login-bootstrap --quiet >/dev/null 2>&1 || true
         fi
       fi
+{% endif %}
 
       _bastion_collect_user_status
       _bastion_collect_cluster_status

@@ -1,0 +1,44 @@
+---
+apiVersion: bastion.platform.example/v1
+kind: BastionAccessPolicy
+cluster:
+  name: fixture-cluster
+  server: https://api.example.invalid:6443
+daemon:
+  allowedLoginGroup: bastion-login
+  socket:
+    path: /run/bastion-bootstrapd/bootstrapd.sock
+groups:
+  k8s-admin:
+    namespaces:
+      - all
+  app-reader:
+    namespaces:
+      - fixture
+users:
+  admin-user:
+    ensureGroups:
+      - bastion-login
+      - k8s-admin
+  eligible-user:
+    ensureGroups:
+      - bastion-login
+      - app-reader
+  config-user:
+    ensureGroups:
+      - bastion-login
+      - app-reader
+  bootstrap-user:
+    ensureGroups:
+      - bastion-login
+      - app-reader
+  missing-user:
+    ensureGroups:
+      - bastion-login
+      - app-reader
+csr:
+  groupPrefix: k8s-
+  signerName: bastion.example.invalid/client
+  ttl:
+    minSeconds: 600
+    maxSeconds: 3600

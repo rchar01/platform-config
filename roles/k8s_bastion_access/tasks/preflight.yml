@@ -1,4 +1,7 @@
 ---
+- name: Validate Kubernetes bastion bootstrap configuration
+  ansible.builtin.import_tasks: validate_bootstrap.yml
+
 - name: Check Kubernetes bastion runtime source
   ansible.builtin.stat:
     path: "{{ k8s_bastion_runtime_src }}"

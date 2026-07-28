@@ -148,12 +148,19 @@ k8s_bastion_admin_kubeconfig_path: /etc/bastion/admin.kubeconfig
 k8s_bastion_ca_path: /etc/bastion/ca.crt
 k8s_bastion_configure_users: true
 k8s_bastion_reconcile_policy_access: true
-k8s_bastion_offline_bootstrap: false
-k8s_bastion_bootstrap_user_kubeconfigs: true
+k8s_bastion_initial_user_bootstrap_mode: disabled
 k8s_bastion_force_bootstrap_user_kubeconfigs: false
 k8s_bastion_bootstrap_admin_kubeconfigs: true
 k8s_bastion_manage_cluster_rbac: false
 k8s_bastion_cluster_admin_role: cluster-admin
+
+# Reserved Phase 1 integration gates. Later phases must add an implementation
+# before any of these cluster-side features can be enabled.
+k8s_bastion_enable_issuer_convergence: false
+k8s_bastion_enable_controller_staging: false
+k8s_bastion_enable_controller_convergence: false
+k8s_bastion_enable_controller_cutover: false
+k8s_bastion_enable_automatic_user_bootstrap: false
 
 k8s_bastion_install_sudo_secure_path: true
 k8s_bastion_admin_group: k8s-admin
@@ -163,7 +170,6 @@ k8s_bastion_profile_hidden_admin_commands:
   - bastion-bootstrapd
 
 k8s_bastion_enable_systemd: true
-k8s_bastion_enable_bootstrapd: true
 k8s_bastion_enable_csr_timers: true
 k8s_bastion_enable_cert_renew_timer: true
 k8s_bastion_enable_cluster_status_timer: true

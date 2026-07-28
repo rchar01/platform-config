@@ -1,0 +1,54 @@
+---
+# Reserved integration gates. Phase 1 defines their public shape but does not
+# implement or authorize cluster deployment, cutover, or automatic enrollment.
+k8s_bastion_enable_issuer_convergence: false
+k8s_bastion_enable_controller_staging: false
+k8s_bastion_enable_controller_convergence: false
+k8s_bastion_enable_controller_cutover: false
+k8s_bastion_enable_automatic_user_bootstrap: false
+
+# Sanitized immutable artifact identity shape for later accepted-release roles.
+k8s_bastion_issuer_artifacts:
+  source_tag: v0.0.0-example
+  source_revision: "0000000000000000000000000000000000000000"
+  image: registry.example.invalid/platform/bootstrap-token-issuer:0.0.0
+  image_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  chart: registry.example.invalid/charts/bootstrap-token-issuer:0.0.0
+  chart_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+k8s_bastion_controller_artifacts:
+  source_tag: v0.0.0-example
+  source_revision: "0000000000000000000000000000000000000000"
+  image: registry.example.invalid/platform/bootstrap-cert-controller:0.0.0
+  image_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  chart: registry.example.invalid/charts/bootstrap-cert-controller:0.0.0
+  chart_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+# References identify externally rendered/provisioned objects; they never hold
+# policy content, private keys, certificates, or Secret data.
+k8s_bastion_controller_policy_config_map:
+  namespace: bastion-system
+  name: bastion-csr-policy
+  key: policy.yaml
+  external_revision: example-policy-revision
+k8s_bastion_controller_signing_secret:
+  namespace: bastion-system
+  name: bastion-csr-signer
+  external_revision: example-signing-material-revision
+k8s_bastion_policy_renderer_revision: "0000000000000000000000000000000000000000"
+k8s_bastion_runtime_revision: "0000000000000000000000000000000000000000"
+k8s_bastion_controller_signer_name: bastion.example.invalid/client
+
+# 192.0.2.0/24 is reserved for documentation and is not a deployable default.
+k8s_bastion_api_networking:
+  issuer_namespace: bastion-system
+  issuer_service: bastion-token-issuer
+  issuer_service_port_name: http
+  api_service_host: kubernetes.default.svc
+  api_service_port: 443
+  api_endpoint_cidrs:
+    - 192.0.2.10/32
+
+k8s_bastion_controller_modes:
+  approver: false
+  signer: false
+  cleanup: false

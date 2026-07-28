@@ -102,7 +102,7 @@ yamllint:
 
 ## Run repository tests
 test:
-	@bash tests/run-all.sh
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" bash tests/run-all.sh
 
 ## Run all local static checks
 verify: yamllint lint test

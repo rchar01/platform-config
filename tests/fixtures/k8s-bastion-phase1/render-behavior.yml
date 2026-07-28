@@ -1,0 +1,69 @@
+---
+- name: Verify Kubernetes bastion Phase 1 rendered behavior
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    phase1_repo_root: "{{ playbook_dir }}/../../.."
+    k8s_bastion_enable_automatic_user_bootstrap: "false"
+    k8s_bastion_sbin_dir: /usr/local/sbin
+    k8s_bastion_internal_bin_dir: /usr/local/lib/bastion/internal
+    k8s_bastion_user_tools: []
+    k8s_bastion_admin_tools: []
+    k8s_bastion_admin_group: k8s-admin
+    k8s_bastion_helper_tools: []
+    k8s_bastion_cluster_status_cache: /run/bastion-cluster-status.json
+    k8s_bastion_cluster_status_stale_seconds: 90
+  tasks:
+    - name: Load rendered bootstrap daemon unit
+      ansible.builtin.set_fact:
+        phase1_bootstrapd_unit: >-
+          {{
+            lookup(
+              'template',
+              phase1_repo_root
+              + '/roles/k8s_bastion_access/templates/bastion-bootstrapd.service.j2'
+            )
+          }}
+
+    - name: Load rendered login profile with quoted false
+      ansible.builtin.set_fact:
+        phase1_login_profile: >-
+          {{
+            lookup(
+              'template',
+              phase1_repo_root
+              + '/roles/k8s_bastion_access/templates/bastion-login.sh.j2'
+            )
+          }}
+
+    - name: Load host configuration task structure
+      ansible.builtin.set_fact:
+        phase1_host_config_tasks: >-
+          {{
+            lookup(
+              'file',
+              phase1_repo_root
+              + '/roles/k8s_bastion_access/tasks/host_config.yml'
+            ) | from_yaml
+          }}
+
+    - name: Verify rendered systemd hardening and quoted-false login behavior
+      ansible.builtin.assert:
+        that:
+          - k8s_bastion_enable_automatic_user_bootstrap | type_debug == 'str'
+          - not (k8s_bastion_enable_automatic_user_bootstrap | bool)
+          - "'ProtectSystem=strict' in phase1_bootstrapd_unit.splitlines()"
+          - >-
+            phase1_bootstrapd_unit.splitlines()
+            | select('match', '^ReadWritePaths=')
+            | list
+            == ['ReadWritePaths=/run/bastion-bootstrapd /home /var/lib/bastion/bootstrap-tokens']
+          - "'bastion-login-bootstrap --quiet' not in phase1_login_profile"
+          - >-
+            phase1_host_config_tasks[0].loop
+            | selectattr('path', 'defined')
+            | selectattr('path', 'equalto', '/var/lib/bastion/bootstrap-tokens')
+            | map(attribute='mode')
+            | list
+            == ['0700']

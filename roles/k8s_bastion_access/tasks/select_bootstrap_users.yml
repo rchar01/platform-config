@@ -1,0 +1,37 @@
+---
+- name: Read installed Kubernetes bastion policy for initial bootstrap
+  ansible.builtin.slurp:
+    path: "{{ k8s_bastion_policy_path }}"
+  register: k8s_bastion_initial_bootstrap_policy
+  check_mode: false
+
+- name: Initialize Kubernetes bastion initial bootstrap user list
+  ansible.builtin.set_fact:
+    k8s_bastion_initial_bootstrap_users: []
+
+- name: Collect non-admin Kubernetes bastion initial bootstrap users
+  ansible.builtin.set_fact:
+    k8s_bastion_initial_bootstrap_users: >-
+      {{ k8s_bastion_initial_bootstrap_users + [item.key] }}
+  loop: >-
+    {{
+      (
+        k8s_bastion_initial_bootstrap_policy.content
+        | b64decode
+        | from_yaml
+      ).users
+      | default({})
+      | dict2items
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+  when: k8s_bastion_admin_group not in (item.value.ensureGroups | default([]))
+
+- name: Find non-admin users missing Kubernetes bastion bootstrap credentials
+  ansible.builtin.shell:
+    cmd: "{{ lookup('template', 'select-bootstrap-users.sh.j2') }}"
+  args:
+    executable: /bin/bash
+  register: k8s_bastion_users_needing_bootstrap
+  changed_when: false
+  check_mode: false

@@ -16,4 +16,18 @@ Policy rendering is out of scope for this role. Set `k8s_bastion_policy_src` to 
 
 Set `k8s_bastion_manage_cluster_rbac: true` to bind policy groups whose `namespaces` list contains `all` to `k8s_bastion_cluster_admin_role`. Namespace-scoped RBAC is intentionally rejected until the policy-to-RBAC model is implemented.
 
+Normal user bootstrap is disabled by default. Select exactly one initial mode
+with `k8s_bastion_initial_user_bootstrap_mode`: `disabled`, `online`, or
+`offline`. `online` obtains one short-lived initial credential per eligible
+non-admin user; `offline` writes synthetic scaffolding without issuer/API calls.
+Policy admins are excluded because `k8s_bastion_bootstrap_admin_kubeconfigs`
+installs their separately supplied admin kubeconfig.
+
+`k8s_bastion_enable_automatic_user_bootstrap` separately controls login recovery
+and the bootstrap daemon. It accepts booleans and Ansible boolean-compatible
+values, is normalized with `bool`, and defaults to `false`. Phase 1 rejects every
+truthy value because the pinned runtime does not exclude policy admins from
+login recovery. Keep it false until a released `platform-k8s-bastion` runtime
+adds that enforcement and this role's dependency gate is deliberately updated.
+
 For restricted networks, use `k8s_bastion_external_tools` and `k8s_bastion_download_environment` to point downloads at an internal artifact mirror or proxy.

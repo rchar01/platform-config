@@ -1,0 +1,51 @@
+---
+- name: Validate Kubernetes bastion automatic bootstrap boolean
+  ansible.builtin.assert:
+    that:
+      - >-
+        (k8s_bastion_enable_automatic_user_bootstrap | string | lower)
+        in ['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']
+    fail_msg: >-
+      k8s_bastion_enable_automatic_user_bootstrap must be a boolean or a
+      boolean-compatible true, false, yes, no, on, off, 1, or 0 value.
+
+- name: Validate Kubernetes bastion bootstrap modes
+  ansible.builtin.assert:
+    that:
+      - k8s_bastion_offline_bootstrap is not defined
+      - k8s_bastion_bootstrap_user_kubeconfigs is not defined
+      - k8s_bastion_enable_bootstrapd is not defined
+      - k8s_bastion_initial_user_bootstrap_mode in ['disabled', 'online', 'offline']
+      - >-
+        not (k8s_bastion_enable_automatic_user_bootstrap | bool)
+        or k8s_bastion_initial_user_bootstrap_mode == 'disabled'
+    fail_msg: >-
+      Remove the legacy k8s_bastion_offline_bootstrap,
+      k8s_bastion_bootstrap_user_kubeconfigs, and k8s_bastion_enable_bootstrapd
+      variables. k8s_bastion_initial_user_bootstrap_mode must be disabled,
+      online, or offline. Automatic login bootstrap requires the initial mode to
+      remain disabled so Ansible and login recovery do not issue expected
+      duplicate credentials.
+
+- name: Keep unimplemented Kubernetes bastion integration gates disabled
+  ansible.builtin.assert:
+    that:
+      - not (k8s_bastion_enable_issuer_convergence | bool)
+      - not (k8s_bastion_enable_controller_staging | bool)
+      - not (k8s_bastion_enable_controller_convergence | bool)
+      - not (k8s_bastion_enable_controller_cutover | bool)
+    fail_msg: >-
+      Issuer convergence and controller staging, convergence, and cutover are
+      reserved Phase 1 interfaces without deployment implementations. Keep them
+      disabled until their separately approved phases are implemented.
+
+- name: Block automatic login bootstrap pending runtime admin exclusion
+  ansible.builtin.assert:
+    that:
+      - not (k8s_bastion_enable_automatic_user_bootstrap | bool)
+    fail_msg: >-
+      Automatic login bootstrap is unavailable with the current
+      platform-k8s-bastion runtime contract because login recovery does not
+      exclude policy admins. Keep k8s_bastion_enable_automatic_user_bootstrap
+      disabled until platform-config consumes a released runtime that enforces
+      admin exclusion and this dependency gate is updated.

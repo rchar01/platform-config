@@ -8,10 +8,11 @@ run_test() {
   local script="$2"
 
   printf '==> %s\n' "$name"
-  bash "$script"
+  "$script"
 }
 
 main() {
+  run_test "Kubernetes bastion Phase 1 safety" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-phase1-safety.sh"
   run_test "Kubernetes bastion access reconciliation" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-access-reconciliation.sh"
   run_test "Bootstrap token issuer staging workflow" "${SCRIPT_DIR}/scenarios/test-bootstrap-token-issuer-staging.sh"
 }

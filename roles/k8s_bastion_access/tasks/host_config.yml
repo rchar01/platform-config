@@ -11,6 +11,8 @@
       mode: "0755"
     - path: "{{ k8s_bastion_var_dir }}"
       mode: "0750"
+    - path: /var/lib/bastion/bootstrap-tokens
+      mode: "0700"
 
 - name: Install Kubernetes bastion access policy
   ansible.builtin.copy:
