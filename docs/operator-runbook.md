@@ -174,7 +174,9 @@ Do not commit private SSH keys or generated public keys to any repository.
 
 ## Outside-Git Secret Store
 
-Secrets belong outside Git under the local platform namespace:
+Durable configuration secrets belong outside Git under the local platform
+namespace. Short-lived PKI passphrase files are the exception and should come
+from temporary secret-manager mounts:
 
 ```text
 ~/.config/platform-infrastructure/
@@ -190,8 +192,6 @@ Current expected paths include:
 ~/.config/platform-infrastructure/pki/export/ansible/services/registry-example/tls.key
 ~/.config/platform-infrastructure/pki/export/ansible/services/openbao-example/fullchain.crt
 ~/.config/platform-infrastructure/pki/export/ansible/services/openbao-example/tls.key
-~/.config/platform-infrastructure/pki/root-ca/private/root-ca.pass
-~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
 ~/.config/platform-infrastructure/config/rke2/dev/cluster-token
 ~/.config/platform-infrastructure/config/k8s-bastion/dev/admin.kubeconfig
 ~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password
@@ -225,16 +225,83 @@ Current service names:
 | `registry-example` | Example Zot registry | Example RKE2/containerd |
 | `openbao-example` | Example OpenBao | None yet |
 
-The CA passphrase files must be outside Git and mode `0600` or stricter:
+Provide CA passphrases through short-lived secret-manager files outside the PKI
+tree. The following paths are examples; each file must be readable by the
+invoking user, mode `0600` or stricter, and contain a first line of at least 16
+characters with non-whitespace content:
+
+```text
+/run/secrets/platform-pki-root-pass
+/run/secrets/platform-pki-intermediate-pass
+```
+
+Do not store passphrase files beside the encrypted CA keys. Keeping both in the
+same PKI tree causes backups to contain the key and its passphrase together.
+
+For installations created from an older version of this runbook, migrate in
+stages. First provision the replacement secret-manager files without removing
+the existing files. Confirm that each replacement unlocks its CA key:
 
 ```bash
-install -d -m 700 ~/.config/platform-infrastructure/pki/root-ca/private
-install -d -m 700 ~/.config/platform-infrastructure/pki/intermediate-ca/private
-openssl rand -out ~/.config/platform-infrastructure/pki/root-ca/private/root-ca.pass -base64 48
-openssl rand -out ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass -base64 48
-chmod 600 ~/.config/platform-infrastructure/pki/root-ca/private/root-ca.pass
-chmod 600 ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+openssl pkey \
+  -in ~/.config/platform-infrastructure/pki/root-ca/private/root-ca.key \
+  -passin file:/run/secrets/platform-pki-root-pass \
+  -noout -check
+openssl pkey \
+  -in ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.key \
+  -passin file:/run/secrets/platform-pki-intermediate-pass \
+  -noout -check
 ```
+
+Only after both checks pass, move the old passphrase files to an owner-only
+quarantine outside `pki/`, preserving their original CA-relative locations:
+
+```bash
+(
+  set -euo pipefail
+  umask 077
+
+  legacy_root="$HOME/.config/platform-infrastructure/legacy"
+  root_source="$HOME/.config/platform-infrastructure/pki/root-ca/private/root-ca.pass"
+  intermediate_source="$HOME/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass"
+
+  [[ -f $root_source && ! -L $root_source ]]
+  [[ -f $intermediate_source && ! -L $intermediate_source ]]
+  root_identity=$(stat -c '%d:%i' "$root_source")
+  intermediate_identity=$(stat -c '%d:%i' "$intermediate_source")
+  [[ ! -L $legacy_root ]]
+  install -d -m 700 "$legacy_root"
+  legacy_dir=$(mktemp -d "$legacy_root/pki-passphrases-$(date +%Y%m%d)-XXXXXX")
+  printf 'Migration quarantine: %s\n' "$legacy_dir"
+  trap 'status=$?; if (( status != 0 )); then printf "Migration failed; inspect and reconcile %s before retrying.\n" "$legacy_dir" >&2; fi' EXIT
+  install -d -m 700 "$legacy_dir/root-ca/private" \
+    "$legacy_dir/intermediate-ca/private"
+
+  root_copy="$legacy_dir/root-ca/private/root-ca.pass"
+  intermediate_copy="$legacy_dir/intermediate-ca/private/intermediate-ca.pass"
+  install -m 600 "$root_source" "$root_copy"
+  install -m 600 "$intermediate_source" "$intermediate_copy"
+  cmp --silent "$root_source" "$root_copy"
+  cmp --silent "$intermediate_source" "$intermediate_copy"
+  [[ $(stat -c '%d:%i' "$root_source") == "$root_identity" ]]
+  [[ $(stat -c '%d:%i' "$intermediate_source") == "$intermediate_identity" ]]
+  rm -- "$root_source" "$intermediate_source"
+  trap - EXIT
+  printf 'Quarantined passphrases under %s\n' "$legacy_dir"
+)
+```
+
+Keep the quarantine until CA operations have succeeded with the replacement
+secret source and recovery has been proven. Encrypted backups created before
+migration may contain both keys and passphrases; retain them as sensitive
+recovery material or remove them according to the reviewed backup-retention
+policy. Never retain a plain backup containing both.
+
+After replacement-secret CA operations and recovery validation succeed,
+explicitly retire the quarantine through the approved secret-disposal process;
+do not leave plaintext passphrase copies there indefinitely. Review encrypted
+backups and other copies containing the quarantined files under the same
+retention decision before declaring the migration complete.
 
 Initial PKI setup:
 
@@ -244,13 +311,13 @@ platform-pki-root-create \
   --name "Example Platform Root CA" \
   --org "Example Platform" \
   --country "XX" \
-  --root-pass-file ~/.config/platform-infrastructure/pki/root-ca/private/root-ca.pass
+  --root-pass-file /run/secrets/platform-pki-root-pass
 platform-pki-intermediate-create \
   --name "Example Platform Intermediate CA" \
   --org "Example Platform" \
   --country "XX" \
-  --root-pass-file ~/.config/platform-infrastructure/pki/root-ca/private/root-ca.pass \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --root-pass-file /run/secrets/platform-pki-root-pass \
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 ```
 
 Define services in `~/.config/platform-infrastructure/pki/inventory/services.yml`:
@@ -286,11 +353,11 @@ Issue and export service certificates:
 
 ```bash
 platform-pki-service-issue gitlab-example \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-issue registry-example \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-issue openbao-example \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-verify gitlab-example
 platform-pki-service-verify registry-example
 platform-pki-service-verify openbao-example
@@ -335,7 +402,7 @@ Renew a service certificate while reusing the existing service private key:
 
 ```bash
 platform-pki-service-renew registry-example \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-verify registry-example
 platform-pki-export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
@@ -349,7 +416,7 @@ Rotate a service private key and certificate when the key may be exposed or a ro
 ```bash
 platform-pki-service-renew registry-example \
   --rotate-key \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-verify registry-example
 platform-pki-export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
@@ -362,7 +429,7 @@ Use the same pattern for GitLab, but include runner trust deployment:
 
 ```bash
 platform-pki-service-renew gitlab-example \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-verify gitlab-example
 platform-pki-export-ansible --force
 make apply ENV=homelab PLAYBOOK=playbooks/gitlab.yml
@@ -375,7 +442,7 @@ Use the same pattern for OpenBao:
 
 ```bash
 platform-pki-service-renew openbao-example \
-  --intermediate-pass-file ~/.config/platform-infrastructure/pki/intermediate-ca/private/intermediate-ca.pass
+  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-verify openbao-example
 platform-pki-export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
