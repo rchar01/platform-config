@@ -1,73 +1,11 @@
 ---
-monitoring_stack_grafana_admin_password_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/monitoring/dev/grafana-admin-password"
-monitoring_stack_prometheus_web_listen_port: 9091
-monitoring_stack_grafana_firewalld_allowed_sources:
-  - 192.0.2.0/24
-monitoring_stack_loki_firewalld_allowed_sources:
-  - 192.0.2.0/24
-monitoring_stack_prometheus_targets:
-  - target: 192.0.2.60:9100
-    vm_name: k8s-bastion-example
-    ip: 192.0.2.60
-    platform_role: bastion
-    environment: dev
-  - target: 192.0.2.61:9100
-    vm_name: registry-example
-    ip: 192.0.2.61
-    platform_role: registry
-    environment: dev
-  - target: 192.0.2.62:9100
-    vm_name: registry-runner-example
-    ip: 192.0.2.62
-    platform_role: registry-runner
-    environment: dev
-  - target: 192.0.2.63:9100
-    vm_name: openbao-example
-    ip: 192.0.2.63
-    platform_role: openbao
-    environment: dev
-  - target: 192.0.2.64:9100
-    vm_name: monitoring-example
-    ip: 192.0.2.64
-    platform_role: monitoring
-    environment: dev
-  - target: 192.0.2.65:9100
-    vm_name: k8s-runner-example
-    ip: 192.0.2.65
-    platform_role: k8s-runner
-    environment: dev
-  - target: 192.0.2.66:9100
-    vm_name: rke2-server-example-01
-    ip: 192.0.2.66
-    platform_role: rke2-server
-    environment: dev
-  - target: 192.0.2.67:9100
-    vm_name: rke2-server-example-02
-    ip: 192.0.2.67
-    platform_role: rke2-server
-    environment: dev
-  - target: 192.0.2.68:9100
-    vm_name: rke2-server-example-03
-    ip: 192.0.2.68
-    platform_role: rke2-server
-    environment: dev
-  - target: 192.0.2.69:9100
-    vm_name: rke2-agent-example-01
-    ip: 192.0.2.69
-    platform_role: rke2-agent
-    environment: dev
-  - target: 192.0.2.70:9100
-    vm_name: rke2-agent-example-02
-    ip: 192.0.2.70
-    platform_role: rke2-agent
-    environment: dev
-  - target: 192.0.2.71:9100
-    vm_name: rke2-agent-example-03
-    ip: 192.0.2.71
-    platform_role: rke2-agent
-    environment: dev
-  - target: 192.0.2.73:9100
-    vm_name: workload-lb-example
-    ip: 192.0.2.73
-    platform_role: workload-load-balancer
-    environment: dev
+# The current playbook fails closed until the replacement HA roles and exact
+# immutable artifact identities exist.
+monitoring_service_vip: 192.0.2.201
+monitoring_grafana_dns: grafana.monitoring.example.invalid
+monitoring_loki_dns: loki.monitoring.example.invalid
+monitoring_mimir_dns: mimir.monitoring.example.invalid
+monitoring_s3_dns: s3.monitoring.example.invalid
+monitoring_alertmanager_dns: alertmanager.monitoring.example.invalid
+monitoring_postgres_dns: postgres.monitoring.example.invalid
+monitoring_keepalived_enabled: false

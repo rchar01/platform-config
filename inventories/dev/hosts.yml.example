@@ -1,5 +1,7 @@
 ---
 all:
+  vars:
+    platform_environment: dev
   children:
     rocky:
       hosts:
@@ -9,10 +11,18 @@ all:
           ansible_host: 192.0.2.61
         registry-runner-example:
           ansible_host: 192.0.2.62
-        openbao-example:
+        openbao-example-01:
           ansible_host: 192.0.2.63
-        monitoring-example:
+        openbao-example-02:
+          ansible_host: 192.0.2.72
+        openbao-example-03:
+          ansible_host: 192.0.2.74
+        monitoring-example-01:
           ansible_host: 192.0.2.64
+        monitoring-example-02:
+          ansible_host: 192.0.2.75
+        monitoring-example-03:
+          ansible_host: 192.0.2.76
         k8s-runner-example:
           ansible_host: 192.0.2.65
         rke2-server-example-01:
@@ -42,8 +52,6 @@ all:
       hosts:
         registry-example:
         registry-runner-example:
-        openbao-example:
-        monitoring-example:
         k8s-runner-example:
 
     registry:
@@ -54,9 +62,11 @@ all:
       hosts:
         registry-runner-example:
 
-    vault:
+    openbao:
       hosts:
-        openbao-example:
+        openbao-example-01:
+        openbao-example-02:
+        openbao-example-03:
 
     gitlab:
       hosts: {}
@@ -68,7 +78,9 @@ all:
 
     monitoring:
       hosts:
-        monitoring-example:
+        monitoring-example-01:
+        monitoring-example-02:
+        monitoring-example-03:
 
     load_balancers:
       hosts:
@@ -79,20 +91,7 @@ all:
         workload-lb-example:
 
     monitoring_targets:
-      hosts:
-        k8s-bastion-example:
-        registry-example:
-        registry-runner-example:
-        openbao-example:
-        monitoring-example:
-        k8s-runner-example:
-        rke2-server-example-01:
-        rke2-server-example-02:
-        rke2-server-example-03:
-        rke2-agent-example-01:
-        rke2-agent-example-02:
-        rke2-agent-example-03:
-        workload-lb-example:
+      hosts: {}
 
     rke2_cluster:
       hosts:
@@ -122,8 +121,6 @@ all:
       hosts:
         registry-example:
         registry-runner-example:
-        openbao-example:
-        monitoring-example:
         k8s-runner-example:
         rke2-server-example-01:
         rke2-server-example-02:

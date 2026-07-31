@@ -5,6 +5,7 @@ storage_volume_packages:
   - xfsprogs
 
 storage_volumes: []
+storage_volume_layouts: []
 
 storage_volume_default_fstype: xfs
 storage_volume_default_mount_options: defaults,rw,nosuid,nodev,relatime

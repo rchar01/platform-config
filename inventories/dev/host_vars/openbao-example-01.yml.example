@@ -1,0 +1,37 @@
+---
+platform_host_description: Example OpenBao HA node 1
+openbao_node_name: bao-1
+openbao_node_address: 192.0.2.63
+openbao_node_dns: bao-1.internal.invalid
+openbao_tls_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/openbao-example-01/fullchain.crt"
+openbao_tls_key_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/openbao-example-01/tls.key"
+
+storage_volume_layouts:
+  - name: openbao_data
+    device: /dev/disk/by-id/example-openbao-01-data
+    vg_name: openbao_data
+    capacity_gib: 20
+    required_free_gib: 4
+    initialize: false
+
+storage_volumes:
+  - name: openbao_raft
+    layout: openbao_data
+    lv_name: raft
+    size_gib: 8
+    mountpoint: /var/lib/openbao
+  - name: openbao_audit_1
+    layout: openbao_data
+    lv_name: audit_1
+    size_gib: 2
+    mountpoint: /var/log/openbao/audit-1
+  - name: openbao_audit_2
+    layout: openbao_data
+    lv_name: audit_2
+    size_gib: 2
+    mountpoint: /var/log/openbao/audit-2
+  - name: openbao_backup_staging
+    layout: openbao_data
+    lv_name: backup_staging
+    size_gib: 2
+    mountpoint: /var/lib/openbao-backup-staging

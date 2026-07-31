@@ -1,0 +1,24 @@
+---
+platform_host_description: Example monitoring HA node 3
+monitoring_node_name: monitoring-3
+monitoring_node_address: 192.0.2.76
+monitoring_node_dns: monitoring-3.internal.invalid
+
+storage_volume_layouts:
+  - name: monitoring_data
+    device: /dev/disk/by-id/example-monitoring-03-data
+    vg_name: monitoring_data
+    capacity_gib: 80
+    required_free_gib: 10
+    initialize: false
+
+storage_volumes:
+  - {name: monitoring_postgresql_data, layout: monitoring_data, lv_name: postgresql_data, size_gib: 6, mountpoint: /srv/monitoring/postgresql/data}
+  - {name: monitoring_postgresql_wal, layout: monitoring_data, lv_name: postgresql_wal, size_gib: 3, mountpoint: /srv/monitoring/postgresql/wal}
+  - {name: monitoring_etcd, layout: monitoring_data, lv_name: etcd, size_gib: 2, mountpoint: /srv/monitoring/etcd}
+  - {name: monitoring_garage_metadata, layout: monitoring_data, lv_name: garage_metadata, size_gib: 3, mountpoint: /srv/monitoring/garage/metadata}
+  - {name: monitoring_garage_objects, layout: monitoring_data, lv_name: garage_objects, size_gib: 20, mountpoint: /srv/monitoring/garage/objects}
+  - {name: monitoring_loki, layout: monitoring_data, lv_name: loki, size_gib: 6, mountpoint: /srv/monitoring/loki}
+  - {name: monitoring_mimir, layout: monitoring_data, lv_name: mimir, size_gib: 10, mountpoint: /srv/monitoring/mimir}
+  - {name: monitoring_alloy, layout: monitoring_data, lv_name: alloy, size_gib: 3, mountpoint: /srv/monitoring/alloy}
+  - {name: monitoring_containers, layout: monitoring_data, lv_name: containers, size_gib: 6, mountpoint: /var/lib/containers}

@@ -1,5 +1,7 @@
 ---
 all:
+  vars:
+    platform_environment: homelab
   children:
     rocky:
       hosts:
@@ -48,7 +50,7 @@ all:
     registry:
       hosts: {}
 
-    vault:
+    openbao:
       hosts: {}
 
     load_balancers:

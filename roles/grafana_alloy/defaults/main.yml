@@ -26,7 +26,7 @@ grafana_alloy_platform_role: >-
     'monitoring' if inventory_hostname in groups.get('monitoring', []) else
     'gitlab-runner' if inventory_hostname in groups.get('gitlab_runners', []) else
     'registry' if inventory_hostname in groups.get('registry', []) else
-    'vault' if inventory_hostname in groups.get('vault', []) else
+    'openbao' if inventory_hostname in groups.get('openbao', []) else
     'bastion' if inventory_hostname in groups.get('bastion', []) else
     'vm'
   }}

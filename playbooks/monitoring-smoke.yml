@@ -1,202 +1,30 @@
 ---
-- name: Smoke test node exporters
-  hosts: monitoring_targets
-  become: true
+- name: Block unavailable monitoring HA smoke checks
+  hosts: localhost
   gather_facts: false
   tasks:
-    - name: Check node_exporter service active state
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - is-active
-          - "{{ node_exporter_service_name | default('node_exporter.service') }}"
-      register: node_exporter_smoke_service_active
-      changed_when: false
+    - name: Stop before an obsolete or empty smoke result
+      ansible.builtin.fail:
+        msg: "Monitoring HA smoke checks are not implemented."
 
-    - name: Assert node_exporter service is active
-      ansible.builtin.assert:
-        that:
-          - node_exporter_smoke_service_active.stdout == 'active'
-        fail_msg: "node_exporter service is not active."
-
-    - name: Check local node_exporter metrics endpoint
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ node_exporter_web_listen_port | default(9100) }}/metrics"
-        method: GET
-        status_code: 200
-      register: node_exporter_smoke_metrics
-
-    - name: Assert node_exporter metrics responded
-      ansible.builtin.assert:
-        that:
-          - node_exporter_smoke_metrics.status == 200
-        fail_msg: "node_exporter metrics endpoint did not return HTTP 200."
-
-    - name: Check Grafana Alloy service active state
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - is-active
-          - "{{ grafana_alloy_service_name | default('alloy.service') }}"
-      register: grafana_alloy_smoke_service_active
-      changed_when: false
-
-    - name: Assert Grafana Alloy service is active
-      ansible.builtin.assert:
-        that:
-          - grafana_alloy_smoke_service_active.stdout == 'active'
-        fail_msg: "Grafana Alloy service is not active."
-
-- name: Smoke test monitoring stack
+- name: Block obsolete monitoring smoke checks
   hosts: monitoring
-  become: true
   gather_facts: false
   tasks:
-    - name: Check Prometheus service active state
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - is-active
-          - "{{ monitoring_stack_prometheus_service_name | default('prometheus.service') }}"
-      register: monitoring_stack_smoke_prometheus_active
-      changed_when: false
+    - name: Stop until monitoring HA smoke checks are available
+      ansible.builtin.fail:
+        msg: >-
+          Monitoring HA smoke checks are not implemented. The previous smoke
+          playbook validated only the retired single-host stack, not HA endpoint,
+          quorum, ingestion, query, alerting, or external-observer behavior.
 
-    - name: Check Grafana service active state
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - is-active
-          - "{{ monitoring_stack_grafana_service_name | default('grafana.service') }}"
-      register: monitoring_stack_smoke_grafana_active
-      changed_when: false
-
-    - name: Check Loki service active state
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - is-active
-          - "{{ monitoring_stack_loki_service_name | default('loki.service') }}"
-      register: monitoring_stack_smoke_loki_active
-      changed_when: false
-
-    - name: Assert monitoring stack services are active
-      ansible.builtin.assert:
-        that:
-          - monitoring_stack_smoke_prometheus_active.stdout == 'active'
-          - monitoring_stack_smoke_grafana_active.stdout == 'active'
-          - monitoring_stack_smoke_loki_active.stdout == 'active'
-        fail_msg: "Prometheus, Grafana, or Loki service is not active."
-
-    - name: Check Prometheus readiness
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_prometheus_web_listen_port | default(9090) }}/-/ready"
-        method: GET
-        status_code: 200
-
-    - name: Check Grafana health
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_grafana_http_port | default(3000) }}/api/health"
-        method: GET
-        status_code: 200
-
-    - name: Check Loki readiness
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_loki_http_listen_port | default(3100) }}/ready"
-        method: GET
-        status_code: 200
-      register: monitoring_stack_smoke_loki_ready
-      retries: 24
-      delay: 5
-      until: monitoring_stack_smoke_loki_ready.status == 200
-
-    - name: Read Grafana admin password for API smoke check
-      ansible.builtin.slurp:
-        src: "{{ monitoring_stack_grafana_admin_password_path | default('/etc/monitoring-stack/grafana/admin-password') }}"
-      register: monitoring_stack_smoke_grafana_admin_password
-      no_log: true
-
-    - name: Check provisioned Grafana VM overview dashboard
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_grafana_http_port | default(3000) }}/api/search?query={{ monitoring_stack_grafana_vm_overview_dashboard_title | default('Dev VM Overview') | urlencode }}"
-        method: GET
-        status_code: 200
-        url_username: admin
-        url_password: "{{ monitoring_stack_smoke_grafana_admin_password.content | b64decode | trim }}"
-        force_basic_auth: true
-      register: monitoring_stack_smoke_grafana_dashboards
-      no_log: true
-
-    - name: Assert provisioned Grafana VM overview dashboard exists
-      ansible.builtin.assert:
-        that:
-          - >-
-            monitoring_stack_smoke_grafana_dashboards.json
-            | selectattr('uid', 'eq', monitoring_stack_grafana_vm_overview_dashboard_uid | default('dev-vm-overview'))
-            | list
-            | length == 1
-        fail_msg: "Provisioned Grafana VM overview dashboard was not found."
-
-    - name: Check provisioned Grafana logs overview dashboard
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_grafana_http_port | default(3000) }}/api/search?query={{ monitoring_stack_grafana_logs_dashboard_title | default('Dev Logs Overview') | urlencode }}"
-        method: GET
-        status_code: 200
-        url_username: admin
-        url_password: "{{ monitoring_stack_smoke_grafana_admin_password.content | b64decode | trim }}"
-        force_basic_auth: true
-      register: monitoring_stack_smoke_grafana_log_dashboards
-      no_log: true
-
-    - name: Assert provisioned Grafana logs overview dashboard exists
-      ansible.builtin.assert:
-        that:
-          - >-
-            monitoring_stack_smoke_grafana_log_dashboards.json
-            | selectattr('uid', 'eq', monitoring_stack_grafana_logs_dashboard_uid | default('dev-logs-overview'))
-            | list
-            | length == 1
-        fail_msg: "Provisioned Grafana logs overview dashboard was not found."
-
-    - name: Check Prometheus active targets
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_prometheus_web_listen_port | default(9090) }}/api/v1/targets?state=active"
-        method: GET
-        status_code: 200
-      register: monitoring_stack_smoke_targets
-      retries: 12
-      delay: 5
-      until: >-
-        monitoring_stack_smoke_targets.json.data.activeTargets
-        | selectattr('health', 'eq', 'up')
-        | list
-        | length >= monitoring_stack_prometheus_targets | length
-
-    - name: Assert Prometheus sees expected targets
-      ansible.builtin.assert:
-        that:
-          - >-
-            monitoring_stack_smoke_targets.json.data.activeTargets
-            | selectattr('health', 'eq', 'up')
-            | list
-            | length >= monitoring_stack_prometheus_targets | length
-        fail_msg: "Prometheus does not report all expected node_exporter targets as up."
-
-    - name: Check Loki VM name labels
-      ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ monitoring_stack_loki_http_listen_port | default(3100) }}/loki/api/v1/label/vm_name/values"
-        method: GET
-        status_code: 200
-      register: monitoring_stack_smoke_loki_vm_labels
-      retries: 24
-      delay: 5
-      until: >-
-        monitoring_stack_smoke_loki_vm_labels.json.data | default([]) | length
-        >= monitoring_stack_prometheus_targets | length
-
-    - name: Assert Loki sees expected VM labels
-      ansible.builtin.assert:
-        that:
-          - >-
-            monitoring_stack_smoke_loki_vm_labels.json.data | default([]) | length
-            >= monitoring_stack_prometheus_targets | length
-        fail_msg: "Loki does not report log labels for all expected VMs."
+- name: Reject smoke checks limited away from monitoring
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Stop before a limited smoke run can report false success
+      ansible.builtin.fail:
+        msg: >-
+          Monitoring HA smoke checks are not implemented. A limit that excludes
+          the replacement service group is not a valid smoke result.
+      when: inventory_hostname not in groups.get('monitoring', [])

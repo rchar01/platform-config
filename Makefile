@@ -53,7 +53,7 @@ help:
 	@printf '  %s\n' 'make smoke-firewalld ENV=dev'
 	@printf '  %s\n' 'make smoke-gitlab'
 	@printf '  %s\n' 'make smoke-runners ENV=dev'
-	@printf '  %s\n' 'make smoke-monitoring ENV=dev'
+	@printf '  %s\n' 'make smoke-monitoring ENV=dev  # blocked until HA replacement'
 	@printf '  %s\n' 'make smoke-rke2 ENV=dev'
 	@printf '  %s\n' 'make smoke-rke2-kube-vip ENV=dev'
 	@printf '  %s\n' 'make smoke-kong-ingress ENV=dev'
@@ -123,9 +123,10 @@ smoke-container:
 smoke-registry:
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
-## Smoke test OpenBao status
+## Report that OpenBao HA smoke checks are not implemented
 smoke-openbao:
-	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-status.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	@printf '%s\n' 'OpenBao HA smoke checks are not implemented; the legacy check is blocked.' >&2
+	@exit 1
 
 ## Smoke test GitLab CE
 smoke-gitlab:
@@ -135,9 +136,10 @@ smoke-gitlab:
 smoke-runners:
 	@$(MAKE) apply PLAYBOOK=playbooks/gitlab-runners-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
-## Smoke test monitoring stack and exporters
+## Report that monitoring HA smoke checks are not implemented
 smoke-monitoring:
-	@$(MAKE) apply PLAYBOOK=playbooks/monitoring-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	@printf '%s\n' 'Monitoring HA smoke checks are not implemented; the legacy check is blocked.' >&2
+	@exit 1
 
 ## Smoke test RKE2 cluster
 smoke-rke2:

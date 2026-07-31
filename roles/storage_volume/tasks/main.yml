@@ -1,4 +1,7 @@
 ---
+- name: Validate storage volume definitions
+  ansible.builtin.include_tasks: validate.yml
+
 - name: Install storage volume packages
   ansible.builtin.package:
     name: "{{ storage_volume_packages }}"
@@ -11,3 +14,7 @@
   loop_control:
     loop_var: storage_volume
     label: "{{ storage_volume.name | default(storage_volume.mountpoint | default(storage_volume.lv_name | default('volume'))) }}"
+
+- name: Verify storage volume layout headroom
+  ansible.builtin.include_tasks: verify_layouts.yml
+  when: storage_volume_layouts | length > 0

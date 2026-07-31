@@ -1,8 +1,45 @@
 ---
-- name: Configure OpenBao hosts
-  hosts: vault
-  become: true
-  roles:
-    - firewalld
-    - podman_host
-    - openbao
+- name: Block missing OpenBao HA implementation in managed environments
+  hosts: localhost
+  gather_facts: false
+  vars:
+    openbao_inventory_environment: >-
+      {{
+        hostvars[groups['all'] | first].platform_environment | default('dev')
+        if groups.get('all', []) | length > 0
+        else 'dev'
+      }}
+  tasks:
+    - name: Stop when the OpenBao HA group is not active
+      ansible.builtin.fail:
+        msg: >-
+          The OpenBao HA implementation is unavailable. An absent service group
+          is not a successful OpenBao convergence result.
+      when:
+        - openbao_inventory_environment != 'homelab'
+        - groups.get('openbao', []) | length == 0
+
+- name: Block obsolete standalone OpenBao convergence
+  hosts: openbao
+  gather_facts: false
+  tasks:
+    - name: Stop until the OpenBao HA implementation is available
+      ansible.builtin.fail:
+        msg: >-
+          The OpenBao HA implementation is unavailable. The standalone role
+          cannot create the approved three-node cluster. Complete the HA roles,
+          immutable artifact, PKI, and storage gates before applying this
+          playbook.
+
+- name: Reject non-OpenBao limited convergence in managed environments
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Stop before a limited run can report false success
+      ansible.builtin.fail:
+        msg: >-
+          The OpenBao HA implementation is unavailable. A limit that excludes
+          the replacement service group is not a successful convergence result.
+      when:
+        - platform_environment | default('dev') != 'homelab'
+        - inventory_hostname not in groups.get('openbao', [])

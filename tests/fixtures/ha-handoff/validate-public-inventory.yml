@@ -1,0 +1,89 @@
+---
+- name: Validate public HA handoff inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    example_inventory_dir: "{{ playbook_dir }}/../../../inventories/dev"
+    replacement_hosts: "{{ groups.openbao + groups.monitoring }}"
+  tasks:
+    - name: Load OpenBao group variable example
+      ansible.builtin.include_vars:
+        file: "{{ example_inventory_dir }}/group_vars/openbao.yml.example"
+        name: openbao_group_example
+
+    - name: Load monitoring group variable example
+      ansible.builtin.include_vars:
+        file: "{{ example_inventory_dir }}/group_vars/monitoring.yml.example"
+        name: monitoring_group_example
+
+    - name: Load OpenBao host variable examples
+      ansible.builtin.include_vars:
+        file: "{{ example_inventory_dir }}/host_vars/{{ item }}.yml.example"
+        name: openbao_host_example
+      loop: "{{ groups.openbao }}"
+      register: openbao_host_examples
+
+    - name: Load monitoring host variable examples
+      ansible.builtin.include_vars:
+        file: "{{ example_inventory_dir }}/host_vars/{{ item }}.yml.example"
+        name: monitoring_host_example
+      loop: "{{ groups.monitoring }}"
+      register: monitoring_host_examples
+
+    - name: Require the fictional 17-host topology
+      ansible.builtin.assert:
+        that:
+          - groups.rocky | length == 17
+          - groups.openbao | length == 3
+          - groups.monitoring | length == 3
+          - groups.monitoring_targets | length == 0
+          - "'vault' not in groups"
+          - replacement_hosts | intersect(groups.container_hosts) | length == 0
+          - replacement_hosts | intersect(groups.storage_volume_hosts) | length == 0
+          - replacement_hosts | intersect(groups.monitoring_targets) | length == 0
+
+    - name: Require unique OpenBao identities
+      ansible.builtin.assert:
+        that:
+          - openbao_host_examples.results | map(attribute='ansible_facts.openbao_host_example.openbao_node_name') | unique | length == 3
+          - openbao_host_examples.results | map(attribute='ansible_facts.openbao_host_example.openbao_node_address') | unique | length == 3
+          - openbao_host_examples.results | map(attribute='ansible_facts.openbao_host_example.openbao_node_dns') | unique | length == 3
+          - openbao_group_example.openbao_service_dns is match('^[a-z0-9.-]+[.]invalid$')
+          - not openbao_group_example.openbao_keepalived_enabled | bool
+
+    - name: Require bounded OpenBao storage examples
+      ansible.builtin.assert:
+        that:
+          - item.ansible_facts.openbao_host_example.storage_volume_layouts | length == 1
+          - item.ansible_facts.openbao_host_example.storage_volume_layouts[0].capacity_gib | int == 20
+          - item.ansible_facts.openbao_host_example.storage_volume_layouts[0].required_free_gib | int == 4
+          - not item.ansible_facts.openbao_host_example.storage_volume_layouts[0].initialize | bool
+          - item.ansible_facts.openbao_host_example.storage_volumes | map(attribute='size_gib') | map('int') | sum == 14
+          - item.ansible_facts.openbao_host_example.storage_volumes | map(attribute='mountpoint') | unique | length == 4
+      loop: "{{ openbao_host_examples.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Require unique monitoring identities
+      ansible.builtin.assert:
+        that:
+          - monitoring_host_examples.results | map(attribute='ansible_facts.monitoring_host_example.monitoring_node_name') | unique | length == 3
+          - monitoring_host_examples.results | map(attribute='ansible_facts.monitoring_host_example.monitoring_node_address') | unique | length == 3
+          - monitoring_host_examples.results | map(attribute='ansible_facts.monitoring_host_example.monitoring_node_dns') | unique | length == 3
+          - monitoring_group_example.monitoring_grafana_dns is match('^[a-z0-9.-]+[.]invalid$')
+          - monitoring_group_example.monitoring_loki_dns is match('^[a-z0-9.-]+[.]invalid$')
+          - monitoring_group_example.monitoring_mimir_dns is match('^[a-z0-9.-]+[.]invalid$')
+          - not monitoring_group_example.monitoring_keepalived_enabled | bool
+
+    - name: Require bounded monitoring storage examples
+      ansible.builtin.assert:
+        that:
+          - item.ansible_facts.monitoring_host_example.storage_volume_layouts | length == 1
+          - item.ansible_facts.monitoring_host_example.storage_volume_layouts[0].capacity_gib | int == 80
+          - item.ansible_facts.monitoring_host_example.storage_volume_layouts[0].required_free_gib | int == 10
+          - not item.ansible_facts.monitoring_host_example.storage_volume_layouts[0].initialize | bool
+          - item.ansible_facts.monitoring_host_example.storage_volumes | map(attribute='size_gib') | map('int') | sum == 59
+          - item.ansible_facts.monitoring_host_example.storage_volumes | map(attribute='mountpoint') | unique | length == 9
+      loop: "{{ monitoring_host_examples.results }}"
+      loop_control:
+        label: "{{ item.item }}"

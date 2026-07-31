@@ -1,0 +1,28 @@
+---
+- name: Validate bounded storage layout behavior
+  hosts: localhost
+  gather_facts: false
+  vars:
+    storage_volume_layouts:
+      - name: test_data
+        device: /dev/disk/by-id/example-test-data
+        vg_name: test_data
+        capacity_gib: "{{ test_capacity_gib | default(20) | int }}"
+        required_free_gib: 4
+        initialize: false
+    storage_volumes:
+      - name: test_primary
+        layout: test_data
+        lv_name: primary
+        size_gib: 8
+        mountpoint: /srv/test/primary
+      - name: test_staging
+        layout: test_data
+        lv_name: staging
+        size_gib: 2
+        mountpoint: /srv/test/staging
+  tasks:
+    - name: Run storage layout validation only
+      ansible.builtin.include_role:
+        name: storage_volume
+        tasks_from: validate.yml

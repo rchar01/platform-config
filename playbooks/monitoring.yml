@@ -1,21 +1,45 @@
 ---
-- name: Configure node exporters
-  hosts: monitoring_targets
-  become: true
-  roles:
-    - firewalld
-    - node_exporter
+- name: Block missing monitoring HA implementation in managed environments
+  hosts: localhost
+  gather_facts: false
+  vars:
+    monitoring_inventory_environment: >-
+      {{
+        hostvars[groups['all'] | first].platform_environment | default('dev')
+        if groups.get('all', []) | length > 0
+        else 'dev'
+      }}
+  tasks:
+    - name: Stop when the monitoring HA group is not active
+      ansible.builtin.fail:
+        msg: >-
+          The monitoring HA implementation is unavailable. An absent service
+          group is not a successful monitoring convergence result.
+      when:
+        - monitoring_inventory_environment != 'homelab'
+        - groups.get('monitoring', []) | length == 0
 
-- name: Configure monitoring stack
+- name: Block obsolete combined monitoring convergence
   hosts: monitoring
-  become: true
-  roles:
-    - firewalld
-    - podman_host
-    - monitoring_stack
+  gather_facts: false
+  tasks:
+    - name: Stop until the monitoring HA implementation is available
+      ansible.builtin.fail:
+        msg: >-
+          The monitoring HA implementation is unavailable. The combined
+          Prometheus, Loki, and Grafana role cannot create the approved platform.
+          Complete the replacement roles, immutable artifacts, PKI, and storage
+          gates before applying this playbook or activating monitoring_targets.
 
-- name: Configure log agents
-  hosts: monitoring_targets
-  become: true
-  roles:
-    - grafana_alloy
+- name: Reject non-monitoring limited convergence in managed environments
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Stop before a limited run can report false success
+      ansible.builtin.fail:
+        msg: >-
+          The monitoring HA implementation is unavailable. A limit that excludes
+          the replacement service group is not a successful convergence result.
+      when:
+        - platform_environment | default('dev') != 'homelab'
+        - inventory_hostname not in groups.get('monitoring', [])

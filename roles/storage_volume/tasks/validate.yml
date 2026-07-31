@@ -1,0 +1,141 @@
+---
+- name: Require storage volume collections
+  ansible.builtin.assert:
+    that:
+      - storage_volumes is sequence
+      - storage_volumes is not string
+      - storage_volume_layouts is sequence
+      - storage_volume_layouts is not string
+    fail_msg: "storage_volumes and storage_volume_layouts must be lists."
+
+- name: Validate storage volume layouts
+  ansible.builtin.assert:
+    that:
+      - storage_volume_layout.name is defined
+      - storage_volume_layout.name is match('^[a-zA-Z0-9_]+$')
+      - storage_volume_layout.device is defined
+      - not storage_volume_require_stable_device or storage_volume_layout.device is match('^/dev/disk/by-')
+      - storage_volume_layout.vg_name is defined
+      - storage_volume_layout.vg_name is match('^[a-zA-Z0-9_+.-]+$')
+      - storage_volume_layout.capacity_gib is defined
+      - storage_volume_layout.capacity_gib | int > 0
+      - storage_volume_layout.required_free_gib | default(0) | int >= 0
+      - storage_volume_layout.capacity_gib | int > storage_volume_layout.required_free_gib | default(0) | int
+      - storage_volume_layout.initialize | default(false) is boolean
+      - storage_volume_layout.partition_number | default(storage_volume_default_partition_number) | int > 0
+      - storage_volume_layout.pv_device is not defined or storage_volume_layout.pv_device is match('^/dev/disk/by-')
+    fail_msg: "Storage layouts require a stable device, VG, capacity, and valid initialization policy."
+  loop: "{{ storage_volume_layouts }}"
+  loop_control:
+    loop_var: storage_volume_layout
+    label: "{{ storage_volume_layout.name | default('invalid-layout') }}"
+
+- name: Collect storage volume uniqueness keys
+  ansible.builtin.set_fact:
+    storage_volume_layout_names: "{{ storage_volume_layouts | map(attribute='name') | list }}"
+    storage_volume_layout_devices: "{{ storage_volume_layouts | map(attribute='device') | list }}"
+    storage_volume_layout_vgs: "{{ storage_volume_layouts | map(attribute='vg_name') | list }}"
+    storage_volume_names: >-
+      {{ storage_volumes | selectattr('name', 'defined') | map(attribute='name') | list }}
+    storage_volume_mountpoints: "{{ storage_volumes | map(attribute='mountpoint') | list }}"
+
+- name: Require unique storage volume definitions
+  ansible.builtin.assert:
+    that:
+      - storage_volume_layout_names | unique | length == storage_volume_layout_names | length
+      - storage_volume_layout_devices | unique | length == storage_volume_layout_devices | length
+      - storage_volume_layout_vgs | unique | length == storage_volume_layout_vgs | length
+      - storage_volume_names | unique | length == storage_volume_names | length
+      - storage_volume_mountpoints | unique | length == storage_volume_mountpoints | length
+    fail_msg: "Storage layout names, devices, VGs, volume names, and mountpoints must be unique."
+
+- name: Validate storage volume entries
+  ansible.builtin.assert:
+    that:
+      - storage_volume.lv_name is defined
+      - storage_volume.mountpoint is defined
+      - storage_volume.mountpoint is match('^/')
+      - >-
+        (storage_volume.layout is defined)
+        or (storage_volume.device is defined and storage_volume.vg_name is defined)
+      - >-
+        (storage_volume.layout is not defined)
+        or (storage_volume.layout in storage_volume_layout_names)
+      - >-
+        (storage_volume.layout is not defined)
+        or (storage_volume.size_gib is defined and storage_volume.size_gib | int > 0)
+      - >-
+        (storage_volume.layout is not defined)
+        or (
+          storage_volume.device is not defined
+          and storage_volume.vg_name is not defined
+          and storage_volume.pv_device is not defined
+          and storage_volume.partition_number is not defined
+          and storage_volume.initialize is not defined
+        )
+    fail_msg: >-
+      Storage volumes require a unique LV and absolute mountpoint. Layout-backed volumes
+      must use the layout as the single disk/VG initialization source and set size_gib.
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume
+    label: "{{ storage_volume.name | default('invalid-volume') }}"
+
+- name: Initialize effective storage logical volume keys
+  ansible.builtin.set_fact:
+    storage_volume_effective_lv_keys: []
+
+- name: Collect effective storage logical volume keys
+  ansible.builtin.set_fact:
+    storage_volume_effective_lv_keys: >-
+      {{
+        storage_volume_effective_lv_keys
+        + [
+          (
+            storage_volume_layouts
+            | selectattr('name', 'equalto', storage_volume.layout)
+            | map(attribute='vg_name')
+            | first
+            if storage_volume.layout is defined
+            else storage_volume.vg_name
+          )
+          ~ '/' ~ storage_volume.lv_name
+        ]
+      }}
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume
+    label: "{{ storage_volume.name | default(storage_volume.lv_name) }}"
+
+- name: Require unique effective storage logical volumes
+  ansible.builtin.assert:
+    that:
+      - storage_volume_effective_lv_keys | unique | length == storage_volume_effective_lv_keys | length
+    fail_msg: "Storage volumes must resolve to unique VG/LV pairs across all definition styles."
+
+- name: Validate storage volume layout allocation bounds
+  ansible.builtin.assert:
+    that:
+      - >-
+        storage_volumes
+        | selectattr('layout', 'defined')
+        | selectattr('layout', 'equalto', storage_volume_layout.name)
+        | list
+        | length > 0
+      - >-
+        (
+          storage_volumes
+          | selectattr('layout', 'defined')
+          | selectattr('layout', 'equalto', storage_volume_layout.name)
+          | map(attribute='size_gib')
+          | map('int')
+          | sum
+        ) + (storage_volume_layout.required_free_gib | default(0) | int)
+        <= (storage_volume_layout.capacity_gib | int)
+    fail_msg: >-
+      Storage layout {{ storage_volume_layout.name }} allocations and required free space
+      exceed its declared capacity.
+  loop: "{{ storage_volume_layouts }}"
+  loop_control:
+    loop_var: storage_volume_layout
+    label: "{{ storage_volume_layout.name }}"

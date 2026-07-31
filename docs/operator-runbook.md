@@ -17,7 +17,10 @@ Public examples in this document use RFC 5737 documentation IPs such as `192.0.2
 
 ## Current Coverage vs Future Phases
 
-This runbook is complete for the currently implemented homelab and dev services. Future phases are documented as prerequisites and placeholders until their roles and playbooks exist.
+This runbook is complete for the currently implemented homelab and unaffected dev
+services. The rebuilt OpenBao and monitoring environments are blocked while their
+three-node HA replacements are implemented. Their playbooks and smoke targets
+fail closed; do not use `site.yml` to bypass the phased handoff.
 
 | Area | Environment | Status | Runbook Coverage |
 |---|---|---|---|
@@ -28,9 +31,9 @@ This runbook is complete for the currently implemented homelab and dev services.
 | Podman host foundation | homelab, dev | implemented | full bring-up and smoke commands |
 | GitLab CE | homelab | implemented | full bring-up, smoke, and root password handling |
 | Zot registry | dev | implemented | full bring-up and smoke commands |
-| OpenBao install/status | dev | implemented | full bring-up and read-only status smoke commands |
+| OpenBao HA | dev | replacement blocked | inventory and bounded-storage contract only; no service apply or smoke command |
 | GitLab runners | dev | implemented | full bring-up and smoke commands |
-| Monitoring | dev | implemented | full bring-up and smoke commands for VM monitoring |
+| Monitoring HA | dev | replacement blocked | inventory and bounded-storage contract only; collectors remain inactive |
 | RKE2 | dev | implemented | full bring-up and smoke commands for the base cluster |
 | kube-vip API HA | dev | implemented | RKE2 HelmChart-based API VIP commands and smoke checks |
 | Kong ingress controller | dev | implemented | RKE2 HelmChart-based classic Ingress controller with fixed NodePorts |
@@ -190,11 +193,10 @@ Current expected paths include:
 ~/.config/platform-infrastructure/pki/export/ansible/services/gitlab-example/tls.key
 ~/.config/platform-infrastructure/pki/export/ansible/services/registry-example/fullchain.crt
 ~/.config/platform-infrastructure/pki/export/ansible/services/registry-example/tls.key
-~/.config/platform-infrastructure/pki/export/ansible/services/openbao-example/fullchain.crt
-~/.config/platform-infrastructure/pki/export/ansible/services/openbao-example/tls.key
+~/.config/platform-infrastructure/pki/export/ansible/services/openbao-example-01/fullchain.crt
+~/.config/platform-infrastructure/pki/export/ansible/services/openbao-example-01/tls.key
 ~/.config/platform-infrastructure/config/rke2/dev/cluster-token
 ~/.config/platform-infrastructure/config/k8s-bastion/dev/admin.kubeconfig
-~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password
 ```
 
 Runner tokens, GitLab root passwords, OpenBao root or unseal material, kubeconfigs, private keys, and service passwords must not be committed.
@@ -223,7 +225,7 @@ Current service names:
 |---|---|---|
 | `gitlab-example` | Example GitLab CE | Example GitLab runners |
 | `registry-example` | Example Zot registry | Example RKE2/containerd |
-| `openbao-example` | Example OpenBao | None yet |
+| `openbao-example-01..03` | Future OpenBao HA nodes | Shared service DNS and each node's internal DNS; issuance remains blocked pending HA PKI review |
 
 Provide CA passphrases through short-lived secret-manager files outside the PKI
 tree. The following paths are examples; each file must be readable by the
@@ -340,13 +342,6 @@ services:
       - 192.0.2.61
     days: 397
 
-  openbao-example:
-    common_name: openbao.example.test
-    dns:
-      - openbao.example.test
-    ips:
-      - 192.0.2.63
-    days: 397
 ```
 
 Issue and export service certificates:
@@ -356,11 +351,8 @@ platform-pki-service-issue gitlab-example \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-issue registry-example \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-issue openbao-example \
-  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 platform-pki-service-verify gitlab-example
 platform-pki-service-verify registry-example
-platform-pki-service-verify openbao-example
 platform-pki-export-ansible --force
 ```
 
@@ -370,7 +362,6 @@ After issuing or renewing, deploy the exported files with the matching playbooks
 make apply ENV=homelab PLAYBOOK=playbooks/gitlab.yml
 make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
-make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
 make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 ```
 
@@ -380,7 +371,6 @@ Run the matching smoke checks:
 make smoke-gitlab
 make smoke-runners ENV=dev
 make smoke-registry ENV=dev
-make smoke-openbao ENV=dev
 make smoke-rke2 ENV=dev
 ```
 
@@ -438,16 +428,10 @@ make smoke-gitlab
 make smoke-runners ENV=dev
 ```
 
-Use the same pattern for OpenBao:
-
-```bash
-platform-pki-service-renew openbao-example \
-  --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-verify openbao-example
-platform-pki-export-ansible --force
-make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
-make smoke-openbao ENV=dev
-```
+Do not issue or renew replacement OpenBao certificates from this generic flow.
+The HA PKI gate requires three node-specific certificates, a shared service DNS
+SAN, per-node internal DNS SANs, and reviewed trust distribution before any
+service apply.
 
 Back up the PKI state after initial CA creation, after issuing certificates, and after every renewal or key rotation:
 
@@ -495,7 +479,6 @@ make apply ENV=homelab PLAYBOOK=playbooks/gitlab.yml
 make smoke-gitlab
 make smoke-container ENV=dev
 make smoke-registry ENV=dev
-make smoke-openbao ENV=dev
 ```
 
 The `smoke-firewalld` target verifies the disabled and inactive baseline. See
@@ -615,11 +598,12 @@ make check ENV=dev PLAYBOOK=playbooks/registry.yml
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
 make smoke-registry ENV=dev
-make check ENV=dev PLAYBOOK=playbooks/openbao.yml
-make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
-make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
-make smoke-openbao ENV=dev
 ```
+
+The OpenBao and monitoring phase playbooks intentionally fail at this point.
+Reconcile the 17-host inventory and strict SSH trust first, run generic baseline
+playbooks only, and initialize replacement storage solely through approved
+canaries. Do not use `site.yml` while either replacement remains blocked.
 
 Before configuring dev GitLab runners, confirm homelab GitLab is reachable from the runner hosts:
 
@@ -659,11 +643,6 @@ make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 # Run a second apply to confirm idempotency.
 make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 make smoke-runners ENV=dev
-make check ENV=dev PLAYBOOK=playbooks/monitoring.yml
-make apply ENV=dev PLAYBOOK=playbooks/monitoring.yml
-# Run a second apply to confirm idempotency.
-make apply ENV=dev PLAYBOOK=playbooks/monitoring.yml
-make smoke-monitoring ENV=dev
 make check ENV=dev PLAYBOOK=playbooks/rke2.yml
 make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 # Run a second apply to confirm idempotency.
@@ -673,19 +652,9 @@ make smoke-rke2 ENV=dev
 
 The first runner iteration uses the shell executor inside containerized GitLab Runner services. It does not mount Docker or Podman sockets and does not enable privileged image-build support. BuildKit, Buildah, or rootless Podman build support belongs in a later explicit phase.
 
-The first monitoring iteration monitors VMs only. It installs Node Exporter on `monitoring_targets` and runs Prometheus plus Grafana on the `monitoring` host. In the current dev inventory, Prometheus binds to localhost port `9091` to avoid Cockpit on `9090`. Kubernetes scraping is a later monitoring expansion. Store the Grafana admin password outside Git at:
-
-```text
-~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password
-```
-
-Keep the password file readable only by its owner. The monitoring role accepts
-source-file modes `0400` and `0600`; `0600` is recommended:
-
-```bash
-chmod 700 ~/.config/platform-infrastructure/config/monitoring/dev
-chmod 600 ~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password
-```
+The retired single-host Prometheus/Loki/Grafana stack is no longer deployable.
+Keep `monitoring_targets` empty until authenticated Loki and Mimir ingress,
+source policy, and a test collector pass the replacement plan's Phase 7 gate.
 
 RKE2 uses a shared cluster token stored outside Git:
 
@@ -776,7 +745,8 @@ After the first login, change the `root` password and create named admin users. 
 OpenBao:
 
 ```text
-Installed and running, but intentionally uninitialized and sealed until a manual or guarded maintenance procedure exists.
+The standalone deployment is retired. The replacement HA playbook is blocked and
+no initialization or unseal workflow is available through normal convergence.
 ```
 
 Runner tokens:
@@ -785,11 +755,8 @@ Runner tokens:
 Create in GitLab, store outside Git, and rotate from GitLab when exposed or no longer needed.
 ```
 
-Grafana:
-
-```text
-The generated admin password is stored outside Git under ~/.config/platform-infrastructure/config/monitoring/dev/grafana-admin-password. Change it through Grafana after first login if this instance becomes more than a lab service.
-```
+Grafana credentials for the replacement platform remain outside Git and are not
+consumed until the HA role and named-account bootstrap workflow exist.
 
 ### Backups
 
@@ -799,8 +766,8 @@ Backup automation is not implemented in `platform-config` yet. Until a dedicated
 |---|---|---|
 | GitLab CE | `gitlab.example.test` | `/var/lib/gitlab` |
 | Zot registry | `registry.example.test` | `/var/lib/zot` |
-| OpenBao | `openbao.example.test` | `/var/lib/openbao` |
-| Monitoring | `monitoring-example.example.test` | `/var/lib/monitoring` |
+| OpenBao HA | `openbao-example-01..03` | Bounded Raft, two audit, and staging filesystems; backup automation pending |
+| Monitoring HA | `monitoring-example-01..03` | Bounded per-service filesystems; backup automation pending |
 | RKE2 | `rke2-server-example-01..03.example.test`, `rke2-agent-example-01..03.example.test` | `/var/lib/rancher/rke2` |
 
 Do not assume service data can be recreated from Ansible alone. For stateful services, validate backups before destructive rebuilds.
@@ -829,24 +796,28 @@ For the current self-signed certificates:
 
 ### Host Key Changes
 
-If a VM is rebuilt and SSH host keys change, refresh only the affected local known-hosts entries:
+If a VM is rebuilt and SSH host keys change, remove only the affected local
+known-hosts entry after authenticating the replacement fingerprint through a
+trusted console or equivalent path:
 
 ```bash
 ssh-keygen -R 192.0.2.51
-ssh-keyscan -H 192.0.2.51 >> ~/.ssh/known_hosts
 ```
 
-Use the target host IP for the rebuilt VM. Do not disable host key checking globally.
+Enroll the independently authenticated key using an approved SSH trust workflow.
+Do not trust unauthenticated `ssh-keyscan` output by itself or disable host key
+checking globally.
 
 ## Full Site Runs
 
-Use phase playbooks for first bring-up and for risky changes. Use `site.yml` once the environment is already converged enough that every imported playbook has required inputs.
+Use phase playbooks for first bring-up and for risky changes. Dev `site.yml` is
+currently blocked because it imports the fail-closed OpenBao and monitoring
+transition playbooks. Use it only after every imported playbook has accepted
+inputs and the replacement service roles exist.
 
 ```bash
 make check ENV=homelab
 make apply ENV=homelab
-make check ENV=dev
-make apply ENV=dev
 ```
 
 Run the same apply command a second time to confirm idempotency. The expected steady-state result is `changed=0` unless a service legitimately refreshes runtime state.
@@ -863,4 +834,6 @@ make verify
 git diff --check
 ```
 
-For service changes, also run the matching smoke playbook against the environment that owns the service.
+For implemented service changes, also run the matching smoke playbook against
+the environment that owns the service. OpenBao and monitoring smoke targets
+remain intentionally blocked.

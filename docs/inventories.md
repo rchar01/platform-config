@@ -43,6 +43,20 @@ To add a host:
 3. Add private host-specific variables under `host_vars/` if required.
 4. Keep secrets, kubeconfigs, tokens, private keys, and private certificates out of this repository and private Git.
 
+The dev public example models the intended 17-host topology, including three
+fictional `openbao` hosts and three fictional `monitoring` hosts. Those six hosts
+are deliberately absent from `container_hosts`, `storage_volume_hosts`, and
+`monitoring_targets` in the example. Private inventory must activate replacement
+groups only after the owning implementation gate passes:
+
+1. Add service groups only after their playbooks no longer invoke retired roles.
+2. Add container-runtime membership only after the replacement runtime contract is safe.
+3. Add storage membership only after stable-device review, check mode, and explicit initialization approval.
+4. Add `monitoring_targets` only after authenticated ingress and the Phase 7 test collector pass.
+
+The legacy OpenBao inventory group was `vault`. The replacement API is
+`openbao`; do not add a compatibility alias without a demonstrated consumer.
+
 Example run:
 
 ```bash

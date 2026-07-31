@@ -1,0 +1,10 @@
+---
+# The current playbook fails closed until the three-node HA role exists and its
+# immutable artifact, PKI, network, and storage gates pass.
+openbao_service_dns: bao.example.invalid
+openbao_service_vip: 192.0.2.200
+openbao_client_port: 8200
+openbao_backend_port: 18200
+openbao_cluster_port: 8201
+openbao_keepalived_enabled: false
+openbao_tls_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"

@@ -1,6 +1,0 @@
----
-openbao_tls_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/openbao-example/fullchain.crt"
-openbao_tls_key_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/openbao-example/tls.key"
-openbao_status_validate_certs: false
-openbao_firewalld_allowed_sources:
-  - 192.0.2.60/32

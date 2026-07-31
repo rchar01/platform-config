@@ -82,9 +82,9 @@ real values in private group or host variables.
 | Role | Primary firewall variables | Rule shape |
 |---|---|---|
 | `zot_registry` | `zot_registry_firewalld_manage`, `zot_registry_firewalld_port`, `zot_registry_firewalld_allowed_sources` | Broad port or source-scoped rich rules. |
-| `openbao` | `openbao_firewalld_manage`, `openbao_firewalld_allowed_sources` | Source-scoped rich rules. |
+| Retired `openbao` role | `openbao_firewalld_manage`, `openbao_firewalld_allowed_sources` | Legacy source-scoped rules; no active playbook invokes this role. |
 | `node_exporter` | `node_exporter_firewalld_manage`, `node_exporter_firewalld_allowed_sources` | Source-scoped rich rules. |
-| `monitoring_stack` | `monitoring_stack_firewalld_manage`, Grafana and Loki allowed-source lists | Source-scoped rich rules. |
+| Retired `monitoring_stack` role | `monitoring_stack_firewalld_manage`, Grafana and Loki allowed-source lists | Legacy source-scoped rules; no active playbook invokes this role. |
 | `rke2` | `rke2_firewalld_manage`, cluster and API source lists, API ports | Cluster and API rich rules. |
 | `gitlab_ce` | `gitlab_ce_firewalld_manage`, `gitlab_ce_firewalld_ports` | Broad service ports. |
 | `haproxy_workload_lb` | `haproxy_workload_lb_firewalld_manage`, `haproxy_workload_lb_firewalld_ports` | Broad listener ports. |

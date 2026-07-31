@@ -1,0 +1,10 @@
+---
+all:
+  children:
+    rocky:
+      hosts:
+        legacy-openbao-example:
+          ansible_host: 192.0.2.63
+    vault:
+      hosts:
+        legacy-openbao-example:

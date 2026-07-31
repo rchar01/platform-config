@@ -12,6 +12,7 @@ run_test() {
 }
 
 main() {
+  run_test "HA handoff safety" "${SCRIPT_DIR}/scenarios/test-ha-handoff-safety.sh"
   run_test "Kubernetes bastion Phase 1 safety" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-phase1-safety.sh"
   run_test "Kubernetes bastion access reconciliation" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-access-reconciliation.sh"
   run_test "Bootstrap token issuer staging workflow" "${SCRIPT_DIR}/scenarios/test-bootstrap-token-issuer-staging.sh"

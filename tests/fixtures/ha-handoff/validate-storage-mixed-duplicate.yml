@@ -1,0 +1,30 @@
+---
+- name: Reject mixed-definition logical volume collisions
+  hosts: localhost
+  gather_facts: false
+  vars:
+    storage_volume_layouts:
+      - name: test_data
+        device: /dev/disk/by-id/example-test-data
+        vg_name: test_data
+        capacity_gib: 20
+        required_free_gib: 4
+        initialize: false
+    storage_volumes:
+      - name: layout_primary
+        layout: test_data
+        lv_name: primary
+        size_gib: 8
+        mountpoint: /srv/test/layout-primary
+      - name: legacy_primary
+        device: /dev/disk/by-id/example-legacy-data
+        vg_name: test_data
+        lv_name: primary
+        lv_size: 2g
+        mountpoint: /srv/test/legacy-primary
+        initialize: false
+  tasks:
+    - name: Run storage layout validation only
+      ansible.builtin.include_role:
+        name: storage_volume
+        tasks_from: validate.yml

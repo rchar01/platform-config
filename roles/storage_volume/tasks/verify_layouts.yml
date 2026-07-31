@@ -1,0 +1,41 @@
+---
+- name: Read storage volume group free space
+  ansible.builtin.command:
+    argv:
+      - vgs
+      - --noheadings
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - vg_free
+      - "{{ storage_volume_layout.vg_name }}"
+  loop: "{{ storage_volume_layouts }}"
+  loop_control:
+    loop_var: storage_volume_layout
+    label: "{{ storage_volume_layout.name }}"
+  register: storage_volume_layout_free
+  changed_when: false
+  check_mode: false
+  failed_when:
+    - not ansible_check_mode
+    - storage_volume_layout_free.rc != 0
+
+- name: Require storage volume group free-space headroom
+  ansible.builtin.assert:
+    that:
+      - >-
+        storage_volume_layout_result.stdout | trim | float
+        >= (
+          storage_volume_layout_result.storage_volume_layout.required_free_gib
+          | default(0)
+          | float
+        ) * 1073741824
+    fail_msg: >-
+      Storage layout {{ storage_volume_layout_result.storage_volume_layout.name }} has less
+      free VG space than its required headroom.
+  loop: "{{ storage_volume_layout_free.results }}"
+  loop_control:
+    loop_var: storage_volume_layout_result
+    label: "{{ storage_volume_layout_result.storage_volume_layout.name }}"
+  when: storage_volume_layout_result.rc == 0

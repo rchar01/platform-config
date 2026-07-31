@@ -1,11 +1,34 @@
 ---
+- name: Resolve storage volume layout
+  ansible.builtin.set_fact:
+    storage_volume_matching_layout: >-
+      {{
+        storage_volume_layouts
+        | selectattr('name', 'equalto', storage_volume.layout)
+        | first
+        if storage_volume.layout is defined
+        else {}
+      }}
+
 - name: Set storage volume facts
   ansible.builtin.set_fact:
-    storage_volume_device: "{{ storage_volume.device }}"
-    storage_volume_partition_number: "{{ storage_volume.partition_number | default(storage_volume_default_partition_number) }}"
-    storage_volume_vg_name: "{{ storage_volume.vg_name }}"
+    storage_volume_device: "{{ storage_volume.device | default(storage_volume_matching_layout.device) }}"
+    storage_volume_partition_number: >-
+      {{
+        storage_volume.partition_number
+        | default(storage_volume_matching_layout.partition_number | default(storage_volume_default_partition_number))
+      }}
+    storage_volume_vg_name: "{{ storage_volume.vg_name | default(storage_volume_matching_layout.vg_name) }}"
     storage_volume_lv_name: "{{ storage_volume.lv_name }}"
-    storage_volume_lv_size: "{{ storage_volume.lv_size | default(storage_volume_default_lv_size) }}"
+    storage_volume_lv_size: >-
+      {{
+        storage_volume.lv_size
+        | default(
+          (storage_volume.size_gib | string) ~ 'g'
+          if storage_volume.size_gib is defined
+          else storage_volume_default_lv_size
+        )
+      }}
     storage_volume_mountpoint: "{{ storage_volume.mountpoint }}"
     storage_volume_fstype: "{{ storage_volume.fstype | default(storage_volume_default_fstype) }}"
     storage_volume_mount_options: "{{ storage_volume.mount_options | default(storage_volume_default_mount_options) }}"
@@ -13,12 +36,19 @@
     storage_volume_owner: "{{ storage_volume.owner | default(storage_volume_default_owner) }}"
     storage_volume_group: "{{ storage_volume.group | default(storage_volume_default_group) }}"
     storage_volume_mode: "{{ storage_volume.mode | default(storage_volume_default_mode) }}"
-    storage_volume_initialize: "{{ storage_volume.initialize | default(false) }}"
+    storage_volume_initialize: >-
+      {{ storage_volume.initialize | default(storage_volume_matching_layout.initialize | default(false)) }}
 
 - name: Set storage volume derived device facts
   ansible.builtin.set_fact:
     storage_volume_pv_device: >-
-      {{ storage_volume.pv_device | default(storage_volume_device ~ '-part' ~ storage_volume_partition_number) }}
+      {{
+        storage_volume.pv_device
+        | default(
+          storage_volume_matching_layout.pv_device
+          | default(storage_volume_device ~ '-part' ~ storage_volume_partition_number)
+        )
+      }}
     storage_volume_lv_device: "/dev/{{ storage_volume_vg_name }}/{{ storage_volume_lv_name }}"
 
 - name: Validate storage volume configuration
@@ -59,6 +89,29 @@
   register: storage_volume_device_topology
   changed_when: false
   check_mode: false
+
+- name: Read storage volume source disk capacity
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -b
+      - -dn
+      - -o
+      - SIZE
+      - "{{ storage_volume_device }}"
+  register: storage_volume_device_capacity
+  changed_when: false
+  check_mode: false
+  when: storage_volume.layout is defined
+
+- name: Require declared storage layout capacity
+  ansible.builtin.assert:
+    that:
+      - storage_volume_device_capacity.stdout | trim | int >= storage_volume_matching_layout.capacity_gib | int * 1073741824
+    fail_msg: >-
+      Storage source disk {{ storage_volume_device }} is smaller than the declared
+      {{ storage_volume_matching_layout.capacity_gib }} GiB layout capacity.
+  when: storage_volume.layout is defined
 
 - name: Inspect storage volume source disk signatures
   ansible.builtin.command:
