@@ -1,0 +1,308 @@
+---
+- name: Configure shared Keepalived VIP foundation
+  when: keepalived_vip_enabled | bool
+  block:
+    - name: Validate shared Keepalived VIP inputs
+      ansible.builtin.include_tasks: validate.yml
+
+    - name: Install exact Keepalived package
+      ansible.builtin.dnf:
+        name: "{{ keepalived_vip_package_nevra }}"
+        state: present
+      register: keepalived_vip_package_result
+
+    - name: Ensure Keepalived script group exists
+      ansible.builtin.group:
+        name: "{{ keepalived_vip_script_group }}"
+        system: true
+        state: present
+      register: keepalived_vip_script_group_result
+
+    - name: Ensure Keepalived script user exists
+      ansible.builtin.user:
+        name: "{{ keepalived_vip_script_user }}"
+        group: "{{ keepalived_vip_script_group }}"
+        home: /nonexistent
+        create_home: false
+        shell: /sbin/nologin
+        system: true
+        state: present
+      register: keepalived_vip_script_user_result
+
+    - name: Track Keepalived validation dependency readiness
+      ansible.builtin.set_fact:
+        keepalived_vip_dependencies_ready: >-
+          {{
+            not (
+              ansible_check_mode
+              and (
+                keepalived_vip_package_result is changed
+                or keepalived_vip_script_group_result is changed
+                or keepalived_vip_script_user_result is changed
+              )
+            )
+          }}
+
+    - name: Verify installed Keepalived package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - "{{ keepalived_vip_package_name }}"
+      register: keepalived_vip_installed_nevra
+      changed_when: false
+      when: keepalived_vip_dependencies_ready
+
+    - name: Assert installed Keepalived package identity
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_installed_nevra.stdout == keepalived_vip_package_nevra
+        fail_msg: >-
+          Installed Keepalived package {{ keepalived_vip_installed_nevra.stdout }}
+          does not match required {{ keepalived_vip_package_nevra }}.
+      when: keepalived_vip_dependencies_ready
+
+    - name: Ensure Keepalived configuration and script directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ keepalived_vip_config_path | dirname }}"
+          mode: "0755"
+        - path: "{{ keepalived_vip_script_dir }}"
+          mode: "0755"
+        - path: "{{ keepalived_vip_service_drop_in_dir }}"
+          mode: "0755"
+
+    - name: Check Keepalived VRRP interfaces
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -o
+          - link
+          - show
+          - dev
+          - "{{ item }}"
+      changed_when: false
+      check_mode: false
+      loop: "{{ keepalived_vip_instances | map(attribute='interface') | unique | sort }}"
+
+    - name: Read Keepalived VRRP interface addresses
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -o
+          - -4
+          - address
+          - show
+          - dev
+          - "{{ item.interface }}"
+      register: keepalived_vip_interface_addresses
+      changed_when: false
+      check_mode: false
+      loop: "{{ keepalived_vip_instances }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Assert Keepalived unicast sources belong to their interfaces
+      ansible.builtin.assert:
+        that:
+          - item.item.source_address ~ '/' in item.stdout
+        fail_msg: >-
+          Keepalived source {{ item.item.source_address }} is not assigned to
+          interface {{ item.item.interface }} on {{ inventory_hostname }}.
+      loop: "{{ keepalived_vip_interface_addresses.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Discover routes to Keepalived VIPs
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -o
+          - route
+          - get
+          - "{{ item.vip | split('/') | first }}"
+      register: keepalived_vip_routes
+      changed_when: false
+      check_mode: false
+      loop: "{{ keepalived_vip_instances }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Assert Keepalived VIPs route through their interfaces
+      ansible.builtin.assert:
+        that:
+          - >-
+            item.stdout is search(' dev ' ~ (item.item.interface | regex_escape) ~ ' ')
+            or (
+              item.stdout is search(
+                '^local '
+                ~ ((item.item.vip | split('/') | first) | regex_escape)
+                ~ ' dev lo '
+              )
+              and keepalived_vip_interface_addresses.results[keepalived_vip_route_index].stdout
+                  is search(' inet ' ~ (item.item.vip | regex_escape) ~ ' ')
+            )
+        fail_msg: >-
+          Route to {{ item.item.vip }} must use {{ item.item.interface }} before
+          ownership, or the exact VIP must be assigned to that interface while
+          the kernel reports its local route through dev lo. Observed:
+          {{ item.stdout }}
+      loop: "{{ keepalived_vip_routes.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+        index_var: keepalived_vip_route_index
+
+    - name: Write Keepalived hard-fault tracking script
+      ansible.builtin.template:
+        src: check-service.sh.j2
+        dest: "{{ keepalived_vip_script_path }}"
+        owner: root
+        group: root
+        mode: "0755"
+        validate: /usr/bin/bash -n %s
+
+    - name: Write validated Keepalived configuration
+      ansible.builtin.template:
+        src: keepalived.conf.j2
+        dest: "{{ keepalived_vip_config_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        validate: >-
+          {{
+            keepalived_vip_config_validate_command
+            if keepalived_vip_dependencies_ready
+            else omit
+          }}
+      notify: Reload shared Keepalived VIP
+
+    - name: Write Keepalived service ordering drop-in
+      ansible.builtin.template:
+        src: platform.conf.j2
+        dest: "{{ keepalived_vip_service_drop_in_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: keepalived_vip_drop_in_result
+
+    - name: Reload systemd manager configuration
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - keepalived_vip_drop_in_result is changed
+
+    - name: Build current Keepalived VRRP firewalld policy
+      ansible.builtin.set_fact:
+        keepalived_vip_current_firewalld_rules: []
+      when: keepalived_vip_firewalld_manage | bool
+
+    - name: Add current Keepalived VRRP peer rules
+      ansible.builtin.set_fact:
+        keepalived_vip_current_firewalld_rules: >-
+          {{
+            keepalived_vip_current_firewalld_rules
+            + [
+              'rule family="ipv4" source address="'
+              ~ item
+              ~ '/32" protocol value="112" accept'
+            ]
+          }}
+      loop: "{{ keepalived_vip_instances | map(attribute='peers') | flatten | unique | sort }}"
+      when: keepalived_vip_firewalld_manage | bool
+
+    - name: Ensure Keepalived managed state directory exists
+      ansible.builtin.file:
+        path: "{{ keepalived_vip_state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: keepalived_vip_firewalld_manage | bool
+
+    - name: Check previous Keepalived VRRP firewalld manifest
+      ansible.builtin.stat:
+        path: "{{ keepalived_vip_firewalld_manifest_path }}"
+      register: keepalived_vip_previous_firewalld_manifest_stat
+      when: keepalived_vip_firewalld_manage | bool
+
+    - name: Read previous Keepalived VRRP firewalld manifest
+      ansible.builtin.slurp:
+        path: "{{ keepalived_vip_firewalld_manifest_path }}"
+      register: keepalived_vip_previous_firewalld_manifest_slurp
+      when:
+        - keepalived_vip_firewalld_manage | bool
+        - keepalived_vip_previous_firewalld_manifest_stat.stat.exists
+
+    - name: Track previous Keepalived VRRP firewalld policy
+      ansible.builtin.set_fact:
+        keepalived_vip_previous_firewalld_rules: >-
+          {{
+            (
+              keepalived_vip_previous_firewalld_manifest_slurp.content
+              | b64decode
+              | from_yaml
+            ).rich_rules | default([])
+            if keepalived_vip_previous_firewalld_manifest_stat.stat.exists
+            else []
+          }}
+      when: keepalived_vip_firewalld_manage | bool
+
+    - name: Enable current Keepalived VRRP firewalld policy
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        offline: true
+        state: enabled
+      loop: "{{ keepalived_vip_current_firewalld_rules }}"
+      when:
+        - keepalived_vip_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Disable stale Keepalived VRRP firewalld policy
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        offline: true
+        state: disabled
+      loop: >-
+        {{
+          keepalived_vip_previous_firewalld_rules
+          | difference(keepalived_vip_current_firewalld_rules)
+        }}
+      when:
+        - keepalived_vip_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Write Keepalived VRRP firewalld manifest
+      ansible.builtin.copy:
+        dest: "{{ keepalived_vip_firewalld_manifest_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: >-
+          {{
+            {
+              'rich_rules': keepalived_vip_current_firewalld_rules | sort
+            } | to_nice_yaml
+          }}
+      when:
+        - keepalived_vip_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Manage shared Keepalived VIP service
+      ansible.builtin.systemd_service:
+        name: "{{ keepalived_vip_service_name }}"
+        enabled: "{{ keepalived_vip_service_enabled }}"
+        state: "{{ keepalived_vip_service_state }}"
+      when: keepalived_vip_dependencies_ready

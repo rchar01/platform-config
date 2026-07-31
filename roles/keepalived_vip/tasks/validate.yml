@@ -1,0 +1,72 @@
+---
+- name: Assert shared Keepalived VIP inputs are configured
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_package_nevra | length > 0
+      - keepalived_vip_script_name is match('^[A-Za-z0-9_]+$')
+      - keepalived_vip_track_service is match('^[A-Za-z0-9_.@-]+$')
+      - keepalived_vip_track_ports | length > 0
+      - keepalived_vip_track_ports | map('int') | select('lt', 1) | list | length == 0
+      - keepalived_vip_track_ports | map('int') | select('gt', 65535) | list | length == 0
+      - keepalived_vip_cluster_members | length > 1
+      - keepalived_vip_cluster_members | selectattr('name', 'defined') | list | length == keepalived_vip_cluster_members | length
+      - keepalived_vip_cluster_members | selectattr('router_id', 'defined') | list | length == keepalived_vip_cluster_members | length
+      - keepalived_vip_cluster_members | selectattr('instances', 'defined') | list | length == keepalived_vip_cluster_members | length
+      - keepalived_vip_cluster_members | map(attribute='name') | unique | length == keepalived_vip_cluster_members | length
+      - keepalived_vip_cluster_members | map(attribute='router_id') | unique | length == keepalived_vip_cluster_members | length
+      - keepalived_vip_instances | length > 0
+      - keepalived_vip_instances | selectattr('name', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | selectattr('interface', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | selectattr('virtual_router_id', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | selectattr('priority', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | selectattr('source_address', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | selectattr('peers', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | selectattr('vip', 'defined') | list | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | map(attribute='name') | unique | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | map(attribute='virtual_router_id') | map('int') | unique | length == keepalived_vip_instances | length
+      - keepalived_vip_instances | map(attribute='vip') | unique | length == keepalived_vip_instances | length
+      - keepalived_vip_advert_interval | int > 0
+      - keepalived_vip_script_interval | int > 0
+      - keepalived_vip_script_timeout | int > 0
+      - keepalived_vip_script_timeout | int <= keepalived_vip_script_interval | int
+      - keepalived_vip_script_rise | int > 0
+      - keepalived_vip_script_fall | int > 0
+    fail_msg: >-
+      Keepalived VIP requires an exact package NEVRA, one safe router ID, at
+      least one required HAProxy listener, a unique cluster router-ID contract,
+      and complete unique VRRP instances.
+
+- name: Validate each shared Keepalived VIP cluster member
+  ansible.builtin.include_tasks: validate_cluster_member.yml
+  loop: "{{ keepalived_vip_cluster_members }}"
+  loop_control:
+    loop_var: keepalived_vip_cluster_member
+    label: "{{ keepalived_vip_cluster_member.name | default('undefined') }}"
+
+- name: Select local shared Keepalived VIP cluster member
+  ansible.builtin.set_fact:
+    keepalived_vip_local_cluster_members: >-
+      {{
+        keepalived_vip_cluster_members
+        | selectattr('name', 'equalto', inventory_hostname)
+        | list
+      }}
+
+- name: Assert local shared Keepalived VIP cluster member exists once
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_local_cluster_members | length == 1
+    fail_msg: >-
+      Keepalived cluster mapping must contain exactly one member named
+      {{ inventory_hostname }}.
+
+- name: Derive local shared Keepalived VIP router ID
+  ansible.builtin.set_fact:
+    keepalived_vip_router_id: "{{ keepalived_vip_local_cluster_members[0].router_id }}"
+
+- name: Validate each shared Keepalived VIP instance
+  ansible.builtin.include_tasks: validate_instance.yml
+  loop: "{{ keepalived_vip_instances }}"
+  loop_control:
+    loop_var: keepalived_vip_instance
+    label: "{{ keepalived_vip_instance.name | default('undefined') }}"

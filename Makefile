@@ -20,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test deploy-bootstrap-token-issuer-staging smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky deploy-bootstrap-token-issuer-staging smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -103,6 +103,10 @@ yamllint:
 ## Run repository tests
 test:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" bash tests/run-all.sh
+
+## Run the opt-in Keepalived role test in disposable Rocky systemd
+test-keepalived-vip-rocky:
+	@bash tests/scenarios/test-keepalived-vip-rocky.sh
 
 ## Run all local static checks
 verify: yamllint lint test

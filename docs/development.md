@@ -33,9 +33,15 @@ make syntax ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml
 make lint
 make yamllint
 make test
+make test-keepalived-vip-rocky
 ```
 
 `ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. The Make targets run tool-dependent checks in the development container, and their configuration excludes `.ansible/` and the vendored bastion runtime.
+
+`make test-keepalived-vip-rocky` is an opt-in integration check outside
+`make verify`. It downloads packages, starts a rootless disposable Rocky 10.1
+systemd container with `NET_ADMIN` for a dummy interface, keeps Keepalived stopped,
+and verifies role convergence, candidate rejection, and stale peer-rule removal.
 
 The dev container mounts this repository at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at

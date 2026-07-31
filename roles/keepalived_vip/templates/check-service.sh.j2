@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin
+
+systemctl is-active --quiet {{ keepalived_vip_track_service }}
+{% for interface in keepalived_vip_instances | map(attribute='interface') | unique | sort %}
+ip link show up dev {{ interface }} >/dev/null 2>&1
+{% endfor %}
+{% for port in keepalived_vip_track_ports | map('int') | unique | sort %}
+ss -H -ltn "sport = :{{ port }}" 2>/dev/null | awk 'END { exit (NR == 0) }'
+{% endfor %}

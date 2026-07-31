@@ -88,6 +88,7 @@ real values in private group or host variables.
 | `rke2` | `rke2_firewalld_manage`, cluster and API source lists, API ports | Cluster and API rich rules. |
 | `gitlab_ce` | `gitlab_ce_firewalld_manage`, `gitlab_ce_firewalld_ports` | Broad service ports. |
 | `haproxy_workload_lb` | `haproxy_workload_lb_firewalld_manage`, `haproxy_workload_lb_firewalld_ports` | Broad listener ports. |
+| `keepalived_vip` | `keepalived_vip_firewalld_manage`, instance `peers` | Reconciled peer-scoped IPv4 rich rules for VRRP protocol `112`; service activation remains disabled by default. |
 
 Prefer source-scoped rules when a service does not need broad client access.
 For example, a private registry configuration can use a documentation-only

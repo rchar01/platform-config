@@ -1,0 +1,8 @@
+---
+- name: Reload shared Keepalived VIP
+  ansible.builtin.systemd_service:
+    name: "{{ keepalived_vip_service_name }}"
+    state: reloaded
+  when:
+    - keepalived_vip_service_state in ['started', 'restarted', 'reloaded']
+    - not ansible_check_mode

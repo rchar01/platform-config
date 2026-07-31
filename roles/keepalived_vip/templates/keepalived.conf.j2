@@ -1,0 +1,44 @@
+global_defs {
+  router_id {{ keepalived_vip_router_id }}
+  script_user {{ keepalived_vip_script_user }} {{ keepalived_vip_script_group }}
+  enable_script_security
+}
+
+vrrp_script {{ keepalived_vip_script_name }} {
+  script "{{ keepalived_vip_script_path }}"
+  interval {{ keepalived_vip_script_interval }}
+  timeout {{ keepalived_vip_script_timeout }}
+  rise {{ keepalived_vip_script_rise }}
+  fall {{ keepalived_vip_script_fall }}
+  weight 0
+  init_fail
+}
+
+{% for instance in keepalived_vip_instances %}
+vrrp_instance {{ instance.name }} {
+  state BACKUP
+  interface {{ instance.interface }}
+  virtual_router_id {{ instance.virtual_router_id }}
+  priority {{ instance.priority }}
+  advert_int {{ keepalived_vip_advert_interval }}
+  nopreempt
+
+  unicast_src_ip {{ instance.source_address }}
+  check_unicast_src
+  unicast_fault_no_peer
+  unicast_peer {
+{% for peer in instance.peers %}
+    {{ peer }}
+{% endfor %}
+  }
+
+  virtual_ipaddress {
+    {{ instance.vip }} dev {{ instance.interface }}
+  }
+
+  track_script {
+    {{ keepalived_vip_script_name }}
+  }
+}
+
+{% endfor %}

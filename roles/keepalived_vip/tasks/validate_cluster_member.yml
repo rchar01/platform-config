@@ -1,0 +1,19 @@
+---
+- name: Assert shared Keepalived VIP cluster member is valid
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_cluster_member.name is match('^[A-Za-z0-9_.-]+$')
+      - keepalived_vip_cluster_member.router_id is match('^[A-Za-z0-9_.-]+$')
+      - keepalived_vip_cluster_member.instances | type_debug == 'dict'
+      - >-
+        keepalived_vip_cluster_member.instances.keys()
+        | difference(keepalived_vip_instances | map(attribute='name') | list)
+        | length == 0
+      - >-
+        (keepalived_vip_instances | map(attribute='name') | list)
+        | difference(keepalived_vip_cluster_member.instances.keys())
+        | length == 0
+    fail_msg: >-
+      Keepalived cluster members require a safe inventory name, unique safe
+      router ID, and an instance mapping that exactly matches the rendered
+      instance names.

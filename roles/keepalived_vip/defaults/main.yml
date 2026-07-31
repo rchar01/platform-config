@@ -1,0 +1,36 @@
+---
+keepalived_vip_enabled: false
+
+keepalived_vip_package_nevra: ""
+keepalived_vip_package_name: keepalived
+keepalived_vip_binary_path: /usr/sbin/keepalived
+keepalived_vip_config_path: /etc/keepalived/keepalived.conf
+keepalived_vip_config_validate_command: "{{ keepalived_vip_binary_path }} -t -f %s"
+
+keepalived_vip_service_name: keepalived.service
+keepalived_vip_service_enabled: false
+keepalived_vip_service_state: stopped
+keepalived_vip_service_drop_in_dir: /etc/systemd/system/keepalived.service.d
+keepalived_vip_service_drop_in_path: "{{ keepalived_vip_service_drop_in_dir }}/platform.conf"
+
+keepalived_vip_cluster_members: []
+keepalived_vip_instances: []
+
+keepalived_vip_script_user: keepalived_script
+keepalived_vip_script_group: keepalived_script
+keepalived_vip_script_name: platform_haproxy_ready
+keepalived_vip_script_dir: /usr/local/libexec/platform
+keepalived_vip_script_path: "{{ keepalived_vip_script_dir }}/keepalived-check-service"
+keepalived_vip_script_interval: 1
+keepalived_vip_script_timeout: 1
+keepalived_vip_script_rise: 2
+keepalived_vip_script_fall: 1
+
+keepalived_vip_track_service: haproxy.service
+keepalived_vip_track_ports: []
+
+keepalived_vip_advert_interval: 1
+
+keepalived_vip_firewalld_manage: true
+keepalived_vip_state_dir: /var/lib/platform-config
+keepalived_vip_firewalld_manifest_path: "{{ keepalived_vip_state_dir }}/keepalived-vip-firewalld.yml"

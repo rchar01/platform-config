@@ -1,0 +1,98 @@
+---
+- name: Assert shared Keepalived VIP instance is fail-closed
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_instance.name is match('^[A-Za-z0-9_]+$')
+      - keepalived_vip_instance.interface is match('^[A-Za-z0-9_.:-]+$')
+      - keepalived_vip_instance.virtual_router_id | type_debug == 'int'
+      - keepalived_vip_instance.virtual_router_id >= 1
+      - keepalived_vip_instance.virtual_router_id <= 255
+      - keepalived_vip_instance.priority | type_debug == 'int'
+      - keepalived_vip_instance.priority >= 1
+      - keepalived_vip_instance.priority <= 254
+      - keepalived_vip_instance.source_address is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - keepalived_vip_instance.source_address.split('.') | map('int') | select('gt', 255) | list | length == 0
+      - keepalived_vip_instance.vip is match('^[0-9]{1,3}([.][0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+      - keepalived_vip_instance.vip.split('/') | first | split('.') | map('int') | select('gt', 255) | list | length == 0
+      - keepalived_vip_instance.peers | length > 0
+      - keepalived_vip_instance.peers | unique | length == keepalived_vip_instance.peers | length
+      - keepalived_vip_instance.source_address not in keepalived_vip_instance.peers
+      - keepalived_vip_instance.peers | select('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}$') | list | length == keepalived_vip_instance.peers | length
+      - keepalived_vip_instance.peers | length + 1 == keepalived_vip_cluster_members | length
+    fail_msg: >-
+      Keepalived instance {{ keepalived_vip_instance.name | default('undefined') }}
+      requires a safe name/interface, VRID 1-255, nopreempt-compatible priority
+      1-254, an IPv4 source, a CIDR VIP, and one unicast peer per other cluster
+      member.
+
+- name: Assert every cluster member defines shared Keepalived VIP instance
+  ansible.builtin.assert:
+    that:
+      - >-
+        keepalived_vip_cluster_members
+        | selectattr('instances.' ~ keepalived_vip_instance.name, 'defined')
+        | list
+        | length == keepalived_vip_cluster_members | length
+    fail_msg: >-
+      Every Keepalived cluster member must define instance
+      {{ keepalived_vip_instance.name }}.
+
+- name: Derive shared Keepalived VIP instance cluster assignments
+  ansible.builtin.set_fact:
+    keepalived_vip_cluster_instance_sources: >-
+      {{
+        keepalived_vip_cluster_members
+        | map(attribute='instances.' ~ keepalived_vip_instance.name ~ '.source_address')
+        | list
+      }}
+    keepalived_vip_cluster_instance_priorities: >-
+      {{
+        keepalived_vip_cluster_members
+        | map(attribute='instances.' ~ keepalived_vip_instance.name ~ '.priority')
+        | list
+      }}
+
+- name: Assert shared Keepalived VIP cluster priorities are integers
+  ansible.builtin.assert:
+    that:
+      - >-
+        keepalived_vip_cluster_instance_priorities
+        | select('integer')
+        | list
+        | length == keepalived_vip_cluster_instance_priorities | length
+    fail_msg: >-
+      Keepalived instance {{ keepalived_vip_instance.name }} cluster priorities
+      must be integers without coercion.
+
+- name: Assert shared Keepalived VIP instance cluster assignments are unique
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_cluster_instance_sources | unique | length == keepalived_vip_cluster_instance_sources | length
+      - keepalived_vip_cluster_instance_priorities | unique | length == keepalived_vip_cluster_instance_priorities | length
+      - keepalived_vip_cluster_instance_priorities | select('lt', 1) | list | length == 0
+      - keepalived_vip_cluster_instance_priorities | select('gt', 254) | list | length == 0
+      - >-
+        keepalived_vip_local_cluster_members[0].instances[keepalived_vip_instance.name].source_address
+        == keepalived_vip_instance.source_address
+      - >-
+        keepalived_vip_local_cluster_members[0].instances[keepalived_vip_instance.name].priority
+        == keepalived_vip_instance.priority
+      - >-
+        keepalived_vip_instance.peers
+        | difference(keepalived_vip_cluster_instance_sources | difference([keepalived_vip_instance.source_address]))
+        | length == 0
+      - >-
+        (keepalived_vip_cluster_instance_sources | difference([keepalived_vip_instance.source_address]))
+        | difference(keepalived_vip_instance.peers)
+        | length == 0
+    fail_msg: >-
+      Keepalived instance {{ keepalived_vip_instance.name }} must use its
+      inventory-host assignment from a cluster mapping with unique source
+      addresses and priorities.
+
+- name: Validate each shared Keepalived VIP peer
+  ansible.builtin.include_tasks: validate_peer.yml
+  loop: "{{ keepalived_vip_instance.peers }}"
+  loop_control:
+    loop_var: keepalived_vip_peer
+    label: "{{ keepalived_vip_peer }}"

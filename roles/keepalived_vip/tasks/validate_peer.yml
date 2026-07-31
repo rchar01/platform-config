@@ -1,0 +1,7 @@
+---
+- name: Assert shared Keepalived VIP peer is valid IPv4
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_peer is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - keepalived_vip_peer.split('.') | map('int') | select('gt', 255) | list | length == 0
+    fail_msg: "Invalid Keepalived unicast peer IPv4 address: {{ keepalived_vip_peer }}"

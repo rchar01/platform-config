@@ -24,6 +24,7 @@ Roles are intentionally variable-driven. Real environment values come from `plat
 - `rke2_kube_vip`: RKE2 kube-vip API HA add-on. It writes a pinned kube-vip HelmChart manifest to the RKE2 bootstrap server, keeps service LoadBalancer support disabled by default, and verifies the API VIP routes through the configured server interface.
 - `kong_ingress`: RKE2 HelmChart-based Kong Gateway and Kong Ingress Controller add-on for classic Kubernetes `Ingress`. It exposes fixed HTTP/HTTPS NodePorts for external load balancers and intentionally defers Gateway API CRDs to a later platform phase.
 - `haproxy_workload_lb`: native HAProxy workload load balancer for external VM-to-worker NodePort traffic. It models the production F5 pattern by forwarding `80/tcp` and `443/tcp` to Kubernetes worker NodePorts while keeping workload load balancing outside the base RKE2 role.
+- `keepalived_vip`: disabled-by-default shared unicast VRRP foundation for OpenBao and monitoring. It enforces all-`BACKUP` plus `nopreempt`, exact package identity, hard-fault local HAProxy/listener tracking, peer-scoped protocol `112` firewall policy, and native candidate validation while leaving service activation to later acceptance gates.
 - `bastion_host`: base package installation and `/opt/platform` layout creation.
 - `k8s_bastion_access`: installs external Kubernetes CLI tools, copies the vendored `platform-k8s-bastion` runtime, writes `/etc/bastion` files from private inputs, installs the login profile, configures policy-driven users, and manages bastion systemd services/timers.
 

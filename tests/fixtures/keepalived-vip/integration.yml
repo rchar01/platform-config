@@ -1,0 +1,45 @@
+---
+- name: Exercise shared Keepalived VIP role on disposable Rocky systemd
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    firewalld_enabled: false
+    keepalived_vip_enabled: true
+    keepalived_vip_package_nevra: "{{ keepalived_vip_test_package_nevra | default('keepalived-0:2.2.8-9.el10.x86_64') }}"
+    keepalived_vip_cluster_members:
+      - name: localhost
+        router_id: test-node-01
+        instances:
+          TEST_VIP:
+            source_address: 192.0.2.10
+            priority: "{{ keepalived_vip_test_priority | default(150) }}"
+      - name: test-node-02
+        router_id: test-node-02
+        instances:
+          TEST_VIP:
+            source_address: 192.0.2.11
+            priority: 140
+      - name: test-node-03
+        router_id: test-node-03
+        instances:
+          TEST_VIP:
+            source_address: "{{ keepalived_vip_test_peer | default('192.0.2.12') }}"
+            priority: 130
+    keepalived_vip_track_service: haproxy.service
+    keepalived_vip_track_ports:
+      - 8200
+      - 8404
+    keepalived_vip_instances:
+      - name: TEST_VIP
+        interface: vrrp-test
+        virtual_router_id: 51
+        priority: "{{ keepalived_vip_test_priority | default(150) }}"
+        source_address: 192.0.2.10
+        peers:
+          - 192.0.2.11
+          - "{{ keepalived_vip_test_peer | default('192.0.2.12') }}"
+        vip: "{{ keepalived_vip_test_vip | default('192.0.2.100/24') }}"
+  roles:
+    - firewalld
+    - keepalived_vip
