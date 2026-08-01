@@ -1,0 +1,129 @@
+---
+- name: Require the canonical OpenBao rolling inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Stop before an empty or partial inventory can enter maintenance
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+        fail_msg: >-
+          OpenBao rolling maintenance requires exactly three inventory members.
+
+- name: Establish strict OpenBao rolling order
+  hosts: openbao
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit full-cluster rolling maintenance
+      ansible.builtin.assert:
+        that:
+          - openbao_rolling_restart_confirm | default(false) | bool
+          - not ansible_check_mode
+          - ansible_play_hosts_all | list | sort == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao rolling maintenance requires explicit confirmation, normal
+          apply mode, and all three OpenBao inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Require an active OpenBao service contract on every voter
+      ansible.builtin.assert:
+        that:
+          - openbao_enabled | default(false) | bool
+          - openbao_service_enabled | default(false) | bool
+          - openbao_service_state | default('stopped') == 'started'
+        fail_msg: >-
+          OpenBao rolling maintenance requires an enabled and started service
+          contract on this node before any voter can converge.
+
+    - name: Establish strict healthy OpenBao cluster baseline
+      ansible.builtin.include_role:
+        name: openbao_status
+      run_once: true # noqa run-once[task]
+
+    - name: Queue current OpenBao standby nodes first
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: openbao_rolling_order
+        openbao_rolling_expected_state: standby
+        openbao_rolling_baseline_active_name: >-
+          {{ openbao_status_active_member.name }}
+      loop: >-
+        {{
+          openbao_cluster_members
+          | rejectattr('node_id', 'equalto', openbao_status_active_member.node_id)
+          | list
+        }}
+      loop_control:
+        label: "{{ item.name }}"
+      run_once: true # noqa run-once[task]
+
+    - name: Queue current OpenBao active node last
+      ansible.builtin.add_host:
+        name: "{{ openbao_status_active_member.name }}"
+        groups: openbao_rolling_order
+        openbao_rolling_expected_state: active
+        openbao_rolling_baseline_active_name: >-
+          {{ openbao_status_active_member.name }}
+      run_once: true # noqa run-once[task]
+
+- name: Converge OpenBao one voter at a time
+  hosts: openbao_rolling_order
+  gather_facts: true
+  order: inventory
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Recheck strict OpenBao cluster state before this voter
+      ansible.builtin.include_role:
+        name: openbao_status
+
+    - name: Stop if OpenBao leadership changed across the planned order
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_active_member.name
+            == openbao_rolling_baseline_active_name
+          - >-
+            (
+              openbao_rolling_expected_state == 'standby'
+              and inventory_hostname != openbao_status_active_member.name
+            )
+            or (
+              openbao_rolling_expected_state == 'active'
+              and inventory_hostname == openbao_status_active_member.name
+            )
+        fail_msg: >-
+          OpenBao leadership changed after the rolling order was established.
+          Abort safely and rerun maintenance from a new strict baseline.
+
+    - name: Reset local OpenBao restart tracking
+      ansible.builtin.set_fact:
+        openbao_restart_required: false
+
+    - name: Converge this OpenBao voter
+      ansible.builtin.include_role:
+        name: openbao
+
+    - name: Wait for custodians to unseal the restarted OpenBao voter
+      ansible.builtin.pause:
+        prompt: >-
+          OpenBao {{ inventory_hostname }} restarted and remains sealed. Have two
+          approved custodians unseal only this node, then press Enter. Automation
+          will independently verify all three healthy voters before continuing.
+      when: openbao_restart_required | bool
+
+    - name: Require strict voter recovery before advancing
+      ansible.builtin.include_role:
+        name: openbao_status
+      when: openbao_restart_required | bool
+
+- name: Confirm strict OpenBao state after rolling maintenance
+  hosts: openbao_rolling_order
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Run final controller-side OpenBao cluster status gate
+      ansible.builtin.include_role:
+        name: openbao_status
+      run_once: true # noqa run-once[task]

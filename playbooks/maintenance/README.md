@@ -54,3 +54,9 @@ Available maintenance playbooks:
   It requires an outside-Git read-only token, does not follow token-bearing
   redirects, and never initializes, unseals, restarts, or reconfigures OpenBao.
   HAProxy, VIP, and firewall connectivity remain separate acceptance gates.
+- `openbao-rolling-restart.yml`: explicitly invoked post-initialization
+  convergence. It requires all three hosts and a strict healthy baseline, queues
+  current standbys before the active node, uses `serial: 1`, aborts on leadership
+  drift, pauses after an actual restart for the two-custodian manual unseal, and
+  requires strict three-voter recovery before advancing. It never initializes or
+  unseals OpenBao and is not imported by `site.yml`.

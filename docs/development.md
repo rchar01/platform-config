@@ -62,6 +62,12 @@ one matching leader, and stable repeated observations while rejecting sealed,
 split-cluster, non-voter, leader-mismatch, and changing-index states. These
 fixtures do not replace live initialized-cluster qualification.
 
+The default suite also checks the maintenance-only OpenBao rolling contract:
+explicit confirmation, full-cluster selection, standby-first inventory order,
+`serial: 1`, leadership-drift aborts, conditional manual-unseal pauses, and
+strict voter recovery before advancing. The disposable Rocky test separately
+proves that unchanged active convergence reports no restart requirement.
+
 The dev container mounts this repository at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at
 `/platform-private` so the default relative private paths still work from

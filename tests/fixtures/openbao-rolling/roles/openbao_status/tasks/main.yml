@@ -1,0 +1,17 @@
+---
+- name: Select mocked OpenBao active identity
+  ansible.builtin.set_fact:
+    openbao_test_current_active_name: >-
+      {{
+        hostvars['localhost'].openbao_test_active_name
+        | default(openbao_test_initial_active)
+      }}
+
+- name: Publish mocked OpenBao active member
+  ansible.builtin.set_fact:
+    openbao_status_active_member: >-
+      {{
+        openbao_cluster_members
+        | selectattr('name', 'equalto', openbao_test_current_active_name)
+        | first
+      }}

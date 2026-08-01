@@ -78,3 +78,10 @@ with the installed CA and DNS identity. It accepts active, standby, sealed, or
 uninitialized health status only as process-readiness evidence; it does not call
 those states cluster acceptance. Post-initialization health, voter membership,
 manual unseal, and rolling restart gates remain separate workflows.
+
+Post-initialization changes that may restart OpenBao belong in the explicit
+`playbooks/maintenance/openbao-rolling-restart.yml` workflow. The role reports
+`openbao_restart_required` only when restart-notifying content changed while the
+service is enabled and requested started. The maintenance playbook owns
+standby-first serial ordering, the manual-unseal pause, and strict voter recovery
+before another node can converge.

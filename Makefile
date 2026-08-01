@@ -20,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -126,6 +126,10 @@ deploy-bootstrap-token-issuer-staging: _guard-staging-mode
 ## Check strict read-only OpenBao direct-node and Raft status
 status-openbao:
 	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-status.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Roll OpenBao voters through explicit manual-unseal maintenance
+roll-openbao:
+	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-rolling-restart.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS) -e openbao_rolling_restart_confirm=true"
 
 ## Smoke test inactive firewalld baseline
 smoke-firewalld:

@@ -37,3 +37,13 @@
     - firewalld
     - podman_host
     - openbao
+  post_tasks:
+    - name: Assert expected OpenBao restart requirement
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_restart_required
+            == openbao_test_expect_restart_required
+        fail_msg: >-
+          OpenBao convergence reported an unexpected restart requirement.
+      when: openbao_test_expect_restart_required is defined

@@ -16,6 +16,7 @@ main() {
   run_test "Keepalived VIP render" "${SCRIPT_DIR}/scenarios/test-keepalived-vip-render.sh"
   run_test "OpenBao HA render" "${SCRIPT_DIR}/scenarios/test-openbao-render.sh"
   run_test "OpenBao strict status" "${SCRIPT_DIR}/scenarios/test-openbao-status.sh"
+  run_test "OpenBao rolling maintenance" "${SCRIPT_DIR}/scenarios/test-openbao-rolling.sh"
   run_test "Kubernetes bastion Phase 1 safety" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-phase1-safety.sh"
   run_test "Kubernetes bastion access reconciliation" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-access-reconciliation.sh"
   run_test "Bootstrap token issuer staging workflow" "${SCRIPT_DIR}/scenarios/test-bootstrap-token-issuer-staging.sh"

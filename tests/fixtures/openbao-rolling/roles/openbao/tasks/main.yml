@@ -1,0 +1,21 @@
+---
+- name: Record mocked OpenBao voter convergence
+  ansible.builtin.lineinfile:
+    path: "{{ openbao_test_order_path }}"
+    line: "{{ inventory_hostname }}"
+    create: true
+    mode: "0600"
+  delegate_to: localhost
+
+- name: Report no mocked OpenBao restart
+  ansible.builtin.set_fact:
+    openbao_restart_required: false
+
+- name: Move mocked OpenBao leadership after selected convergence
+  ansible.builtin.set_fact:
+    openbao_test_active_name: "{{ openbao_test_drift_to }}"
+  delegate_to: localhost
+  delegate_facts: true
+  when:
+    - openbao_test_drift_after is defined
+    - inventory_hostname == openbao_test_drift_after

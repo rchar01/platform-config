@@ -111,7 +111,8 @@ for check_mode_artifact in \
     fail "OpenBao check mode created ${check_mode_artifact}"
   fi
 done
-run_playbook >/dev/null
+run_playbook \
+  --extra-vars '{"openbao_test_expect_restart_required":false}' >/dev/null
 
 if podman exec "$CONTAINER" test -e \
   /run/systemd/generator/multi-user.target.wants/openbao.service; then
@@ -121,7 +122,8 @@ if podman exec "$CONTAINER" systemctl is-active --quiet openbao.service; then
   fail 'OpenBao service started before explicit activation'
 fi
 
-idempotent_output="$(run_playbook)"
+idempotent_output="$(run_playbook \
+  --extra-vars '{"openbao_test_expect_restart_required":false}')"
 grep -qE 'changed=0.*failed=0' <<< "$idempotent_output" \
   || fail 'Second staged OpenBao role convergence was not idempotent'
 
@@ -131,7 +133,9 @@ grep -q '198[.]51[.]100[.]1/32.*port="18200"' <<< "$initial_rules" \
 grep -q '127[.]0[.]0[.]2/32.*port="8201"' <<< "$initial_rules" \
   || fail 'OpenBao cluster peer rule was not staged'
 
-run_playbook --extra-vars openbao_test_backend_source=198.51.100.2/32 >/dev/null
+run_playbook \
+  --extra-vars openbao_test_backend_source=198.51.100.2/32 \
+  --extra-vars '{"openbao_test_expect_restart_required":false}' >/dev/null
 updated_rules="$(podman exec "$CONTAINER" firewall-offline-cmd --zone=public --list-rich-rules)"
 grep -q '198[.]51[.]100[.]2/32.*port="18200"' <<< "$updated_rules" \
   || fail 'Replacement OpenBao backend source rule was not staged'
@@ -160,7 +164,9 @@ podman exec "$CONTAINER" mount \
   tmpfs \
   /var/lib/openbao-backup-staging
 
-run_playbook --extra-vars '{"openbao_test_service_started":true}' >/dev/null
+run_playbook \
+  --extra-vars '{"openbao_test_service_started":true,"openbao_test_expect_restart_required":true}' \
+  >/dev/null
 podman exec "$CONTAINER" test -e \
   /run/systemd/generator/multi-user.target.wants/openbao.service \
   || fail 'OpenBao Quadlet did not gain its explicit activation target'
@@ -180,11 +186,13 @@ grep -q '"initialized":false' < <(
   podman exec "$CONTAINER" cat /tmp/openbao-test/health.json
 ) || fail 'OpenBao disposable node was unexpectedly initialized'
 
-active_idempotent_output="$(run_playbook --extra-vars '{"openbao_test_service_started":true}')"
+active_idempotent_output="$(run_playbook \
+  --extra-vars '{"openbao_test_service_started":true,"openbao_test_expect_restart_required":false}')"
 grep -qE 'changed=0.*failed=0' <<< "$active_idempotent_output" \
   || fail 'Second active OpenBao role convergence was not idempotent'
 
-run_playbook >/dev/null
+run_playbook \
+  --extra-vars '{"openbao_test_expect_restart_required":false}' >/dev/null
 if podman exec "$CONTAINER" systemctl is-active --quiet openbao.service; then
   fail 'OpenBao service remained active after returning to staged state'
 fi
@@ -192,7 +200,8 @@ if podman exec "$CONTAINER" test -e \
   /run/systemd/generator/multi-user.target.wants/openbao.service; then
   fail 'OpenBao activation target remained after returning to staged state'
 fi
-disabled_idempotent_output="$(run_playbook)"
+disabled_idempotent_output="$(run_playbook \
+  --extra-vars '{"openbao_test_expect_restart_required":false}')"
 grep -qE 'changed=0.*failed=0' <<< "$disabled_idempotent_output" \
   || fail 'Second disabled OpenBao role convergence was not idempotent'
 

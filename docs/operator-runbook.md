@@ -773,6 +773,23 @@ expected voters, one matching leader, and stable repeated Raft observations. It
 does not initialize, unseal, restart, or reconfigure OpenBao, and it is not an
 HAProxy or VIP smoke check.
 
+After the cluster has been initialized and live qualification explicitly allows
+a configuration change that may restart voters, use the maintenance-only path:
+
+```bash
+make roll-openbao ENV=dev LIMIT=openbao
+```
+
+The command requires the complete three-host group and an initially strict
+healthy cluster. It snapshots the current active node, queues both standbys
+first, and processes one host at a time. If leadership changes relative to that
+plan, the run aborts before converging the affected host. After an actual restart
+it stops for two approved custodians to manually unseal that node, then
+independently requires all three healthy voters before continuing. Pressing
+Enter never substitutes for the status gate. Do not run this workflow before
+cluster initialization or use it to initialize, join, unseal, restore, or reset
+OpenBao.
+
 Runner tokens:
 
 ```text

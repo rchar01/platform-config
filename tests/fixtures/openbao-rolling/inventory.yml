@@ -1,0 +1,33 @@
+---
+all:
+  vars:
+    ansible_connection: local
+    openbao_enabled: true
+    openbao_service_enabled: >-
+      {{ inventory_hostname != (openbao_test_disabled_host | default('')) }}
+    openbao_service_state: >-
+      {{
+        'started'
+        if inventory_hostname != (openbao_test_disabled_host | default(''))
+        else 'stopped'
+      }}
+    openbao_test_initial_active: bao-test-1
+    openbao_cluster_members:
+      - name: bao-test-1
+        node_id: bao-1
+        address: 192.0.2.10
+        dns: bao-1.internal.invalid
+      - name: bao-test-2
+        node_id: bao-2
+        address: 192.0.2.11
+        dns: bao-2.internal.invalid
+      - name: bao-test-3
+        node_id: bao-3
+        address: 192.0.2.12
+        dns: bao-3.internal.invalid
+  children:
+    openbao:
+      hosts:
+        bao-test-1:
+        bao-test-2:
+        bao-test-3:
