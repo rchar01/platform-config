@@ -55,7 +55,7 @@ assert_playbook_blocked() {
     fail "${message}: playbook exited successfully"
   fi
 
-  grep -qE 'HA implementation is unavailable|HA status checks are not implemented|HA smoke checks are not implemented' <<< "$output" \
+  grep -qE 'HA implementation is unavailable|Strict OpenBao HA status requires|HA smoke checks are not implemented' <<< "$output" \
     || fail "${message}: expected blocking failure was not reached"
 }
 
@@ -83,6 +83,8 @@ test_obsolete_service_paths_are_blocked() {
 
   assert_not_contains "$SITE_PLAYBOOK" 'initialize|reset|restore|failure' \
     'Routine site convergence imports an operational or destructive workflow'
+  assert_not_contains "$OPENBAO_STATUS_PLAYBOOK" 'validate_certs: false|initialize|unseal' \
+    'OpenBao status weakens TLS or includes a custody operation'
   assert_contains "$MAKEFILE" 'legacy check is blocked' \
     'Legacy smoke targets are not explicitly blocked'
 

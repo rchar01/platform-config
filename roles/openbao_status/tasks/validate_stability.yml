@@ -1,0 +1,29 @@
+---
+- name: Assert OpenBao Raft state is stable across observations
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_status_raft_observations
+        | length
+        == openbao_status_stability_observations
+      - >-
+        openbao_status_raft_observations
+        | map(attribute='node_ids')
+        | unique
+        | list
+        | length == 1
+      - >-
+        openbao_status_raft_observations
+        | map(attribute='leader_node_id')
+        | unique
+        | list
+        | length == 1
+      - >-
+        openbao_status_raft_observations
+        | map(attribute='index')
+        | unique
+        | list
+        | length == 1
+    fail_msg: >-
+      OpenBao Raft membership, leader, or configuration index changed between
+      strict status observations.

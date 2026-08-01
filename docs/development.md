@@ -56,6 +56,12 @@ mode, idempotency, mount rejection, and atomic candidate preservation, then
 explicitly starts an uninitialized node, requires TLS health status `501`, and
 returns it to an idempotent disabled state without initialization side effects.
 
+`make verify` also exercises synthetic strict OpenBao health and Raft status
+predicates. The fixtures require one active node, two standbys, three voters,
+one matching leader, and stable repeated observations while rejecting sealed,
+split-cluster, non-voter, leader-mismatch, and changing-index states. These
+fixtures do not replace live initialized-cluster qualification.
+
 The dev container mounts this repository at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at
 `/platform-private` so the default relative private paths still work from

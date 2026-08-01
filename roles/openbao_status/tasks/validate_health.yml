@@ -1,0 +1,113 @@
+---
+- name: Assert all direct OpenBao nodes are initialized and unsealed
+  ansible.builtin.assert:
+    that:
+      - openbao_status_health_results.results | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='item.node_id')
+        | list
+        | sort
+        == openbao_status_expected_node_ids
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.initialized')
+        | select('boolean')
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.initialized')
+        | select('equalto', true)
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.sealed')
+        | select('boolean')
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.sealed')
+        | select('equalto', false)
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.standby')
+        | select('boolean')
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.version')
+        | unique
+        | list
+        == [openbao_version]
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.cluster_id')
+        | select('string')
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.cluster_id')
+        | reject('equalto', '')
+        | list
+        | length == 3
+      - >-
+        openbao_status_health_results.results
+        | map(attribute='json.cluster_id')
+        | reject('equalto', '')
+        | unique
+        | list
+        | length == 1
+      - >-
+        openbao_status_health_results.results
+        | selectattr('status', 'equalto', 200)
+        | list
+        | length == 1
+      - >-
+        openbao_status_health_results.results
+        | selectattr('status', 'equalto', 429)
+        | list
+        | length == 2
+      - >-
+        openbao_status_health_results.results
+        | selectattr('json.standby', 'equalto', false)
+        | list
+        | length == 1
+      - >-
+        openbao_status_health_results.results
+        | selectattr('json.standby', 'equalto', true)
+        | list
+        | length == 2
+    fail_msg: >-
+      Strict OpenBao health requires one active node and two standbys, all
+      initialized, unsealed, on version 2.6.1, and in the same cluster.
+
+- name: Assert OpenBao health codes match active and standby state
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.status == 200 and item.json.standby == false)
+        or (item.status == 429 and item.json.standby == true)
+    fail_msg: >-
+      OpenBao node {{ item.item.node_id }} returned a health code that does not
+      match its active or standby state.
+  loop: "{{ openbao_status_health_results.results }}"
+  loop_control:
+    label: "{{ item.item.node_id }}"
+
+- name: Select active OpenBao node from strict health
+  ansible.builtin.set_fact:
+    openbao_status_active_member: >-
+      {{
+        (
+          openbao_status_health_results.results
+          | selectattr('status', 'equalto', 200)
+          | first
+        ).item
+      }}

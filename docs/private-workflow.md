@@ -189,6 +189,13 @@ Never commit:
 - private CA key material
 - production service passwords
 
+For strict OpenBao status checks, keep the dedicated read-only token in an
+owner-private `0400` or `0600` file under the outside-Git secret store. Private
+inventory may reference its absolute path through `openbao_status_token_src`,
+but must not contain the token value. The status identity needs only `read` on
+`sys/storage/raft/configuration`; the token is read on the controller and is not
+copied to an OpenBao node.
+
 ## Validation
 
 After sourcing the environment file:

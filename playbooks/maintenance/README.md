@@ -49,7 +49,8 @@ Do not import maintenance playbooks from `playbooks/site.yml`.
 
 Available maintenance playbooks:
 
-- `openbao-status.yml`: intentionally fails closed until strict three-node
-  service, TLS, health, Raft membership, HAProxy, and firewall checks replace
-  the retired standalone status behavior. It never initializes or unseals
-  OpenBao.
+- `openbao-status.yml`: performs strict controller-side direct-node TLS health
+  and authenticated Raft membership checks for the three-node OpenBao cluster.
+  It requires an outside-Git read-only token, does not follow token-bearing
+  redirects, and never initializes, unseals, restarts, or reconfigures OpenBao.
+  HAProxy, VIP, and firewall connectivity remain separate acceptance gates.

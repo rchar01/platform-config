@@ -1,22 +1,24 @@
 ---
-- name: Block unavailable OpenBao HA status checks
+- name: Require the canonical OpenBao HA status inventory
   hosts: localhost
   gather_facts: false
   tasks:
-    - name: Stop before an obsolete or empty status result
-      ansible.builtin.fail:
-        msg: "Strict OpenBao HA status checks are not implemented."
+    - name: Stop before an empty or partial inventory can report success
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+        fail_msg: >-
+          Strict OpenBao HA status requires exactly three inventory members.
 
-- name: Block obsolete OpenBao status checks
+- name: Check strict direct-node OpenBao HA status
   hosts: openbao
   gather_facts: false
+  any_errors_fatal: true
   tasks:
-    - name: Stop until strict HA status checks are available
-      ansible.builtin.fail:
-        msg: >-
-          Strict OpenBao HA status checks are not implemented. The previous check
-          accepted sealed, standby, and uninitialized nodes and disabled
-          certificate validation by default.
+    - name: Run one controller-side OpenBao cluster status gate
+      ansible.builtin.include_role:
+        name: openbao_status
+      run_once: true # noqa run-once[task]
 
 - name: Reject status checks limited away from OpenBao
   hosts: all
@@ -25,6 +27,6 @@
     - name: Stop before a limited status run can report false success
       ansible.builtin.fail:
         msg: >-
-          Strict OpenBao HA status checks are not implemented. A limit that
-          excludes the replacement service group is not a valid status result.
+          Strict OpenBao HA status requires an OpenBao inventory host. A limit
+          that excludes the service group is not a valid status result.
       when: inventory_hostname not in groups.get('openbao', [])

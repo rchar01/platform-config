@@ -18,10 +18,11 @@ Public examples in this document use RFC 5737 documentation IPs such as `192.0.2
 ## Current Coverage vs Future Phases
 
 This runbook is complete for the currently implemented homelab and unaffected dev
-services. The rebuilt OpenBao service role foundation is staged but its playbook,
-HAProxy, initialization, status, and smoke paths remain blocked. Monitoring also
-remains blocked while its three-node replacement is implemented. Do not use
-`site.yml` to bypass the phased handoff.
+services. The rebuilt OpenBao service role foundation is staged and its strict
+read-only direct-node status gate is available, but service convergence, HAProxy,
+initialization, and smoke paths remain blocked. Monitoring also remains blocked
+while its three-node replacement is implemented. Do not use `site.yml` to bypass
+the phased handoff.
 
 | Area | Environment | Status | Runbook Coverage |
 |---|---|---|---|
@@ -32,7 +33,7 @@ remains blocked while its three-node replacement is implemented. Do not use
 | Podman host foundation | homelab, dev | implemented | full bring-up and smoke commands |
 | GitLab CE | homelab | implemented | full bring-up, smoke, and root password handling |
 | Zot registry | dev | implemented | full bring-up and smoke commands |
-| OpenBao HA | dev | service foundation staged | immutable image, direct-node role, inventory, and bounded-storage contracts; no active service apply or smoke command |
+| OpenBao HA | dev | service foundation and read-only status staged | immutable image, direct-node role and status, inventory, and bounded-storage contracts; no active service apply or smoke command |
 | GitLab runners | dev | implemented | full bring-up and smoke commands |
 | Monitoring HA | dev | replacement blocked | inventory and bounded-storage contract only; collectors remain inactive |
 | RKE2 | dev | implemented | full bring-up and smoke commands for the base cluster |
@@ -749,6 +750,28 @@ OpenBao:
 The standalone deployment is retired. The replacement HA playbook is blocked and
 no initialization or unseal workflow is available through normal convergence.
 ```
+
+After an initialized three-node cluster and a dedicated least-privilege status
+identity exist, store its token in an owner-private file outside Git and set
+`openbao_status_token_src` to that absolute controller path in private inventory.
+The token policy needs only:
+
+```hcl
+path "sys/storage/raft/configuration" {
+  capabilities = ["read"]
+}
+```
+
+Run the read-only direct-node and Raft gate with:
+
+```bash
+make status-openbao ENV=dev LIMIT=openbao
+```
+
+The gate requires strict TLS, one active node, two standbys, exactly three
+expected voters, one matching leader, and stable repeated Raft observations. It
+does not initialize, unseal, restart, or reconfigure OpenBao, and it is not an
+HAProxy or VIP smoke check.
 
 Runner tokens:
 

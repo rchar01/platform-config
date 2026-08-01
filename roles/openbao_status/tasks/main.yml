@@ -1,0 +1,178 @@
+---
+- name: Assert strict OpenBao status inputs are safe
+  ansible.builtin.assert:
+    that:
+      - openbao_version == '2.6.1'
+      - openbao_status_token_src is match('^/.+$')
+      - openbao_tls_ca_src is match('^/.+$')
+      - openbao_backend_port | type_debug == 'int'
+      - openbao_backend_port >= 1
+      - openbao_backend_port <= 65535
+      - openbao_cluster_port | type_debug == 'int'
+      - openbao_cluster_port >= 1
+      - openbao_cluster_port <= 65535
+      - openbao_status_request_timeout | type_debug == 'int'
+      - openbao_status_request_timeout >= 1
+      - openbao_status_retries | type_debug == 'int'
+      - openbao_status_retries >= 1
+      - openbao_status_retry_delay | type_debug == 'int'
+      - openbao_status_retry_delay >= 0
+      - openbao_status_stability_observations | type_debug == 'int'
+      - openbao_status_stability_observations >= 2
+      - openbao_status_stability_delay | type_debug == 'int'
+      - openbao_status_stability_delay >= 1
+      - openbao_cluster_members | type_debug == 'list'
+      - openbao_cluster_members | length == 3
+      - openbao_cluster_members | selectattr('name', 'defined') | list | length == 3
+      - openbao_cluster_members | selectattr('node_id', 'defined') | list | length == 3
+      - openbao_cluster_members | selectattr('address', 'defined') | list | length == 3
+      - openbao_cluster_members | selectattr('dns', 'defined') | list | length == 3
+      - openbao_cluster_members | map(attribute='name') | unique | length == 3
+      - openbao_cluster_members | map(attribute='node_id') | unique | length == 3
+      - openbao_cluster_members | map(attribute='address') | unique | length == 3
+      - openbao_cluster_members | map(attribute='dns') | unique | length == 3
+      - groups.get('openbao', []) | length == 3
+      - >-
+        openbao_cluster_members
+        | map(attribute='name')
+        | list
+        | sort
+        == groups.get('openbao', []) | list | sort
+    fail_msg: >-
+      Strict OpenBao HA status requires the approved three-node mapping,
+      absolute controller-side CA and token paths, bounded retries, and the
+      direct backend and cluster ports.
+
+- name: Build expected OpenBao status identities
+  ansible.builtin.set_fact:
+    openbao_status_expected_node_ids: >-
+      {{ openbao_cluster_members | map(attribute='node_id') | list | sort }}
+    openbao_status_expected_raft_addresses: >-
+      {{
+        openbao_cluster_members
+        | map(attribute='dns')
+        | map('regex_replace', '$', ':' ~ (openbao_cluster_port | string))
+        | list
+        | sort
+      }}
+    openbao_status_expected_raft_pairs: >-
+      {{
+        openbao_cluster_members
+        | map(attribute='node_id')
+        | zip(
+            openbao_cluster_members
+            | map(attribute='dns')
+            | map('regex_replace', '$', ':' ~ (openbao_cluster_port | string))
+          )
+        | map('join', '=')
+        | list
+        | sort
+      }}
+
+- name: Check OpenBao status CA source on controller
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_ca_src }}"
+  delegate_to: localhost
+  become: false
+  register: openbao_status_ca_stat
+
+- name: Assert OpenBao status CA source is available
+  ansible.builtin.assert:
+    that:
+      - openbao_status_ca_stat.stat.exists
+      - openbao_status_ca_stat.stat.isreg
+    fail_msg: "The controller-side OpenBao status CA certificate is unavailable."
+
+- name: Check OpenBao status token source on controller
+  ansible.builtin.stat:
+    path: "{{ openbao_status_token_src }}"
+  delegate_to: localhost
+  become: false
+  register: openbao_status_token_stat
+  no_log: true
+
+- name: Assert OpenBao status token source is private
+  ansible.builtin.assert:
+    that:
+      - openbao_status_token_stat.stat.exists
+      - openbao_status_token_stat.stat.isreg
+      - openbao_status_token_stat.stat.mode is match('^0?[46]00$')
+    fail_msg: >-
+      The outside-Git OpenBao status token must be a controller-side regular
+      file readable only by its owner.
+  no_log: true
+
+- name: Read OpenBao status token on controller
+  ansible.builtin.slurp:
+    path: "{{ openbao_status_token_src }}"
+  delegate_to: localhost
+  become: false
+  register: openbao_status_token_file
+  no_log: true
+
+- name: Hold OpenBao status token in memory
+  ansible.builtin.set_fact:
+    openbao_status_token: "{{ openbao_status_token_file.content | b64decode | trim }}"
+  no_log: true
+
+- name: Assert OpenBao status token is not empty
+  ansible.builtin.assert:
+    that:
+      - openbao_status_token | length > 0
+    fail_msg: "The outside-Git OpenBao status token file is empty."
+  no_log: true
+
+- name: Query strict health from each direct OpenBao node
+  ansible.builtin.uri:
+    url: "https://{{ item.dns }}:{{ openbao_backend_port }}/v1/sys/health"
+    method: GET
+    ca_path: "{{ openbao_tls_ca_src }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code:
+      - 200
+      - 429
+      - 472
+      - 473
+      - 501
+      - 503
+    timeout: "{{ openbao_status_request_timeout }}"
+  delegate_to: localhost
+  become: false
+  register: openbao_status_health_results
+  until:
+    - >-
+      openbao_status_health_results.status | default(0) in [200, 429]
+      and openbao_status_health_results.json | default(none) is mapping
+      and openbao_status_health_results.json.get('initialized') is boolean
+      and openbao_status_health_results.json.get('initialized') == true
+      and openbao_status_health_results.json.get('sealed') is boolean
+      and openbao_status_health_results.json.get('sealed') == false
+      and openbao_status_health_results.json.get('standby') is boolean
+      and openbao_status_health_results.json.get('version', '') == openbao_version
+      and openbao_status_health_results.json.get('cluster_id') is string
+      and openbao_status_health_results.json.get('cluster_id', '') | length > 0
+  retries: "{{ openbao_status_retries }}"
+  delay: "{{ openbao_status_retry_delay }}"
+  loop: "{{ openbao_cluster_members }}"
+  loop_control:
+    label: "{{ item.node_id }}"
+
+- name: Validate strict direct-node OpenBao health
+  ansible.builtin.include_tasks: validate_health.yml
+
+- name: Initialize stable OpenBao Raft observations
+  ansible.builtin.set_fact:
+    openbao_status_raft_observations: []
+
+- name: Observe strict OpenBao Raft state
+  ansible.builtin.include_tasks: observe_raft.yml
+  loop: "{{ range(0, openbao_status_stability_observations) | list }}"
+  loop_control:
+    loop_var: openbao_status_observation_number
+    label: "observation {{ openbao_status_observation_number | int + 1 }}"
+
+- name: Validate stable OpenBao Raft observations
+  ansible.builtin.include_tasks: validate_stability.yml

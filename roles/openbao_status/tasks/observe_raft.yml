@@ -1,0 +1,110 @@
+---
+- name: Wait between stable OpenBao Raft observations
+  ansible.builtin.wait_for:
+    timeout: "{{ openbao_status_stability_delay }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_status_observation_number | int > 0
+
+- name: Query authenticated OpenBao Raft configuration
+  ansible.builtin.uri:
+    url: >-
+      https://{{ openbao_status_active_member.dns }}:{{ openbao_backend_port
+      }}/v1/sys/storage/raft/configuration
+    method: GET
+    headers:
+      X-Vault-Token: "{{ openbao_status_token }}"
+    ca_path: "{{ openbao_tls_ca_src }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code:
+      - 200
+      - 307
+      - 400
+      - 403
+      - 429
+      - 500
+      - 502
+      - 503
+    timeout: "{{ openbao_status_request_timeout }}"
+  delegate_to: localhost
+  become: false
+  register: openbao_status_raft_query
+  no_log: true
+  until:
+    - >-
+      openbao_status_raft_query.status | default(0) == 200
+      and openbao_status_raft_query.json | default(none) is mapping
+      and openbao_status_raft_query.json.get('data') is mapping
+      and openbao_status_raft_query.json.data.get('config') is mapping
+      and openbao_status_raft_query.json.data.config.get('servers') is sequence
+      and openbao_status_raft_query.json.data.config.servers is not string
+      and openbao_status_raft_query.json.data.config.servers | length == 3
+      and openbao_status_raft_query.json.data.config.servers
+        | select('mapping') | list | length == 3
+      and openbao_status_raft_query.json.data.config.servers
+        | selectattr('node_id', 'defined') | map(attribute='node_id')
+        | list | sort == openbao_status_expected_node_ids
+      and openbao_status_raft_query.json.data.config.servers
+        | selectattr('address', 'defined') | map(attribute='address')
+        | list | sort == openbao_status_expected_raft_addresses
+      and openbao_status_raft_query.json.data.config.servers
+        | map(attribute='node_id')
+        | zip(
+            openbao_status_raft_query.json.data.config.servers
+            | map(attribute='address')
+          )
+        | map('join', '=') | list | sort == openbao_status_expected_raft_pairs
+      and openbao_status_raft_query.json.data.config.servers
+        | selectattr('voter', 'defined')
+        | selectattr('voter', 'boolean') | list | length == 3
+      and openbao_status_raft_query.json.data.config.servers
+        | selectattr('voter', 'defined')
+        | selectattr('voter', 'equalto', true) | list | length == 3
+      and openbao_status_raft_query.json.data.config.servers
+        | selectattr('leader', 'defined')
+        | selectattr('leader', 'boolean') | list | length == 3
+      and openbao_status_raft_query.json.data.config.servers
+        | selectattr('leader', 'defined')
+        | selectattr('leader', 'equalto', true) | list | length == 1
+      and openbao_status_raft_query.json.data.config.get('index')
+        | type_debug == 'int'
+      and openbao_status_raft_query.json.data.config.index >= 1
+  retries: "{{ openbao_status_retries }}"
+  delay: "{{ openbao_status_retry_delay }}"
+
+- name: Hold OpenBao Raft configuration without authentication material
+  ansible.builtin.set_fact:
+    openbao_status_raft_index: >-
+      {{ openbao_status_raft_query.json.data.config.index }}
+    openbao_status_raft_servers: >-
+      {{ openbao_status_raft_query.json.data.config.servers }}
+
+- name: Validate strict OpenBao Raft configuration
+  ansible.builtin.include_tasks: validate_raft.yml
+
+- name: Record strict OpenBao Raft observation
+  ansible.builtin.set_fact:
+    openbao_status_raft_observations: >-
+      {{
+        openbao_status_raft_observations
+        + [
+            {
+              'index': openbao_status_raft_index,
+              'leader_node_id': (
+                openbao_status_raft_servers
+                | selectattr('leader', 'equalto', true)
+                | map(attribute='node_id')
+                | first
+              ),
+              'node_ids': (
+                openbao_status_raft_servers
+                | map(attribute='node_id')
+                | list
+                | sort
+              )
+            }
+          ]
+      }}

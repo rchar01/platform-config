@@ -1,0 +1,125 @@
+---
+- name: Validate strict OpenBao status predicates
+  hosts: localhost
+  gather_facts: false
+  vars:
+    openbao_status_test_mode: healthy
+    openbao_version: 2.6.1
+    openbao_status_stability_observations: 2
+    openbao_status_expected_node_ids:
+      - bao-1
+      - bao-2
+      - bao-3
+    openbao_status_expected_raft_addresses:
+      - bao-1.internal.invalid:8201
+      - bao-2.internal.invalid:8201
+      - bao-3.internal.invalid:8201
+    openbao_status_expected_raft_pairs:
+      - bao-1=bao-1.internal.invalid:8201
+      - bao-2=bao-2.internal.invalid:8201
+      - bao-3=bao-3.internal.invalid:8201
+    openbao_status_health_results:
+      results:
+        - item:
+            node_id: bao-1
+            dns: bao-1.internal.invalid
+          status: 200
+          json:
+            initialized: true
+            sealed: false
+            standby: false
+            version: 2.6.1
+            cluster_id: test-cluster
+        - item:
+            node_id: bao-2
+            dns: bao-2.internal.invalid
+          status: "{{ 503 if openbao_status_test_mode == 'sealed' else 429 }}"
+          json:
+            initialized: >-
+              {{ 1 if openbao_status_test_mode == 'numeric-health' else true }}
+            sealed: >-
+              {{
+                0
+                if openbao_status_test_mode == 'numeric-health'
+                else openbao_status_test_mode == 'sealed'
+              }}
+            standby: true
+            version: 2.6.1
+            cluster_id: test-cluster
+        - item:
+            node_id: bao-3
+            dns: bao-3.internal.invalid
+          status: 429
+          json:
+            initialized: true
+            sealed: false
+            standby: true
+            version: 2.6.1
+            cluster_id: >-
+              {{
+                ''
+                if openbao_status_test_mode == 'empty-cluster-id'
+                else (
+                  'other-cluster'
+                  if openbao_status_test_mode == 'split-cluster'
+                  else 'test-cluster'
+                )
+              }}
+    openbao_status_raft_index: >-
+      {{ 'invalid' if openbao_status_test_mode == 'malformed-index' else 24 }}
+    openbao_status_raft_servers:
+      - node_id: bao-1
+        address: >-
+          {{
+            'bao-2.internal.invalid:8201'
+            if openbao_status_test_mode == 'swapped-address'
+            else 'bao-1.internal.invalid:8201'
+          }}
+        leader: "{{ openbao_status_test_mode != 'leader-mismatch' }}"
+        voter: true
+      - node_id: bao-2
+        address: >-
+          {{
+            'bao-1.internal.invalid:8201'
+            if openbao_status_test_mode == 'swapped-address'
+            else 'bao-2.internal.invalid:8201'
+          }}
+        leader: "{{ openbao_status_test_mode == 'leader-mismatch' }}"
+        voter: true
+      - node_id: bao-3
+        address: bao-3.internal.invalid:8201
+        leader: false
+        voter: >-
+          {{
+            1
+            if openbao_status_test_mode == 'numeric-raft'
+            else openbao_status_test_mode != 'nonvoter'
+          }}
+    openbao_status_raft_observations:
+      - index: 24
+        leader_node_id: bao-1
+        node_ids:
+          - bao-1
+          - bao-2
+          - bao-3
+      - index: "{{ 25 if openbao_status_test_mode == 'unstable' else 24 }}"
+        leader_node_id: bao-1
+        node_ids:
+          - bao-1
+          - bao-2
+          - bao-3
+  tasks:
+    - name: Validate strict synthetic OpenBao health
+      ansible.builtin.include_role:
+        name: openbao_status
+        tasks_from: validate_health.yml
+
+    - name: Validate strict synthetic OpenBao Raft state
+      ansible.builtin.include_role:
+        name: openbao_status
+        tasks_from: validate_raft.yml
+
+    - name: Validate stable synthetic OpenBao Raft observations
+      ansible.builtin.include_role:
+        name: openbao_status
+        tasks_from: validate_stability.yml

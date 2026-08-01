@@ -1,0 +1,12 @@
+---
+openbao_version: 2.6.1
+openbao_backend_port: 18200
+openbao_cluster_port: 8201
+openbao_tls_ca_src: ""
+openbao_cluster_members: []
+openbao_status_token_src: ""
+openbao_status_request_timeout: 5
+openbao_status_retries: 10
+openbao_status_retry_delay: 2
+openbao_status_stability_observations: 2
+openbao_status_stability_delay: 1

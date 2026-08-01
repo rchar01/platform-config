@@ -1,0 +1,84 @@
+---
+- name: Assert strict OpenBao Raft voter state
+  ansible.builtin.assert:
+    that:
+      - openbao_status_raft_index | type_debug == 'int'
+      - openbao_status_raft_index >= 1
+      - openbao_status_raft_servers | type_debug == 'list'
+      - openbao_status_raft_servers | length == 3
+      - >-
+        openbao_status_raft_servers
+        | selectattr('node_id', 'defined')
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | map(attribute='node_id')
+        | list
+        | sort
+        == openbao_status_expected_node_ids
+      - >-
+        openbao_status_raft_servers
+        | map(attribute='node_id')
+        | unique
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | selectattr('address', 'defined')
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | map(attribute='address')
+        | list
+        | sort
+        == openbao_status_expected_raft_addresses
+      - >-
+        openbao_status_raft_servers
+        | map(attribute='address')
+        | unique
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | map(attribute='node_id')
+        | zip(openbao_status_raft_servers | map(attribute='address'))
+        | map('join', '=')
+        | list
+        | sort
+        == openbao_status_expected_raft_pairs
+      - >-
+        openbao_status_raft_servers
+        | selectattr('voter', 'defined')
+        | selectattr('voter', 'boolean')
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | selectattr('voter', 'defined')
+        | selectattr('voter', 'equalto', true)
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | selectattr('leader', 'defined')
+        | selectattr('leader', 'boolean')
+        | list
+        | length == 3
+      - >-
+        openbao_status_raft_servers
+        | selectattr('leader', 'defined')
+        | selectattr('leader', 'equalto', true)
+        | list
+        | length == 1
+      - >-
+        openbao_status_raft_servers
+        | selectattr('leader', 'equalto', true)
+        | map(attribute='node_id')
+        | first
+        == openbao_status_active_member.node_id
+    fail_msg: >-
+      Strict OpenBao Raft status requires exactly the three expected unique
+      voters, one leader, expected cluster addresses, and agreement between the
+      active API node and Raft leader.
