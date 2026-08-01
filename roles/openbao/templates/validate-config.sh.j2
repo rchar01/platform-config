@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+candidate="${1:?candidate configuration path is required}"
+
+exec /usr/bin/podman run \
+  --rm \
+  --network none \
+  --pull never \
+  --read-only \
+  --user 0:0 \
+  --security-opt no-new-privileges \
+  --entrypoint /usr/bin/bao \
+  --volume "${candidate}:/tmp/openbao.hcl:ro,Z" \
+  {{ openbao_image }} \
+  operator validate-config -config=/tmp/openbao.hcl

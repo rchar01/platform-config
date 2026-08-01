@@ -1,0 +1,138 @@
+---
+- name: Assert OpenBao HA scalar inputs are safe
+  ansible.builtin.assert:
+    that:
+      - openbao_version == '2.6.1'
+      - openbao_image_registry is match('^[a-z0-9.-]+/[a-z0-9_./-]+$')
+      - openbao_image_digest is match('^sha256:[a-f0-9]{64}$')
+      - openbao_image == openbao_image_registry ~ '@' ~ openbao_image_digest
+      - openbao_image_architecture == 'amd64'
+      - ansible_facts.architecture in ['x86_64', 'amd64']
+      - openbao_container_uid == '100'
+      - openbao_container_gid == '1000'
+      - openbao_node_name is match('^[A-Za-z0-9_.-]+$')
+      - openbao_node_address is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - openbao_node_address.split('.') | map('int') | select('gt', 255) | list | length == 0
+      - openbao_node_dns is match('^[a-z0-9.-]+$')
+      - openbao_service_dns is match('^[a-z0-9.-]+$')
+      - openbao_service_dns != openbao_node_dns
+      - openbao_service_vip is match('^[0-9]{1,3}([.][0-9]{1,3}){3}$')
+      - openbao_service_vip.split('.') | map('int') | select('gt', 255) | list | length == 0
+      - openbao_client_port | type_debug == 'int'
+      - openbao_backend_port | type_debug == 'int'
+      - openbao_cluster_port | type_debug == 'int'
+      - openbao_client_port >= 1 and openbao_client_port <= 65535
+      - openbao_backend_port >= 1 and openbao_backend_port <= 65535
+      - openbao_cluster_port >= 1 and openbao_cluster_port <= 65535
+      - >-
+        [openbao_client_port, openbao_backend_port, openbao_cluster_port]
+        | unique
+        | length == 3
+      - openbao_seal_type == 'shamir'
+      - openbao_raft_performance_multiplier | type_debug == 'int'
+      - openbao_raft_performance_multiplier >= 1
+      - openbao_raft_performance_multiplier <= 10
+      - openbao_tls_min_version in ['tls12', 'tls13']
+      - openbao_tls_max_version in ['tls12', 'tls13']
+      - not (openbao_tls_min_version == 'tls13' and openbao_tls_max_version == 'tls12')
+      - openbao_log_level in ['trace', 'debug', 'info', 'warn', 'error']
+      - openbao_log_format in ['standard', 'json']
+      - openbao_telemetry_prometheus_retention_time is match('^[1-9][0-9]*[smh]$')
+      - openbao_service_enabled is boolean
+      - openbao_service_state in ['started', 'stopped']
+      - (openbao_service_enabled | bool) == (openbao_service_state == 'started')
+      - openbao_tls_ca_src is match('^/.+$')
+      - openbao_tls_cert_src is match('^/.+$')
+      - openbao_tls_key_src is match('^/.+$')
+      - openbao_config_path is match('^/[A-Za-z0-9_./-]+$')
+      - openbao_data_dir is match('^/[A-Za-z0-9_./-]+$')
+      - openbao_audit_1_dir is match('^/[A-Za-z0-9_./-]+$')
+      - openbao_audit_2_dir is match('^/[A-Za-z0-9_./-]+$')
+      - openbao_required_mounts | unique | length == openbao_required_mounts | length
+      - openbao_required_mounts | length == 4
+      - >-
+        openbao_required_mounts
+        | difference(
+            [
+              openbao_data_dir,
+              openbao_audit_1_dir,
+              openbao_audit_2_dir,
+              openbao_backup_staging_dir
+            ]
+          )
+        | length == 0
+      - >-
+        [
+          openbao_data_dir,
+          openbao_audit_1_dir,
+          openbao_audit_2_dir,
+          openbao_backup_staging_dir
+        ]
+        | difference(openbao_required_mounts)
+        | length == 0
+    fail_msg: >-
+      OpenBao HA requires the approved immutable amd64 2.6.1 image, Shamir
+      seal, explicit unique ports, safe node/service identities, strict TLS,
+      and four distinct pre-existing service mounts.
+
+- name: Assert OpenBao HA cluster mapping is complete
+  ansible.builtin.assert:
+    that:
+      - openbao_cluster_members | type_debug == 'list'
+      - openbao_cluster_members | length == 3
+      - openbao_cluster_members | selectattr('name', 'defined') | list | length == 3
+      - openbao_cluster_members | selectattr('node_id', 'defined') | list | length == 3
+      - openbao_cluster_members | selectattr('address', 'defined') | list | length == 3
+      - openbao_cluster_members | selectattr('dns', 'defined') | list | length == 3
+      - openbao_cluster_members | map(attribute='name') | unique | length == 3
+      - openbao_cluster_members | map(attribute='node_id') | unique | length == 3
+      - openbao_cluster_members | map(attribute='address') | unique | length == 3
+      - openbao_cluster_members | map(attribute='dns') | unique | length == 3
+    fail_msg: >-
+      OpenBao cluster mapping must define exactly three members with unique
+      inventory names, node IDs, IPv4 addresses, and DNS names.
+
+- name: Validate each OpenBao HA cluster member
+  ansible.builtin.include_tasks: validate_cluster_member.yml
+  loop: "{{ openbao_cluster_members }}"
+  loop_control:
+    loop_var: openbao_cluster_member
+    label: "{{ openbao_cluster_member.name | default('undefined') }}"
+
+- name: Select local OpenBao HA cluster member
+  ansible.builtin.set_fact:
+    openbao_local_cluster_members: >-
+      {{
+        openbao_cluster_members
+        | selectattr('name', 'equalto', inventory_hostname)
+        | list
+      }}
+
+- name: Assert local OpenBao HA identity matches canonical mapping
+  ansible.builtin.assert:
+    that:
+      - openbao_local_cluster_members | length == 1
+      - openbao_local_cluster_members[0].node_id == openbao_node_name
+      - openbao_local_cluster_members[0].address == openbao_node_address
+      - openbao_local_cluster_members[0].dns == openbao_node_dns
+    fail_msg: >-
+      OpenBao local node identity must exactly match its canonical
+      inventory-host assignment.
+
+- name: Assert OpenBao backend firewall sources are IPv4 CIDRs
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_backend_allowed_sources
+        | select('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+        | list
+        | length == openbao_backend_allowed_sources | length
+      - openbao_backend_allowed_sources | unique | length == openbao_backend_allowed_sources | length
+    fail_msg: "OpenBao backend firewall sources must be unique IPv4 CIDRs."
+
+- name: Validate each OpenBao backend firewall source
+  ansible.builtin.include_tasks: validate_backend_source.yml
+  loop: "{{ openbao_backend_allowed_sources }}"
+  loop_control:
+    loop_var: openbao_backend_source
+    label: "{{ openbao_backend_source }}"

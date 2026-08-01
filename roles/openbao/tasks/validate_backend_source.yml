@@ -1,0 +1,13 @@
+---
+- name: Assert OpenBao backend firewall source octets are valid
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_backend_source.split('/')
+        | first
+        | split('.')
+        | map('int')
+        | select('gt', 255)
+        | list
+        | length == 0
+    fail_msg: "OpenBao backend firewall source {{ openbao_backend_source }} is invalid."

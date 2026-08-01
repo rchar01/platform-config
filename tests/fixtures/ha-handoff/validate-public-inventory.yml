@@ -49,7 +49,29 @@
           - openbao_host_examples.results | map(attribute='ansible_facts.openbao_host_example.openbao_node_address') | unique | length == 3
           - openbao_host_examples.results | map(attribute='ansible_facts.openbao_host_example.openbao_node_dns') | unique | length == 3
           - openbao_group_example.openbao_service_dns is match('^[a-z0-9.-]+[.]invalid$')
+          - openbao_group_example.openbao_image_digest is match('^sha256:[a-f0-9]{64}$')
+          - not openbao_group_example.openbao_enabled | bool
+          - not openbao_group_example.openbao_service_enabled | bool
+          - openbao_group_example.openbao_service_state == 'stopped'
           - not openbao_group_example.openbao_keepalived_enabled | bool
+          - openbao_group_example.openbao_cluster_members | length == 3
+          - openbao_group_example.openbao_cluster_members | map(attribute='name') | unique | length == 3
+          - openbao_group_example.openbao_cluster_members | map(attribute='node_id') | unique | length == 3
+          - openbao_group_example.openbao_cluster_members | map(attribute='address') | unique | length == 3
+          - openbao_group_example.openbao_cluster_members | map(attribute='dns') | unique | length == 3
+          - >-
+            openbao_group_example.openbao_cluster_members
+            | map(attribute='name')
+            | difference(groups.openbao)
+            | length == 0
+          - >-
+            groups.openbao
+            | difference(
+                openbao_group_example.openbao_cluster_members
+                | map(attribute='name')
+                | list
+              )
+            | length == 0
 
     - name: Require bounded OpenBao storage examples
       ansible.builtin.assert:

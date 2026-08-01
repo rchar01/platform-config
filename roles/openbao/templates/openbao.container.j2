@@ -1,20 +1,27 @@
 [Unit]
-Description=OpenBao Secret Management Service
-Wants={{ openbao_quadlet_wants }}
-After={{ openbao_quadlet_after }}
+Description=OpenBao HA Service
+Wants=network-online.target
+After=network-online.target
 
 [Container]
 Image={{ openbao_image }}
 ContainerName={{ openbao_container_name }}
 User={{ openbao_container_uid }}:{{ openbao_container_gid }}
-PublishPort={{ openbao_host_port }}:{{ openbao_container_port }}
-Volume={{ openbao_config_dir }}:/etc/openbao:ro,{{ openbao_quadlet_volume_label }}
-Volume={{ openbao_data_dir }}:{{ openbao_container_data_dir }}:{{ openbao_quadlet_volume_label }}
-Exec=server -config={{ openbao_config_path }}
+Network=host
+Environment=SKIP_CHOWN=true
+NoNewPrivileges=true
+Volume={{ openbao_config_dir }}:{{ openbao_container_config_dir }}:ro,Z
+Volume={{ openbao_data_dir }}:{{ openbao_container_data_dir }}:Z
+Volume={{ openbao_audit_1_dir }}:{{ openbao_container_audit_1_dir }}:Z
+Volume={{ openbao_audit_2_dir }}:{{ openbao_container_audit_2_dir }}:Z
+Exec=server
 
 [Service]
 Restart={{ openbao_quadlet_restart_policy }}
+RestartSec={{ openbao_quadlet_restart_sec }}
 MemorySwapMax={{ openbao_quadlet_memory_swap_max }}
 
+{% if openbao_service_enabled | bool %}
 [Install]
 WantedBy=multi-user.target
+{% endif %}

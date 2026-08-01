@@ -20,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky deploy-bootstrap-token-issuer-staging smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -107,6 +107,14 @@ test:
 ## Run the opt-in Keepalived role test in disposable Rocky systemd
 test-keepalived-vip-rocky:
 	@bash tests/scenarios/test-keepalived-vip-rocky.sh
+
+## Validate OpenBao configuration with the exact 2.6.1 image
+test-openbao-image:
+	@bash tests/scenarios/test-openbao-image.sh
+
+## Run the opt-in OpenBao role test in disposable Rocky systemd
+test-openbao-rocky:
+	@bash tests/scenarios/test-openbao-rocky.sh
 
 ## Run all local static checks
 verify: yamllint lint test

@@ -1,0 +1,39 @@
+---
+- name: Exercise staged OpenBao HA role on disposable Rocky systemd
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    firewalld_enabled: false
+    podman_host_socket_manage: false
+    openbao_enabled: true
+    openbao_service_enabled: "{{ openbao_test_service_started | default(false) }}"
+    openbao_service_state: "{{ 'started' if openbao_test_service_started | default(false) else 'stopped' }}"
+    openbao_firewalld_manage: true
+    openbao_backend_allowed_sources:
+      - "{{ openbao_test_backend_source | default('198.51.100.1/32') }}"
+    openbao_node_name: bao-test-1
+    openbao_node_address: 127.0.0.1
+    openbao_node_dns: bao-test-1.internal.invalid
+    openbao_service_dns: bao-test.internal.invalid
+    openbao_service_vip: 192.0.2.100
+    openbao_tls_ca_src: /tmp/openbao-test/ca.crt
+    openbao_tls_cert_src: /tmp/openbao-test/tls.crt
+    openbao_tls_key_src: /tmp/openbao-test/tls.key
+    openbao_cluster_members:
+      - name: localhost
+        node_id: bao-test-1
+        address: 127.0.0.1
+        dns: bao-test-1.internal.invalid
+      - name: test-node-02
+        node_id: bao-test-2
+        address: 127.0.0.2
+        dns: bao-test-2.internal.invalid
+      - name: test-node-03
+        node_id: bao-test-3
+        address: 127.0.0.3
+        dns: bao-test-3.internal.invalid
+  roles:
+    - firewalld
+    - podman_host
+    - openbao

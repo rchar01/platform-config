@@ -49,4 +49,7 @@ Do not import maintenance playbooks from `playbooks/site.yml`.
 
 Available maintenance playbooks:
 
-- `openbao-status.yml`: read-only OpenBao service, health endpoint, and permanent firewalld rule checks. It does not initialize or unseal OpenBao.
+- `openbao-status.yml`: intentionally fails closed until strict three-node
+  service, TLS, health, Raft membership, HAProxy, and firewall checks replace
+  the retired standalone status behavior. It never initializes or unseals
+  OpenBao.

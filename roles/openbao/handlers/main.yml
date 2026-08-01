@@ -1,12 +1,9 @@
 ---
-- name: Reload systemd
-  ansible.builtin.systemd_service:
-    daemon_reload: true
-
-- name: Restart OpenBao
+- name: Restart OpenBao HA service
   ansible.builtin.systemd_service:
     name: "{{ openbao_service_name }}"
     state: restarted
   when:
     - openbao_service_enabled | bool
+    - openbao_service_state == 'started'
     - not ansible_check_mode

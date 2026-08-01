@@ -1,26 +1,80 @@
 # openbao
 
-This is the retired standalone OpenBao implementation. It remains in the tree
-only while its three-node HA replacement is developed; no active playbook calls
-it. Do not apply it to the `openbao` group.
+Stages one node of the approved three-node OpenBao Integrated Storage design.
+The role is disabled by default, and the service remains disabled and stopped
+by default after configuration is enabled.
 
-The legacy role owns one local OpenBao configuration, TLS deployment from
-private source paths, persistent Raft storage under `/var/lib/openbao/data`, the
-`openbao.container` Quadlet unit, service lifecycle, and source-scoped permanent
-firewalld rich rules for `8200/tcp`. It does not expose cluster traffic or form a
-three-voter cluster.
+The role owns:
 
-The official OpenBao image runs the server as UID `100` and GID `1000`, so the role pins the Quadlet user and grants that identity access to data and TLS key files through `openbao_container_uid` and `openbao_container_gid`. The generated systemd service sets `MemorySwapMax=0` as container-level hardening.
+- the immutable OpenBao `2.6.1` `linux/amd64` image reference;
+- canonical three-node identity and retry-join validation;
+- host-network backend and cluster listeners;
+- outside-Git CA, node certificate, and private-key installation;
+- manual Shamir sealing by omission of any Auto Unseal stanza;
+- non-root Quadlet execution with swap disabled at the service boundary;
+- native `operator validate-config` candidate validation inside the pinned
+  image before atomic configuration replacement; and
+- reconciled backend and cluster firewalld rules.
 
-When `openbao_firewalld_manage` is true, the role manages permanent
-source-scoped rich rules with offline-capable module operations. Rules are also
-applied immediately when inventory explicitly configures firewalld to run.
+The selected standard image is pinned to the GHCR `linux/amd64` platform
+manifest `sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0`.
+Inspection of that exact artifact reports OpenBao `2.6.1`, architecture `amd64`,
+runtime user `openbao`, UID `100`, and GID `1000`. Those numeric IDs are an
+artifact-specific contract, not a promise made by the mutable Alpine image
+source.
 
-This role intentionally does not initialize or unseal OpenBao. Initialization
-and unseal operations require explicit operator action and must not be imported
-from `playbooks/site.yml`.
+## Required Inputs
 
-Certificate private keys, unseal keys, root tokens, recovery keys, and any real CA material must stay outside public Git.
+Set `openbao_enabled: true` only after the controller-side TLS files and all
+four service mounts exist. Provide exactly three canonical members:
 
-The supported public interface will be documented here only after the HA role
-passes render, convergence, TLS, quorum, VIP, backup, and restore acceptance.
+```yaml
+openbao_cluster_members:
+  - name: openbao-01
+    node_id: bao-1
+    address: 192.0.2.63
+    dns: bao-1.internal.invalid
+  - name: openbao-02
+    node_id: bao-2
+    address: 192.0.2.64
+    dns: bao-2.internal.invalid
+  - name: openbao-03
+    node_id: bao-3
+    address: 192.0.2.65
+    dns: bao-3.internal.invalid
+```
+
+Each host's `openbao_node_name`, `openbao_node_address`, and
+`openbao_node_dns` must exactly match its canonical mapping. The role verifies
+that the local address exists before rendering a host-network listener.
+
+By default these paths must already be separate mounts:
+
+- `/var/lib/openbao`
+- `/var/log/openbao/audit-1`
+- `/var/log/openbao/audit-2`
+- `/var/lib/openbao-backup-staging`
+
+The role never creates, formats, or mounts service storage. It sets ownership
+only on the existing mount roots and does not recursively rewrite persisted
+data.
+
+## Activation Boundary
+
+Normal convergence does not initialize or unseal OpenBao, enable audit devices,
+create credentials, restore data, configure HAProxy, or activate a VIP. Leave:
+
+```yaml
+openbao_service_enabled: false
+openbao_service_state: stopped
+```
+
+until the owning HA plan's storage, PKI, direct-backend, and pre-initialization
+runtime gates pass. Keepalived remains independently disabled until HAProxy,
+network, observer, and canary acceptance passes.
+
+When explicitly started, the role verifies the node-specific backend endpoint
+with the installed CA and DNS identity. It accepts active, standby, sealed, or
+uninitialized health status only as process-readiness evidence; it does not call
+those states cluster acceptance. Post-initialization health, voter membership,
+manual unseal, and rolling restart gates remain separate workflows.

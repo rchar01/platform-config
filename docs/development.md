@@ -34,6 +34,8 @@ make lint
 make yamllint
 make test
 make test-keepalived-vip-rocky
+make test-openbao-image
+make test-openbao-rocky
 ```
 
 `ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. The Make targets run tool-dependent checks in the development container, and their configuration excludes `.ansible/` and the vendored bastion runtime.
@@ -42,6 +44,17 @@ make test-keepalived-vip-rocky
 `make verify`. It downloads packages, starts a rootless disposable Rocky 10.1
 systemd container with `NET_ADMIN` for a dummy interface, keeps Keepalived stopped,
 and verifies role convergence, candidate rejection, and stale peer-rule removal.
+
+`make test-openbao-image` is also opt-in. It pulls the exact approved OpenBao
+`2.6.1` `linux/amd64` manifest, verifies its version and non-root identity, and
+runs the generated native configuration validator against valid and invalid
+rendered HCL without starting a server.
+
+`make test-openbao-rocky` installs Podman in a privileged disposable Rocky 10.1
+systemd container, stages the role with its service disabled, verifies check
+mode, idempotency, mount rejection, and atomic candidate preservation, then
+explicitly starts an uninitialized node, requires TLS health status `501`, and
+returns it to an idempotent disabled state without initialization side effects.
 
 The dev container mounts this repository at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at

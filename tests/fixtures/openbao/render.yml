@@ -1,0 +1,74 @@
+---
+- name: Render staged OpenBao HA role fixtures
+  hosts: localhost
+  gather_facts: false
+  vars:
+    openbao_role_dir: "{{ playbook_dir }}/../../../roles/openbao"
+    openbao_test_image_digest: sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
+    openbao_test_local_node_name: bao-1
+    openbao_test_peer_2_node_name: bao-2
+    openbao_test_peer_2_dns: bao-2.internal.invalid
+    openbao_test_cluster_port: 8201
+    openbao_test_seal_type: shamir
+    openbao_test_cluster_members:
+      - name: localhost
+        node_id: bao-1
+        address: 192.0.2.10
+        dns: bao-1.internal.invalid
+      - name: test-node-02
+        node_id: "{{ openbao_test_peer_2_node_name }}"
+        address: 192.0.2.11
+        dns: "{{ openbao_test_peer_2_dns }}"
+      - name: test-node-03
+        node_id: bao-3
+        address: 192.0.2.12
+        dns: bao-3.internal.invalid
+  tasks:
+    - name: Exercise disabled-by-default OpenBao role
+      ansible.builtin.include_role:
+        name: openbao
+
+    - name: Load OpenBao role defaults
+      ansible.builtin.include_vars:
+        file: "{{ openbao_role_dir }}/defaults/main.yml"
+
+    - name: Configure OpenBao render fixture inputs
+      ansible.builtin.set_fact:
+        ansible_facts:
+          architecture: x86_64
+        openbao_image_digest: "{{ openbao_test_image_digest }}"
+        openbao_image: "{{ openbao_image_registry }}@{{ openbao_test_image_digest }}"
+        openbao_cluster_members: "{{ openbao_test_cluster_members }}"
+        openbao_node_name: "{{ openbao_test_local_node_name }}"
+        openbao_node_address: 192.0.2.10
+        openbao_node_dns: bao-1.internal.invalid
+        openbao_service_dns: bao.example.invalid
+        openbao_service_vip: 192.0.2.100
+        openbao_cluster_port: "{{ openbao_test_cluster_port }}"
+        openbao_seal_type: "{{ openbao_test_seal_type }}"
+        openbao_tls_ca_src: /outside-git/openbao/ca.crt
+        openbao_tls_cert_src: /outside-git/openbao/tls.crt
+        openbao_tls_key_src: /outside-git/openbao/tls.key
+        openbao_backend_allowed_sources:
+          - 198.51.100.0/24
+
+    - name: Validate OpenBao render fixture inputs
+      ansible.builtin.include_tasks: "{{ openbao_role_dir }}/tasks/validate.yml"
+
+    - name: Render OpenBao configuration fixture
+      ansible.builtin.template:
+        src: "{{ openbao_role_dir }}/templates/openbao.hcl.j2"
+        dest: "{{ openbao_test_output_dir }}/openbao.hcl"
+        mode: "0600"
+
+    - name: Render OpenBao Quadlet fixture
+      ansible.builtin.template:
+        src: "{{ openbao_role_dir }}/templates/openbao.container.j2"
+        dest: "{{ openbao_test_output_dir }}/openbao.container"
+        mode: "0600"
+
+    - name: Render OpenBao validator fixture
+      ansible.builtin.template:
+        src: "{{ openbao_role_dir }}/templates/validate-config.sh.j2"
+        dest: "{{ openbao_test_output_dir }}/validate-config"
+        mode: "0700"

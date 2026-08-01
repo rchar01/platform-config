@@ -1,114 +1,416 @@
 ---
-- name: Assert OpenBao TLS source files are configured
-  ansible.builtin.assert:
-    that:
-      - openbao_tls_cert_src | length > 0
-      - openbao_tls_key_src | length > 0
-    fail_msg: "openbao_tls_cert_src and openbao_tls_key_src are required when TLS is enabled."
-  when: openbao_tls_enabled | bool
+- name: Configure staged OpenBao HA service foundation
+  when: openbao_enabled | bool
+  block:
+    - name: Validate OpenBao HA inputs
+      ansible.builtin.include_tasks: validate.yml
 
-- name: Ensure OpenBao directories exist
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: directory
-    owner: "{{ item.owner | default(omit) }}"
-    group: "{{ item.group | default(omit) }}"
-    mode: "{{ item.mode }}"
-  loop:
-    - path: "{{ openbao_config_dir }}"
-      mode: "0755"
-      owner: root
-      group: root
-    - path: "{{ openbao_tls_dir }}"
-      mode: "0750"
-      owner: root
-      group: "{{ openbao_container_gid }}"
-    - path: "{{ openbao_data_dir }}"
-      mode: "0750"
+    - name: Check OpenBao TLS source files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      register: openbao_tls_source_stats
+      no_log: true
+      loop:
+        - "{{ openbao_tls_ca_src }}"
+        - "{{ openbao_tls_cert_src }}"
+        - "{{ openbao_tls_key_src }}"
 
-- name: Check OpenBao data directory ownership
-  ansible.builtin.stat:
-    path: "{{ openbao_data_dir }}"
-  register: openbao_data_dir_stat
+    - name: Assert OpenBao TLS source files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Required outside-Git OpenBao TLS source {{ item.item }} is unavailable."
+      no_log: true
+      loop: "{{ openbao_tls_source_stats.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-- name: Set OpenBao data directory ownership
-  ansible.builtin.command:
-    argv:
-      - chown
-      - "{{ openbao_container_uid }}:{{ openbao_container_gid }}"
-      - "{{ openbao_data_dir }}"
-  changed_when: true
-  when:
-    - not ansible_check_mode
-    - openbao_data_dir_stat.stat.exists
-    - >-
-      openbao_data_dir_stat.stat.uid | string != openbao_container_uid | string
-      or openbao_data_dir_stat.stat.gid | string != openbao_container_gid | string
+    - name: Check OpenBao service directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: openbao_service_directory_stats
+      loop: "{{ openbao_required_mounts }}"
 
-- name: Copy OpenBao TLS certificate
-  ansible.builtin.copy:
-    src: "{{ openbao_tls_cert_src }}"
-    dest: "{{ openbao_tls_cert_path }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Restart OpenBao
-  when: openbao_tls_enabled | bool
+    - name: Assert OpenBao service directories exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: >-
+          Required OpenBao path {{ item.item }} must exist before service
+          convergence; the role never creates or initializes storage mounts.
+      loop: "{{ openbao_service_directory_stats.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-- name: Copy OpenBao TLS private key
-  ansible.builtin.copy:
-    src: "{{ openbao_tls_key_src }}"
-    dest: "{{ openbao_tls_key_path }}"
-    owner: root
-    group: "{{ openbao_container_gid }}"
-    mode: "0640"
-  no_log: true
-  notify: Restart OpenBao
-  when: openbao_tls_enabled | bool
+    - name: Verify OpenBao service paths are separate mounts
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --mountpoint
+          - "{{ item }}"
+      changed_when: false
+      check_mode: false
+      loop: "{{ openbao_required_mounts }}"
 
-- name: Write OpenBao configuration
-  ansible.builtin.template:
-    src: openbao.hcl.j2
-    dest: "{{ openbao_config_path }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Restart OpenBao
+    - name: Read local IPv4 addresses for OpenBao binding
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -o
+          - -4
+          - address
+          - show
+      register: openbao_local_ipv4_addresses
+      changed_when: false
+      check_mode: false
 
-- name: Write OpenBao Quadlet unit
-  ansible.builtin.template:
-    src: openbao.container.j2
-    dest: "{{ openbao_quadlet_path }}"
-    owner: root
-    group: root
-    mode: "0644"
-  register: openbao_quadlet_result
-  notify:
-    - Reload systemd
-    - Restart OpenBao
+    - name: Assert OpenBao node address belongs to this host
+      ansible.builtin.assert:
+        that:
+          - openbao_local_ipv4_addresses.stdout is search(' inet ' ~ (openbao_node_address | regex_escape) ~ '/')
+        fail_msg: >-
+          OpenBao node address {{ openbao_node_address }} is not assigned to
+          {{ inventory_hostname }} and cannot be used with host networking.
 
-- name: Reload systemd manager configuration
-  ansible.builtin.systemd_service:
-    daemon_reload: true
-  changed_when: false
-  when: not ansible_check_mode
+    - name: Ensure OpenBao configuration directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ openbao_config_dir }}"
+          group: "{{ openbao_container_gid }}"
+          mode: "0750"
+        - path: "{{ openbao_tls_dir }}"
+          group: "{{ openbao_container_gid }}"
+          mode: "0750"
+        - path: "{{ openbao_validator_dir }}"
+          group: root
+          mode: "0755"
+        - path: "{{ openbao_quadlet_dir }}"
+          group: root
+          mode: "0755"
 
-- name: Manage OpenBao service
-  ansible.builtin.systemd_service:
-    name: "{{ openbao_service_name }}"
-    enabled: "{{ openbao_service_enabled }}"
-    state: "{{ openbao_service_state }}"
-  when: not (ansible_check_mode and openbao_quadlet_result is changed)
+    - name: Set OpenBao service path ownership
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ openbao_container_uid }}"
+        group: "{{ openbao_container_gid }}"
+        mode: "0750"
+      loop:
+        - "{{ openbao_data_dir }}"
+        - "{{ openbao_audit_1_dir }}"
+        - "{{ openbao_audit_2_dir }}"
 
-- name: Manage OpenBao firewalld rich rules
-  ansible.posix.firewalld:
-    rich_rule: "rule family=\"{{ 'ipv6' if ':' in item else 'ipv4' }}\" source address=\"{{ item }}\" port port=\"{{ openbao_host_port }}\" protocol=\"tcp\" accept"
-    permanent: true
-    immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
-    offline: true
-    state: enabled
-  loop: "{{ openbao_firewalld_allowed_sources }}"
-  when:
-    - openbao_firewalld_manage | bool
-    - openbao_firewalld_allowed_sources | length > 0
-    - firewalld_dependencies_ready | default(true)
+    - name: Install OpenBao CA certificate
+      ansible.builtin.copy:
+        src: "{{ openbao_tls_ca_src }}"
+        dest: "{{ openbao_tls_ca_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart OpenBao HA service
+
+    - name: Install OpenBao node certificate
+      ansible.builtin.copy:
+        src: "{{ openbao_tls_cert_src }}"
+        dest: "{{ openbao_tls_cert_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart OpenBao HA service
+
+    - name: Install OpenBao node private key
+      ansible.builtin.copy:
+        src: "{{ openbao_tls_key_src }}"
+        dest: "{{ openbao_tls_key_path }}"
+        owner: root
+        group: "{{ openbao_container_gid }}"
+        mode: "0640"
+      no_log: true
+      notify: Restart OpenBao HA service
+
+    - name: Check exact OpenBao image availability
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - image
+          - exists
+          - "{{ openbao_image }}"
+      register: openbao_image_exists
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Pull exact OpenBao image
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - pull
+          - "{{ openbao_image }}"
+      register: openbao_image_pull_result
+      changed_when: true
+      when:
+        - openbao_image_exists.rc != 0
+        - not ansible_check_mode
+
+    - name: Track OpenBao image readiness
+      ansible.builtin.set_fact:
+        openbao_image_ready: >-
+          {{
+            openbao_image_exists.rc == 0
+            or (
+              openbao_image_pull_result is defined
+              and openbao_image_pull_result is changed
+            )
+          }}
+
+    - name: Inspect exact OpenBao image
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - image
+          - inspect
+          - "{{ openbao_image }}"
+      register: openbao_image_inspect
+      changed_when: false
+      when: openbao_image_ready | bool
+
+    - name: Parse exact OpenBao image metadata
+      ansible.builtin.set_fact:
+        openbao_image_metadata: "{{ openbao_image_inspect.stdout | from_json | first }}"
+      when: openbao_image_ready | bool
+
+    - name: Assert exact OpenBao image identity
+      ansible.builtin.assert:
+        that:
+          - openbao_image_metadata.Digest == openbao_image_digest
+          - openbao_image_metadata.Architecture == openbao_image_architecture
+          - openbao_image_metadata.Config.User == openbao_image_user
+          - openbao_image_metadata.Labels['org.opencontainers.image.version'] == 'v' ~ openbao_version
+        fail_msg: >-
+          Pulled OpenBao image metadata does not match the approved digest,
+          architecture, user, and version contract.
+      when: openbao_image_ready | bool
+
+    - name: Write OpenBao candidate validator
+      ansible.builtin.template:
+        src: validate-config.sh.j2
+        dest: "{{ openbao_validator_path }}"
+        owner: root
+        group: root
+        mode: "0755"
+        validate: /bin/bash -n %s
+
+    - name: Write validated OpenBao configuration
+      ansible.builtin.template:
+        src: openbao.hcl.j2
+        dest: "{{ openbao_config_path }}"
+        owner: root
+        group: "{{ openbao_container_gid }}"
+        mode: "0640"
+        validate: >-
+          {{ openbao_config_validate_command if openbao_image_ready | bool else omit }}
+      notify: Restart OpenBao HA service
+
+    - name: Write OpenBao Quadlet unit
+      ansible.builtin.template:
+        src: openbao.container.j2
+        dest: "{{ openbao_quadlet_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: openbao_quadlet_result
+      notify: Restart OpenBao HA service
+
+    - name: Reload systemd manager for OpenBao Quadlet
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - openbao_quadlet_result is changed
+
+    - name: Build current OpenBao firewalld policy
+      ansible.builtin.set_fact:
+        openbao_current_firewalld_rules: []
+      when: openbao_firewalld_manage | bool
+
+    - name: Add current OpenBao backend API firewalld policy
+      ansible.builtin.set_fact:
+        openbao_current_firewalld_rules: >-
+          {{
+            openbao_current_firewalld_rules
+            + [
+              'rule family="ipv4" source address="'
+              ~ item
+              ~ '" port port="'
+              ~ (openbao_backend_port | string)
+              ~ '" protocol="tcp" accept'
+            ]
+          }}
+      loop: >-
+        {{
+          (
+            (
+              openbao_cluster_members
+              | map(attribute='address')
+              | map('regex_replace', '$', '/32')
+              | list
+            )
+            + openbao_backend_allowed_sources
+          )
+          | unique
+          | sort
+        }}
+      when: openbao_firewalld_manage | bool
+
+    - name: Add current OpenBao cluster firewalld policy
+      ansible.builtin.set_fact:
+        openbao_current_firewalld_rules: >-
+          {{
+            openbao_current_firewalld_rules
+            + [
+              'rule family="ipv4" source address="'
+              ~ item.address
+              ~ '/32" port port="'
+              ~ (openbao_cluster_port | string)
+              ~ '" protocol="tcp" accept'
+            ]
+          }}
+      loop: "{{ openbao_cluster_members | rejectattr('name', 'equalto', inventory_hostname) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: openbao_firewalld_manage | bool
+
+    - name: Ensure OpenBao managed state directory exists
+      ansible.builtin.file:
+        path: "{{ openbao_state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: openbao_firewalld_manage | bool
+
+    - name: Check previous OpenBao firewalld manifest
+      ansible.builtin.stat:
+        path: "{{ openbao_firewalld_manifest_path }}"
+      register: openbao_previous_firewalld_manifest_stat
+      when: openbao_firewalld_manage | bool
+
+    - name: Read previous OpenBao firewalld manifest
+      ansible.builtin.slurp:
+        path: "{{ openbao_firewalld_manifest_path }}"
+      register: openbao_previous_firewalld_manifest_slurp
+      when:
+        - openbao_firewalld_manage | bool
+        - openbao_previous_firewalld_manifest_stat.stat.exists
+
+    - name: Track previous OpenBao firewalld policy
+      ansible.builtin.set_fact:
+        openbao_previous_firewalld_rules: >-
+          {{
+            (
+              openbao_previous_firewalld_manifest_slurp.content
+              | b64decode
+              | from_yaml
+            ).rich_rules | default([])
+            if openbao_previous_firewalld_manifest_stat.stat.exists
+            else []
+          }}
+      when: openbao_firewalld_manage | bool
+
+    - name: Enable current OpenBao firewalld policy
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        offline: true
+        state: enabled
+      loop: "{{ openbao_current_firewalld_rules | unique | sort }}"
+      when:
+        - openbao_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Disable stale OpenBao firewalld policy
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        offline: true
+        state: disabled
+      loop: >-
+        {{
+          openbao_previous_firewalld_rules
+          | difference(openbao_current_firewalld_rules)
+        }}
+      when:
+        - openbao_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Write OpenBao firewalld manifest
+      ansible.builtin.copy:
+        dest: "{{ openbao_firewalld_manifest_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: >-
+          {{
+            {
+              'rich_rules': openbao_current_firewalld_rules | unique | sort
+            } | to_nice_yaml
+          }}
+      when:
+        - openbao_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Manage staged OpenBao HA service
+      ansible.builtin.systemd_service:
+        name: "{{ openbao_service_name }}"
+        state: "{{ openbao_service_state }}"
+      when:
+        - openbao_image_ready | bool
+        - not (ansible_check_mode and openbao_quadlet_result is changed)
+
+    - name: Apply pending OpenBao HA restart before readiness checks
+      ansible.builtin.meta: flush_handlers
+      when: openbao_service_state == 'started'
+
+    - name: Verify OpenBao pre-initialization TLS process readiness
+      ansible.builtin.uri:
+        url: "https://{{ openbao_node_dns }}:{{ openbao_backend_port }}/v1/sys/health"
+        method: GET
+        ca_path: "{{ openbao_tls_ca_path }}"
+        validate_certs: true
+        use_proxy: false
+        return_content: true
+        status_code:
+          - 200
+          - 429
+          - 501
+          - 503
+      register: openbao_preinitialization_health
+      changed_when: false
+      when:
+        - openbao_service_state == 'started'
+        - not ansible_check_mode
+
+    - name: Assert OpenBao health response reports initialization state
+      ansible.builtin.assert:
+        that:
+          - openbao_preinitialization_health.json.initialized is defined
+          - openbao_preinitialization_health.json.sealed is defined
+        fail_msg: >-
+          OpenBao process readiness requires a valid TLS health response with
+          explicit initialized and sealed state.
+      when:
+        - openbao_service_state == 'started'
+        - not ansible_check_mode

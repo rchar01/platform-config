@@ -1,6 +1,11 @@
 ---
-# The current playbook fails closed until the three-node HA role exists and its
-# immutable artifact, PKI, network, and storage gates pass.
+# The service role is staged and disabled; the playbook remains blocked until
+# PKI, network, storage, HAProxy, initialization, and observer gates pass.
+openbao_enabled: false
+openbao_service_enabled: false
+openbao_service_state: stopped
+openbao_image_registry: ghcr.io/openbao/openbao
+openbao_image_digest: sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
 openbao_service_dns: bao.example.invalid
 openbao_service_vip: 192.0.2.200
 openbao_client_port: 8200
@@ -8,3 +13,17 @@ openbao_backend_port: 18200
 openbao_cluster_port: 8201
 openbao_keepalived_enabled: false
 openbao_tls_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
+openbao_backend_allowed_sources: []
+openbao_cluster_members:
+  - name: openbao-example-01
+    node_id: bao-1
+    address: 192.0.2.63
+    dns: bao-1.internal.invalid
+  - name: openbao-example-02
+    node_id: bao-2
+    address: 192.0.2.72
+    dns: bao-2.internal.invalid
+  - name: openbao-example-03
+    node_id: bao-3
+    address: 192.0.2.74
+    dns: bao-3.internal.invalid
