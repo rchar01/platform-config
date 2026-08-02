@@ -48,6 +48,9 @@ reject_fixture 'Disabled monitoring HAProxy accepted a started service state' \
   '{"monitoring_haproxy_test_enabled":false,"monitoring_haproxy_test_service_state":"started"}'
 reject_fixture 'Monitoring HAProxy accepted an unpinned package' \
   --extra-vars 'monitoring_haproxy_test_package_nevra=haproxy'
+reject_fixture 'Monitoring HAProxy accepted a different complete package NEVRA' \
+  --extra-vars \
+  'monitoring_haproxy_test_package_nevra=haproxy-0:3.0.6-1.el10.x86_64'
 reject_fixture 'Monitoring HAProxy accepted a metrics/frontend port collision' \
   --extra-vars '{"monitoring_haproxy_test_metrics_port":443}'
 reject_fixture 'Monitoring HAProxy coerced a string metrics port' \
