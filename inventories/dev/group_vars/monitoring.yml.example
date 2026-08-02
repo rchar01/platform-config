@@ -9,3 +9,7 @@ monitoring_s3_dns: s3.monitoring.example.invalid
 monitoring_alertmanager_dns: alertmanager.monitoring.example.invalid
 monitoring_postgres_dns: postgres.monitoring.example.invalid
 monitoring_keepalived_enabled: false
+monitoring_haproxy_contract_ready: false
+monitoring_haproxy_enabled: false
+monitoring_haproxy_service_enabled: false
+monitoring_haproxy_service_state: stopped

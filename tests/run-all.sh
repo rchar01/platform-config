@@ -16,6 +16,7 @@ main() {
   run_test "Keepalived VIP render" "${SCRIPT_DIR}/scenarios/test-keepalived-vip-render.sh"
   run_test "Platform external probe render" "${SCRIPT_DIR}/scenarios/test-platform-external-probe-render.sh"
   run_test "OpenBao HAProxy render" "${SCRIPT_DIR}/scenarios/test-openbao-haproxy-render.sh"
+  run_test "Monitoring HAProxy contract" "${SCRIPT_DIR}/scenarios/test-monitoring-haproxy-contract.sh"
   run_test "OpenBao HA render" "${SCRIPT_DIR}/scenarios/test-openbao-render.sh"
   run_test "OpenBao strict status" "${SCRIPT_DIR}/scenarios/test-openbao-status.sh"
   run_test "OpenBao rolling maintenance" "${SCRIPT_DIR}/scenarios/test-openbao-rolling.sh"

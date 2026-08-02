@@ -1,0 +1,16 @@
+---
+- name: Preserve validation-only monitoring HAProxy lifecycle boundary
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_enabled is boolean
+      - monitoring_haproxy_service_enabled is boolean
+      - not monitoring_haproxy_service_enabled
+      - monitoring_haproxy_service_state == 'stopped'
+    fail_msg: >-
+      The monitoring HAProxy role currently validates its frontend contract only.
+      Service activation remains unavailable until package, backend, firewall,
+      SELinux, rendering, and lifecycle implementation is complete.
+
+- name: Validate staged monitoring HAProxy frontend contract
+  ansible.builtin.include_tasks: validate.yml
+  when: monitoring_haproxy_enabled

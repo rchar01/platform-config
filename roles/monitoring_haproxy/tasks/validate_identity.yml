@@ -1,0 +1,24 @@
+---
+- name: Assert monitoring HAProxy identity is safe
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_identity.keys() | sort == ['role', 'subject_dn']
+      - >-
+        monitoring_haproxy_identity.role in [
+          'alloy_loki_writer',
+          'alloy_mimir_writer',
+          'garage_s3',
+          'grafana_alertmanager',
+          'grafana_browser',
+          'grafana_loki_query',
+          'grafana_mimir_query',
+          'operator'
+        ]
+      - >-
+        monitoring_haproxy_identity.subject_dn is match(
+          '^CN=[A-Za-z0-9._-]+,OU=[A-Za-z0-9._-]+,'
+          ~ 'O=[A-Za-z0-9._-]+,C=[A-Z]{2}$'
+        )
+    fail_msg: >-
+      Monitoring HAProxy identities require exactly subject_dn and role, an
+      approved role, and an escape-free canonical RFC2253 subject DN.

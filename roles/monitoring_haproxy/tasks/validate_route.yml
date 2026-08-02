@@ -1,0 +1,11 @@
+---
+- name: Assert monitoring HAProxy route is exact and safe
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_route.keys() | sort == ['method', 'path']
+      - monitoring_haproxy_route.method in monitoring_haproxy_route_group.methods
+      - monitoring_haproxy_route.path is match('^/(?!/)[A-Za-z0-9._~!$&''()+,;=:@%/-]*$')
+      - monitoring_haproxy_route.path is not search('[*?{}]')
+    fail_msg: >-
+      Monitoring HAProxy routes require exactly an approved method and a literal
+      absolute path without wildcards, templates, fragments, or query strings.

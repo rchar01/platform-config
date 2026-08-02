@@ -1,0 +1,45 @@
+---
+# This slice validates the locked frontend contract only. It intentionally does
+# not install HAProxy, render configuration, manage firewalld, or touch services.
+monitoring_haproxy_contract_ready: false
+monitoring_haproxy_enabled: false
+monitoring_haproxy_service_enabled: false
+monitoring_haproxy_service_state: stopped
+
+monitoring_haproxy_package_nevra: ""
+monitoring_haproxy_https_port: 443
+monitoring_haproxy_postgresql_frontend_port: 5432
+monitoring_haproxy_metrics_bind_address: ""
+monitoring_haproxy_metrics_port: 0
+
+monitoring_haproxy_grafana_dns: ""
+monitoring_haproxy_loki_dns: ""
+monitoring_haproxy_mimir_dns: ""
+monitoring_haproxy_s3_dns: ""
+monitoring_haproxy_alertmanager_dns: ""
+monitoring_haproxy_postgresql_dns: ""
+
+monitoring_haproxy_frontend_pem_src: ""
+monitoring_haproxy_client_ca_src: ""
+monitoring_haproxy_client_crl_src: ""
+monitoring_haproxy_backend_ca_src: ""
+monitoring_haproxy_backend_client_pem_src: ""
+
+monitoring_haproxy_tenant: ""
+monitoring_haproxy_identity_roles: []
+
+monitoring_haproxy_loki_writer_routes: []
+monitoring_haproxy_loki_query_routes: []
+monitoring_haproxy_mimir_writer_routes: []
+monitoring_haproxy_mimir_query_routes: []
+monitoring_haproxy_alertmanager_routes: []
+monitoring_haproxy_operator_routes: []
+
+monitoring_haproxy_https_allowed_sources: []
+monitoring_haproxy_postgresql_allowed_sources: []
+monitoring_haproxy_metrics_allowed_sources: []
+monitoring_haproxy_operator_allowed_sources: []
+
+# Backend topology and health wiring remain explicit Phase 1 blockers. The
+# validation-only slice preserves the private input without interpreting it.
+monitoring_haproxy_backends: {}

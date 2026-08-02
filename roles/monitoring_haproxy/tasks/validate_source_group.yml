@@ -1,0 +1,20 @@
+---
+- name: Assert monitoring HAProxy source group is restricted
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_source_group.sources is sequence
+      - monitoring_haproxy_source_group.sources is not string
+      - monitoring_haproxy_source_group.sources | length > 0
+      - >-
+        monitoring_haproxy_source_group.sources | unique | length
+        == monitoring_haproxy_source_group.sources | length
+    fail_msg: >-
+      Monitoring HAProxy {{ monitoring_haproxy_source_group.name }} sources must
+      be a non-empty unique restricted CIDR list.
+
+- name: Validate monitoring HAProxy source CIDRs
+  ansible.builtin.include_tasks: validate_source.yml
+  loop: "{{ monitoring_haproxy_source_group.sources }}"
+  loop_control:
+    loop_var: monitoring_haproxy_source
+    label: "{{ monitoring_haproxy_source }}"

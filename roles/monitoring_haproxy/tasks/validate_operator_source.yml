@@ -1,0 +1,19 @@
+---
+- name: Reset monitoring HAProxy operator source containment
+  ansible.builtin.set_fact:
+    monitoring_haproxy_operator_source_contained: false
+
+- name: Compare monitoring HAProxy operator source with HTTPS sources
+  ansible.builtin.include_tasks: compare_operator_source.yml
+  loop: "{{ monitoring_haproxy_https_allowed_sources }}"
+  loop_control:
+    loop_var: monitoring_haproxy_https_source
+    label: "{{ monitoring_haproxy_https_source }}"
+
+- name: Assert monitoring HAProxy operator source is allowed at HTTPS listener
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_operator_source_contained
+    fail_msg: >-
+      Monitoring HAProxy operator source {{ monitoring_haproxy_operator_source }}
+      must be contained by the outer HTTPS source policy.

@@ -1,0 +1,37 @@
+---
+- name: Track monitoring HAProxy operator source containment
+  ansible.builtin.set_fact:
+    monitoring_haproxy_operator_source_contained: >-
+      {{
+        monitoring_haproxy_operator_source_contained
+        or (
+          monitoring_haproxy_https_source_prefix <= monitoring_haproxy_operator_source_prefix
+          and monitoring_haproxy_operator_source_integer
+            // (2 ** (32 - monitoring_haproxy_https_source_prefix))
+            == monitoring_haproxy_https_source_integer
+              // (2 ** (32 - monitoring_haproxy_https_source_prefix))
+        )
+      }}
+  vars:
+    monitoring_haproxy_operator_source_octets: >-
+      {{ monitoring_haproxy_operator_source.split('/') | first | split('.') | map('int') | list }}
+    monitoring_haproxy_operator_source_prefix: >-
+      {{ monitoring_haproxy_operator_source.split('/') | last | int }}
+    monitoring_haproxy_operator_source_integer: >-
+      {{
+        monitoring_haproxy_operator_source_octets[0] * 16777216
+        + monitoring_haproxy_operator_source_octets[1] * 65536
+        + monitoring_haproxy_operator_source_octets[2] * 256
+        + monitoring_haproxy_operator_source_octets[3]
+      }}
+    monitoring_haproxy_https_source_octets: >-
+      {{ monitoring_haproxy_https_source.split('/') | first | split('.') | map('int') | list }}
+    monitoring_haproxy_https_source_prefix: >-
+      {{ monitoring_haproxy_https_source.split('/') | last | int }}
+    monitoring_haproxy_https_source_integer: >-
+      {{
+        monitoring_haproxy_https_source_octets[0] * 16777216
+        + monitoring_haproxy_https_source_octets[1] * 65536
+        + monitoring_haproxy_https_source_octets[2] * 256
+        + monitoring_haproxy_https_source_octets[3]
+      }}

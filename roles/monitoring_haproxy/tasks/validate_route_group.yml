@@ -1,0 +1,46 @@
+---
+- name: Assert monitoring HAProxy route group is populated
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_route_group.routes is sequence
+      - monitoring_haproxy_route_group.routes is not string
+      - monitoring_haproxy_route_group.routes | length > 0
+    fail_msg: >-
+      Monitoring HAProxy route group {{ monitoring_haproxy_route_group.name }}
+      requires observed exact routes.
+
+- name: Reset monitoring HAProxy route keys
+  ansible.builtin.set_fact:
+    monitoring_haproxy_route_keys: []
+
+- name: Build monitoring HAProxy route keys
+  ansible.builtin.set_fact:
+    monitoring_haproxy_route_keys: >-
+      {{ monitoring_haproxy_route_keys + [
+        monitoring_haproxy_route.method ~ ' ' ~ monitoring_haproxy_route.path
+      ] }}
+  loop: "{{ monitoring_haproxy_route_group.routes }}"
+  loop_control:
+    loop_var: monitoring_haproxy_route
+    label: >-
+      {{ monitoring_haproxy_route.method | default('invalid') }}
+      {{ monitoring_haproxy_route.path | default('invalid') }}
+
+- name: Assert monitoring HAProxy routes are unique
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_route_keys | unique | length
+        == monitoring_haproxy_route_keys | length
+    fail_msg: >-
+      Monitoring HAProxy route group {{ monitoring_haproxy_route_group.name }}
+      contains duplicate method/path entries.
+
+- name: Validate monitoring HAProxy route entries
+  ansible.builtin.include_tasks: validate_route.yml
+  loop: "{{ monitoring_haproxy_route_group.routes }}"
+  loop_control:
+    loop_var: monitoring_haproxy_route
+    label: >-
+      {{ monitoring_haproxy_route.method | default('invalid') }}
+      {{ monitoring_haproxy_route.path | default('invalid') }}

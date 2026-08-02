@@ -1,0 +1,166 @@
+---
+- name: Assert monitoring HAProxy scalar contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_contract_ready is boolean
+      - monitoring_haproxy_contract_ready
+      - monitoring_haproxy_enabled is boolean
+      - monitoring_haproxy_service_enabled is boolean
+      - monitoring_haproxy_package_nevra is match('^haproxy-[0-9]+:[0-9][A-Za-z0-9_.+-]*-[A-Za-z0-9_.+~-]+[.]x86_64$')
+      - monitoring_haproxy_https_port is integer
+      - monitoring_haproxy_postgresql_frontend_port is integer
+      - monitoring_haproxy_metrics_port is integer
+      - monitoring_haproxy_https_port | int == 443
+      - monitoring_haproxy_postgresql_frontend_port | int == 5432
+      - monitoring_haproxy_metrics_port | int >= 1
+      - monitoring_haproxy_metrics_port | int <= 65535
+      - monitoring_haproxy_metrics_port | int not in [443, 5432]
+      - monitoring_haproxy_tenant is match('^[A-Za-z0-9_.-]+$')
+    fail_msg: >-
+      Monitoring HAProxy requires an explicitly ready contract, exact HAProxy
+      NEVRA, fixed client ports, a distinct metrics port, and a safe tenant.
+
+- name: Assert monitoring HAProxy metrics bind address
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_metrics_bind_address is match(
+          '^(0|[1-9][0-9]{0,2})([.](0|[1-9][0-9]{0,2})){3}$'
+        )
+      - >-
+        monitoring_haproxy_metrics_bind_address.split('.') | map('int')
+        | select('gt', 255) | list | length == 0
+      - monitoring_haproxy_metrics_bind_address != '0.0.0.0'
+    fail_msg: >-
+      Monitoring HAProxy metrics require a restricted valid IPv4 bind address.
+
+- name: Assert monitoring HAProxy TLS source paths
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_tls_source is string
+      - monitoring_haproxy_tls_source is match('^/[^\n\r\u0000]+$')
+    fail_msg: >-
+      Monitoring HAProxy TLS sources must be non-empty absolute controller paths.
+  loop:
+    - "{{ monitoring_haproxy_frontend_pem_src }}"
+    - "{{ monitoring_haproxy_client_ca_src }}"
+    - "{{ monitoring_haproxy_client_crl_src }}"
+    - "{{ monitoring_haproxy_backend_ca_src }}"
+    - "{{ monitoring_haproxy_backend_client_pem_src }}"
+  loop_control:
+    loop_var: monitoring_haproxy_tls_source
+    label: "{{ monitoring_haproxy_tls_source }}"
+
+- name: Build monitoring HAProxy service DNS list
+  ansible.builtin.set_fact:
+    monitoring_haproxy_service_dns_names:
+      - "{{ monitoring_haproxy_grafana_dns }}"
+      - "{{ monitoring_haproxy_loki_dns }}"
+      - "{{ monitoring_haproxy_mimir_dns }}"
+      - "{{ monitoring_haproxy_s3_dns }}"
+      - "{{ monitoring_haproxy_alertmanager_dns }}"
+      - "{{ monitoring_haproxy_postgresql_dns }}"
+
+- name: Assert monitoring HAProxy service DNS names
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_service_dns_name is match(
+          '^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+          ~ '(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$'
+        )
+    fail_msg: >-
+      Monitoring HAProxy service DNS names must be unique lowercase FQDNs.
+  loop: "{{ monitoring_haproxy_service_dns_names }}"
+  loop_control:
+    loop_var: monitoring_haproxy_service_dns_name
+
+- name: Assert monitoring HAProxy service DNS names are unique
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_service_dns_names | unique | length
+        == monitoring_haproxy_service_dns_names | length
+    fail_msg: Monitoring HAProxy service DNS names must be unique.
+
+- name: Assert monitoring HAProxy identity map is complete
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_identity_roles | length >= 8
+      - >-
+        [
+          'alloy_loki_writer',
+          'alloy_mimir_writer',
+          'garage_s3',
+          'grafana_alertmanager',
+          'grafana_browser',
+          'grafana_loki_query',
+          'grafana_mimir_query',
+          'operator'
+        ]
+        | difference(monitoring_haproxy_identity_roles | map(attribute='role') | list)
+        | length == 0
+      - >-
+        monitoring_haproxy_identity_roles | map(attribute='subject_dn') | unique | length
+        == monitoring_haproxy_identity_roles | length
+    fail_msg: >-
+      Monitoring HAProxy requires every mandatory identity role and unique exact
+      subject DNs.
+
+- name: Validate monitoring HAProxy identity entries
+  ansible.builtin.include_tasks: validate_identity.yml
+  loop: "{{ monitoring_haproxy_identity_roles }}"
+  loop_control:
+    loop_var: monitoring_haproxy_identity
+    label: "{{ monitoring_haproxy_identity.role | default('invalid') }}"
+
+- name: Validate monitoring HAProxy route groups
+  ansible.builtin.include_tasks: validate_route_group.yml
+  loop:
+    - name: loki_writer
+      routes: "{{ monitoring_haproxy_loki_writer_routes }}"
+      methods: [POST]
+    - name: loki_query
+      routes: "{{ monitoring_haproxy_loki_query_routes }}"
+      methods: [GET, POST]
+    - name: mimir_writer
+      routes: "{{ monitoring_haproxy_mimir_writer_routes }}"
+      methods: [POST]
+    - name: mimir_query
+      routes: "{{ monitoring_haproxy_mimir_query_routes }}"
+      methods: [GET, POST]
+    - name: alertmanager
+      routes: "{{ monitoring_haproxy_alertmanager_routes }}"
+      methods: [DELETE, GET, PATCH, POST, PUT]
+    - name: operator
+      routes: "{{ monitoring_haproxy_operator_routes }}"
+      methods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+  loop_control:
+    loop_var: monitoring_haproxy_route_group
+    label: "{{ monitoring_haproxy_route_group.name }}"
+
+- name: Validate monitoring HAProxy restricted source groups
+  ansible.builtin.include_tasks: validate_source_group.yml
+  loop:
+    - name: https
+      sources: "{{ monitoring_haproxy_https_allowed_sources }}"
+      minimum_prefix: 24
+    - name: postgresql
+      sources: "{{ monitoring_haproxy_postgresql_allowed_sources }}"
+      minimum_prefix: 24
+    - name: metrics
+      sources: "{{ monitoring_haproxy_metrics_allowed_sources }}"
+      minimum_prefix: 24
+    - name: operator
+      sources: "{{ monitoring_haproxy_operator_allowed_sources }}"
+      minimum_prefix: 24
+  loop_control:
+    loop_var: monitoring_haproxy_source_group
+    label: "{{ monitoring_haproxy_source_group.name }}"
+
+- name: Validate operator sources are contained by HTTPS policy
+  ansible.builtin.include_tasks: validate_operator_source.yml
+  loop: "{{ monitoring_haproxy_operator_allowed_sources }}"
+  loop_control:
+    loop_var: monitoring_haproxy_operator_source
+    label: "{{ monitoring_haproxy_operator_source }}"
