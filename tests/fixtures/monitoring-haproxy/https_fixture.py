@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import http.server
 import json
 import ssl
@@ -27,6 +28,8 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        content_length = int(self.headers.get("Content-Length", "0"))
+        payload = self.rfile.read(content_length)
         status = int(server.status_file.read_text(encoding="ascii").strip())
         peer_subject = dict(
             attribute
@@ -36,10 +39,15 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         body = json.dumps(
             {
                 "client_cn": peer_subject.get("commonName"),
+                "authorization": self.headers.get("Authorization"),
+                "host": self.headers.get("Host"),
                 "method": self.command,
                 "node": server.node,
                 "path": self.path,
+                "payload_sha256": hashlib.sha256(payload).hexdigest(),
                 "tenant": self.headers.get("X-Scope-OrgID"),
+                "x_amz_content_sha256": self.headers.get("X-Amz-Content-Sha256"),
+                "x_amz_date": self.headers.get("X-Amz-Date"),
             },
             separators=(",", ":"),
         ).encode("ascii")
@@ -47,10 +55,16 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     do_GET = _respond
+    do_DELETE = _respond
+    do_HEAD = _respond
+    do_OPTIONS = _respond
+    do_PATCH = _respond
     do_POST = _respond
+    do_PUT = _respond
 
     def log_message(self, format, *args):
         return

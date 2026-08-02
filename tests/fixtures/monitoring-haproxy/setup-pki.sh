@@ -19,9 +19,11 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
 
 issue_client() {
   local name=$1
+  local common_name=${2:-$name}
+  local organizational_unit=${3:-telemetry}
 
   openssl req -newkey rsa:2048 -nodes \
-    -subj "/CN=${name}" \
+    -subj "/C=XX/O=platform-test/OU=${organizational_unit}/CN=${common_name}" \
     -keyout "$PKI_DIR/${name}.key" \
     -out "$PKI_DIR/${name}.csr" >/dev/null 2>&1
   openssl ca -batch -config "$CLIENT_CA_DIR/openssl.cnf" \
@@ -31,15 +33,14 @@ issue_client() {
     >"$PKI_DIR/${name}.pem"
 }
 
-for identity in \
-  alloy-writer \
-  grafana-loki-query \
-  grafana-browser \
-  unmapped-client \
-  revoked-client \
-  haproxy-backend; do
-  issue_client "$identity"
-done
+issue_client alloy-writer
+issue_client alloy-writer-wrong-subject alloy-writer unauthorized
+issue_client grafana-loki-query
+issue_client grafana-browser grafana-browser users
+issue_client garage-s3 garage-s3 storage
+issue_client unmapped-client
+issue_client revoked-client
+issue_client haproxy-backend haproxy-backend backends
 
 openssl ca -batch -config "$CLIENT_CA_DIR/openssl.cnf" \
   -revoke "$PKI_DIR/revoked-client.crt" >/dev/null 2>&1
@@ -71,9 +72,10 @@ issue_server() {
 }
 
 issue_server frontend.test.invalid \
-  'DNS:loki.test.invalid,DNS:grafana.test.invalid,DNS:bad-backend.test.invalid,DNS:untrusted-backend.test.invalid'
+  'DNS:loki.test.invalid,DNS:grafana.test.invalid,DNS:s3.test.invalid,DNS:bad-backend.test.invalid,DNS:untrusted-backend.test.invalid'
 issue_server loki-backend.test.invalid 'DNS:loki-backend.test.invalid'
 issue_server grafana-backend.test.invalid 'DNS:grafana-backend.test.invalid'
+issue_server s3-backend.test.invalid 'DNS:s3-backend.test.invalid'
 issue_server other-backend.test.invalid 'DNS:other-backend.test.invalid'
 issue_server patroni.test.invalid 'DNS:patroni.test.invalid'
 
@@ -81,6 +83,20 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj /CN=monitoring-untrusted-test-ca \
   -keyout "$PKI_DIR/untrusted-ca.key" \
   -out "$PKI_DIR/untrusted-ca.crt" >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -subj '/C=XX/O=untrusted-test/OU=telemetry/CN=untrusted-client' \
+  -addext 'extendedKeyUsage=clientAuth' \
+  -keyout "$PKI_DIR/untrusted-client.key" \
+  -out "$PKI_DIR/untrusted-client.csr" >/dev/null 2>&1
+openssl x509 -req -days 1 \
+  -in "$PKI_DIR/untrusted-client.csr" \
+  -CA "$PKI_DIR/untrusted-ca.crt" \
+  -CAkey "$PKI_DIR/untrusted-ca.key" \
+  -CAcreateserial \
+  -copy_extensions copy \
+  -out "$PKI_DIR/untrusted-client.crt" >/dev/null 2>&1
+cat "$PKI_DIR/untrusted-client.key" "$PKI_DIR/untrusted-client.crt" \
+  >"$PKI_DIR/untrusted-client.pem"
 openssl req -newkey rsa:2048 -nodes \
   -subj /CN=untrusted-backend.test.invalid \
   -addext 'subjectAltName=DNS:untrusted-backend.test.invalid' \

@@ -17,6 +17,9 @@ x509_extensions = client_certificate
 copy_extensions = copy
 
 [ client_policy ]
+countryName = supplied
+organizationName = supplied
+organizationalUnitName = supplied
 commonName = supplied
 
 [ client_certificate ]
