@@ -1,0 +1,304 @@
+---
+- name: Configure staged OpenBao HAProxy foundation
+  when: openbao_haproxy_enabled | bool
+  block:
+    - name: Validate OpenBao HAProxy inputs
+      ansible.builtin.include_tasks: validate.yml
+
+    - name: Check OpenBao HAProxy backend CA
+      ansible.builtin.stat:
+        path: "{{ openbao_haproxy_backend_ca_path }}"
+      register: openbao_haproxy_backend_ca_stat
+      check_mode: false
+
+    - name: Assert OpenBao HAProxy backend CA exists
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_backend_ca_stat.stat.exists
+          - openbao_haproxy_backend_ca_stat.stat.isreg
+        fail_msg: >-
+          OpenBao HAProxy requires the installed backend CA before configuration
+          can be staged.
+
+    - name: Read local IPv4 addresses for OpenBao HAProxy metrics binding
+      ansible.builtin.command:
+        argv:
+          - ip
+          - -o
+          - -4
+          - address
+          - show
+      register: openbao_haproxy_local_ipv4_addresses
+      changed_when: false
+      check_mode: false
+
+    - name: Assert OpenBao HAProxy metrics address belongs to this host
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_haproxy_stats_bind_address == '0.0.0.0'
+            or openbao_haproxy_local_ipv4_addresses.stdout is search(
+              ' inet ' ~ (openbao_haproxy_stats_bind_address | regex_escape) ~ '/'
+            )
+        fail_msg: >-
+          OpenBao HAProxy metrics bind address
+          {{ openbao_haproxy_stats_bind_address }} is not local.
+
+    - name: Install exact OpenBao HAProxy package
+      ansible.builtin.dnf:
+        name: "{{ openbao_haproxy_package_nevra }}"
+        state: present
+        allow_downgrade: true
+      register: openbao_haproxy_package_result
+      notify: Reload OpenBao HAProxy
+
+    - name: Track OpenBao HAProxy binary readiness
+      ansible.builtin.set_fact:
+        openbao_haproxy_binary_ready: >-
+          {{ not (ansible_check_mode and openbao_haproxy_package_result is changed) }}
+
+    - name: Verify installed OpenBao HAProxy package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - "{{ openbao_haproxy_package_name }}"
+      register: openbao_haproxy_installed_nevra
+      changed_when: false
+      when: openbao_haproxy_binary_ready | bool
+
+    - name: Assert installed OpenBao HAProxy package identity
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_installed_nevra.stdout == openbao_haproxy_package_nevra
+        fail_msg: >-
+          Installed HAProxy package {{ openbao_haproxy_installed_nevra.stdout }}
+          does not match required {{ openbao_haproxy_package_nevra }}.
+      when: openbao_haproxy_binary_ready | bool
+
+    - name: Inspect OpenBao HAProxy build features
+      ansible.builtin.command:
+        argv:
+          - "{{ openbao_haproxy_binary_path }}"
+          - -vv
+      register: openbao_haproxy_build_features
+      changed_when: false
+      when: openbao_haproxy_binary_ready | bool
+
+    - name: Assert OpenBao HAProxy supports TLS and Prometheus metrics
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_build_features.stdout is search('Built with OpenSSL version')
+          - openbao_haproxy_build_features.stdout is search('Built with the Prometheus exporter as a service')
+        fail_msg: >-
+          OpenBao HAProxy requires a build with OpenSSL and the Prometheus
+          exporter service.
+      when: openbao_haproxy_binary_ready | bool
+
+    - name: Check existing OpenBao HAProxy configuration
+      ansible.builtin.stat:
+        path: "{{ openbao_haproxy_config_path }}"
+      register: openbao_haproxy_existing_config_stat
+      when: openbao_haproxy_binary_ready | bool
+
+    - name: Validate existing configuration after HAProxy package change
+      ansible.builtin.command:
+        argv:
+          - "{{ openbao_haproxy_binary_path }}"
+          - -c
+          - -f
+          - "{{ openbao_haproxy_config_path }}"
+      changed_when: false
+      when:
+        - openbao_haproxy_binary_ready | bool
+        - openbao_haproxy_package_result is changed
+        - openbao_haproxy_existing_config_stat.stat.exists
+
+    - name: Install OpenBao HAProxy SELinux management package
+      ansible.builtin.dnf:
+        name: "{{ openbao_haproxy_selinux_package }}"
+        state: present
+      register: openbao_haproxy_selinux_package_result
+      when:
+        - openbao_haproxy_selinux_manage | bool
+        - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+
+    - name: Ensure OpenBao HAProxy managed state directory exists
+      ansible.builtin.file:
+        path: "{{ openbao_haproxy_state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - openbao_haproxy_firewalld_manage | bool
+
+    - name: Ensure OpenBao HAProxy configuration directory exists
+      ansible.builtin.file:
+        path: "{{ openbao_haproxy_config_path | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write validated OpenBao HAProxy configuration
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: "{{ openbao_haproxy_config_path }}"
+        owner: root
+        group: root
+        mode: "0640"
+        validate: >-
+          {{ openbao_haproxy_config_validate_command if openbao_haproxy_binary_ready | bool else omit }}
+      notify: Reload OpenBao HAProxy
+
+    - name: Label OpenBao HAProxy listener ports for SELinux
+      community.general.seport:
+        ports: "{{ item | string }}"
+        proto: tcp
+        setype: "{{ openbao_haproxy_selinux_port_type }}"
+        state: present
+      loop:
+        - "{{ openbao_haproxy_client_port }}"
+        - "{{ openbao_haproxy_stats_port }}"
+      notify: Reload OpenBao HAProxy
+      when:
+        - openbao_haproxy_selinux_manage | bool
+        - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+        - >-
+          not (
+            ansible_check_mode
+            and openbao_haproxy_selinux_package_result is changed
+          )
+
+    - name: Build current OpenBao HAProxy firewalld policy
+      ansible.builtin.set_fact:
+        openbao_haproxy_current_firewalld_rules: []
+      when: openbao_haproxy_firewalld_manage | bool
+
+    - name: Add OpenBao HAProxy client firewalld policy
+      ansible.builtin.set_fact:
+        openbao_haproxy_current_firewalld_rules: >-
+          {{
+            openbao_haproxy_current_firewalld_rules
+            + [
+              'rule family="ipv4" source address="'
+              ~ item
+              ~ '" port port="'
+              ~ (openbao_haproxy_client_port | string)
+              ~ '" protocol="tcp" accept'
+            ]
+          }}
+      loop: "{{ openbao_haproxy_client_allowed_sources | sort }}"
+      when: openbao_haproxy_firewalld_manage | bool
+
+    - name: Add OpenBao HAProxy metrics firewalld policy
+      ansible.builtin.set_fact:
+        openbao_haproxy_current_firewalld_rules: >-
+          {{
+            openbao_haproxy_current_firewalld_rules
+            + [
+              'rule family="ipv4" source address="'
+              ~ item
+              ~ '" port port="'
+              ~ (openbao_haproxy_stats_port | string)
+              ~ '" protocol="tcp" accept'
+            ]
+          }}
+      loop: "{{ openbao_haproxy_stats_allowed_sources | sort }}"
+      when: openbao_haproxy_firewalld_manage | bool
+
+    - name: Check previous OpenBao HAProxy firewalld manifest
+      ansible.builtin.stat:
+        path: "{{ openbao_haproxy_firewalld_manifest_path }}"
+      register: openbao_haproxy_previous_firewalld_manifest_stat
+      when: openbao_haproxy_firewalld_manage | bool
+
+    - name: Read previous OpenBao HAProxy firewalld manifest
+      ansible.builtin.slurp:
+        path: "{{ openbao_haproxy_firewalld_manifest_path }}"
+      register: openbao_haproxy_previous_firewalld_manifest_slurp
+      when:
+        - openbao_haproxy_firewalld_manage | bool
+        - openbao_haproxy_previous_firewalld_manifest_stat.stat.exists
+
+    - name: Track previous OpenBao HAProxy firewalld policy
+      ansible.builtin.set_fact:
+        openbao_haproxy_previous_firewalld_rules: >-
+          {{
+            (
+              openbao_haproxy_previous_firewalld_manifest_slurp.content
+              | b64decode
+              | from_yaml
+            ).rich_rules | default([])
+            if openbao_haproxy_previous_firewalld_manifest_stat.stat.exists
+            else []
+          }}
+      when: openbao_haproxy_firewalld_manage | bool
+
+    - name: Enable current OpenBao HAProxy firewalld policy
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        offline: true
+        state: enabled
+      loop: "{{ openbao_haproxy_current_firewalld_rules | unique | sort }}"
+      when:
+        - openbao_haproxy_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Disable stale OpenBao HAProxy firewalld policy
+      ansible.posix.firewalld:
+        rich_rule: "{{ item }}"
+        permanent: true
+        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        offline: true
+        state: disabled
+      loop: >-
+        {{
+          openbao_haproxy_previous_firewalld_rules
+          | difference(openbao_haproxy_current_firewalld_rules)
+        }}
+      when:
+        - openbao_haproxy_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Write OpenBao HAProxy firewalld manifest
+      ansible.builtin.copy:
+        dest: "{{ openbao_haproxy_firewalld_manifest_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: >-
+          {{
+            {
+              'rich_rules': openbao_haproxy_current_firewalld_rules | unique | sort
+            } | to_nice_yaml
+          }}
+      when:
+        - openbao_haproxy_firewalld_manage | bool
+        - firewalld_dependencies_ready | default(true)
+
+    - name: Assert managed firewall dependencies are ready before activation
+      ansible.builtin.assert:
+        that:
+          - firewalld_dependencies_ready | default(false) | bool
+          - >-
+            firewalld_service_state | default('stopped')
+            in ['started', 'restarted', 'reloaded']
+        fail_msg: >-
+          Active OpenBao HAProxy requires firewalld dependencies and active
+          enforcement before its wildcard listener can start.
+      when:
+        - openbao_haproxy_service_state == 'started'
+        - openbao_haproxy_firewalld_manage | bool
+
+    - name: Manage staged OpenBao HAProxy service
+      ansible.builtin.systemd_service:
+        name: "{{ openbao_haproxy_service_name }}"
+        enabled: "{{ openbao_haproxy_service_enabled }}"
+        state: "{{ openbao_haproxy_service_state }}"
+      when: openbao_haproxy_binary_ready | bool

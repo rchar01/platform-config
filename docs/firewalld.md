@@ -83,6 +83,7 @@ real values in private group or host variables.
 |---|---|---|
 | `zot_registry` | `zot_registry_firewalld_manage`, `zot_registry_firewalld_port`, `zot_registry_firewalld_allowed_sources` | Broad port or source-scoped rich rules. |
 | Staged `openbao` role | `openbao_firewalld_manage`, `openbao_backend_allowed_sources`, canonical cluster members | Reconciled direct-backend and peer-only cluster rules; no active playbook invokes this role yet. |
+| `openbao_haproxy` | `openbao_haproxy_firewalld_manage`, client and stats allowed-source lists | Reconciled source-scoped client and metrics listener rules; role and service remain disabled by default. |
 | `node_exporter` | `node_exporter_firewalld_manage`, `node_exporter_firewalld_allowed_sources` | Source-scoped rich rules. |
 | Retired `monitoring_stack` role | `monitoring_stack_firewalld_manage`, Grafana and Loki allowed-source lists | Legacy source-scoped rules; no active playbook invokes this role. |
 | `rke2` | `rke2_firewalld_manage`, cluster and API source lists, API ports | Cluster and API rich rules. |

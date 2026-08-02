@@ -1,0 +1,37 @@
+---
+- name: Exercise OpenBao HAProxy on disposable Rocky systemd
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    firewalld_enabled: false
+    openbao_haproxy_test_active: false
+    openbao_haproxy_enabled: true
+    openbao_haproxy_package_nevra: >-
+      {{ openbao_haproxy_test_package_nevra | default('haproxy-0:3.0.5-6.el10_2.1.x86_64') }}
+    openbao_haproxy_service_enabled: "{{ openbao_haproxy_test_active }}"
+    openbao_haproxy_service_state: "{{ 'started' if openbao_haproxy_test_active else 'stopped' }}"
+    openbao_haproxy_client_port: 8200
+    openbao_haproxy_backend_port: 18200
+    openbao_haproxy_cluster_port: 8201
+    openbao_haproxy_stats_port: 8404
+    openbao_haproxy_backend_ca_path: /etc/openbao/tls/ca.crt
+    openbao_haproxy_backend_health_host: bao.example.invalid
+    openbao_cluster_members:
+      - name: openbao-test-01
+        address: 127.0.0.2
+        dns: bao-test-1.internal.invalid
+      - name: openbao-test-02
+        address: 127.0.0.3
+        dns: bao-test-2.internal.invalid
+      - name: openbao-test-03
+        address: 127.0.0.4
+        dns: bao-test-3.internal.invalid
+    openbao_haproxy_stats_bind_address: 127.0.0.1
+    openbao_haproxy_client_allowed_sources:
+      - "{{ openbao_haproxy_test_client_source | default('198.51.100.0/24') }}"
+    openbao_haproxy_stats_allowed_sources:
+      - 127.0.0.1/32
+  roles:
+    - firewalld
+    - openbao_haproxy

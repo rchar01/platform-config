@@ -1,0 +1,48 @@
+---
+openbao_haproxy_enabled: false
+
+openbao_haproxy_package_name: haproxy
+openbao_haproxy_package_nevra: ""
+openbao_haproxy_binary_path: /usr/sbin/haproxy
+openbao_haproxy_config_path: /etc/haproxy/haproxy.cfg
+openbao_haproxy_config_validate_command: "{{ openbao_haproxy_binary_path }} -c -f %s"
+
+openbao_haproxy_service_name: haproxy.service
+openbao_haproxy_service_enabled: false
+openbao_haproxy_service_state: stopped
+
+openbao_haproxy_user: haproxy
+openbao_haproxy_group: haproxy
+openbao_haproxy_maxconn: 4096
+openbao_haproxy_timeout_connect: 5s
+openbao_haproxy_timeout_client: 50s
+openbao_haproxy_timeout_server: 50s
+openbao_haproxy_timeout_check: 4s
+
+openbao_haproxy_client_bind: "*"
+openbao_haproxy_client_port: "{{ openbao_client_port | default(8200) }}"
+openbao_haproxy_backend_port: "{{ openbao_backend_port | default(18200) }}"
+openbao_haproxy_cluster_port: "{{ openbao_cluster_port | default(8201) }}"
+openbao_haproxy_backend_ca_path: "{{ openbao_tls_ca_path | default('/etc/openbao/tls/ca.crt') }}"
+openbao_haproxy_backend_health_host: "{{ openbao_service_dns | default('') }}"
+openbao_haproxy_backend_health_path: /v1/sys/health
+openbao_haproxy_check_interval: 1s
+openbao_haproxy_check_fast_interval: 1s
+openbao_haproxy_check_down_interval: 1s
+openbao_haproxy_check_rise: 2
+openbao_haproxy_check_fall: 2
+
+openbao_haproxy_stats_bind_address: 127.0.0.1
+openbao_haproxy_stats_port: 8404
+openbao_haproxy_stats_path: /metrics
+openbao_haproxy_stats_allowed_sources:
+  - 127.0.0.1/32
+
+openbao_haproxy_client_allowed_sources: []
+openbao_haproxy_firewalld_manage: true
+openbao_haproxy_state_dir: /var/lib/platform-config
+openbao_haproxy_firewalld_manifest_path: "{{ openbao_haproxy_state_dir }}/openbao-haproxy-firewalld.yml"
+
+openbao_haproxy_selinux_manage: true
+openbao_haproxy_selinux_package: policycoreutils-python-utils
+openbao_haproxy_selinux_port_type: http_port_t

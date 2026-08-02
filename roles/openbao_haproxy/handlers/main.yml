@@ -1,0 +1,9 @@
+---
+- name: Reload OpenBao HAProxy
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_haproxy_service_name }}"
+    state: reloaded
+  when:
+    - openbao_haproxy_service_enabled | bool
+    - openbao_haproxy_service_state == 'started'
+    - not ansible_check_mode

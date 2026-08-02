@@ -20,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-platform-external-probe-alloy test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -111,6 +111,10 @@ test-keepalived-vip-rocky:
 ## Run the opt-in external probe and exact Alloy integration check
 test-platform-external-probe-alloy:
 	@bash tests/scenarios/test-platform-external-probe-alloy.sh
+
+## Run the opt-in OpenBao HAProxy integration check
+test-openbao-haproxy-rocky:
+	@bash tests/scenarios/test-openbao-haproxy-rocky.sh
 
 ## Validate OpenBao configuration with the exact 2.6.1 image
 test-openbao-image:

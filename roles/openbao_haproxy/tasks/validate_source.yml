@@ -1,0 +1,25 @@
+---
+- name: Assert OpenBao HAProxy firewall source octets are valid
+  ansible.builtin.assert:
+    that:
+      - openbao_haproxy_source_prefix | int >= 1
+      - >-
+        openbao_haproxy_source.split('/') | first | split('.')
+        | map('int') | select('gt', 255) | list | length == 0
+      - >-
+        (openbao_haproxy_source_integer | int)
+        % (2 ** (32 - (openbao_haproxy_source_prefix | int))) == 0
+    fail_msg: >-
+      OpenBao HAProxy firewall source {{ openbao_haproxy_source }} must be a
+      restricted, network-normalized IPv4 CIDR with valid octets.
+  vars:
+    openbao_haproxy_source_octets: >-
+      {{ openbao_haproxy_source.split('/') | first | split('.') | map('int') | list }}
+    openbao_haproxy_source_prefix: "{{ openbao_haproxy_source.split('/') | last | int }}"
+    openbao_haproxy_source_integer: >-
+      {{
+        openbao_haproxy_source_octets[0] * 16777216
+        + openbao_haproxy_source_octets[1] * 65536
+        + openbao_haproxy_source_octets[2] * 256
+        + openbao_haproxy_source_octets[3]
+      }}

@@ -1,0 +1,73 @@
+---
+- name: Render OpenBao HAProxy fixtures
+  hosts: localhost
+  gather_facts: false
+  vars:
+    openbao_haproxy_role_dir: "{{ playbook_dir }}/../../../roles/openbao_haproxy"
+    openbao_haproxy_test_package_nevra: haproxy-0:3.0.5-6.el10_2.1.x86_64
+    openbao_haproxy_test_service_enabled: false
+    openbao_haproxy_test_service_state: stopped
+    openbao_haproxy_test_client_port: 8200
+    openbao_haproxy_test_backend_port: 18200
+    openbao_haproxy_test_cluster_port: 8201
+    openbao_haproxy_test_stats_port: 8404
+    openbao_haproxy_test_backend_2_name: openbao-example-02
+    openbao_haproxy_test_backend_2_address: 192.0.2.64
+    openbao_haproxy_test_backend_2_dns: bao-2.internal.invalid
+    openbao_haproxy_test_client_sources:
+      - 198.51.100.0/24
+    openbao_haproxy_test_stats_sources:
+      - 192.0.2.128/25
+    openbao_haproxy_test_health_host: bao.example.invalid
+    openbao_haproxy_test_health_path: /v1/sys/health
+    openbao_haproxy_test_workload_lb_enabled: false
+    openbao_haproxy_test_user: haproxy
+    openbao_haproxy_test_group: haproxy
+    openbao_haproxy_test_maxconn: 4096
+  tasks:
+    - name: Exercise disabled-by-default OpenBao HAProxy role
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+
+    - name: Load OpenBao HAProxy role defaults
+      ansible.builtin.include_vars:
+        file: "{{ openbao_haproxy_role_dir }}/defaults/main.yml"
+
+    - name: Configure OpenBao HAProxy fixture inputs
+      ansible.builtin.set_fact:
+        openbao_haproxy_package_nevra: "{{ openbao_haproxy_test_package_nevra }}"
+        openbao_haproxy_service_enabled: "{{ openbao_haproxy_test_service_enabled }}"
+        openbao_haproxy_service_state: "{{ openbao_haproxy_test_service_state }}"
+        openbao_haproxy_client_port: "{{ openbao_haproxy_test_client_port }}"
+        openbao_haproxy_backend_port: "{{ openbao_haproxy_test_backend_port }}"
+        openbao_haproxy_cluster_port: "{{ openbao_haproxy_test_cluster_port }}"
+        openbao_haproxy_stats_port: "{{ openbao_haproxy_test_stats_port }}"
+        openbao_haproxy_backend_ca_path: /etc/openbao/tls/ca.crt
+        openbao_haproxy_backend_health_host: "{{ openbao_haproxy_test_health_host }}"
+        openbao_haproxy_backend_health_path: "{{ openbao_haproxy_test_health_path }}"
+        openbao_cluster_members:
+          - name: openbao-example-01
+            address: 192.0.2.63
+            dns: bao-1.internal.invalid
+          - name: "{{ openbao_haproxy_test_backend_2_name }}"
+            address: "{{ openbao_haproxy_test_backend_2_address }}"
+            dns: "{{ openbao_haproxy_test_backend_2_dns }}"
+          - name: openbao-example-03
+            address: 192.0.2.65
+            dns: bao-3.internal.invalid
+        openbao_haproxy_stats_bind_address: 192.0.2.63
+        openbao_haproxy_client_allowed_sources: "{{ openbao_haproxy_test_client_sources }}"
+        openbao_haproxy_stats_allowed_sources: "{{ openbao_haproxy_test_stats_sources }}"
+        haproxy_workload_lb_enabled: "{{ openbao_haproxy_test_workload_lb_enabled }}"
+        openbao_haproxy_user: "{{ openbao_haproxy_test_user }}"
+        openbao_haproxy_group: "{{ openbao_haproxy_test_group }}"
+        openbao_haproxy_maxconn: "{{ openbao_haproxy_test_maxconn }}"
+
+    - name: Validate OpenBao HAProxy fixture inputs
+      ansible.builtin.include_tasks: "{{ openbao_haproxy_role_dir }}/tasks/validate.yml"
+
+    - name: Render OpenBao HAProxy configuration fixture
+      ansible.builtin.template:
+        src: "{{ openbao_haproxy_role_dir }}/templates/haproxy.cfg.j2"
+        dest: "{{ openbao_haproxy_test_output_dir }}/haproxy.cfg"
+        mode: "0640"

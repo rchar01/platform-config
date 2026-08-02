@@ -1,0 +1,40 @@
+global
+  log /dev/log local0
+  maxconn {{ openbao_haproxy_maxconn }}
+  user {{ openbao_haproxy_user }}
+  group {{ openbao_haproxy_group }}
+
+defaults
+  log global
+  option dontlognull
+  timeout connect {{ openbao_haproxy_timeout_connect }}
+  timeout client {{ openbao_haproxy_timeout_client }}
+  timeout server {{ openbao_haproxy_timeout_server }}
+  timeout check {{ openbao_haproxy_timeout_check }}
+
+frontend openbao_client
+  bind {{ openbao_haproxy_client_bind }}:{{ openbao_haproxy_client_port }}
+  mode tcp
+  option tcplog
+  acl openbao_client_source src {{ openbao_haproxy_client_allowed_sources | join(' ') }}
+  tcp-request connection reject unless openbao_client_source
+  default_backend openbao_active
+
+backend openbao_active
+  mode tcp
+  option httpchk
+  http-check send meth GET uri {{ openbao_haproxy_backend_health_path }} ver HTTP/1.1 hdr Host {{ openbao_haproxy_backend_health_host }}
+  http-check expect status 200
+  default-server inter {{ openbao_haproxy_check_interval }} fastinter {{ openbao_haproxy_check_fast_interval }} downinter {{ openbao_haproxy_check_down_interval }} rise {{ openbao_haproxy_check_rise }} fall {{ openbao_haproxy_check_fall }}
+{% for backend in openbao_cluster_members %}
+  server {{ backend.name }} {{ backend.address }}:{{ openbao_haproxy_backend_port }} check check-ssl check-sni {{ backend.dns }} verify required ca-file {{ openbao_haproxy_backend_ca_path }} verifyhost {{ backend.dns }}
+{% endfor %}
+
+frontend openbao_metrics
+  bind {{ openbao_haproxy_stats_bind_address }}:{{ openbao_haproxy_stats_port }}
+  mode http
+  acl openbao_metrics_source src {{ openbao_haproxy_stats_allowed_sources | join(' ') }}
+  http-request deny deny_status 403 unless openbao_metrics_source
+  http-request use-service prometheus-exporter if { path -m str {{ openbao_haproxy_stats_path }} }
+  http-request deny deny_status 404
+  no log

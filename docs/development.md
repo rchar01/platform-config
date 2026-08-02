@@ -35,6 +35,7 @@ make yamllint
 make test
 make test-keepalived-vip-rocky
 make test-platform-external-probe-alloy
+make test-openbao-haproxy-rocky
 make test-openbao-image
 make test-openbao-rocky
 ```
@@ -64,6 +65,12 @@ lifecycle, native complete-config validation and candidate preservation,
 idempotency, exact kernel VIP ownership metrics, and runtime blackbox results
 against controlled strict TLS, redirect, status, body, and client-certificate
 fixtures.
+
+`make test-openbao-haproxy-rocky` installs the approved exact HAProxy `3.0`
+package in a disposable Rocky systemd container. It verifies check mode, exact
+package downgrade, atomic candidate preservation, staged/active/disabled
+lifecycle, reconciled firewall policy, strict active-only TLS backend selection
+and switch, hostname rejection, and restricted built-in metrics.
 
 `make verify` also exercises synthetic strict OpenBao health and Raft status
 predicates. The fixtures require one active node, two standbys, three voters,
