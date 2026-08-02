@@ -36,6 +36,7 @@ make test
 make test-keepalived-vip-rocky
 make test-platform-external-probe-alloy
 make test-openbao-haproxy-rocky
+make test-monitoring-haproxy-capabilities
 make test-openbao-image
 make test-openbao-rocky
 ```
@@ -71,6 +72,18 @@ package in a disposable Rocky systemd container. It verifies check mode, exact
 package downgrade, atomic candidate preservation, staged/active/disabled
 lifecycle, reconciled firewall policy, strict active-only TLS backend selection
 and switch, hostname rejection, and restricted built-in metrics.
+
+`make test-monitoring-haproxy-capabilities` is a Phase 0 mechanism check, not a
+production role test. It installs exact HAProxy `3.0.5` in a disposable Rocky
+container and uses synthetic, invocation-local certificates and services to
+exercise required frontend mTLS, CRL rejection, exact client identity maps,
+method/path separation, tenant-header replacement, backend mTLS plus CA/SNI/name
+verification, raw PostgreSQL TCP selected by a separate Patroni HTTPS `/primary`
+check, restricted metrics, and native candidate rejection. The fixture forces
+HTTP/1.1; final HTTP/2/ALPN behavior, ports, health paths, identity key format,
+and service allowlists remain unresolved monitoring contract inputs. Fixture PKI
+does not replace `platform-tools`: real CA state and issued service material stay
+outside Git and use the maintained `platform-tools` workflows.
 
 `make verify` also exercises synthetic strict OpenBao health and Raft status
 predicates. The fixtures require one active node, two standbys, three voters,

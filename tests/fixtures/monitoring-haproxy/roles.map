@@ -1,0 +1,3 @@
+alloy-writer writer
+grafana-loki-query loki_query
+grafana-browser browser

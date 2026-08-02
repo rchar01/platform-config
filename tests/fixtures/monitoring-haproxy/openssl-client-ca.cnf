@@ -1,0 +1,27 @@
+[ ca ]
+default_ca = client_ca
+
+[ client_ca ]
+dir = /etc/monitoring-haproxy-test/client-ca
+database = $dir/index.txt
+new_certs_dir = $dir/newcerts
+certificate = $dir/ca.crt
+private_key = $dir/ca.key
+serial = $dir/serial
+crlnumber = $dir/crlnumber
+default_days = 1
+default_crl_days = 1
+default_md = sha256
+policy = client_policy
+x509_extensions = client_certificate
+copy_extensions = copy
+
+[ client_policy ]
+commonName = supplied
+
+[ client_certificate ]
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = clientAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
