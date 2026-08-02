@@ -9,4 +9,5 @@
     state: restarted
   when:
     - grafana_alloy_service_enabled | bool
+    - grafana_alloy_service_state == 'started'
     - not ansible_check_mode

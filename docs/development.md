@@ -34,6 +34,7 @@ make lint
 make yamllint
 make test
 make test-keepalived-vip-rocky
+make test-platform-external-probe-alloy
 make test-openbao-image
 make test-openbao-rocky
 ```
@@ -55,6 +56,14 @@ systemd container, stages the role with its service disabled, verifies check
 mode, idempotency, mount rejection, and atomic candidate preservation, then
 explicitly starts an uninitialized node, requires TLS health status `501`, and
 returns it to an idempotent disabled state without initialization side effects.
+
+`make test-platform-external-probe-alloy` downloads the official Alloy `1.18.0`
+AMD64 RPM and converges both staged roles in a disposable Rocky systemd
+container. It verifies SHA-256 and exact package identity, disabled service/timer
+lifecycle, native complete-config validation and candidate preservation,
+idempotency, exact kernel VIP ownership metrics, and runtime blackbox results
+against controlled strict TLS, redirect, status, body, and client-certificate
+fixtures.
 
 `make verify` also exercises synthetic strict OpenBao health and Raft status
 predicates. The fixtures require one active node, two standbys, three voters,

@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin
+
+metrics_dir={{ platform_external_probe_metrics_dir | quote }}
+metrics_path={{ platform_external_probe_metrics_path | quote }}
+tmp_path=""
+published=0
+cleanup() {
+  if [[ -n "$tmp_path" ]]; then
+    rm -f -- "$tmp_path"
+  fi
+  if [[ "$published" -eq 0 ]]; then
+    rm -f -- "$metrics_path"
+  fi
+}
+trap cleanup EXIT
+tmp_path="$(mktemp "${metrics_dir}/.vip-ownership.XXXXXX")"
+
+keepalived_active=0
+if systemctl is-active --quiet {{ platform_external_probe_keepalived_service | quote }}; then
+  keepalived_active=1
+fi
+timestamp="$(date +%s)"
+
+{
+  printf '%s\n' '# HELP platform_vip_owned Whether the literal VIP is present on the configured local interface.'
+  printf '%s\n' '# TYPE platform_vip_owned gauge'
+  printf '%s\n' '# HELP platform_keepalived_active Whether the local Keepalived service is active.'
+  printf '%s\n' '# TYPE platform_keepalived_active gauge'
+  printf '%s\n' '# HELP platform_vip_ownership_collection_success Whether local interface inspection succeeded.'
+  printf '%s\n' '# TYPE platform_vip_ownership_collection_success gauge'
+  printf '%s\n' '# HELP platform_vip_ownership_observation_timestamp_seconds Unix time of the ownership observation.'
+  printf '%s\n' '# TYPE platform_vip_ownership_observation_timestamp_seconds gauge'
+{% for vip in platform_external_probe_vip_ownership %}
+  owned=0
+  collection_success=0
+  if addresses="$(ip -o -4 address show dev {{ vip.interface | quote }} 2>/dev/null)"; then
+    collection_success=1
+    while read -r _ _ family local_cidr _; do
+      if [[ "$family" == inet && "${local_cidr%%/*}" == {{ vip.vip | quote }} ]]; then
+        owned=1
+        break
+      fi
+    done <<<"$addresses"
+  fi
+  printf 'platform_vip_owned{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}",interface="{{ vip.interface }}"} %s\n' "$owned"
+  printf 'platform_keepalived_active{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}"} %s\n' "$keepalived_active"
+  printf 'platform_vip_ownership_collection_success{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}"} %s\n' "$collection_success"
+  printf 'platform_vip_ownership_observation_timestamp_seconds{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}"} %s\n' "$timestamp"
+{% endfor %}
+} >"$tmp_path"
+
+chmod 0644 "$tmp_path"
+mv -f -- "$tmp_path" "$metrics_path"
+published=1
+trap - EXIT

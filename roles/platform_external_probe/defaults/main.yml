@@ -1,0 +1,20 @@
+---
+platform_external_probe_enabled: false
+platform_external_probe_observer_id: "{{ inventory_hostname }}"
+platform_external_probe_environment: "{{ platform_environment | default('dev') }}"
+platform_external_probe_targets: []
+platform_external_probe_scrape_interval: 5s
+platform_external_probe_scrape_timeout: 4s
+platform_external_probe_metrics_receiver: prometheus.remote_write.platform_metrics.receiver
+platform_external_probe_alloy_fragment: ""
+
+platform_external_probe_vip_ownership: []
+platform_external_probe_keepalived_service: keepalived.service
+platform_external_probe_metrics_dir: /var/lib/alloy/platform-external-probe
+platform_external_probe_metrics_path: "{{ platform_external_probe_metrics_dir }}/vip-ownership.prom"
+platform_external_probe_script_path: /usr/local/libexec/platform/platform-external-probe-ownership
+platform_external_probe_service_name: platform-external-probe-ownership.service
+platform_external_probe_timer_name: platform-external-probe-ownership.timer
+platform_external_probe_timer_enabled: false
+platform_external_probe_timer_state: stopped
+platform_external_probe_timer_interval: 5s

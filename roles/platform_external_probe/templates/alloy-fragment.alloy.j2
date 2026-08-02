@@ -1,0 +1,67 @@
+{% set blackbox_config %}
+modules:
+{% for target in platform_external_probe_targets %}
+  {{ target.name }}:
+    prober: http
+    timeout: {{ platform_external_probe_scrape_timeout }}
+    http:
+      method: GET
+      valid_status_codes: {{ target.valid_status_codes | to_json }}
+      follow_redirects: false
+      fail_if_not_ssl: true
+      headers:
+        Host: {{ target.host_header | to_json }}
+      tls_config:
+        ca_file: {{ target.ca_file | to_json }}
+        server_name: {{ target.server_name | to_json }}
+        insecure_skip_verify: false
+        min_version: TLS12
+{% if target.client_cert_file | default('') | length > 0 %}
+        cert_file: {{ target.client_cert_file | to_json }}
+        key_file: {{ target.client_key_file | to_json }}
+{% endif %}
+      fail_if_body_not_matches_regexp: {{ target.required_body_regexes | to_json }}
+      fail_if_body_matches_regexp: {{ target.forbidden_body_regexes | to_json }}
+{% endfor %}
+{% endset %}
+prometheus.exporter.blackbox "platform_external_probe" {
+  config = {{ blackbox_config | trim | to_json }}
+
+{% for target in platform_external_probe_targets %}
+  target {
+    name    = {{ target.name | to_json }}
+    address = {{ target.address | to_json }}
+    module  = {{ target.name | to_json }}
+    labels = {
+      observer    = {{ platform_external_probe_observer_id | to_json }},
+      environment = {{ platform_external_probe_environment | to_json }},
+      service     = {{ target.service | to_json }},
+      address_mode = {{ target.address_mode | to_json }},
+    }
+  }
+{% endfor %}
+}
+
+prometheus.scrape "platform_external_probe" {
+  targets         = prometheus.exporter.blackbox.platform_external_probe.targets
+  forward_to      = [{{ platform_external_probe_metrics_receiver }}]
+  scrape_interval = {{ platform_external_probe_scrape_interval | to_json }}
+  scrape_timeout  = {{ platform_external_probe_scrape_timeout | to_json }}
+}
+{% if platform_external_probe_vip_ownership | length > 0 %}
+
+prometheus.exporter.unix "platform_vip_ownership" {
+  set_collectors = ["textfile"]
+
+  textfile {
+    directory = {{ platform_external_probe_metrics_dir | to_json }}
+  }
+}
+
+prometheus.scrape "platform_vip_ownership" {
+  targets         = prometheus.exporter.unix.platform_vip_ownership.targets
+  forward_to      = [{{ platform_external_probe_metrics_receiver }}]
+  scrape_interval = {{ platform_external_probe_scrape_interval | to_json }}
+  scrape_timeout  = {{ platform_external_probe_scrape_timeout | to_json }}
+}
+{% endif %}

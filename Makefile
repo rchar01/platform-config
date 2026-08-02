@@ -20,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-platform-external-probe-alloy test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -107,6 +107,10 @@ test:
 ## Run the opt-in Keepalived role test in disposable Rocky systemd
 test-keepalived-vip-rocky:
 	@bash tests/scenarios/test-keepalived-vip-rocky.sh
+
+## Run the opt-in external probe and exact Alloy integration check
+test-platform-external-probe-alloy:
+	@bash tests/scenarios/test-platform-external-probe-alloy.sh
 
 ## Validate OpenBao configuration with the exact 2.6.1 image
 test-openbao-image:

@@ -1,0 +1,54 @@
+---
+- name: Assert external probe inputs are configured safely
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_observer_id is match('^[A-Za-z0-9_.-]+$')
+      - platform_external_probe_environment is match('^[A-Za-z0-9_.-]+$')
+      - platform_external_probe_enabled is boolean
+      - platform_external_probe_targets | length > 0
+      - platform_external_probe_targets | selectattr('name', 'defined') | list | length == platform_external_probe_targets | length
+      - platform_external_probe_targets | map(attribute='name') | unique | length == platform_external_probe_targets | length
+      - platform_external_probe_metrics_receiver is match('^[a-z][a-z0-9_]*[.][a-z][a-z0-9_]*[.][a-z][a-z0-9_]*[.][a-z][a-z0-9_]*$')
+      - platform_external_probe_scrape_interval is match('^[1-9][0-9]*s$')
+      - platform_external_probe_scrape_timeout is match('^[1-9][0-9]*s$')
+      - platform_external_probe_scrape_timeout | regex_replace('s$', '') | int < platform_external_probe_scrape_interval | regex_replace('s$', '') | int
+      - platform_external_probe_timer_enabled is boolean
+      - platform_external_probe_timer_state in ['started', 'stopped']
+      - (platform_external_probe_timer_enabled | bool) == (platform_external_probe_timer_state == 'started')
+      - platform_external_probe_timer_interval is match('^[1-9][0-9]*s$')
+      - platform_external_probe_vip_ownership | length > 0 or not platform_external_probe_timer_enabled | bool
+      - platform_external_probe_keepalived_service is match('^[A-Za-z0-9_.@-]+[.]service$')
+      - platform_external_probe_metrics_dir is match('^/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - platform_external_probe_metrics_path | dirname == platform_external_probe_metrics_dir
+      - platform_external_probe_script_path is match('^/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
+      - platform_external_probe_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
+      - "'..' not in platform_external_probe_metrics_dir.split('/')"
+      - "'..' not in platform_external_probe_script_path.split('/')"
+    fail_msg: >-
+      External probes require a safe observer identity, unique typed targets, a
+      stable Alloy metrics receiver, bounded intervals, and a coherent disabled
+      or active ownership timer state.
+
+- name: Validate each external HTTPS probe target
+  ansible.builtin.include_tasks: validate_target.yml
+  loop: "{{ platform_external_probe_targets }}"
+  loop_control:
+    loop_var: platform_external_probe_target
+    label: "{{ platform_external_probe_target.name | default('undefined') }}"
+
+- name: Validate each external VIP ownership target
+  ansible.builtin.include_tasks: validate_vip.yml
+  loop: "{{ platform_external_probe_vip_ownership }}"
+  loop_control:
+    loop_var: platform_external_probe_vip
+    label: "{{ platform_external_probe_vip.instance | default('undefined') }}"
+
+- name: Assert external VIP ownership identities are unique
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_vip_ownership | map(attribute='instance') | unique | length == platform_external_probe_vip_ownership | length
+      - platform_external_probe_vip_ownership | map(attribute='vip') | unique | length == platform_external_probe_vip_ownership | length
+    fail_msg: "External VIP ownership observations require unique instance names and VIPs."
+  when: platform_external_probe_vip_ownership | length > 0

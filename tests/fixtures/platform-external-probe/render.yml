@@ -1,0 +1,125 @@
+---
+- name: Render shared external probe fixtures
+  hosts: localhost
+  gather_facts: false
+  vars:
+    platform_external_probe_role_dir: "{{ playbook_dir }}/../../../roles/platform_external_probe"
+    grafana_alloy_role_dir: "{{ playbook_dir }}/../../../roles/grafana_alloy"
+    platform_external_probe_test_target_2_name: openbao_vip
+    platform_external_probe_test_target_2_address: https://192.0.2.200:8200/v1/sys/health
+    platform_external_probe_test_target_2_host_header: bao.example.invalid
+    platform_external_probe_test_target_2_ca_file: /etc/pki/tls/certs/ca-bundle.crt
+    platform_external_probe_test_target_2_client_cert_file: ""
+    platform_external_probe_test_target_2_client_key_file: ""
+    platform_external_probe_test_required_body_regexes:
+      - '"initialized"[[:space:]]*:[[:space:]]*true'
+      - '"sealed"[[:space:]]*:[[:space:]]*false'
+      - '"standby"[[:space:]]*:[[:space:]]*false'
+    platform_external_probe_test_forbidden_body_regexes:
+      - '"initialized"[[:space:]]*:[[:space:]]*false'
+      - '"sealed"[[:space:]]*:[[:space:]]*true'
+      - '"standby"[[:space:]]*:[[:space:]]*true'
+    platform_external_probe_test_vip: 192.0.2.200
+    platform_external_probe_test_instance: OPENBAO
+    platform_external_probe_test_timer_enabled: false
+    platform_external_probe_test_timer_state: stopped
+  tasks:
+    - name: Exercise disabled-by-default external probe role
+      ansible.builtin.include_role:
+        name: platform_external_probe
+
+    - name: Exercise disabled-by-default Grafana Alloy role
+      ansible.builtin.include_role:
+        name: grafana_alloy
+
+    - name: Load external probe role defaults
+      ansible.builtin.include_vars:
+        file: "{{ platform_external_probe_role_dir }}/defaults/main.yml"
+
+    - name: Load Grafana Alloy role defaults
+      ansible.builtin.include_vars:
+        file: "{{ grafana_alloy_role_dir }}/defaults/main.yml"
+
+    - name: Configure external probe fixture inputs
+      ansible.builtin.set_fact:
+        platform_external_probe_observer_id: monitoring-example-01
+        platform_external_probe_environment: dev
+        platform_external_probe_targets:
+          - name: openbao_dns
+            service: openbao
+            address: https://bao.example.invalid:8200/v1/sys/health
+            address_mode: dns
+            server_name: bao.example.invalid
+            host_header: bao.example.invalid
+            ca_file: /etc/pki/tls/certs/ca-bundle.crt
+            valid_status_codes:
+              - 200
+            required_body_regexes: "{{ platform_external_probe_test_required_body_regexes }}"
+            forbidden_body_regexes: "{{ platform_external_probe_test_forbidden_body_regexes }}"
+          - name: "{{ platform_external_probe_test_target_2_name }}"
+            service: openbao
+            address: "{{ platform_external_probe_test_target_2_address }}"
+            address_mode: vip
+            server_name: bao.example.invalid
+            host_header: "{{ platform_external_probe_test_target_2_host_header }}"
+            ca_file: "{{ platform_external_probe_test_target_2_ca_file }}"
+            client_cert_file: "{{ platform_external_probe_test_target_2_client_cert_file }}"
+            client_key_file: "{{ platform_external_probe_test_target_2_client_key_file }}"
+            valid_status_codes:
+              - 200
+            required_body_regexes: "{{ platform_external_probe_test_required_body_regexes }}"
+            forbidden_body_regexes: "{{ platform_external_probe_test_forbidden_body_regexes }}"
+        platform_external_probe_vip_ownership:
+          - service: openbao
+            instance: "{{ platform_external_probe_test_instance }}"
+            interface: eth0
+            vip: "{{ platform_external_probe_test_vip }}"
+        platform_external_probe_timer_enabled: "{{ platform_external_probe_test_timer_enabled }}"
+        platform_external_probe_timer_state: "{{ platform_external_probe_test_timer_state }}"
+
+    - name: Validate external probe fixture inputs
+      ansible.builtin.include_tasks: "{{ platform_external_probe_role_dir }}/tasks/validate.yml"
+
+    - name: Render external probe Alloy fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/alloy-fragment.alloy.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/external-probe.alloy"
+        mode: "0640"
+
+    - name: Load rendered external probe Alloy fixture
+      ansible.builtin.slurp:
+        src: "{{ platform_external_probe_test_output_dir }}/external-probe.alloy"
+      register: platform_external_probe_rendered_fragment
+
+    - name: Configure Grafana Alloy process-owner fixture inputs
+      ansible.builtin.set_fact:
+        grafana_alloy_prometheus_remote_write_url: https://mimir.example.invalid/api/v1/push
+        grafana_alloy_prometheus_remote_write_ca_file: /etc/pki/tls/certs/ca-bundle.crt
+        grafana_alloy_prometheus_remote_write_server_name: mimir.example.invalid
+        grafana_alloy_external_labels:
+          observer: monitoring-example-01
+        grafana_alloy_feature_config: "{{ platform_external_probe_rendered_fragment.content | b64decode }}"
+
+    - name: Render complete Grafana Alloy fixture
+      ansible.builtin.template:
+        src: "{{ grafana_alloy_role_dir }}/templates/config.alloy.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/config.alloy"
+        mode: "0640"
+
+    - name: Render VIP ownership collector fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/collect-vip-ownership.sh.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/collect-vip-ownership"
+        mode: "0755"
+
+    - name: Render VIP ownership service fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-ownership.service.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-ownership.service"
+        mode: "0644"
+
+    - name: Render VIP ownership timer fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-ownership.timer.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-ownership.timer"
+        mode: "0644"

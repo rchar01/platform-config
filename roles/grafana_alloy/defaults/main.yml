@@ -1,21 +1,40 @@
 ---
-grafana_alloy_version: 1.16.1
+grafana_alloy_enabled: false
+grafana_alloy_version: 1.18.0
 grafana_alloy_arch: amd64
 grafana_alloy_rpm_name: "alloy-{{ grafana_alloy_version }}-1.{{ grafana_alloy_arch }}.rpm"
 grafana_alloy_download_url: "https://github.com/grafana/alloy/releases/download/v{{ grafana_alloy_version }}/{{ grafana_alloy_rpm_name }}"
-grafana_alloy_download_checksum: sha256:4f5ad2b8716c8a233a7a7ffd36bba84edcf53205725ead17c2b6674b0218b52f
+grafana_alloy_download_checksum: sha256:d8800c642f97895a20b5d7b86b51fc8729b452708223efe72c27cd13004c37c0
+grafana_alloy_package_nevra: alloy-0:1.18.0-1.x86_64
 grafana_alloy_cache_dir: /var/cache/platform/grafana-alloy
 
 grafana_alloy_config_dir: /etc/alloy
 grafana_alloy_config_path: "{{ grafana_alloy_config_dir }}/config.alloy"
 grafana_alloy_storage_dir: /var/lib/alloy/data
 grafana_alloy_service_name: alloy.service
-grafana_alloy_service_enabled: true
-grafana_alloy_service_state: started
+grafana_alloy_service_enabled: false
+grafana_alloy_service_state: stopped
 grafana_alloy_http_listen_address: 127.0.0.1
 grafana_alloy_http_listen_port: 12345
+grafana_alloy_config_validate_command: /usr/bin/alloy validate %s
+grafana_alloy_conflicting_unit_paths:
+  - /etc/containers/systemd/alloy.container
+  - /etc/containers/systemd/monitoring-alloy.container
+  - /run/containers/systemd/alloy.container
+  - /run/containers/systemd/monitoring-alloy.container
+  - /usr/share/containers/systemd/alloy.container
+  - /usr/share/containers/systemd/monitoring-alloy.container
 
 grafana_alloy_loki_url: ""
+grafana_alloy_prometheus_remote_write_url: ""
+grafana_alloy_prometheus_remote_write_ca_file: ""
+grafana_alloy_prometheus_remote_write_server_name: ""
+grafana_alloy_prometheus_remote_write_client_cert_file: ""
+grafana_alloy_prometheus_remote_write_client_key_file: ""
+grafana_alloy_prometheus_remote_write_bearer_token_file: ""
+grafana_alloy_prometheus_wal_max_keepalive_time: 8h
+grafana_alloy_external_labels: {}
+grafana_alloy_feature_config: ""
 grafana_alloy_environment: "{{ platform_environment | default('dev') }}"
 grafana_alloy_vm_name: "{{ inventory_hostname }}"
 grafana_alloy_ip: "{{ ansible_host | default(inventory_hostname) }}"

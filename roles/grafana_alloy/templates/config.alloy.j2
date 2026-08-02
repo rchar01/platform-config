@@ -3,6 +3,42 @@ logging {
   format = "logfmt"
 }
 
+{% if grafana_alloy_prometheus_remote_write_url | length > 0 %}
+prometheus.remote_write "platform_metrics" {
+  external_labels = {
+{% for label_name, label_value in grafana_alloy_external_labels | dictsort %}
+    {{ label_name | to_json }} = {{ label_value | to_json }},
+{% endfor %}
+  }
+
+  endpoint {
+    url              = {{ grafana_alloy_prometheus_remote_write_url | to_json }}
+    follow_redirects = false
+{% if grafana_alloy_prometheus_remote_write_bearer_token_file | length > 0 %}
+    bearer_token_file = {{ grafana_alloy_prometheus_remote_write_bearer_token_file | to_json }}
+{% endif %}
+{% if grafana_alloy_prometheus_remote_write_ca_file | length > 0 %}
+
+    tls_config {
+      ca_file              = {{ grafana_alloy_prometheus_remote_write_ca_file | to_json }}
+      server_name          = {{ grafana_alloy_prometheus_remote_write_server_name | to_json }}
+      insecure_skip_verify = false
+      min_version          = "TLS12"
+{% if grafana_alloy_prometheus_remote_write_client_cert_file | length > 0 %}
+      cert_file = {{ grafana_alloy_prometheus_remote_write_client_cert_file | to_json }}
+      key_file  = {{ grafana_alloy_prometheus_remote_write_client_key_file | to_json }}
+{% endif %}
+    }
+{% endif %}
+  }
+
+  wal {
+    max_keepalive_time = {{ grafana_alloy_prometheus_wal_max_keepalive_time | to_json }}
+  }
+}
+{% endif %}
+
+{% if grafana_alloy_loki_url | length > 0 %}
 loki.write "default" {
   endpoint {
     url = {{ grafana_alloy_loki_url | to_json }}
@@ -40,3 +76,8 @@ loki.source.journal "system" {
     platform_role = {{ grafana_alloy_platform_role | trim | to_json }},
   }
 }
+{% endif %}
+
+{% if grafana_alloy_feature_config | trim | length > 0 %}
+{{ grafana_alloy_feature_config | trim }}
+{% endif %}

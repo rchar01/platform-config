@@ -1,0 +1,102 @@
+---
+- name: Validate external probe lifecycle paths
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_enabled is boolean
+      - platform_external_probe_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
+      - platform_external_probe_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - "'..' not in platform_external_probe_metrics_path.split('/')"
+    fail_msg: "External probe lifecycle inputs must use safe systemd and absolute path names."
+
+- name: Initialize disabled external probe contribution
+  ansible.builtin.set_fact:
+    platform_external_probe_alloy_fragment: ""
+  when: not platform_external_probe_enabled | bool
+
+- name: Check for a previously managed ownership timer
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ platform_external_probe_timer_name }}"
+  register: platform_external_probe_managed_timer
+  check_mode: false
+
+- name: Stop previously managed ownership timer when no longer requested
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_timer_name }}"
+    enabled: false
+    state: stopped
+  when:
+    - platform_external_probe_managed_timer.stat.exists
+    - not (platform_external_probe_enabled | bool and platform_external_probe_vip_ownership | length > 0)
+    - not ansible_check_mode
+
+- name: Remove stale ownership evidence when collection is not requested
+  ansible.builtin.file:
+    path: "{{ platform_external_probe_metrics_path }}"
+    state: absent
+  when:
+    - not (platform_external_probe_enabled | bool and platform_external_probe_vip_ownership | length > 0)
+
+- name: Configure staged external probe contribution
+  when: platform_external_probe_enabled | bool
+  block:
+    - name: Validate external probe inputs
+      ansible.builtin.include_tasks: validate.yml
+
+    - name: Render external probe Alloy contribution
+      ansible.builtin.set_fact:
+        platform_external_probe_alloy_fragment: >-
+          {{ lookup('ansible.builtin.template', 'alloy-fragment.alloy.j2') }}
+
+    - name: Install VIP ownership observation support
+      when: platform_external_probe_vip_ownership | length > 0
+      block:
+        - name: Ensure external probe ownership paths exist
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "{{ item.mode }}"
+          loop:
+            - path: "{{ platform_external_probe_metrics_dir }}"
+              mode: "0755"
+            - path: "{{ platform_external_probe_script_path | dirname }}"
+              mode: "0755"
+
+        - name: Write external probe ownership collector
+          ansible.builtin.template:
+            src: collect-vip-ownership.sh.j2
+            dest: "{{ platform_external_probe_script_path }}"
+            owner: root
+            group: root
+            mode: "0755"
+            validate: /bin/bash -n %s
+          notify: Run external probe ownership collector
+
+        - name: Write external probe ownership service
+          ansible.builtin.template:
+            src: platform-external-probe-ownership.service.j2
+            dest: "/etc/systemd/system/{{ platform_external_probe_service_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Reload systemd for external probe
+
+        - name: Write external probe ownership timer
+          ansible.builtin.template:
+            src: platform-external-probe-ownership.timer.j2
+            dest: "/etc/systemd/system/{{ platform_external_probe_timer_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Reload systemd for external probe
+
+        - name: Reload systemd before external probe timer management
+          ansible.builtin.meta: flush_handlers
+
+        - name: Manage external probe ownership timer
+          ansible.builtin.systemd_service:
+            name: "{{ platform_external_probe_timer_name }}"
+            enabled: "{{ platform_external_probe_timer_enabled }}"
+            state: "{{ platform_external_probe_timer_state }}"
+          when: not ansible_check_mode

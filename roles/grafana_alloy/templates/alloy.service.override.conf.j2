@@ -4,3 +4,7 @@ Group=root
 ExecStart=
 ExecStart=/usr/bin/alloy run {{ grafana_alloy_config_path }} --storage.path={{ grafana_alloy_storage_dir }} --server.http.listen-addr={{ grafana_alloy_http_listen_address }}:{{ grafana_alloy_http_listen_port }}
 Restart=always
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full

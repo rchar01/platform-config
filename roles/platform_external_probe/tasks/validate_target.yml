@@ -1,0 +1,23 @@
+---
+- name: Assert external HTTPS probe target is strict
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_target.name | default('') is match('^[a-z][a-z0-9_]*$')
+      - platform_external_probe_target.service | default('') is match('^[A-Za-z0-9_.-]+$')
+      - platform_external_probe_target.address | default('') is match('^https://[^/@]+(?:/|$)')
+      - platform_external_probe_target.address_mode | default('') in ['dns', 'vip', 'direct']
+      - platform_external_probe_target.server_name | default('') is match('^[A-Za-z0-9.-]+$')
+      - platform_external_probe_target.host_header | default('') == platform_external_probe_target.server_name | default('')
+      - platform_external_probe_target.ca_file | default('') is match('^/')
+      - platform_external_probe_target.valid_status_codes | default([]) | length > 0
+      - platform_external_probe_target.valid_status_codes | default([]) | map('int') | select('lt', 100) | list | length == 0
+      - platform_external_probe_target.valid_status_codes | default([]) | map('int') | select('gt', 599) | list | length == 0
+      - platform_external_probe_target.required_body_regexes | default([]) | length > 0
+      - platform_external_probe_target.forbidden_body_regexes | default([]) | length > 0
+      - (platform_external_probe_target.client_cert_file | default('') | length > 0) == (platform_external_probe_target.client_key_file | default('') | length > 0)
+      - platform_external_probe_target.client_cert_file | default('') | length == 0 or platform_external_probe_target.client_cert_file is match('^/')
+      - platform_external_probe_target.client_key_file | default('') | length == 0 or platform_external_probe_target.client_key_file is match('^/')
+    fail_msg: >-
+      External target {{ platform_external_probe_target.name | default('undefined') }}
+      must use HTTPS without URL credentials, strict CA/SNI/Host identity, an
+      explicit status policy, and positive and negative body checks.

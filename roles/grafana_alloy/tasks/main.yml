@@ -1,101 +1,408 @@
 ---
-- name: Assert Grafana Alloy inputs are configured
+- name: Validate Grafana Alloy lifecycle selector
   ansible.builtin.assert:
     that:
-      - grafana_alloy_version | length > 0
-      - grafana_alloy_loki_url | length > 0
-      - grafana_alloy_vm_name | length > 0
-      - grafana_alloy_ip | length > 0
-    fail_msg: "Grafana Alloy requires a pinned version, Loki URL, VM name, and IP label."
+      - grafana_alloy_enabled is boolean
+      - grafana_alloy_service_name == 'alloy.service'
+      - grafana_alloy_cache_dir is match('^/[A-Za-z0-9_./-]+$')
+      - grafana_alloy_config_dir is match('^/[A-Za-z0-9_./-]+$')
+      - grafana_alloy_config_path is match('^/[A-Za-z0-9_./-]+$')
+      - grafana_alloy_config_path | dirname == grafana_alloy_config_dir
+      - grafana_alloy_storage_dir is match('^/[A-Za-z0-9_./-]+$')
+      - grafana_alloy_config_validate_command == '/usr/bin/alloy validate %s'
+      - grafana_alloy_http_listen_address is match('^[A-Za-z0-9_.:-]+$')
+      - "'..' not in grafana_alloy_cache_dir.split('/')"
+      - "'..' not in grafana_alloy_config_dir.split('/')"
+      - "'..' not in grafana_alloy_storage_dir.split('/')"
+    fail_msg: "Grafana Alloy lifecycle inputs must identify one safe systemd service."
 
-- name: Ensure Grafana Alloy cache and state directories exist
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "{{ item.mode }}"
-  loop:
-    - path: "{{ grafana_alloy_cache_dir }}"
-      mode: "0755"
-    - path: "{{ grafana_alloy_config_dir }}"
-      mode: "0755"
-    - path: "{{ grafana_alloy_storage_dir }}"
-      mode: "0755"
-    - path: /etc/systemd/system/alloy.service.d
-      mode: "0755"
+- name: Check for previously managed native Grafana Alloy lifecycle
+  ansible.builtin.stat:
+    path: /etc/systemd/system/alloy.service.d/platform.conf
+  register: grafana_alloy_managed_drop_in
+  check_mode: false
+  when: not grafana_alloy_enabled | bool
 
-- name: Check installed Grafana Alloy version
+- name: Read disabled Grafana Alloy systemd unit owner
   ansible.builtin.command:
     argv:
-      - rpm
-      - -q
-      - --qf
-      - "%{VERSION}"
-      - alloy
-  register: grafana_alloy_installed_version
+      - systemctl
+      - show
+      - --property=FragmentPath
+      - --value
+      - "{{ grafana_alloy_service_name }}"
+  register: grafana_alloy_disabled_fragment_path
   changed_when: false
   failed_when: false
-
-- name: Decide whether Grafana Alloy install or upgrade is needed
-  ansible.builtin.set_fact:
-    grafana_alloy_install_needed: >-
-      {{
-        grafana_alloy_installed_version.rc != 0
-        or grafana_alloy_installed_version.stdout != grafana_alloy_version
-      }}
-
-- name: Download Grafana Alloy RPM
-  ansible.builtin.get_url:
-    url: "{{ grafana_alloy_download_url }}"
-    dest: "{{ grafana_alloy_cache_dir }}/{{ grafana_alloy_rpm_name }}"
-    checksum: "{{ grafana_alloy_download_checksum }}"
-    owner: root
-    group: root
-    mode: "0644"
+  check_mode: false
   when:
-    - not ansible_check_mode
-    - grafana_alloy_install_needed | bool
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
 
-- name: Install Grafana Alloy RPM
-  ansible.builtin.dnf:
-    name: "{{ grafana_alloy_cache_dir }}/{{ grafana_alloy_rpm_name }}"
-    state: present
-    disable_gpg_check: true
-  notify: Restart Grafana Alloy
-  when:
-    - not ansible_check_mode
-    - grafana_alloy_install_needed | bool
-
-- name: Write Grafana Alloy configuration
-  ansible.builtin.template:
-    src: config.alloy.j2
-    dest: "{{ grafana_alloy_config_path }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Restart Grafana Alloy
-
-- name: Write Grafana Alloy systemd override
-  ansible.builtin.template:
-    src: alloy.service.override.conf.j2
-    dest: /etc/systemd/system/alloy.service.d/platform.conf
-    owner: root
-    group: root
-    mode: "0644"
-  notify:
-    - Reload systemd
-    - Restart Grafana Alloy
-
-- name: Reload systemd manager configuration
-  ansible.builtin.systemd_service:
-    daemon_reload: true
+- name: Read disabled Grafana Alloy systemd unit load state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property=LoadState
+      - --value
+      - "{{ grafana_alloy_service_name }}"
+  register: grafana_alloy_disabled_load_state
   changed_when: false
-  when: not ansible_check_mode
+  failed_when: false
+  check_mode: false
+  when:
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
 
-- name: Manage Grafana Alloy service
+- name: Read disabled Grafana Alloy systemd unit source
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property=SourcePath
+      - --value
+      - "{{ grafana_alloy_service_name }}"
+  register: grafana_alloy_disabled_source_path
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
+
+- name: Read disabled Grafana Alloy systemd reload state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property=NeedDaemonReload
+      - --value
+      - "{{ grafana_alloy_service_name }}"
+  register: grafana_alloy_disabled_reload_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
+
+- name: Check approved Grafana Alloy Quadlet sources
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: grafana_alloy_disabled_quadlet_source_stats
+  check_mode: false
+  loop:
+    - /etc/containers/systemd/alloy.container
+    - /run/containers/systemd/alloy.container
+    - /usr/share/containers/systemd/alloy.container
+  when:
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
+
+- name: Assert disabled Grafana Alloy process ownership is unambiguous
+  ansible.builtin.assert:
+    that:
+      - grafana_alloy_disabled_fragment_path.rc == 0
+      - grafana_alloy_disabled_load_state.rc == 0
+      - grafana_alloy_disabled_source_path.rc == 0
+      - grafana_alloy_disabled_reload_state.rc == 0
+      - >-
+        (
+          grafana_alloy_disabled_load_state.stdout == 'not-found'
+          and grafana_alloy_disabled_fragment_path.stdout | length == 0
+        )
+        or (
+          grafana_alloy_disabled_load_state.stdout == 'loaded'
+          and grafana_alloy_disabled_fragment_path.stdout == '/usr/lib/systemd/system/alloy.service'
+        )
+        or (
+          grafana_alloy_disabled_load_state.stdout == 'loaded'
+          and grafana_alloy_disabled_fragment_path.stdout is match(
+            '^/run/systemd/generator(?:[.](?:early|late))?/alloy[.]service$'
+          )
+          and grafana_alloy_disabled_source_path.stdout in [
+            '/etc/containers/systemd/alloy.container',
+            '/run/containers/systemd/alloy.container',
+            '/usr/share/containers/systemd/alloy.container'
+          ]
+          and grafana_alloy_disabled_reload_state.stdout == 'no'
+          and grafana_alloy_disabled_quadlet_source_stats.results
+            | selectattr('item', 'equalto', grafana_alloy_disabled_source_path.stdout)
+            | selectattr('stat.exists')
+            | list
+            | length == 1
+        )
+    fail_msg: >-
+      Refusing to release the native Grafana Alloy process-owner drop-in because
+      the current systemd unit owner is unknown, stale, or could not be read.
+  when:
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
+
+- name: Stop previously managed native Grafana Alloy when disabled
   ansible.builtin.systemd_service:
     name: "{{ grafana_alloy_service_name }}"
-    enabled: "{{ grafana_alloy_service_enabled }}"
-    state: "{{ grafana_alloy_service_state }}"
-  when: not ansible_check_mode
+    enabled: false
+    state: stopped
+  when:
+    - not grafana_alloy_enabled | bool
+    - grafana_alloy_managed_drop_in.stat.exists | default(false)
+    - grafana_alloy_disabled_fragment_path.stdout == '/usr/lib/systemd/system/alloy.service'
+    - not ansible_check_mode
+
+- name: Remove Grafana Alloy native process-owner drop-in when disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system/alloy.service.d/platform.conf
+    state: absent
+  notify: Reload systemd
+  when: not grafana_alloy_enabled | bool
+
+- name: Configure staged Grafana Alloy process owner
+  when: grafana_alloy_enabled | bool
+  block:
+    - name: Assert Grafana Alloy inputs are configured safely
+      ansible.builtin.assert:
+        that:
+          - grafana_alloy_version == '1.18.0'
+          - grafana_alloy_arch == 'amd64'
+          - grafana_alloy_rpm_name == 'alloy-1.18.0-1.amd64.rpm'
+          - grafana_alloy_download_checksum == 'sha256:d8800c642f97895a20b5d7b86b51fc8729b452708223efe72c27cd13004c37c0'
+          - grafana_alloy_package_nevra == 'alloy-0:1.18.0-1.x86_64'
+          - grafana_alloy_enabled is boolean
+          - grafana_alloy_service_enabled is boolean
+          - grafana_alloy_service_state in ['started', 'stopped']
+          - (grafana_alloy_service_enabled | bool) == (grafana_alloy_service_state == 'started')
+          - grafana_alloy_vm_name | length > 0
+          - grafana_alloy_ip | length > 0
+          - grafana_alloy_http_listen_port | int >= 1
+          - grafana_alloy_http_listen_port | int <= 65535
+          - grafana_alloy_loki_url | length > 0 or grafana_alloy_prometheus_remote_write_url | length > 0
+          - grafana_alloy_loki_url | length == 0 or grafana_alloy_loki_url is match('^https://[^/@]+(?:/|$)')
+          - grafana_alloy_prometheus_remote_write_url | length == 0 or grafana_alloy_prometheus_remote_write_url is match('^https://[^/@]+(?:/|$)')
+          - grafana_alloy_prometheus_remote_write_ca_file | length == 0 or grafana_alloy_prometheus_remote_write_ca_file is match('^/')
+          - grafana_alloy_prometheus_remote_write_server_name | length == 0 or grafana_alloy_prometheus_remote_write_server_name is match('^[A-Za-z0-9.-]+$')
+          - (grafana_alloy_prometheus_remote_write_ca_file | length > 0) == (grafana_alloy_prometheus_remote_write_server_name | length > 0)
+          - (grafana_alloy_prometheus_remote_write_client_cert_file | length > 0) == (grafana_alloy_prometheus_remote_write_client_key_file | length > 0)
+          - grafana_alloy_prometheus_remote_write_client_cert_file | length == 0 or grafana_alloy_prometheus_remote_write_ca_file | length > 0
+          - grafana_alloy_prometheus_remote_write_client_cert_file | length == 0 or grafana_alloy_prometheus_remote_write_client_cert_file is match('^/')
+          - grafana_alloy_prometheus_remote_write_client_key_file | length == 0 or grafana_alloy_prometheus_remote_write_client_key_file is match('^/')
+          - grafana_alloy_prometheus_remote_write_bearer_token_file | length == 0 or grafana_alloy_prometheus_remote_write_bearer_token_file is match('^/')
+          - "'/etc/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
+          - "'/etc/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
+          - "'/run/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
+          - "'/run/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
+          - "'/usr/share/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
+          - "'/usr/share/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
+        fail_msg: >-
+          Grafana Alloy requires the approved 1.18.0 RPM identity, a coherent
+          disabled or active service state, at least one output, and strict
+          outside-Git file references for authenticated remote write.
+
+    - name: Check for conflicting Grafana Alloy process owners
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: grafana_alloy_conflicting_unit_stats
+      check_mode: false
+      loop: "{{ grafana_alloy_conflicting_unit_paths }}"
+
+    - name: Read current Grafana Alloy systemd unit owner
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=FragmentPath
+          - --value
+          - "{{ grafana_alloy_service_name }}"
+      register: grafana_alloy_systemd_fragment_path
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read current Grafana Alloy systemd unit load state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=LoadState
+          - --value
+          - "{{ grafana_alloy_service_name }}"
+      register: grafana_alloy_systemd_load_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Assert host-native Grafana Alloy has one process owner
+      ansible.builtin.assert:
+        that:
+          - grafana_alloy_conflicting_unit_stats.results | selectattr('stat.exists') | list | length == 0
+          - grafana_alloy_systemd_fragment_path.rc == 0
+          - grafana_alloy_systemd_load_state.rc == 0
+          - >-
+            (
+              grafana_alloy_systemd_load_state.stdout == 'not-found'
+              and grafana_alloy_systemd_fragment_path.stdout | length == 0
+            )
+            or (
+              grafana_alloy_systemd_load_state.stdout == 'loaded'
+              and grafana_alloy_systemd_fragment_path.stdout == '/usr/lib/systemd/system/alloy.service'
+            )
+        fail_msg: >-
+          Host-native Grafana Alloy requires an absent unit or the exact RPM
+          unit and cannot converge with failed, generated, masked, or unknown
+          systemd ownership.
+
+    - name: Read Grafana Alloy target architecture
+      ansible.builtin.command:
+        argv:
+          - uname
+          - -m
+      register: grafana_alloy_target_architecture
+      changed_when: false
+      check_mode: false
+
+    - name: Assert Grafana Alloy target architecture is x86_64
+      ansible.builtin.assert:
+        that:
+          - grafana_alloy_target_architecture.stdout == 'x86_64'
+        fail_msg: "The approved Grafana Alloy RPM supports only x86_64 targets."
+
+    - name: Ensure Grafana Alloy cache and state directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ grafana_alloy_cache_dir }}"
+          mode: "0755"
+        - path: "{{ grafana_alloy_config_dir }}"
+          mode: "0755"
+        - path: "{{ grafana_alloy_storage_dir }}"
+          mode: "0755"
+        - path: /etc/systemd/system/alloy.service.d
+          mode: "0755"
+
+    - name: Check installed Grafana Alloy package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - alloy
+      register: grafana_alloy_installed_package
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Decide whether Grafana Alloy install or upgrade is needed
+      ansible.builtin.set_fact:
+        grafana_alloy_install_needed: >-
+          {{
+            grafana_alloy_installed_package.rc != 0
+            or grafana_alloy_installed_package.stdout != grafana_alloy_package_nevra
+          }}
+
+    - name: Download exact Grafana Alloy RPM
+      ansible.builtin.get_url:
+        url: "{{ grafana_alloy_download_url }}"
+        dest: "{{ grafana_alloy_cache_dir }}/{{ grafana_alloy_rpm_name }}"
+        checksum: "{{ grafana_alloy_download_checksum }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - not ansible_check_mode
+        - grafana_alloy_install_needed | bool
+
+    - name: Install exact Grafana Alloy RPM
+      ansible.builtin.dnf:
+        name: "{{ grafana_alloy_cache_dir }}/{{ grafana_alloy_rpm_name }}"
+        state: present
+        allow_downgrade: true
+        disable_gpg_check: true
+      notify: Restart Grafana Alloy
+      when:
+        - not ansible_check_mode
+        - grafana_alloy_install_needed | bool
+
+    - name: Verify installed Grafana Alloy package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - alloy
+      register: grafana_alloy_verified_package
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Assert installed Grafana Alloy package identity
+      ansible.builtin.assert:
+        that:
+          - grafana_alloy_verified_package.stdout == grafana_alloy_package_nevra
+        fail_msg: >-
+          Installed Grafana Alloy package does not match the approved exact RPM
+          identity {{ grafana_alloy_package_nevra }}.
+      when: not ansible_check_mode
+
+    - name: Reconcile Grafana Alloy paths after package installation
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ grafana_alloy_config_dir }}"
+          mode: "0755"
+        - path: "{{ grafana_alloy_storage_dir }}"
+          mode: "0755"
+        - path: /etc/systemd/system/alloy.service.d
+          mode: "0755"
+
+    - name: Track Grafana Alloy validator readiness
+      ansible.builtin.set_fact:
+        grafana_alloy_validator_ready: >-
+          {{
+            grafana_alloy_installed_package.stdout == grafana_alloy_package_nevra
+            or not ansible_check_mode
+          }}
+
+    - name: Write validated Grafana Alloy configuration
+      ansible.builtin.template:
+        src: config.alloy.j2
+        dest: "{{ grafana_alloy_config_path }}"
+        owner: root
+        group: root
+        mode: "0640"
+        validate: >-
+          {{ grafana_alloy_config_validate_command if grafana_alloy_validator_ready | bool else omit }}
+      notify: Restart Grafana Alloy
+
+    - name: Write Grafana Alloy systemd override
+      ansible.builtin.template:
+        src: alloy.service.override.conf.j2
+        dest: /etc/systemd/system/alloy.service.d/platform.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart Grafana Alloy
+
+    - name: Reload systemd manager configuration
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Manage Grafana Alloy service
+      ansible.builtin.systemd_service:
+        name: "{{ grafana_alloy_service_name }}"
+        enabled: "{{ grafana_alloy_service_enabled }}"
+        state: "{{ grafana_alloy_service_state }}"
+      when: not ansible_check_mode

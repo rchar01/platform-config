@@ -1,0 +1,14 @@
+---
+- name: Reload systemd for external probe
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: not ansible_check_mode
+
+- name: Run external probe ownership collector
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_service_name }}"
+    state: started
+  when:
+    - platform_external_probe_timer_enabled | bool
+    - platform_external_probe_timer_state == 'started'
+    - not ansible_check_mode

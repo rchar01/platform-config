@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule detect-only platform VIP ownership metrics
+
+[Timer]
+OnBootSec={{ platform_external_probe_timer_interval }}
+OnUnitActiveSec={{ platform_external_probe_timer_interval }}
+AccuracySec=1s
+Unit={{ platform_external_probe_service_name }}
+
+[Install]
+WantedBy=timers.target
