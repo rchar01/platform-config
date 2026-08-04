@@ -7,7 +7,8 @@ enabled.
 
 The role enforces these initial IPv4 VRRP invariants:
 
-- every instance starts as `BACKUP` with `nopreempt`;
+- every instance starts as `BACKUP` and delays automatic priority-based failback
+  for five minutes by default;
 - priorities are limited to `1..254` so address-owner preemption is impossible;
 - callers provide one canonical cluster mapping keyed by inventory hostname;
   the role derives the local router ID and validates the assigned source address,
@@ -32,6 +33,7 @@ Example inputs:
 ```yaml
 keepalived_vip_enabled: true
 keepalived_vip_package_nevra: keepalived-0:2.2.8-9.el10.x86_64
+keepalived_vip_preempt_delay: 300
 keepalived_vip_cluster_members:
   - name: openbao-01
     router_id: bao-1
@@ -69,7 +71,13 @@ keepalived_vip_instances:
 Leave `keepalived_vip_service_enabled: false` and
 `keepalived_vip_service_state: stopped` until the owning service plan has passed
 direct-backend, HAProxy, network, firewall, and observer gates. The role does not
-perform failback, failure injection, or VIP activation testing.
+perform runtime failback, failure injection, or VIP activation testing.
+
+The default 300-second `preempt_delay` requires a recovered preferred node to
+remain eligible while observing a lower-priority owner before it can reclaim the
+VIP. This suppresses rapid failback when the preferred node repeatedly enters
+`FAULT`, but no finite delay prevents switching if it stays healthy longer than
+the delay and then fails again.
 
 Callers must run the repository's `firewalld` role first so its package and
 Python dependencies exist before this role stages peer-scoped VRRP rules.

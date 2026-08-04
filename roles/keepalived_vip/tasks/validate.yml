@@ -26,6 +26,9 @@
       - keepalived_vip_instances | map(attribute='virtual_router_id') | map('int') | unique | length == keepalived_vip_instances | length
       - keepalived_vip_instances | map(attribute='vip') | unique | length == keepalived_vip_instances | length
       - keepalived_vip_advert_interval | int > 0
+      - keepalived_vip_preempt_delay | type_debug == 'int'
+      - keepalived_vip_preempt_delay >= 60
+      - keepalived_vip_preempt_delay <= 1000
       - keepalived_vip_script_interval | int > 0
       - keepalived_vip_script_timeout | int > 0
       - keepalived_vip_script_timeout | int <= keepalived_vip_script_interval | int
@@ -34,7 +37,7 @@
     fail_msg: >-
       Keepalived VIP requires an exact package NEVRA, one safe router ID, at
       least one required HAProxy listener, a unique cluster router-ID contract,
-      and complete unique VRRP instances.
+      a 60-1000 second preemption delay, and complete unique VRRP instances.
 
 - name: Validate each shared Keepalived VIP cluster member
   ansible.builtin.include_tasks: validate_cluster_member.yml

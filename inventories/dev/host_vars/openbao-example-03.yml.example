@@ -5,6 +5,16 @@ openbao_node_address: 192.0.2.74
 openbao_node_dns: bao-3.internal.invalid
 openbao_tls_cert_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/openbao-example-03/fullchain.crt"
 openbao_tls_key_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/services/openbao-example-03/tls.key"
+keepalived_vip_instances:
+  - name: OPENBAO
+    interface: eth0
+    virtual_router_id: 51
+    priority: 130
+    source_address: 192.0.2.74
+    peers:
+      - 192.0.2.63
+      - 192.0.2.72
+    vip: 192.0.2.200/24
 
 storage_volume_layouts:
   - name: openbao_data

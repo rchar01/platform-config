@@ -3,6 +3,16 @@ platform_host_description: Example monitoring HA node 1
 monitoring_node_name: monitoring-1
 monitoring_node_address: 192.0.2.64
 monitoring_node_dns: monitoring-1.internal.invalid
+keepalived_vip_instances:
+  - name: MONITORING
+    interface: eth0
+    virtual_router_id: 52
+    priority: 150
+    source_address: 192.0.2.64
+    peers:
+      - 192.0.2.75
+      - 192.0.2.76
+    vip: 192.0.2.201/24
 
 storage_volume_layouts:
   - name: monitoring_data

@@ -54,6 +54,12 @@ groups only after the owning implementation gate passes:
 3. Add storage membership only after stable-device review, check mode, and explicit initialization approval.
 4. Add `monitoring_targets` only after authenticated ingress and the Phase 7 test collector pass.
 
+The OpenBao and monitoring examples include disabled Keepalived cluster maps and
+matching per-host instances. Their fictional `150`, `140`, and `130` priorities
+select the preferred order, while a 300-second preemption delay prevents immediate
+automatic failback. Real interfaces, peers, VRIDs, priorities, and VIPs belong in
+private inventory and must remain disabled until their activation gates pass.
+
 The legacy OpenBao inventory group was `vault`. The replacement API is
 `openbao`; do not add a compatibility alias without a demonstrated consumer.
 

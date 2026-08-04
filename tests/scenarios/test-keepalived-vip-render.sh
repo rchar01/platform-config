@@ -50,8 +50,10 @@ assert_contains "$DEFAULTS" '^keepalived_vip_service_state: stopped$' \
 
 assert_contains "$CONFIG" '^[[:space:]]+state BACKUP$' \
   'Keepalived fixture does not force the initial BACKUP state'
-assert_contains "$CONFIG" '^[[:space:]]+nopreempt$' \
-  'Keepalived fixture does not disable automatic failback'
+assert_contains "$CONFIG" '^[[:space:]]+preempt_delay 300$' \
+  'Keepalived fixture does not delay automatic failback for five minutes'
+assert_not_contains "$CONFIG" '^[[:space:]]+nopreempt$' \
+  'Keepalived fixture still disables automatic failback'
 assert_contains "$CONFIG" '^[[:space:]]+unicast_src_ip 192[.]0[.]2[.]10$' \
   'Keepalived fixture does not render the unicast source'
 assert_contains "$CONFIG" '^[[:space:]]+weight 0$' \
@@ -82,7 +84,7 @@ if ansible-playbook "$FIXTURE" \
   --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
   --extra-vars '{"keepalived_vip_test_priority":255,"keepalived_vip_test_canonical_priority":255}' \
   >/dev/null 2>&1; then
-  fail 'Keepalived fixture accepted priority 255 with nopreempt'
+  fail 'Keepalived fixture accepted address-owner priority 255'
 fi
 
 ansible-playbook "$FIXTURE" \
@@ -92,7 +94,38 @@ ansible-playbook "$FIXTURE" \
 ansible-playbook "$FIXTURE" \
   --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
   --extra-vars '{"keepalived_vip_test_priority":254,"keepalived_vip_test_canonical_priority":254}' \
-  >/dev/null || fail 'Keepalived fixture rejected maximum nopreempt priority 254'
+  >/dev/null || fail 'Keepalived fixture rejected maximum priority 254'
+
+if ansible-playbook "$FIXTURE" \
+  --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
+  --extra-vars '{"keepalived_vip_preempt_delay":59}' \
+  >/dev/null 2>&1; then
+  fail 'Keepalived fixture accepted an unsafe short preemption delay'
+fi
+
+if ansible-playbook "$FIXTURE" \
+  --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
+  --extra-vars '{"keepalived_vip_preempt_delay":1001}' \
+  >/dev/null 2>&1; then
+  fail 'Keepalived fixture accepted a preemption delay above the native limit'
+fi
+
+if ansible-playbook "$FIXTURE" \
+  --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
+  --extra-vars '{"keepalived_vip_preempt_delay":"300"}' \
+  >/dev/null 2>&1; then
+  fail 'Keepalived fixture coerced a non-integer preemption delay'
+fi
+
+ansible-playbook "$FIXTURE" \
+  --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
+  --extra-vars '{"keepalived_vip_preempt_delay":60}' \
+  >/dev/null || fail 'Keepalived fixture rejected minimum preemption delay 60'
+
+ansible-playbook "$FIXTURE" \
+  --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR}" \
+  --extra-vars '{"keepalived_vip_preempt_delay":1000}' \
+  >/dev/null || fail 'Keepalived fixture rejected maximum preemption delay 1000'
 
 if ansible-playbook "$FIXTURE" \
   --extra-vars "keepalived_vip_test_output_dir=${OUTPUT_DIR} keepalived_vip_test_package_nevra=" \

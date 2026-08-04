@@ -30,6 +30,7 @@ keepalived_vip_track_service: haproxy.service
 keepalived_vip_track_ports: []
 
 keepalived_vip_advert_interval: 1
+keepalived_vip_preempt_delay: 300
 
 keepalived_vip_firewalld_manage: true
 keepalived_vip_state_dir: /var/lib/platform-config

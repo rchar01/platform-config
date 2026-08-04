@@ -21,7 +21,7 @@ vrrp_instance {{ instance.name }} {
   virtual_router_id {{ instance.virtual_router_id }}
   priority {{ instance.priority }}
   advert_int {{ keepalived_vip_advert_interval }}
-  nopreempt
+  preempt_delay {{ keepalived_vip_preempt_delay }}
 
   unicast_src_ip {{ instance.source_address }}
   check_unicast_src

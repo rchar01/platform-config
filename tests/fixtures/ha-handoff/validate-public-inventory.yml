@@ -54,6 +54,10 @@
           - not openbao_group_example.openbao_service_enabled | bool
           - openbao_group_example.openbao_service_state == 'stopped'
           - not openbao_group_example.openbao_keepalived_enabled | bool
+          - not openbao_group_example.keepalived_vip_enabled | bool
+          - not openbao_group_example.keepalived_vip_service_enabled | bool
+          - openbao_group_example.keepalived_vip_service_state == 'stopped'
+          - openbao_group_example.keepalived_vip_preempt_delay == 300
           - openbao_group_example.openbao_cluster_members | length == 3
           - openbao_group_example.openbao_cluster_members | map(attribute='name') | unique | length == 3
           - openbao_group_example.openbao_cluster_members | map(attribute='node_id') | unique | length == 3
@@ -72,6 +76,10 @@
                 | list
               )
             | length == 0
+          - openbao_group_example.keepalived_vip_cluster_members | length == 3
+          - openbao_group_example.keepalived_vip_cluster_members | map(attribute='router_id') | unique | length == 3
+          - openbao_group_example.keepalived_vip_cluster_members | map(attribute='instances.OPENBAO.priority') | unique | length == 3
+          - openbao_group_example.keepalived_vip_cluster_members | map(attribute='instances.OPENBAO.source_address') | unique | length == 3
 
     - name: Require bounded OpenBao storage examples
       ansible.builtin.assert:
@@ -82,6 +90,30 @@
           - not item.ansible_facts.openbao_host_example.storage_volume_layouts[0].initialize | bool
           - item.ansible_facts.openbao_host_example.storage_volumes | map(attribute='size_gib') | map('int') | sum == 14
           - item.ansible_facts.openbao_host_example.storage_volumes | map(attribute='mountpoint') | unique | length == 4
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances | length == 1
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].name == 'OPENBAO'
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].interface == 'eth0'
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].virtual_router_id == 51
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].source_address == item.ansible_facts.openbao_host_example.openbao_node_address
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].peers | length == 2
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].source_address not in item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].peers
+          - item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].vip == '192.0.2.200/24'
+          - >-
+            item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].priority
+            == (
+              openbao_group_example.keepalived_vip_cluster_members
+              | selectattr('name', 'equalto', item.item)
+              | map(attribute='instances.OPENBAO.priority')
+              | first
+            )
+          - >-
+            item.ansible_facts.openbao_host_example.keepalived_vip_instances[0].source_address
+            == (
+              openbao_group_example.keepalived_vip_cluster_members
+              | selectattr('name', 'equalto', item.item)
+              | map(attribute='instances.OPENBAO.source_address')
+              | first
+            )
       loop: "{{ openbao_host_examples.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -96,6 +128,14 @@
           - monitoring_group_example.monitoring_loki_dns is match('^[a-z0-9.-]+[.]invalid$')
           - monitoring_group_example.monitoring_mimir_dns is match('^[a-z0-9.-]+[.]invalid$')
           - not monitoring_group_example.monitoring_keepalived_enabled | bool
+          - not monitoring_group_example.keepalived_vip_enabled | bool
+          - not monitoring_group_example.keepalived_vip_service_enabled | bool
+          - monitoring_group_example.keepalived_vip_service_state == 'stopped'
+          - monitoring_group_example.keepalived_vip_preempt_delay == 300
+          - monitoring_group_example.keepalived_vip_cluster_members | length == 3
+          - monitoring_group_example.keepalived_vip_cluster_members | map(attribute='router_id') | unique | length == 3
+          - monitoring_group_example.keepalived_vip_cluster_members | map(attribute='instances.MONITORING.priority') | unique | length == 3
+          - monitoring_group_example.keepalived_vip_cluster_members | map(attribute='instances.MONITORING.source_address') | unique | length == 3
 
     - name: Require bounded monitoring storage examples
       ansible.builtin.assert:
@@ -106,6 +146,30 @@
           - not item.ansible_facts.monitoring_host_example.storage_volume_layouts[0].initialize | bool
           - item.ansible_facts.monitoring_host_example.storage_volumes | map(attribute='size_gib') | map('int') | sum == 59
           - item.ansible_facts.monitoring_host_example.storage_volumes | map(attribute='mountpoint') | unique | length == 9
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances | length == 1
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].name == 'MONITORING'
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].interface == 'eth0'
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].virtual_router_id == 52
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].source_address == item.ansible_facts.monitoring_host_example.monitoring_node_address
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].peers | length == 2
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].source_address not in item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].peers
+          - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].vip == '192.0.2.201/24'
+          - >-
+            item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].priority
+            == (
+              monitoring_group_example.keepalived_vip_cluster_members
+              | selectattr('name', 'equalto', item.item)
+              | map(attribute='instances.MONITORING.priority')
+              | first
+            )
+          - >-
+            item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].source_address
+            == (
+              monitoring_group_example.keepalived_vip_cluster_members
+              | selectattr('name', 'equalto', item.item)
+              | map(attribute='instances.MONITORING.source_address')
+              | first
+            )
       loop: "{{ monitoring_host_examples.results }}"
       loop_control:
         label: "{{ item.item }}"

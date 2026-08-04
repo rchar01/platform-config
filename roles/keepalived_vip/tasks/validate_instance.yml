@@ -21,7 +21,7 @@
       - keepalived_vip_instance.peers | length + 1 == keepalived_vip_cluster_members | length
     fail_msg: >-
       Keepalived instance {{ keepalived_vip_instance.name | default('undefined') }}
-      requires a safe name/interface, VRID 1-255, nopreempt-compatible priority
+      requires a safe name/interface, VRID 1-255, preemption-compatible priority
       1-254, an IPv4 source, a CIDR VIP, and one unicast peer per other cluster
       member.
 

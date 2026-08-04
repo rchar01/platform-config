@@ -9,6 +9,34 @@ monitoring_s3_dns: s3.monitoring.example.invalid
 monitoring_alertmanager_dns: alertmanager.monitoring.example.invalid
 monitoring_postgres_dns: postgres.monitoring.example.invalid
 monitoring_keepalived_enabled: false
+keepalived_vip_enabled: false
+keepalived_vip_package_nevra: ""
+keepalived_vip_service_enabled: false
+keepalived_vip_service_state: stopped
+keepalived_vip_preempt_delay: 300
+keepalived_vip_track_service: haproxy.service
+keepalived_vip_track_ports:
+  - 443
+  - 5432
+keepalived_vip_cluster_members:
+  - name: monitoring-example-01
+    router_id: monitoring-vrrp-1
+    instances:
+      MONITORING:
+        source_address: 192.0.2.64
+        priority: 150
+  - name: monitoring-example-02
+    router_id: monitoring-vrrp-2
+    instances:
+      MONITORING:
+        source_address: 192.0.2.75
+        priority: 140
+  - name: monitoring-example-03
+    router_id: monitoring-vrrp-3
+    instances:
+      MONITORING:
+        source_address: 192.0.2.76
+        priority: 130
 monitoring_haproxy_contract_ready: false
 monitoring_haproxy_enabled: false
 monitoring_haproxy_service_enabled: false

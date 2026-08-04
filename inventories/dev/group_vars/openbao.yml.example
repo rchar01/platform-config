@@ -12,6 +12,33 @@ openbao_client_port: 8200
 openbao_backend_port: 18200
 openbao_cluster_port: 8201
 openbao_keepalived_enabled: false
+keepalived_vip_enabled: false
+keepalived_vip_package_nevra: ""
+keepalived_vip_service_enabled: false
+keepalived_vip_service_state: stopped
+keepalived_vip_preempt_delay: 300
+keepalived_vip_track_service: haproxy.service
+keepalived_vip_track_ports:
+  - 8200
+keepalived_vip_cluster_members:
+  - name: openbao-example-01
+    router_id: bao-vrrp-1
+    instances:
+      OPENBAO:
+        source_address: 192.0.2.63
+        priority: 150
+  - name: openbao-example-02
+    router_id: bao-vrrp-2
+    instances:
+      OPENBAO:
+        source_address: 192.0.2.72
+        priority: 140
+  - name: openbao-example-03
+    router_id: bao-vrrp-3
+    instances:
+      OPENBAO:
+        source_address: 192.0.2.74
+        priority: 130
 openbao_tls_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
 openbao_backend_allowed_sources: []
 openbao_cluster_members:
