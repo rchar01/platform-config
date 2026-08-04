@@ -60,6 +60,13 @@ select the preferred order, while a 300-second preemption delay prevents immedia
 automatic failback. Real interfaces, peers, VRIDs, priorities, and VIPs belong in
 private inventory and must remain disabled until their activation gates pass.
 
+The focused OpenBao staging playbook owns Podman installation directly, so
+OpenBao nodes do not require `container_hosts` membership. Storage remains a
+separate destructive boundary: add real nodes to `storage_volume_hosts` only
+after stable-device review and explicit initialization approval. Set
+`openbao_orchestration_ready` only after the resulting mounts and every remaining
+role input are complete.
+
 The legacy OpenBao inventory group was `vault`. The replacement API is
 `openbao`; do not add a compatibility alias without a demonstrated consumer.
 

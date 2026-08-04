@@ -1,5 +1,5 @@
 ---
-- name: Block missing OpenBao HA implementation in managed environments
+- name: Require the canonical OpenBao staging inventory
   hosts: localhost
   gather_facts: false
   vars:
@@ -10,36 +10,145 @@
         else 'dev'
       }}
   tasks:
-    - name: Stop when the OpenBao HA group is not active
-      ansible.builtin.fail:
-        msg: >-
-          The OpenBao HA implementation is unavailable. An absent service group
-          is not a successful OpenBao convergence result.
-      when:
-        - openbao_inventory_environment != 'homelab'
-        - groups.get('openbao', []) | length == 0
+    - name: Require exactly three OpenBao members in managed environments
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_inventory_environment == 'homelab'
+            or groups.get('openbao', []) | length == 3
+        fail_msg: >-
+          OpenBao staging requires exactly three inventory members in managed
+          environments. An absent or partial group is not successful convergence.
 
-- name: Block obsolete standalone OpenBao convergence
+- name: Validate and quiesce the disabled OpenBao staging contract
   hosts: openbao
-  gather_facts: false
+  gather_facts: true
+  any_errors_fatal: true
   tasks:
-    - name: Stop until the OpenBao HA implementation is available
-      ansible.builtin.fail:
-        msg: >-
-          The OpenBao HA implementation is unavailable. The standalone role
-          cannot create the approved three-node cluster. Complete the HA roles,
-          immutable artifact, PKI, and storage gates before applying this
-          playbook.
+    - name: Require explicit full-cluster OpenBao staging
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao staging requires all three OpenBao inventory hosts without a
+          partial limit.
+      run_once: true # noqa run-once[task]
 
-- name: Reject non-OpenBao limited convergence in managed environments
+    - name: Require enabled ownership with every service stopped
+      ansible.builtin.assert:
+        that:
+          - (openbao_orchestration_ready | default(false)) is boolean
+          - openbao_orchestration_ready | default(false)
+          - (openbao_enabled | default(false)) is boolean
+          - openbao_enabled | default(false)
+          - (openbao_haproxy_enabled | default(false)) is boolean
+          - openbao_haproxy_enabled | default(false)
+          - (keepalived_vip_enabled | default(false)) is boolean
+          - keepalived_vip_enabled | default(false)
+          - (openbao_service_enabled | default(false)) is boolean
+          - not (openbao_service_enabled | default(false))
+          - openbao_service_state | default('stopped') == 'stopped'
+          - (openbao_haproxy_service_enabled | default(false)) is boolean
+          - not (openbao_haproxy_service_enabled | default(false))
+          - openbao_haproxy_service_state | default('stopped') == 'stopped'
+          - (keepalived_vip_service_enabled | default(false)) is boolean
+          - not (keepalived_vip_service_enabled | default(false))
+          - keepalived_vip_service_state | default('stopped') == 'stopped'
+        fail_msg: >-
+          OpenBao staging requires an explicit ready contract, enabled role
+          ownership, and stopped/disabled OpenBao, HAProxy, and Keepalived
+          services on every node.
+
+    - name: Validate OpenBao configuration inputs before staging
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: validate.yml
+
+    - name: Validate OpenBao HAProxy inputs before staging
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: validate.yml
+
+    - name: Validate Keepalived inputs before staging
+      ansible.builtin.include_role:
+        name: keepalived_vip
+        tasks_from: validate.yml
+
+    - name: Inspect existing OpenBao HA services
+      ansible.builtin.service_facts:
+
+    - name: Record existing OpenBao service state for staged unmasking
+      ansible.builtin.set_fact:
+        openbao_staging_service_was_present: >-
+          {{
+            (openbao_service_name | default('openbao.service'))
+            in (ansible_facts.services | default({}))
+          }}
+
+    - name: Disable and stop existing OpenBao HA edge services
+      become: true
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop:
+        - "{{ keepalived_vip_service_name | default('keepalived.service') }}"
+        - "{{ openbao_haproxy_service_name | default('haproxy.service') }}"
+      when: item in (ansible_facts.services | default({}))
+
+    - name: Mask and stop an existing OpenBao service before staging
+      become: true
+      ansible.builtin.systemd_service:
+        name: "{{ openbao_service_name | default('openbao.service') }}"
+        masked: true
+        state: stopped
+      when: openbao_staging_service_was_present | bool
+
+    - name: Remove persistent and generated OpenBao service enablement
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/etc/systemd/system/multi-user.target.wants/{{ openbao_service_name | default('openbao.service') }}"
+        - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name | default('openbao.service') }}"
+
+- name: Stage the disabled OpenBao HA foundation
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - firewalld
+    - podman_host
+    - openbao
+    - openbao_haproxy
+    - keepalived_vip
+  post_tasks:
+    - name: Unmask the successfully staged disabled OpenBao service
+      ansible.builtin.systemd_service:
+        name: "{{ openbao_service_name | default('openbao.service') }}"
+        masked: false
+        state: stopped
+        daemon_reload: true
+      when: openbao_staging_service_was_present | bool
+
+- name: Reject limits that exclude OpenBao in managed environments
   hosts: all
   gather_facts: false
   tasks:
-    - name: Stop before a limited run can report false success
-      ansible.builtin.fail:
-        msg: >-
-          The OpenBao HA implementation is unavailable. A limit that excludes
-          the replacement service group is not a successful convergence result.
-      when:
-        - platform_environment | default('dev') != 'homelab'
-        - inventory_hostname not in groups.get('openbao', [])
+    - name: Require a selected OpenBao host before reporting convergence
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('openbao', []))
+            | length > 0
+        fail_msg: >-
+          OpenBao staging did not select the replacement service group. A limit
+          that excludes OpenBao is not successful convergence.
+      when: platform_environment | default('dev') != 'homelab'
+      run_once: true # noqa run-once[task]

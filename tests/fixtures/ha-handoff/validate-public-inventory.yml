@@ -50,10 +50,16 @@
           - openbao_host_examples.results | map(attribute='ansible_facts.openbao_host_example.openbao_node_dns') | unique | length == 3
           - openbao_group_example.openbao_service_dns is match('^[a-z0-9.-]+[.]invalid$')
           - openbao_group_example.openbao_image_digest is match('^sha256:[a-f0-9]{64}$')
+          - not openbao_group_example.openbao_orchestration_ready | bool
           - not openbao_group_example.openbao_enabled | bool
           - not openbao_group_example.openbao_service_enabled | bool
           - openbao_group_example.openbao_service_state == 'stopped'
-          - not openbao_group_example.openbao_keepalived_enabled | bool
+          - not openbao_group_example.openbao_haproxy_enabled | bool
+          - not openbao_group_example.openbao_haproxy_service_enabled | bool
+          - openbao_group_example.openbao_haproxy_service_state == 'stopped'
+          - openbao_group_example.openbao_haproxy_package_nevra | length == 0
+          - openbao_group_example.openbao_haproxy_client_allowed_sources | length == 0
+          - openbao_group_example.openbao_haproxy_stats_allowed_sources == ['127.0.0.1/32']
           - not openbao_group_example.keepalived_vip_enabled | bool
           - not openbao_group_example.keepalived_vip_service_enabled | bool
           - openbao_group_example.keepalived_vip_service_state == 'stopped'

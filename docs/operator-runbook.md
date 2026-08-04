@@ -602,10 +602,27 @@ make apply ENV=dev PLAYBOOK=playbooks/registry.yml
 make smoke-registry ENV=dev
 ```
 
-The OpenBao and monitoring phase playbooks intentionally fail at this point.
-Reconcile the 17-host inventory and strict SSH trust first, run generic baseline
-playbooks only, and initialize replacement storage solely through approved
-canaries. Do not use `site.yml` while either replacement remains blocked.
+The monitoring phase playbook intentionally fails at this point. The OpenBao
+playbook can stage its complete three-node foundation, but only after inventory,
+strict SSH trust, generic baseline, approved storage initialization, PKI, package,
+network, and source-policy inputs pass their gates. Set
+`openbao_orchestration_ready: true` only with all three component roles enabled
+and all OpenBao, HAProxy, and Keepalived services disabled and stopped. Then use:
+
+```bash
+make check ENV=dev PLAYBOOK=playbooks/openbao.yml
+make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
+# Run a second apply to confirm idempotency.
+make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
+```
+
+This stages configuration and permanent offline firewall policy; it does not
+initialize or unseal OpenBao, start a service, run observers, or assign the VIP.
+On apply, all-host component input validation completes before the playbook
+disables and stops any existing Keepalived, HAProxy, and OpenBao services, then
+temporarily masks OpenBao and starts role convergence. A failed staging run
+leaves OpenBao masked; successful convergence unblocks the newly disabled unit.
+Do not use `site.yml` while monitoring remains blocked.
 
 Before configuring dev GitLab runners, confirm homelab GitLab is reachable from the runner hosts:
 

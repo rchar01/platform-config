@@ -1,0 +1,15 @@
+---
+- name: Require complete mocked OpenBao role order
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_test_role_order
+        == ['firewalld', 'podman_host', 'openbao', 'openbao_haproxy']
+
+- name: Record complete mocked OpenBao orchestration
+  ansible.builtin.copy:
+    content: complete
+    dest: "{{ openbao_test_marker_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]

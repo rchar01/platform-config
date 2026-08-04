@@ -1,6 +1,8 @@
 ---
-# The service role is staged and disabled; the playbook remains blocked until
-# PKI, network, storage, HAProxy, initialization, and observer gates pass.
+# Keep the staging gate false until storage, PKI, network, package, and source
+# policy inputs satisfy every role assertion. Staging owns configuration while
+# all three services remain disabled and stopped.
+openbao_orchestration_ready: false
 openbao_enabled: false
 openbao_service_enabled: false
 openbao_service_state: stopped
@@ -11,7 +13,13 @@ openbao_service_vip: 192.0.2.200
 openbao_client_port: 8200
 openbao_backend_port: 18200
 openbao_cluster_port: 8201
-openbao_keepalived_enabled: false
+openbao_haproxy_enabled: false
+openbao_haproxy_package_nevra: ""
+openbao_haproxy_service_enabled: false
+openbao_haproxy_service_state: stopped
+openbao_haproxy_client_allowed_sources: []
+openbao_haproxy_stats_allowed_sources:
+  - 127.0.0.1/32
 keepalived_vip_enabled: false
 keepalived_vip_package_nevra: ""
 keepalived_vip_service_enabled: false

@@ -1,0 +1,6 @@
+---
+- name: Validate mocked OpenBao HAProxy staging inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_test_invalid_component | default('') != 'haproxy'
+    fail_msg: Mocked OpenBao HAProxy inputs are invalid.

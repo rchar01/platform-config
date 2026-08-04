@@ -1,0 +1,6 @@
+---
+- name: Validate mocked Keepalived staging inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_test_invalid_component | default('') != 'keepalived'
+    fail_msg: Mocked Keepalived inputs are invalid.

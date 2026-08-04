@@ -18,7 +18,7 @@ fail() {
 
 run_playbook() {
   podman exec \
-    --env ANSIBLE_COLLECTIONS_PATH=/workspace/.ansible/collections \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections:/workspace/.ansible/collections \
     --env ANSIBLE_ROLES_PATH=/workspace/roles \
     --workdir /workspace \
     "$CONTAINER" \
@@ -68,6 +68,9 @@ podman exec "$CONTAINER" bash -c \
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
+podman exec "$CONTAINER" ansible-galaxy collection install \
+  -r /workspace/requirements.yml \
+  -p /root/.ansible/collections >/dev/null
 podman exec "$CONTAINER" mkdir -p \
   /tmp/openbao-test \
   /var/lib/openbao \
@@ -124,8 +127,10 @@ fi
 
 idempotent_output="$(run_playbook \
   --extra-vars '{"openbao_test_expect_restart_required":false}')"
-grep -qE 'changed=0.*failed=0' <<< "$idempotent_output" \
-  || fail 'Second staged OpenBao role convergence was not idempotent'
+if ! grep -qE 'changed=0.*failed=0' <<< "$idempotent_output"; then
+  printf '%s\n' "$idempotent_output" >&2
+  fail 'Second staged OpenBao role convergence was not idempotent'
+fi
 
 initial_rules="$(podman exec "$CONTAINER" firewall-offline-cmd --zone=public --list-rich-rules)"
 grep -q '198[.]51[.]100[.]1/32.*port="18200"' <<< "$initial_rules" \
@@ -191,10 +196,34 @@ active_idempotent_output="$(run_playbook \
 grep -qE 'changed=0.*failed=0' <<< "$active_idempotent_output" \
   || fail 'Second active OpenBao role convergence was not idempotent'
 
+podman exec "$CONTAINER" systemctl mask --now openbao.service >/dev/null
+if run_playbook \
+  --extra-vars openbao_log_level=debug \
+  --extra-vars 'openbao_config_validate_command=/bin/false %s' \
+  >/dev/null 2>&1; then
+  fail 'OpenBao accepted a staged candidate rejected before Quadlet replacement'
+fi
+podman exec "$CONTAINER" systemctl daemon-reload
+if podman exec "$CONTAINER" systemctl is-active --quiet openbao.service; then
+  fail 'OpenBao restarted after a failed masked staging run'
+fi
+if [[ "$(podman exec "$CONTAINER" systemctl is-enabled openbao.service 2>/dev/null || true)" != masked ]]; then
+  fail 'OpenBao lost its fail-closed mask after a failed staging run'
+fi
+podman exec "$CONTAINER" systemctl unmask openbao.service >/dev/null
+
+podman exec "$CONTAINER" mkdir -p /etc/systemd/system/multi-user.target.wants
+podman exec "$CONTAINER" ln -sfn \
+  /run/systemd/generator/openbao.service \
+  /etc/systemd/system/multi-user.target.wants/openbao.service
 run_playbook \
   --extra-vars '{"openbao_test_expect_restart_required":false}' >/dev/null
 if podman exec "$CONTAINER" systemctl is-active --quiet openbao.service; then
   fail 'OpenBao service remained active after returning to staged state'
+fi
+if podman exec "$CONTAINER" test -e \
+  /etc/systemd/system/multi-user.target.wants/openbao.service; then
+  fail 'OpenBao service remained persistently enabled after returning to staged state'
 fi
 if podman exec "$CONTAINER" test -e \
   /run/systemd/generator/multi-user.target.wants/openbao.service; then

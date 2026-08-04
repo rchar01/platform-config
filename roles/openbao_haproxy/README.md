@@ -1,9 +1,10 @@
 # openbao_haproxy
 
 Stages the dedicated host-native HAProxy policy for the three-node OpenBao HA
-design. The role and service are disabled and stopped by default. No active
-playbook invokes it while private inventory, target compatibility, and live
-activation gates remain open.
+design. The role and service are disabled and stopped by default. The guarded
+`playbooks/openbao.yml` staging path invokes the role only when the complete
+three-node ownership contract is explicitly ready and every service remains
+disabled and stopped.
 
 The role owns:
 

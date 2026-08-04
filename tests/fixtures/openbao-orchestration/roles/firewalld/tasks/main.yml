@@ -1,0 +1,13 @@
+---
+- name: Record entry into mocked OpenBao convergence
+  ansible.builtin.file:
+    path: "{{ openbao_test_marker_path }}"
+    state: touch
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]
+
+- name: Start mocked OpenBao role order
+  ansible.builtin.set_fact:
+    openbao_test_role_order:
+      - firewalld

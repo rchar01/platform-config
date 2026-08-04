@@ -1,0 +1,9 @@
+---
+- name: Require mocked OpenBao HAProxy order
+  ansible.builtin.assert:
+    that:
+      - openbao_test_role_order == ['firewalld', 'podman_host', 'openbao']
+
+- name: Record mocked OpenBao HAProxy
+  ansible.builtin.set_fact:
+    openbao_test_role_order: "{{ openbao_test_role_order + ['openbao_haproxy'] }}"

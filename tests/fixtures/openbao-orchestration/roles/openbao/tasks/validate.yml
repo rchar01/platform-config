@@ -1,0 +1,6 @@
+---
+- name: Validate mocked OpenBao staging inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_test_invalid_component | default('') != 'openbao'
+    fail_msg: Mocked OpenBao inputs are invalid.

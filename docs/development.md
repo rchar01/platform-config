@@ -58,6 +58,8 @@ systemd container, stages the role with its service disabled, verifies check
 mode, idempotency, mount rejection, and atomic candidate preservation, then
 explicitly starts an uninitialized node, requires TLS health status `501`, and
 returns it to an idempotent disabled state without initialization side effects.
+The deactivation path also removes seeded persistent systemd enablement and
+proves a failed pre-Quadlet staging attempt remains masked across daemon reload.
 
 `make test-platform-external-probe-alloy` downloads the official Alloy `1.18.0`
 AMD64 RPM and converges both staged roles in a disposable Rocky systemd
@@ -98,6 +100,12 @@ explicit confirmation, full-cluster selection, standby-first inventory order,
 `serial: 1`, leadership-drift aborts, conditional manual-unseal pauses, and
 strict voter recovery before advancing. The disposable Rocky test separately
 proves that unchanged active convergence reports no restart requirement.
+
+The OpenBao staging scenario uses shadow roles to prove exact firewalld, Podman,
+OpenBao, HAProxy, and Keepalived order. It rejects malformed or partially selected
+clusters, an unready ownership contract, invalid component configuration, and
+any requested service activation before a role can mutate a host. It does not
+exercise real packages or services.
 
 The dev container mounts this repository at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at

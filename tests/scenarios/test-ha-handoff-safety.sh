@@ -55,7 +55,7 @@ assert_playbook_blocked() {
     fail "${message}: playbook exited successfully"
   fi
 
-  grep -qE 'HA implementation is unavailable|Strict OpenBao HA status requires|HA smoke checks are not implemented' <<< "$output" \
+  grep -qE 'OpenBao staging|Strict OpenBao HA status requires|HA implementation is unavailable|HA smoke checks are not implemented' <<< "$output" \
     || fail "${message}: expected blocking failure was not reached"
 }
 
@@ -71,10 +71,12 @@ assert_playbook_succeeds() {
 test_obsolete_service_paths_are_blocked() {
   assert_contains "$OPENBAO_PLAYBOOK" '^  hosts: openbao$' \
     'OpenBao playbook does not target the replacement openbao group'
-  assert_contains "$OPENBAO_PLAYBOOK" 'ansible[.]builtin[.]fail:' \
-    'OpenBao transition playbook is not fail-closed'
-  assert_not_contains "$OPENBAO_PLAYBOOK" '^[[:space:]]+- openbao$|hosts: vault' \
-    'OpenBao transition playbook still invokes the standalone role or legacy group'
+  assert_contains "$OPENBAO_PLAYBOOK" 'openbao_orchestration_ready' \
+    'OpenBao staging playbook lacks its explicit readiness gate'
+  assert_contains "$OPENBAO_PLAYBOOK" 'ansible_play_hosts_all' \
+    'OpenBao staging playbook permits partial cluster convergence'
+  assert_not_contains "$OPENBAO_PLAYBOOK" 'hosts: vault|initialize|unseal' \
+    'OpenBao staging playbook includes a legacy or custody path'
 
   assert_contains "$MONITORING_PLAYBOOK" 'ansible[.]builtin[.]fail:' \
     'Monitoring transition playbook is not fail-closed'

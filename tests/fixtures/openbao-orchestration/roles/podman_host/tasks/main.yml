@@ -1,0 +1,9 @@
+---
+- name: Require mocked Podman prerequisite order
+  ansible.builtin.assert:
+    that:
+      - openbao_test_role_order == ['firewalld']
+
+- name: Record mocked Podman prerequisite
+  ansible.builtin.set_fact:
+    openbao_test_role_order: "{{ openbao_test_role_order + ['podman_host'] }}"
