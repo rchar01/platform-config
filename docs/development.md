@@ -34,9 +34,12 @@ make lint
 make yamllint
 make test
 make test-keepalived-vip-rocky
+make test-podman-host-rocky
 make test-platform-external-probe-alloy
 make test-openbao-haproxy-rocky
 make test-monitoring-haproxy-capabilities
+make test-monitoring-etcd-image
+make test-monitoring-etcd-cluster
 make test-openbao-image
 make test-openbao-rocky
 ```
@@ -47,6 +50,11 @@ make test-openbao-rocky
 `make verify`. It downloads packages, starts a rootless disposable Rocky 10.1
 systemd container with `NET_ADMIN` for a dummy interface, keeps Keepalived stopped,
 and verifies role convergence, candidate rejection, and stale peer-rule removal.
+
+`make test-podman-host-rocky` is also opt-in. It installs the exact approved
+Podman package in a privileged disposable Rocky 10.1 systemd container, verifies
+check-mode non-mutation, keeps the API socket disabled, exercises native Quadlet
+generation without starting the generated service, and requires idempotency.
 
 `make test-openbao-image` is also opt-in. It pulls the exact approved OpenBao
 `2.6.1` `linux/amd64` manifest, verifies its version and non-root identity, and
@@ -88,6 +96,25 @@ private ports and observed Loki/Mimir/Alertmanager route allowlists remain
 unresolved production inputs. Fixture PKI does not replace `platform-tools`:
 real CA state and issued service material stay outside Git and use the maintained
 `platform-tools` workflows.
+
+`make test-monitoring-etcd-image` is also a Phase 0 qualification check. It
+resolves the official etcd `3.6.14` multi-platform index and `linux/amd64`
+manifest from one registry response, then pulls the selected platform through
+the immutable index reference and rejects malformed configuration. It runs one
+disposable member as explicit UID/GID `10001`, with no capabilities and a
+read-only root filesystem, before checking liveness, readiness, legacy health,
+and an invocation-local write/read. The official image declares root as its
+default user, so future Quadlets must retain the tested explicit override.
+
+`make test-monitoring-etcd-cluster` extends that local-only evidence with three
+independently persisted members on an internal Podman network and invocation-local
+synthetic PKI. It requires peer and client mTLS, rejects a client without a
+certificate, verifies three voters and one leader, proves writes continue after
+leader loss, confirms the restarted member reuses its data directory and catches
+up acknowledged data, and requires that no write is acknowledged while two
+members are stopped. A timed-out proposal may still commit after quorum returns.
+The check does not qualify snapshots, member replacement, real PKI, target
+networking, or Patroni behavior.
 
 `make verify` also exercises synthetic strict OpenBao health and Raft status
 predicates. The fixtures require one active node, two standbys, three voters,

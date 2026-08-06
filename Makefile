@@ -20,7 +20,7 @@ YAMLLINT ?= yamllint
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-etcd-image test-monitoring-etcd-cluster test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -108,6 +108,10 @@ test:
 test-keepalived-vip-rocky:
 	@bash tests/scenarios/test-keepalived-vip-rocky.sh
 
+## Run the opt-in Podman host and Quadlet integration check
+test-podman-host-rocky:
+	@bash tests/scenarios/test-podman-host-rocky.sh
+
 ## Run the opt-in external probe and exact Alloy integration check
 test-platform-external-probe-alloy:
 	@bash tests/scenarios/test-platform-external-probe-alloy.sh
@@ -119,6 +123,14 @@ test-openbao-haproxy-rocky:
 ## Run the opt-in monitoring HAProxy Phase 0 capability check
 test-monitoring-haproxy-capabilities:
 	@bash tests/scenarios/test-monitoring-haproxy-capabilities.sh
+
+## Qualify the exact monitoring etcd image and disposable runtime
+test-monitoring-etcd-image:
+	@bash tests/scenarios/test-monitoring-etcd-image.sh
+
+## Exercise disposable monitoring etcd mTLS and quorum behavior
+test-monitoring-etcd-cluster:
+	@bash tests/scenarios/test-monitoring-etcd-cluster.sh
 
 ## Validate OpenBao configuration with the exact 2.6.1 image
 test-openbao-image:

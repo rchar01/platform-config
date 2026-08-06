@@ -1,0 +1,10 @@
+---
+- name: Exercise Podman host role on disposable Rocky systemd
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    podman_host_packages:
+      - podman-7:5.8.2-5.el10_2.x86_64
+  roles:
+    - podman_host
