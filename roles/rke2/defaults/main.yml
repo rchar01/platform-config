@@ -31,6 +31,14 @@ rke2_write_kubeconfig_mode: "0600"
 rke2_kernel_modules:
   - br_netfilter
   - overlay
+rke2_kernel_module_packages:
+  - kernel-modules-extra
+rke2_kernel_module_package_state: present
+rke2_reboot_for_kernel_modules: false
+rke2_kernel_module_reboot_timeout: 900
+rke2_kernel_module_reboot_marker_path: /var/lib/rke2-kernel-reboot-target
+rke2_kernel_module_readiness_marker_path: /var/lib/rke2-kernel-reboot-readiness
+rke2_grubby_path: /usr/sbin/grubby
 rke2_sysctl:
   net.bridge.bridge-nf-call-iptables: "1"
   net.bridge.bridge-nf-call-ip6tables: "1"

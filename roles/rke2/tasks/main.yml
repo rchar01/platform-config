@@ -8,6 +8,11 @@
       - platform_ingress_controller in ['traefik', 'kong']
       - kong_ingress_enabled is not defined
       - "'ingress-controller' not in rke2_extra_config"
+      - rke2_kernel_module_package_state in ['present', 'latest']
+      - rke2_kernel_module_reboot_timeout | int > 0
+      - rke2_kernel_module_reboot_marker_path | length > 0
+      - rke2_kernel_module_readiness_marker_path | length > 0
+      - rke2_kernel_module_reboot_marker_path != rke2_kernel_module_readiness_marker_path
       - groups.get(rke2_server_group, []) | length > 0
       - rke2_version | length > 0 or rke2_allow_unpinned | bool
     fail_msg: >-
@@ -70,6 +75,408 @@
     fail_msg: "RKE2 registry CA file does not exist on the control node: {{ rke2_registry_ca_src }}"
   when: rke2_registry_ca_src | length > 0
 
+- name: Install RKE2 kernel module packages
+  ansible.builtin.package:
+    name: "{{ rke2_kernel_module_packages }}"
+    state: "{{ rke2_kernel_module_package_state }}"
+  when: rke2_kernel_module_packages | length > 0
+
+- name: Inspect RKE2 kernel modules after package installation
+  ansible.builtin.command:
+    argv:
+      - modinfo
+      - "{{ item }}"
+  loop: "{{ rke2_kernel_modules }}"
+  register: rke2_kernel_module_inspection
+  check_mode: false
+  changed_when: false
+  failed_when: false
+
+- name: Record unavailable RKE2 kernel modules
+  ansible.builtin.set_fact:
+    rke2_unavailable_kernel_modules: >-
+      {{
+        rke2_kernel_module_inspection.results
+        | selectattr('rc', 'ne', 0)
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Check for an incomplete RKE2 kernel transition
+  ansible.builtin.stat:
+    path: "{{ rke2_kernel_module_reboot_marker_path }}"
+  register: rke2_kernel_module_reboot_marker_stat
+
+- name: Check for incomplete post-reboot RKE2 readiness
+  ansible.builtin.stat:
+    path: "{{ rke2_kernel_module_readiness_marker_path }}"
+  register: rke2_kernel_module_readiness_marker_stat
+
+- name: Read the incomplete RKE2 kernel transition target
+  ansible.builtin.slurp:
+    src: "{{ rke2_kernel_module_reboot_marker_path }}"
+  register: rke2_kernel_module_reboot_marker
+  when: rke2_kernel_module_reboot_marker_stat.stat.exists
+
+- name: Record the incomplete RKE2 kernel transition target
+  ansible.builtin.set_fact:
+    rke2_previous_kernel_reboot_target: >-
+      {{
+        (rke2_kernel_module_reboot_marker.content | b64decode | trim)
+        if rke2_kernel_module_reboot_marker_stat.stat.exists
+        else ''
+      }}
+
+- name: Stop after an unsuccessful RKE2 kernel transition
+  ansible.builtin.assert:
+    that:
+      - >-
+        not rke2_kernel_module_reboot_marker_stat.stat.exists
+        or rke2_previous_kernel_reboot_target == ansible_facts['kernel']
+    fail_msg: >-
+      The previous reboot expected kernel {{ rke2_previous_kernel_reboot_target }}
+      but the host returned on {{ ansible_facts['kernel'] }} without required modules.
+      Correct the bootloader target and remove
+      {{ rke2_kernel_module_reboot_marker_path }} only after verification.
+  when: not ansible_check_mode
+
+- name: Clear a completed RKE2 kernel transition marker
+  ansible.builtin.file:
+    path: "{{ rke2_kernel_module_reboot_marker_path }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - rke2_kernel_module_reboot_marker_stat.stat.exists
+    - rke2_previous_kernel_reboot_target == ansible_facts['kernel']
+    - rke2_unavailable_kernel_modules | length == 0
+
+- name: Read the default boot kernel
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_grubby_path }}"
+      - --default-kernel
+  register: rke2_default_kernel_command
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  when: rke2_unavailable_kernel_modules | length > 0
+
+- name: Record the default boot kernel release
+  ansible.builtin.set_fact:
+    rke2_default_kernel_release: >-
+      {{
+        (rke2_default_kernel_command.stdout | basename | regex_replace('^vmlinuz-', ''))
+        if rke2_default_kernel_command.rc | default(1) == 0
+        else ''
+      }}
+
+- name: Inspect RKE2 modules for the default boot kernel
+  ansible.builtin.command:
+    argv:
+      - modinfo
+      - -k
+      - "{{ rke2_default_kernel_release }}"
+      - "{{ item }}"
+  loop: "{{ rke2_kernel_modules }}"
+  register: rke2_default_kernel_module_inspection
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  when:
+    - rke2_unavailable_kernel_modules | length > 0
+    - rke2_default_kernel_release | length > 0
+    - rke2_default_kernel_release != ansible_facts['kernel']
+
+- name: Determine whether a kernel reboot can resolve module availability
+  ansible.builtin.set_fact:
+    rke2_kernel_module_reboot_eligible: >-
+      {{
+        rke2_unavailable_kernel_modules | length > 0
+        and not rke2_kernel_module_reboot_marker_stat.stat.exists
+        and rke2_default_kernel_release | length > 0
+        and rke2_default_kernel_release != ansible_facts['kernel']
+        and (
+          rke2_default_kernel_module_inspection.results | default([])
+          | selectattr('rc', 'defined') | list | length
+          == rke2_kernel_modules | length
+        )
+        and (
+          rke2_default_kernel_module_inspection.results | default([])
+          | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0)
+          | list | length == 0
+        )
+      }}
+
+- name: Assert unavailable modules have a verified reboot path
+  ansible.builtin.assert:
+    that:
+      - >-
+        rke2_unavailable_kernel_modules | length == 0
+        or (rke2_reboot_for_kernel_modules | bool and rke2_kernel_module_reboot_eligible | bool)
+    fail_msg: >-
+      Modules {{ rke2_unavailable_kernel_modules | join(', ') }} are unavailable
+      for running kernel {{ ansible_facts['kernel'] }}, and default boot kernel
+      {{ rke2_default_kernel_release | default('unknown') }} does not provide a
+      verified reboot path. Install matching module packages or select a boot
+      kernel that provides every required module.
+  when: not ansible_check_mode
+
+- name: Check installed RKE2 binary before a prerequisite reboot
+  ansible.builtin.stat:
+    path: "{{ rke2_binary_path }}"
+  register: rke2_binary_stat
+
+- name: Read RKE2 service state before a prerequisite reboot
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ rke2_service_name }}"
+  register: rke2_pre_reboot_service_active
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  when: rke2_binary_stat.stat.exists
+
+- name: Determine whether post-reboot RKE2 readiness is required
+  ansible.builtin.set_fact:
+    rke2_post_reboot_readiness_required: >-
+      {{
+        rke2_kernel_module_readiness_marker_stat.stat.exists
+        or (
+          rke2_kernel_module_reboot_eligible | bool
+          and rke2_binary_stat.stat.exists
+        )
+      }}
+
+- name: Require an installed RKE2 node to be active before reboot
+  ansible.builtin.assert:
+    that:
+      - rke2_pre_reboot_service_active.stdout | default('') == 'active'
+    fail_msg: >-
+      {{ rke2_service_name }} is installed but not active. Restore the existing
+      node and cluster health before allowing a prerequisite kernel reboot.
+  when:
+    - rke2_kernel_module_reboot_eligible | bool
+    - rke2_binary_stat.stat.exists
+
+- name: Verify an existing RKE2 server API before prerequisite reboot
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - --raw=/readyz
+  register: rke2_pre_reboot_api_ready
+  retries: 12
+  delay: 5
+  until:
+    - rke2_pre_reboot_api_ready.rc == 0
+    - rke2_pre_reboot_api_ready.stdout == 'ok'
+  check_mode: false
+  changed_when: false
+  when:
+    - rke2_kernel_module_reboot_eligible | bool
+    - rke2_binary_stat.stat.exists
+    - rke2_node_role == 'server'
+
+- name: Verify an existing RKE2 node is Ready before prerequisite reboot
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - node
+      - "{{ rke2_node_name }}"
+      - -o=jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  delegate_to: "{{ rke2_bootstrap_host }}"
+  register: rke2_pre_reboot_node_ready
+  retries: 12
+  delay: 5
+  until:
+    - rke2_pre_reboot_node_ready.rc == 0
+    - rke2_pre_reboot_node_ready.stdout == 'True'
+  check_mode: false
+  changed_when: false
+  when:
+    - rke2_kernel_module_reboot_eligible | bool
+    - rke2_binary_stat.stat.exists
+
+- name: Record the verified RKE2 kernel reboot target
+  ansible.builtin.copy:
+    dest: "{{ rke2_kernel_module_reboot_marker_path }}"
+    content: "{{ rke2_default_kernel_release }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - not ansible_check_mode
+    - rke2_kernel_module_reboot_eligible | bool
+
+- name: Record pending post-reboot RKE2 readiness
+  ansible.builtin.copy:
+    dest: "{{ rke2_kernel_module_readiness_marker_path }}"
+    content: "{{ rke2_node_name }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - not ansible_check_mode
+    - rke2_kernel_module_reboot_eligible | bool
+    - rke2_binary_stat.stat.exists
+
+- name: Reboot into a kernel with verified RKE2 modules
+  ansible.builtin.reboot:
+    msg: "Rebooting to activate kernel modules required by RKE2"
+    reboot_timeout: "{{ rke2_kernel_module_reboot_timeout }}"
+    post_reboot_delay: 5
+  register: rke2_kernel_module_reboot
+  when:
+    - not ansible_check_mode
+    - rke2_reboot_for_kernel_modules | bool
+    - rke2_kernel_module_reboot_eligible | bool
+
+- name: Refresh kernel facts after an RKE2 prerequisite reboot
+  ansible.builtin.setup:
+    filter: ansible_kernel
+  when:
+    - not ansible_check_mode
+    - rke2_kernel_module_reboot.changed | default(false)
+
+- name: Assert the verified RKE2 kernel reboot target is active
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['kernel'] == rke2_default_kernel_release
+    fail_msg: >-
+      The reboot returned on kernel {{ ansible_facts['kernel'] }} instead of the
+      verified target {{ rke2_default_kernel_release }}. The transition marker
+      remains for operator recovery.
+  when:
+    - not ansible_check_mode
+    - rke2_kernel_module_reboot.changed | default(false)
+
+- name: Verify RKE2 kernel modules are available
+  ansible.builtin.command:
+    argv:
+      - modinfo
+      - "{{ item }}"
+  loop: "{{ rke2_kernel_modules }}"
+  register: rke2_kernel_module_verification
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Clear the verified RKE2 kernel reboot target
+  ansible.builtin.file:
+    path: "{{ rke2_kernel_module_reboot_marker_path }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - rke2_kernel_module_reboot.changed | default(false)
+
+- name: Wait for an existing RKE2 server after prerequisite reboot
+  ansible.builtin.wait_for:
+    host: "{{ rke2_node_ip }}"
+    port: 9345
+    timeout: "{{ rke2_wait_for_supervisor_timeout }}"
+  check_mode: false
+  when:
+    - rke2_post_reboot_readiness_required | bool
+    - rke2_binary_stat.stat.exists
+    - rke2_node_role == 'server'
+
+- name: Verify an existing RKE2 server API after prerequisite reboot
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - --raw=/readyz
+  register: rke2_post_reboot_api_ready
+  check_mode: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_post_reboot_api_ready.rc == 0
+    - rke2_post_reboot_api_ready.stdout == 'ok'
+  changed_when: false
+  when:
+    - rke2_post_reboot_readiness_required | bool
+    - rke2_binary_stat.stat.exists
+    - rke2_node_role == 'server'
+
+- name: Verify an existing RKE2 agent after prerequisite reboot
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ rke2_service_name }}"
+  register: rke2_post_reboot_agent_active
+  check_mode: false
+  retries: 60
+  delay: 5
+  until: rke2_post_reboot_agent_active.stdout == 'active'
+  changed_when: false
+  when:
+    - rke2_post_reboot_readiness_required | bool
+    - rke2_binary_stat.stat.exists
+    - rke2_node_role == 'agent'
+
+- name: Assert pending RKE2 readiness has an installed node
+  ansible.builtin.assert:
+    that:
+      - rke2_binary_stat.stat.exists
+    fail_msg: >-
+      Post-reboot readiness remains pending but {{ rke2_binary_path }} is absent.
+      Inspect the node and clear {{ rke2_kernel_module_readiness_marker_path }}
+      only after confirming that no existing RKE2 service requires recovery.
+  when: rke2_post_reboot_readiness_required | bool
+
+- name: Wait for an existing RKE2 node to return Ready after reboot
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - node
+      - "{{ rke2_node_name }}"
+      - -o=jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  delegate_to: "{{ rke2_bootstrap_host }}"
+  register: rke2_post_reboot_node_ready
+  check_mode: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_post_reboot_node_ready.rc == 0
+    - rke2_post_reboot_node_ready.stdout == 'True'
+  changed_when: false
+  when:
+    - rke2_post_reboot_readiness_required | bool
+    - rke2_binary_stat.stat.exists
+
+- name: Clear completed post-reboot RKE2 readiness
+  ansible.builtin.file:
+    path: "{{ rke2_kernel_module_readiness_marker_path }}"
+    state: absent
+  when:
+    - not ansible_check_mode
+    - rke2_post_reboot_readiness_required | bool
+
+- name: Report unavailable RKE2 kernel modules in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Kernel module {{ item.item }} is unavailable for the running kernel.
+      Apply the role to install prerequisites and perform the approved reboot.
+  loop: "{{ rke2_kernel_module_inspection.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - ansible_check_mode
+    - item.rc != 0
+
 - name: Persist RKE2 kernel modules
   ansible.builtin.copy:
     dest: /etc/modules-load.d/rke2.conf
@@ -86,6 +493,7 @@
     name: "{{ item }}"
     state: present
   loop: "{{ rke2_kernel_modules }}"
+  when: not ansible_check_mode
 
 - name: Configure RKE2 sysctl settings
   ansible.posix.sysctl:
@@ -95,11 +503,8 @@
     state: present
     reload: true
   loop: "{{ rke2_sysctl | dict2items }}"
-
-- name: Check installed RKE2 binary
-  ansible.builtin.stat:
-    path: "{{ rke2_binary_path }}"
-  register: rke2_binary_stat
+  when:
+    - not ansible_check_mode or rke2_unavailable_kernel_modules | length == 0
 
 - name: Check existing RKE2 kubeconfig
   ansible.builtin.stat:

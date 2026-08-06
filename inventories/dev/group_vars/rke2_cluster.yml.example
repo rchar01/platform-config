@@ -1,6 +1,7 @@
 ---
 rke2_version: v1.35.5+rke2r1
 rke2_token_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/rke2/dev/cluster-token"
+rke2_reboot_for_kernel_modules: true
 platform_ingress_controller: traefik
 rke2_traefik_http_node_port: 30080
 rke2_traefik_https_node_port: 30443

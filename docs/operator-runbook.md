@@ -662,11 +662,6 @@ make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 # Run a second apply to confirm idempotency.
 make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 make smoke-runners ENV=dev
-make check ENV=dev PLAYBOOK=playbooks/rke2.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
-# Run a second apply to confirm idempotency.
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
-make smoke-rke2 ENV=dev
 ```
 
 The first runner iteration uses the shell executor inside containerized GitLab Runner services. It does not mount Docker or Podman sockets and does not enable privileged image-build support. BuildKit, Buildah, or rootless Podman build support belongs in a later explicit phase.
@@ -681,7 +676,20 @@ RKE2 uses a shared cluster token stored outside Git:
 ~/.config/platform-infrastructure/config/rke2/dev/cluster-token
 ```
 
-RKE2 uses the dev Zot registry through `registries.yaml`. The role manages required `br_netfilter`/`overlay` kernel modules and Kubernetes networking sysctls. If package updates installed a newer kernel and the running kernel lacks those modules, reboot the affected RKE2 nodes before applying the role again.
+Configure the six-node Kubernetes path with focused playbooks. Do not use
+`site.yml` or `scripts/run-dev.sh` while the monitoring phase remains blocked.
+
+```bash
+make check ENV=dev PLAYBOOK=playbooks/rke2.yml
+make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
+make smoke-rke2 ENV=dev
+# Run a second apply to confirm idempotency.
+make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
+```
+
+RKE2 uses the dev Zot registry through `registries.yaml`. On Enterprise Linux 10, the role installs `kernel-modules-extra` for `br_netfilter`; `overlay` is provided by `kernel-modules-core`. It then manages both modules and the Kubernetes networking sysctls. Set `rke2_reboot_for_kernel_modules: true` only where the role may perform a controlled serial reboot when the installed module package targets a newer kernel. On clean nodes, the role verifies the exact boot target and module availability after reboot before installing or starting RKE2. An installed node must be active, API-healthy where applicable, and Kubernetes `Ready` before reboot; it must return `Ready` before the serial play advances.
+
+Kernel transitions use `/var/lib/rke2-kernel-reboot-target` to record the exact expected kernel and `/var/lib/rke2-kernel-reboot-readiness` to retain pending cluster-readiness validation for an existing node. An interruption after the target marker is written but before reboot fails closed on the next run; boot the recorded target, verify both required modules, and rerun the role. Clean nodes need only complete that kernel verification. For existing nodes, a retained readiness marker automatically resumes the service, API, and Kubernetes `Ready` gates without issuing another reboot. Remove the target marker manually only after the recorded kernel and modules are verified, and remove the readiness marker only after the installed node is healthy and `Ready`.
 
 Set `platform_ingress_controller: traefik` for the default bundled RKE2 controller or `platform_ingress_controller: kong` for the optional Kong alternative. RKE2 releases before 1.36 require the explicit `ingress-controller: traefik` setting; the role renders it rather than relying on release-dependent defaults. Bundled Traefik uses a managed `HelmChartConfig` to expose fixed worker NodePorts `30080` and `30443` without also binding host ports `80` and `443`.
 
@@ -698,11 +706,17 @@ make smoke-rke2-kube-vip ENV=dev
 
 The private environment must set the API VIP, the server interface that reaches that VIP, and pinned kube-vip chart and application image versions. The role explicitly configures the upstream `15/10/2`-second lease duration, renewal deadline, and retry period to tolerate transient API or etcd latency. It verifies the VIP is already in `rke2_tls_sans`, validates the leader-election timing relationships, and confirms that each RKE2 server routes the VIP through the configured interface.
 
-Kong is an explicit alternative selected with `platform_ingress_controller: kong`. The RKE2 role then configures `ingress-controller: none`, and the separate Kong phase installs a pinned HelmChart after kube-vip. This mode supports classic Kubernetes `Ingress` only; Gateway API CRDs and `Gateway`/`HTTPRoute` resources are deferred. Kong exposes the same fixed proxy NodePorts so the external load-balancer contract does not change.
+Kong is an explicit alternative selected with `platform_ingress_controller: kong`. The RKE2 role then configures `ingress-controller: none`, and the separate Kong phase installs a pinned HelmChart after kube-vip. This mode supports classic Kubernetes `Ingress` only; Gateway API CRDs and `Gateway`/`HTTPRoute` resources are deferred. Kong exposes the same fixed proxy NodePorts so the external load-balancer contract does not change. With the default Traefik selection, do not apply the Kong installation phase; run its smoke playbook only to verify Kong resources are absent.
 
 Apply and smoke-test the RKE2 selector change before running the Kong playbook. The Kong role fails closed if packaged Traefik resources still exist.
 
 Do not change the selector on an existing cluster as an ordinary convergence operation. First migrate application `Ingress` resources to the destination class, explicitly uninstall the previous controller, confirm `30080` and `30443` are free, and then apply the destination controller. Deleting only an RKE2 manifest file does not uninstall resources previously applied from it.
+
+```bash
+make smoke-kong-ingress ENV=dev
+```
+
+Only when Kong is selected and its private pins are configured:
 
 ```bash
 make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
