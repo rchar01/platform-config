@@ -6,6 +6,7 @@ selinux: {{ rke2_selinux | bool | to_json }}
 advertise-address: {{ rke2_node_ip | to_json }}
 write-kubeconfig-mode: {{ rke2_write_kubeconfig_mode | to_json }}
 cni: {{ rke2_cni | to_json }}
+ingress-controller: {{ ('traefik' if platform_ingress_controller == 'traefik' else 'none') | to_json }}
 {% if inventory_hostname != rke2_bootstrap_host %}
 server: {{ rke2_server_url | to_json }}
 {% endif %}

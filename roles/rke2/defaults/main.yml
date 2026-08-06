@@ -37,10 +37,20 @@ rke2_sysctl:
   net.ipv4.ip_forward: "1"
 
 rke2_cni: calico
-rke2_disable:
-  - rke2-ingress-nginx
+platform_ingress_controller: traefik
+rke2_disable: []
 rke2_tls_sans: []
 rke2_extra_config: {}
+
+rke2_server_manifest_dir: /var/lib/rancher/rke2/server/manifests
+rke2_traefik_helmchartconfig_path: "{{ rke2_server_manifest_dir }}/rke2-traefik-config.yaml"
+rke2_kong_manifest_path: "{{ rke2_server_manifest_dir }}/kong-ingress.yaml"
+rke2_kubectl: /var/lib/rancher/rke2/bin/kubectl
+rke2_kubeconfig: /etc/rancher/rke2/rke2.yaml
+rke2_traefik_node_port_min: 30000
+rke2_traefik_node_port_max: 32767
+rke2_traefik_http_node_port: 30080
+rke2_traefik_https_node_port: 30443
 
 rke2_registry_mirrors: {}
 rke2_registry_configs: {}

@@ -1,0 +1,18 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ingressClass:
+      isDefaultClass: true
+    service:
+      type: NodePort
+    ports:
+      web:
+        hostPort: null
+        nodePort: {{ rke2_traefik_http_node_port | int }}
+      websecure:
+        hostPort: null
+        nodePort: {{ rke2_traefik_https_node_port | int }}

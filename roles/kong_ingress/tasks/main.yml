@@ -1,4 +1,13 @@
 ---
+- name: Assert the platform ingress controller selection is supported
+  ansible.builtin.assert:
+    that:
+      - platform_ingress_controller in ['traefik', 'kong']
+      - kong_ingress_enabled is not defined
+    fail_msg: >-
+      platform_ingress_controller must be either traefik or kong. Remove the
+      retired kong_ingress_enabled variable before applying this role.
+
 - name: Assert Kong ingress inputs are configured
   ansible.builtin.assert:
     that:
@@ -21,14 +30,14 @@
       Kong ingress requires RKE2 server hosts, release/chart settings, pinned image tags,
       fixed proxy NodePorts within the configured NodePort range, and Gateway API disabled
       for this first classic Ingress phase.
-  when: kong_ingress_enabled | bool
+  when: platform_ingress_controller == 'kong'
 
 - name: Check Kong ingress manifest directory on bootstrap server
   ansible.builtin.stat:
     path: "{{ kong_ingress_manifest_dir }}"
   register: kong_ingress_manifest_dir_stat
   when:
-    - kong_ingress_enabled | bool
+    - platform_ingress_controller == 'kong'
     - inventory_hostname == kong_ingress_bootstrap_host
 
 - name: Assert Kong ingress manifest directory exists on bootstrap server
@@ -38,7 +47,7 @@
       - kong_ingress_manifest_dir_stat.stat.isdir
     fail_msg: "RKE2 manifest directory does not exist: {{ kong_ingress_manifest_dir }}"
   when:
-    - kong_ingress_enabled | bool
+    - platform_ingress_controller == 'kong'
     - inventory_hostname == kong_ingress_bootstrap_host
 
 - name: Check RKE2 server service before Kong ingress install
@@ -51,7 +60,7 @@
   check_mode: false
   changed_when: false
   when:
-    - kong_ingress_enabled | bool
+    - platform_ingress_controller == 'kong'
     - inventory_hostname == kong_ingress_bootstrap_host
 
 - name: Assert RKE2 server service is active before Kong ingress install
@@ -60,7 +69,58 @@
       - kong_ingress_server_service.stdout == 'active'
     fail_msg: "rke2-server.service must be active before installing Kong ingress."
   when:
-    - kong_ingress_enabled | bool
+    - platform_ingress_controller == 'kong'
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Check for packaged Traefik resources before installing Kong
+  ansible.builtin.command:
+    argv:
+      - "{{ kong_ingress_kubectl }}"
+      - --kubeconfig
+      - "{{ kong_ingress_kubeconfig }}"
+      - -n
+      - kube-system
+      - get
+      - helmchart/rke2-traefik
+      - helmchartconfig/rke2-traefik
+      - daemonset/rke2-traefik
+      - service/rke2-traefik
+      - --ignore-not-found
+      - -o=name
+  register: kong_ingress_traefik_resources
+  check_mode: false
+  changed_when: false
+  when:
+    - platform_ingress_controller == 'kong'
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Check for the Traefik IngressClass before installing Kong
+  ansible.builtin.command:
+    argv:
+      - "{{ kong_ingress_kubectl }}"
+      - --kubeconfig
+      - "{{ kong_ingress_kubeconfig }}"
+      - get
+      - ingressclass/traefik
+      - --ignore-not-found
+      - -o=name
+  register: kong_ingress_traefik_ingressclass
+  check_mode: false
+  changed_when: false
+  when:
+    - platform_ingress_controller == 'kong'
+    - inventory_hostname == kong_ingress_bootstrap_host
+
+- name: Assert packaged Traefik is absent before installing Kong
+  ansible.builtin.assert:
+    that:
+      - kong_ingress_traefik_resources.stdout | length == 0
+      - kong_ingress_traefik_ingressclass.stdout | length == 0
+    fail_msg: >-
+      Packaged Traefik resources remain. Apply and verify the RKE2 Kong selector
+      before installing Kong.
+  when:
+    - platform_ingress_controller == 'kong'
     - inventory_hostname == kong_ingress_bootstrap_host
 
 - name: Write Kong ingress HelmChart manifest on bootstrap server
@@ -71,5 +131,5 @@
     group: root
     mode: "0644"
   when:
-    - kong_ingress_enabled | bool
+    - platform_ingress_controller == 'kong'
     - inventory_hostname == kong_ingress_bootstrap_host

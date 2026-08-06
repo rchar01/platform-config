@@ -1,6 +1,9 @@
 ---
 rke2_version: v1.35.5+rke2r1
 rke2_token_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/rke2/dev/cluster-token"
+platform_ingress_controller: traefik
+rke2_traefik_http_node_port: 30080
+rke2_traefik_https_node_port: 30443
 rke2_tls_sans:
   - api.dev.example.test
   - 192.0.2.72
@@ -22,14 +25,6 @@ rke2_kube_vip_env:
   lb_enable: "true"
   lb_port: "6443"
   vip_interface: "{{ rke2_kube_vip_interface }}"
-
-kong_ingress_enabled: true
-kong_ingress_chart_version: 0.24.0
-kong_ingress_gateway_image_tag: 3.9.1
-kong_ingress_controller_image_tag: 3.5.7
-kong_ingress_gateway_api_enabled: false
-kong_ingress_proxy_http_node_port: 30080
-kong_ingress_proxy_https_node_port: 30443
 
 rke2_registry_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
 rke2_registry_mirrors: "{{ {

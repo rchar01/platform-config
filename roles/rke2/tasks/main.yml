@@ -5,12 +5,30 @@
       - rke2_node_role in ['server', 'agent']
       - rke2_token_src | length > 0
       - rke2_cni | length > 0
+      - platform_ingress_controller in ['traefik', 'kong']
+      - kong_ingress_enabled is not defined
+      - "'ingress-controller' not in rke2_extra_config"
       - groups.get(rke2_server_group, []) | length > 0
       - rke2_version | length > 0 or rke2_allow_unpinned | bool
     fail_msg: >-
-      RKE2 requires server/agent groups, rke2_token_src, rke2_cni, and an explicit
-      rke2_version pin. Set rke2_allow_unpinned=true only for intentional one-off
-      discovery installs.
+      RKE2 requires server/agent groups, rke2_token_src, rke2_cni, a supported
+      platform_ingress_controller, and an explicit rke2_version pin. Configure
+      ingress through platform_ingress_controller rather than rke2_extra_config.
+      Remove the retired kong_ingress_enabled variable before applying this role.
+      Set rke2_allow_unpinned=true only for intentional one-off discovery installs.
+
+- name: Assert bundled Traefik NodePorts are configured
+  ansible.builtin.assert:
+    that:
+      - rke2_traefik_node_port_min | int > 0
+      - rke2_traefik_node_port_max | int >= rke2_traefik_node_port_min | int
+      - rke2_traefik_http_node_port | int >= rke2_traefik_node_port_min | int
+      - rke2_traefik_http_node_port | int <= rke2_traefik_node_port_max | int
+      - rke2_traefik_https_node_port | int >= rke2_traefik_node_port_min | int
+      - rke2_traefik_https_node_port | int <= rke2_traefik_node_port_max | int
+      - rke2_traefik_http_node_port | int != rke2_traefik_https_node_port | int
+    fail_msg: "Bundled Traefik requires distinct HTTP and HTTPS NodePorts within the configured range."
+  when: platform_ingress_controller == 'traefik'
 
 - name: Check RKE2 token source on control node
   ansible.builtin.stat:
@@ -78,6 +96,102 @@
     reload: true
   loop: "{{ rke2_sysctl | dict2items }}"
 
+- name: Check installed RKE2 binary
+  ansible.builtin.stat:
+    path: "{{ rke2_binary_path }}"
+  register: rke2_binary_stat
+
+- name: Check existing RKE2 kubeconfig
+  ansible.builtin.stat:
+    path: "{{ rke2_kubeconfig }}"
+  register: rke2_kubeconfig_stat
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+
+- name: Check for the managed Kong manifest before enabling Traefik
+  ansible.builtin.stat:
+    path: "{{ rke2_kong_manifest_path }}"
+  register: rke2_kong_manifest_stat
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+
+- name: Check for RKE2-managed Kong resources before enabling Traefik
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - -n
+      - kube-system
+      - get
+      - addon/kong-ingress
+      - helmchart/kong
+      - --ignore-not-found
+      - -o=name
+  register: rke2_kong_cluster_resources
+  check_mode: false
+  changed_when: false
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+    - rke2_binary_stat.stat.exists
+    - rke2_kubeconfig_stat.stat.exists
+
+- name: Check for the Kong IngressClass before enabling Traefik
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - ingressclass/kong
+      - --ignore-not-found
+      - -o=name
+  register: rke2_kong_ingressclass
+  check_mode: false
+  changed_when: false
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+    - rke2_binary_stat.stat.exists
+    - rke2_kubeconfig_stat.stat.exists
+
+- name: Check for the Kong proxy service before enabling Traefik
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - service
+      - --all-namespaces
+      - --field-selector=metadata.name=kong-gateway-proxy
+      - -o=name
+  register: rke2_kong_proxy_service
+  check_mode: false
+  changed_when: false
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+    - rke2_binary_stat.stat.exists
+    - rke2_kubeconfig_stat.stat.exists
+
+- name: Assert Kong is absent before enabling Traefik
+  ansible.builtin.assert:
+    that:
+      - not rke2_kong_manifest_stat.stat.exists
+      - not rke2_binary_stat.stat.exists or not rke2_kubeconfig_stat.stat.exists or rke2_kong_cluster_resources.stdout | length == 0
+      - not rke2_binary_stat.stat.exists or not rke2_kubeconfig_stat.stat.exists or rke2_kong_ingressclass.stdout | length == 0
+      - not rke2_binary_stat.stat.exists or not rke2_kubeconfig_stat.stat.exists or rke2_kong_proxy_service.stdout | length == 0
+    fail_msg: >-
+      Kong resources remain on this cluster. Migrate application Ingress resources
+      and explicitly uninstall Kong before selecting bundled Traefik.
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+
 - name: Ensure RKE2 configuration directory exists
   ansible.builtin.file:
     path: "{{ rke2_config_dir }}"
@@ -85,6 +199,34 @@
     owner: root
     group: root
     mode: "0755"
+
+- name: Ensure RKE2 server manifest directory exists
+  ansible.builtin.file:
+    path: "{{ rke2_server_manifest_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: rke2_node_role == 'server'
+
+- name: Configure bundled Traefik NodePorts on the bootstrap server
+  ansible.builtin.template:
+    src: rke2-traefik-helmchartconfig.yaml.j2
+    dest: "{{ rke2_traefik_helmchartconfig_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - platform_ingress_controller == 'traefik'
+    - inventory_hostname == rke2_bootstrap_host
+
+- name: Remove bundled Traefik configuration when Kong is selected
+  ansible.builtin.file:
+    path: "{{ rke2_traefik_helmchartconfig_path }}"
+    state: absent
+  when:
+    - platform_ingress_controller == 'kong'
+    - inventory_hostname == rke2_bootstrap_host
 
 - name: Copy RKE2 cluster token
   ansible.builtin.copy:
@@ -131,11 +273,6 @@
     state: absent
   notify: Restart RKE2
   when: rke2_registry_mirrors | length == 0 and rke2_registry_configs | length == 0
-
-- name: Check installed RKE2 binary
-  ansible.builtin.stat:
-    path: "{{ rke2_binary_path }}"
-  register: rke2_binary_stat
 
 - name: Check installed RKE2 version
   ansible.builtin.command:

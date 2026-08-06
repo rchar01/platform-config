@@ -1,11 +1,12 @@
 ---
-kong_ingress_enabled: false
+platform_ingress_controller: traefik
 
 kong_ingress_server_group: rke2_servers
 kong_ingress_worker_group: rke2_agents
 kong_ingress_bootstrap_host: "{{ groups[kong_ingress_server_group][0] }}"
 kong_ingress_manifest_dir: /var/lib/rancher/rke2/server/manifests
 kong_ingress_manifest_path: "{{ kong_ingress_manifest_dir }}/kong-ingress.yaml"
+kong_ingress_addon_name: kong-ingress
 
 kong_ingress_release_name: kong
 kong_ingress_namespace: kong

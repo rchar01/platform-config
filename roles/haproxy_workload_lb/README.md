@@ -1,8 +1,8 @@
 # haproxy_workload_lb
 
-Installs native HAProxy from OS packages and configures it as an external workload load balancer for Kubernetes ingress NodePorts.
+Installs native HAProxy from OS packages and configures it as an external workload load balancer for the selected Kubernetes ingress controller's NodePorts.
 
-This role is intentionally separate from RKE2 and in-cluster ingress roles. It models an external appliance-style load balancer: dev can use HAProxy on a VM, while production can use F5 with the same worker-node and NodePort target pattern.
+This role is intentionally separate from RKE2 and in-cluster ingress roles. It models an external appliance-style load balancer: dev can use HAProxy on a VM, while production can use F5 with the same worker-node and NodePort target pattern. Bundled Traefik and optional Kong both use the default `30080`/`30443` contract, but only one is selected per cluster.
 
 The role is disabled by default. Set `haproxy_workload_lb_enabled: true` in private inventory for environments that should own this HAProxy VM.
 

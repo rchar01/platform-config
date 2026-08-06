@@ -36,10 +36,10 @@ the phased handoff.
 | OpenBao HA | dev | service foundation and read-only status staged | immutable image, direct-node role and status, inventory, and bounded-storage contracts; no active service apply or smoke command |
 | GitLab runners | dev | implemented | full bring-up and smoke commands |
 | Monitoring HA | dev | replacement blocked | inventory and bounded-storage contract only; collectors remain inactive |
-| RKE2 | dev | implemented | full bring-up and smoke commands for the base cluster |
+| RKE2 and bundled Traefik | dev | implemented | full bring-up and smoke commands for the base cluster and default ingress controller |
 | kube-vip API HA | dev | implemented | RKE2 HelmChart-based API VIP commands and smoke checks |
-| Kong ingress controller | dev | implemented | RKE2 HelmChart-based classic Ingress controller with fixed NodePorts |
-| External workload load balancer | dev | implemented | native HAProxy VM commands and smoke checks through Kong NodePorts |
+| Kong ingress controller | dev | optional | alternative RKE2 HelmChart-based classic Ingress controller with fixed NodePorts |
+| External workload load balancer | dev | implemented | native HAProxy VM commands and smoke checks through the selected ingress controller's NodePorts |
 | Kubernetes bastion live integration | dev | implemented | cluster access workflow and smoke checks |
 
 ## Template Prerequisite
@@ -683,6 +683,8 @@ RKE2 uses a shared cluster token stored outside Git:
 
 RKE2 uses the dev Zot registry through `registries.yaml`. The role manages required `br_netfilter`/`overlay` kernel modules and Kubernetes networking sysctls. If package updates installed a newer kernel and the running kernel lacks those modules, reboot the affected RKE2 nodes before applying the role again.
 
+Set `platform_ingress_controller: traefik` for the default bundled RKE2 controller or `platform_ingress_controller: kong` for the optional Kong alternative. RKE2 releases before 1.36 require the explicit `ingress-controller: traefik` setting; the role renders it rather than relying on release-dependent defaults. Bundled Traefik uses a managed `HelmChartConfig` to expose fixed worker NodePorts `30080` and `30443` without also binding host ports `80` and `443`.
+
 RKE2 must be pinned with `rke2_version` in the private environment. The default role preflight rejects unpinned installs; use `rke2_allow_unpinned: true` only for a deliberate temporary discovery run, then pin the discovered version immediately before normal convergence.
 
 kube-vip API HA is installed after the base RKE2 cluster through an RKE2 `HelmChart` manifest written by `playbooks/rke2-kube-vip.yml`. Keep it API-only for this phase; workload service load balancing and ingress remain separate later work.
@@ -696,16 +698,22 @@ make smoke-rke2-kube-vip ENV=dev
 
 The private environment must set the API VIP, the server interface that reaches that VIP, and pinned kube-vip chart and application image versions. The role explicitly configures the upstream `15/10/2`-second lease duration, renewal deadline, and retry period to tolerate transient API or etcd latency. It verifies the VIP is already in `rke2_tls_sans`, validates the leader-election timing relationships, and confirms that each RKE2 server routes the VIP through the configured interface.
 
-The Kong ingress controller is installed after kube-vip as a separate RKE2 HelmChart-based add-on. This first phase supports classic Kubernetes `Ingress` only; Gateway API CRDs and `Gateway`/`HTTPRoute` resources are deferred. Kong exposes fixed proxy NodePorts so external load balancers can target worker node IPs.
+Kong is an explicit alternative selected with `platform_ingress_controller: kong`. The RKE2 role then configures `ingress-controller: none`, and the separate Kong phase installs a pinned HelmChart after kube-vip. This mode supports classic Kubernetes `Ingress` only; Gateway API CRDs and `Gateway`/`HTTPRoute` resources are deferred. Kong exposes the same fixed proxy NodePorts so the external load-balancer contract does not change.
+
+Apply and smoke-test the RKE2 selector change before running the Kong playbook. The Kong role fails closed if packaged Traefik resources still exist.
+
+Do not change the selector on an existing cluster as an ordinary convergence operation. First migrate application `Ingress` resources to the destination class, explicitly uninstall the previous controller, confirm `30080` and `30443` are free, and then apply the destination controller. Deleting only an RKE2 manifest file does not uninstall resources previously applied from it.
 
 ```bash
+make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
+make smoke-rke2 ENV=dev
 make check ENV=dev PLAYBOOK=playbooks/kong-ingress.yml
 make apply ENV=dev PLAYBOOK=playbooks/kong-ingress.yml
 make apply ENV=dev PLAYBOOK=playbooks/kong-ingress.yml
 make smoke-kong-ingress ENV=dev
 ```
 
-The dev external workload load balancer uses native HAProxy on a VM outside RKE2. It forwards to Kong worker NodePorts so dev mirrors the production F5-to-worker-node pattern.
+The dev external workload load balancer uses native HAProxy on a VM outside RKE2. It forwards to the selected ingress controller's worker NodePorts so dev mirrors the production F5-to-worker-node pattern.
 
 ```bash
 make check ENV=dev PLAYBOOK=playbooks/workload-lb.yml

@@ -32,7 +32,7 @@
       until: kong_ingress_smoke_helmchart.rc == 0
       changed_when: false
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Wait for Kong controller rollout
@@ -49,7 +49,7 @@
           - --timeout=300s
       changed_when: false
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Wait for Kong gateway rollout
@@ -66,7 +66,7 @@
           - --timeout=300s
       changed_when: false
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Read Kong proxy service NodePorts
@@ -84,7 +84,7 @@
       register: kong_ingress_smoke_proxy_service
       changed_when: false
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Assert Kong proxy service uses fixed NodePorts
@@ -95,7 +95,7 @@
           - kong_ingress_smoke_proxy_service.stdout is search('kong-proxy-tls:' ~ (kong_ingress_proxy_https_node_port | default(30443) | string))
         fail_msg: "Kong proxy service does not expose the expected fixed NodePorts."
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Read Kong NodePort services
@@ -112,7 +112,7 @@
       register: kong_ingress_smoke_nodeport_services
       changed_when: false
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Assert Kong exposes only expected NodePort services
@@ -123,7 +123,7 @@
             == kong_ingress_expected_nodeport_services | default([kong_ingress_proxy_service_name | default('kong-gateway-proxy')]) | sort
         fail_msg: "Kong exposes unexpected NodePort services."
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_smoke_is_bootstrap | bool
 
     - name: Probe Kong HTTP NodePorts on worker nodes
@@ -135,7 +135,7 @@
         return_content: true
       loop: "{{ kong_ingress_smoke_worker_hosts }}"
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_proxy_http_enabled | default(true) | bool
         - kong_ingress_smoke_is_bootstrap | bool
 
@@ -149,6 +149,69 @@
         return_content: true
       loop: "{{ kong_ingress_smoke_worker_hosts }}"
       when:
-        - kong_ingress_enabled | default(false) | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
         - kong_ingress_proxy_https_enabled | default(true) | bool
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Confirm Kong AddOn and HelmChart are absent when Traefik is selected
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - -n
+          - "{{ kong_ingress_helmchart_namespace | default('kube-system') }}"
+          - get
+          - addon/{{ kong_ingress_addon_name | default('kong-ingress') }}
+          - helmchart/{{ kong_ingress_release_name | default('kong') }}
+          - --ignore-not-found
+          - -o=name
+      register: kong_ingress_smoke_absent_helmchart
+      changed_when: false
+      when:
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Confirm Kong IngressClass is absent when Traefik is selected
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - get
+          - ingressclass/{{ kong_ingress_class_name | default('kong') }}
+          - --ignore-not-found
+          - -o=name
+      register: kong_ingress_smoke_absent_ingressclass
+      changed_when: false
+      when:
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Confirm Kong proxy service is absent when Traefik is selected
+      ansible.builtin.command:
+        argv:
+          - "{{ kong_ingress_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ kong_ingress_smoke_kubeconfig }}"
+          - get
+          - service
+          - --all-namespaces
+          - --field-selector=metadata.name={{ kong_ingress_proxy_service_name | default('kong-gateway-proxy') }}
+          - -o=name
+      register: kong_ingress_smoke_absent_service
+      changed_when: false
+      when:
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+        - kong_ingress_smoke_is_bootstrap | bool
+
+    - name: Assert Kong is absent when Traefik is selected
+      ansible.builtin.assert:
+        that:
+          - kong_ingress_smoke_absent_helmchart.stdout | length == 0
+          - kong_ingress_smoke_absent_ingressclass.stdout | length == 0
+          - kong_ingress_smoke_absent_service.stdout | length == 0
+        fail_msg: "Kong resources remain while Traefik is the selected platform ingress controller."
+      when:
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
         - kong_ingress_smoke_is_bootstrap | bool

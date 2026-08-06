@@ -28,6 +28,12 @@
     rke2_smoke_expected_nodes: "{{ groups.get('rke2_cluster', []) | length }}"
     rke2_smoke_kubectl: /var/lib/rancher/rke2/bin/kubectl
     rke2_smoke_kubeconfig: /etc/rancher/rke2/rke2.yaml
+    rke2_smoke_worker_hosts: >-
+      {{
+        groups.get('rke2_agents', [])
+        | map('extract', hostvars, 'ansible_host')
+        | list
+      }}
   tasks:
     - name: Wait for all RKE2 nodes to become Ready
       ansible.builtin.command:
@@ -63,7 +69,7 @@
         fail_msg: "Unexpected RKE2 node count."
       when: rke2_smoke_is_bootstrap | bool
 
-    - name: Confirm default RKE2 ingress is disabled
+    - name: Confirm RKE2 ingress-nginx is absent
       ansible.builtin.command:
         argv:
           - "{{ rke2_smoke_kubectl }}"
@@ -74,14 +80,179 @@
           - get
           - helmchart
           - rke2-ingress-nginx
+          - --ignore-not-found
+          - -o=name
       register: rke2_smoke_ingress_nginx
       changed_when: false
-      failed_when: rke2_smoke_ingress_nginx.rc not in [0, 1]
       when: rke2_smoke_is_bootstrap | bool
 
-    - name: Assert default RKE2 ingress is absent
+    - name: Assert RKE2 ingress-nginx is absent
       ansible.builtin.assert:
         that:
-          - rke2_smoke_ingress_nginx.rc == 1
-        fail_msg: "Default RKE2 ingress-nginx HelmChart exists but should be disabled."
+          - rke2_smoke_ingress_nginx.stdout | length == 0
+        fail_msg: "RKE2 ingress-nginx exists but is not a supported platform ingress selection."
       when: rke2_smoke_is_bootstrap | bool
+
+    - name: Wait for bundled Traefik HelmCharts
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_smoke_kubeconfig }}"
+          - -n
+          - kube-system
+          - get
+          - helmchart
+          - rke2-traefik
+          - rke2-traefik-crd
+      register: rke2_smoke_traefik_helmcharts
+      retries: 60
+      delay: 5
+      until: rke2_smoke_traefik_helmcharts.rc == 0
+      changed_when: false
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Wait for bundled Traefik rollout
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_smoke_kubeconfig }}"
+          - -n
+          - kube-system
+          - rollout
+          - status
+          - daemonset/rke2-traefik
+          - --timeout=300s
+      changed_when: false
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Read bundled Traefik service NodePorts
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_smoke_kubeconfig }}"
+          - -n
+          - kube-system
+          - get
+          - service
+          - rke2-traefik
+          - -o=jsonpath={.spec.type}{" "}{range .spec.ports[*]}{.name}:{.nodePort}{" "}{end}
+      register: rke2_smoke_traefik_service
+      changed_when: false
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Assert bundled Traefik uses fixed NodePorts
+      ansible.builtin.assert:
+        that:
+          - rke2_smoke_traefik_service.stdout is search('^NodePort ')
+          - rke2_smoke_traefik_service.stdout is search('web:' ~ (rke2_traefik_http_node_port | default(30080) | string))
+          - rke2_smoke_traefik_service.stdout is search('websecure:' ~ (rke2_traefik_https_node_port | default(30443) | string))
+        fail_msg: "Bundled Traefik does not expose the expected fixed NodePorts."
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Probe bundled Traefik HTTP NodePorts on worker nodes
+      ansible.builtin.uri:
+        url: "http://{{ item }}:{{ rke2_traefik_http_node_port | default(30080) }}/"
+        method: GET
+        status_code:
+          - 404
+        return_content: true
+      loop: "{{ rke2_smoke_worker_hosts }}"
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Probe bundled Traefik HTTPS NodePorts on worker nodes
+      ansible.builtin.uri:
+        url: "https://{{ item }}:{{ rke2_traefik_https_node_port | default(30443) }}/"
+        method: GET
+        validate_certs: false
+        status_code:
+          - 404
+        return_content: true
+      loop: "{{ rke2_smoke_worker_hosts }}"
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Read bundled Traefik IngressClass
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_smoke_kubeconfig }}"
+          - get
+          - ingressclass
+          - traefik
+          - -o=jsonpath={.spec.controller}{" "}{.metadata.annotations.ingressclass\.kubernetes\.io/is-default-class}
+      register: rke2_smoke_traefik_ingressclass
+      changed_when: false
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Assert bundled Traefik is the default IngressClass
+      ansible.builtin.assert:
+        that:
+          - rke2_smoke_traefik_ingressclass.stdout == 'traefik.io/ingress-controller true'
+        fail_msg: "Bundled Traefik is not the default platform IngressClass."
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'traefik'
+
+    - name: Read packaged Traefik resources when Kong is selected
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_smoke_kubeconfig }}"
+          - -n
+          - kube-system
+          - get
+          - helmchart/rke2-traefik
+          - helmchartconfig/rke2-traefik
+          - daemonset/rke2-traefik
+          - service/rke2-traefik
+          - --ignore-not-found
+          - -o=name
+      register: rke2_smoke_traefik_resources
+      changed_when: false
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
+
+    - name: Read Traefik IngressClass when Kong is selected
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_smoke_kubeconfig }}"
+          - get
+          - ingressclass/traefik
+          - --ignore-not-found
+          - -o=name
+      register: rke2_smoke_traefik_ingressclass
+      changed_when: false
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
+
+    - name: Assert bundled Traefik is absent when Kong is selected
+      ansible.builtin.assert:
+        that:
+          - rke2_smoke_traefik_resources.stdout | length == 0
+          - rke2_smoke_traefik_ingressclass.stdout | length == 0
+        fail_msg: "Bundled Traefik exists while Kong is the selected platform ingress controller."
+      when:
+        - rke2_smoke_is_bootstrap | bool
+        - (platform_ingress_controller | default('traefik')) == 'kong'
