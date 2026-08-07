@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+required_commands=(
+  ansible
+  ansible-lint
+  ansible-playbook
+  awk
+  bash
+  cmp
+  date
+  find
+  flock
+  git
+  grep
+  install
+  make
+  openssl
+  sed
+  sha256sum
+  sort
+  ssh
+  ssh-keygen
+  stat
+  timeout
+  unshare
+  wc
+)
+
+for command_name in "${required_commands[@]}"; do
+  command -v "$command_name" >/dev/null || {
+    printf 'Required command is missing: %s\n' "$command_name" >&2
+    exit 1
+  }
+done
+
+python --version
+python -m pip --version
+python -m pip check
+python -m pytest --version
+ansible --version | sed -n '1p'
+ansible-lint --version
+yamllint --version
+bash --version | sed -n '1p'
+make --version | sed -n '1p'
+ssh -V
+openssl version
+unshare --version
+flock --version
+git --version
+grep --version | sed -n '1p'
+sed --version | sed -n '1p'
+find --version | sed -n '1p'
+awk --version | sed -n '1p'
+date --version | sed -n '1p'
+sha256sum --version | sed -n '1p'
+install --version | sed -n '1p'
+stat --version | sed -n '1p'
+cmp --version | sed -n '1p'
+sort --version | sed -n '1p'
+wc --version | sed -n '1p'
+timeout --version | sed -n '1p'

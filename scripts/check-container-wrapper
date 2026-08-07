@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+wrapper="$repo_root/scripts/in-container"
+scratch_root="$(mktemp -d "$repo_root/.ansible/wrapper-check.XXXXXXXX")"
+runtime_root="$scratch_root/runtime"
+fake_bin="$scratch_root/bin"
+fake_log="$scratch_root/fake-podman.log"
+
+mkdir -p "$runtime_root" "$fake_bin"
+
+cleanup() {
+  rm -rf "$scratch_root"
+}
+trap cleanup EXIT INT TERM
+
+assert_empty() {
+  local remaining
+
+  remaining="$(find "$runtime_root" -mindepth 1 -print -quit)"
+  [[ -z $remaining ]] || {
+    printf 'Container wrapper left temporary state: %s\n' "$remaining" >&2
+    exit 1
+  }
+}
+
+run_wrapper() {
+  TMPDIR="$runtime_root" \
+    PLATFORM_CONFIG_CONTAINER_PROFILE=test \
+    PLATFORM_CONFIG_TEST_SCRATCH_ROOT="$runtime_root" \
+    "$wrapper" "$@"
+}
+
+run_wrapper true
+assert_empty
+
+set +e
+run_wrapper bash -c 'exit 23'
+status=$?
+set -e
+[[ $status -eq 23 ]] || {
+  printf 'Container wrapper changed child exit status: expected 23, got %s\n' "$status" >&2
+  exit 1
+}
+assert_empty
+
+for signal_status in 'INT 130' 'TERM 143'; do
+  read -r signal expected_status <<<"$signal_status"
+  set +e
+  timeout --foreground --preserve-status --signal="$signal" 1 \
+    bash -c 'TMPDIR="$1" PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_TEST_SCRATCH_ROOT="$1" exec "$2" sleep 30' \
+    bash "$runtime_root" "$wrapper"
+  status=$?
+  set -e
+  [[ $status -eq $expected_status ]] || {
+    printf 'Container wrapper changed %s status: expected %s, got %s\n' \
+      "$signal" "$expected_status" "$status" >&2
+    exit 1
+  }
+  assert_empty
+done
+
+cat >"$fake_bin/podman" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${1:-} == image && ${2:-} == exists ]]; then
+  exit 1
+fi
+if [[ ${1:-} == build ]]; then
+  trap 'printf "build-int\n" >>"$FAKE_PODMAN_LOG"; exit 130' INT
+  trap 'printf "build-term\n" >>"$FAKE_PODMAN_LOG"; exit 143' TERM
+  while :; do
+    sleep 0.05
+  done
+fi
+if [[ ${1:-} == run ]]; then
+  printf 'run\n' >>"$FAKE_PODMAN_LOG"
+  exit 0
+fi
+printf 'unexpected:%s\n' "$*" >>"$FAKE_PODMAN_LOG"
+exit 2
+EOF
+chmod 0700 "$fake_bin/podman"
+
+for signal_status in 'INT 130' 'TERM 143'; do
+  read -r signal expected_status <<<"$signal_status"
+  : >"$fake_log"
+  set +e
+  timeout --foreground --preserve-status --signal="$signal" 1 \
+    bash -c 'PATH="$1:$PATH" FAKE_PODMAN_LOG="$2" TMPDIR="$3" PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_TEST_SCRATCH_ROOT="$3" PLATFORM_CONFIG_DEV_IMAGE=missing-signal-test exec "$4" true' \
+    bash "$fake_bin" "$fake_log" "$runtime_root" "$wrapper"
+  status=$?
+  set -e
+  [[ $status -eq $expected_status ]] || {
+    printf 'Container wrapper changed build %s status: expected %s, got %s\n' \
+      "$signal" "$expected_status" "$status" >&2
+    exit 1
+  }
+  grep -Fx build-term "$fake_log" >/dev/null || {
+    printf 'Container wrapper did not interrupt image build after %s\n' "$signal" >&2
+    exit 1
+  }
+  if grep -Fx run "$fake_log" >/dev/null; then
+    printf 'Container wrapper started a container after interrupted image build\n' >&2
+    exit 1
+  fi
+  assert_empty
+done
+
+printf 'Container wrapper cleanup check passed\n'

@@ -3,6 +3,7 @@ set -euo pipefail
 
 image="${PLATFORM_CONFIG_DEV_IMAGE:-platform-config-dev:latest}"
 containerfile="${PLATFORM_CONFIG_DEV_CONTAINERFILE:-Containerfile.dev}"
+profile="${PLATFORM_CONFIG_CONTAINER_PROFILE:-development}"
 ansible_ssh_common_args="${ANSIBLE_SSH_COMMON_ARGS:-}"
 ansible_ssh_common_args="${ansible_ssh_common_args:+$ansible_ssh_common_args }-o UserKnownHostsFile=/tmp/platform-home/.ssh/known_hosts"
 
@@ -11,20 +12,87 @@ repo_parent="$(dirname "$repo_root")"
 private_root="${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_parent/platform-private}"
 secret_root="${PLATFORM_CONFIG_SECRET_ROOT:-$HOME/.config/platform-infrastructure}"
 tmp_home="$(mktemp -d "${TMPDIR:-/tmp}/platform-config-home.XXXXXXXX")"
+tmp_ansible=""
+podman_pid=""
+received_signal=""
 
 cleanup() {
+  local status=$?
+
+  trap - EXIT INT TERM
+  if [[ -n $podman_pid ]] && kill -0 "$podman_pid" 2>/dev/null; then
+    kill -TERM "$podman_pid" 2>/dev/null || true
+    wait "$podman_pid" 2>/dev/null || true
+  fi
   rm -rf "$tmp_home"
+  if [[ -n $tmp_ansible ]]; then
+    rm -rf "$tmp_ansible"
+  fi
+  exit "$status"
 }
-trap cleanup EXIT INT TERM
+
+forward_signal() {
+  local signal="$1"
+
+  received_signal="$signal"
+  if [[ -n $podman_pid ]] && kill -0 "$podman_pid" 2>/dev/null; then
+    # Bash starts managed children asynchronously, where SIGINT may be inherited
+    # as ignored. TERM reliably stops Podman; the wrapper preserves 130 vs 143.
+    kill -TERM "$podman_pid" 2>/dev/null || true
+  fi
+}
+
+run_managed() {
+  local status
+
+  received_signal=""
+  "$@" <&0 &
+  podman_pid=$!
+  while :; do
+    if wait "$podman_pid"; then
+      status=0
+    else
+      status=$?
+    fi
+    if ! kill -0 "$podman_pid" 2>/dev/null; then
+      break
+    fi
+  done
+  podman_pid=""
+
+  case "$received_signal" in
+    INT) status=130 ;;
+    TERM) status=143 ;;
+  esac
+
+  return "$status"
+}
+trap cleanup EXIT
+trap 'forward_signal INT' INT
+trap 'forward_signal TERM' TERM
 
 mkdir -p "$tmp_home/.ansible/tmp" "$tmp_home/.config" "$tmp_home/Projects/public"
+
+case "$profile" in
+  development)
+    ;;
+  test)
+    test_scratch_root="${PLATFORM_CONFIG_TEST_SCRATCH_ROOT:-$repo_root/.ansible}"
+    mkdir -p "$test_scratch_root"
+    tmp_ansible="$(mktemp -d "$test_scratch_root/container.XXXXXXXX")"
+    ;;
+  *)
+    printf 'Unsupported PLATFORM_CONFIG_CONTAINER_PROFILE: %s\n' "$profile" >&2
+    exit 2
+    ;;
+esac
 
 if [[ $# -eq 0 ]]; then
   set -- bash
 fi
 
 if ! podman image exists "$image" >/dev/null 2>&1; then
-  podman build -f "$repo_root/$containerfile" -t "$image" "$repo_root"
+  run_managed podman build -f "$repo_root/$containerfile" -t "$image" "$repo_root"
 fi
 
 podman_args=(
@@ -36,29 +104,49 @@ podman_args=(
   --env HOME=/tmp/platform-home
   --env ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.ansible/collections
   --env "ANSIBLE_SSH_COMMON_ARGS=$ansible_ssh_common_args"
-  --volume "$repo_root:/workspace"
   --volume "$tmp_home:/tmp/platform-home:rw"
 )
 
-if [[ -d "$private_root" ]]; then
-  podman_args+=(--volume "$private_root:/platform-private:ro")
-  podman_args+=(--volume "$private_root:/tmp/platform-home/Projects/public/platform-private:ro")
-fi
+if [[ $profile == test ]]; then
+  pytest_addopts="${PYTEST_ADDOPTS:-} -p no:cacheprovider"
+  podman_args+=(
+    --env PLATFORM_CONFIG_CONTAINER_PROFILE=test
+    --env "PLATFORM_CONFIG_EXPECT_UID=$(id -u)"
+    --env "PLATFORM_CONFIG_EXPECT_GID=$(id -g)"
+    --env PYTHONDONTWRITEBYTECODE=1
+    --env "PYTEST_ADDOPTS=$pytest_addopts"
+    --volume "$repo_root:/workspace:ro"
+    --volume "$tmp_ansible:/workspace/.ansible:rw"
+  )
+else
+  podman_args+=(--volume "$repo_root:/workspace")
 
-if [[ -d "$HOME/.ssh" ]]; then
-  podman_args+=(--volume "$HOME/.ssh:/tmp/platform-home/.ssh:ro")
-fi
+  if [[ -d "$private_root" ]]; then
+    podman_args+=(--volume "$private_root:/platform-private:ro")
+    podman_args+=(--volume "$private_root:/tmp/platform-home/Projects/public/platform-private:ro")
+  fi
 
-if [[ -d "$secret_root" ]]; then
-  podman_args+=(--volume "$secret_root:/tmp/platform-home/.config/platform-infrastructure:ro")
-fi
+  if [[ -d "$HOME/.ssh" ]]; then
+    podman_args+=(--volume "$HOME/.ssh:/tmp/platform-home/.ssh:ro")
+  fi
 
-if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-  podman_args+=(--env SSH_AUTH_SOCK=/tmp/ssh-agent --volume "$SSH_AUTH_SOCK:/tmp/ssh-agent")
+  if [[ -d "$secret_root" ]]; then
+    podman_args+=(--volume "$secret_root:/tmp/platform-home/.config/platform-infrastructure:ro")
+  fi
+
+  if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    podman_args+=(--env SSH_AUTH_SOCK=/tmp/ssh-agent --volume "$SSH_AUTH_SOCK:/tmp/ssh-agent")
+  fi
 fi
 
 if [[ -t 0 && -t 1 ]]; then
   podman_args+=(-it)
 fi
 
-exec podman "${podman_args[@]}" "$image" "$@"
+if run_managed podman "${podman_args[@]}" "$image" "$@"; then
+  status=0
+else
+  status=$?
+fi
+
+exit "$status"

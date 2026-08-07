@@ -21,6 +21,7 @@ Required local tools:
 - Podman on the workstation or CI runner
 - Git and Make
 - Ansible from `requirements-dev.txt`, installed inside `Containerfile.dev`
+- pytest and direct test dependencies from `requirements-test.txt`, installed inside `Containerfile.dev`
 - Ansible Galaxy collections from `requirements.yml`, installed inside `Containerfile.dev`
 - Git when using `vendor/platform-k8s-bastion` as a submodule
 
@@ -32,6 +33,9 @@ make syntax ENV=dev
 make syntax ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml
 make lint
 make yamllint
+make check-dev-toolchain
+make check-test-container-profile
+make check-container-wrapper
 make test
 make test-keepalived-vip-rocky
 make test-podman-host-rocky
@@ -44,7 +48,11 @@ make test-openbao-image
 make test-openbao-rocky
 ```
 
-`ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. The Make targets run tool-dependent checks in the development container, and their configuration excludes `.ansible/` and the vendored bastion runtime.
+`ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. These Make targets use the development image through a sanitized test profile: the public repository is mounted read-only at `/workspace`, invocation-local writable state is overlaid at `/workspace/.ansible`, and private configuration, SSH files, the external secret store, the SSH agent, and the Podman socket are not exposed. Their configuration excludes `.ansible/` and the vendored bastion runtime.
+
+`make check-dev-toolchain` reports the Python, pytest, Ansible, lint, shell, crypto, and GNU utility versions used by tests and runs `python -m pip check`. `make check-test-container-profile` verifies the sanitized mount, identity, cache, executable-scratch, and secret-isolation contract. `make check-container-wrapper` verifies success, failure, SIGINT/SIGTERM interruption status, and temporary-state cleanup. All three checks are included in `make verify`.
+
+Run `make deps` after changing `Containerfile.dev`, `requirements-dev.txt`, `requirements-test.txt`, or `requirements.yml`. The generic container wrapper builds only when the local image is absent; it does not detect a stale existing image.
 
 `make test-keepalived-vip-rocky` is an opt-in integration check outside
 `make verify`. It downloads packages, starts a rootless disposable Rocky 10.1
@@ -134,12 +142,16 @@ clusters, an unready ownership contract, invalid component configuration, and
 any requested service activation before a role can mutate a host. It does not
 exercise real packages or services.
 
-The dev container mounts this repository at `/workspace`. If
+Operational and interactive dev-container commands mount this repository writable at `/workspace`. If
 `../platform-private` exists next to the repository, it is mounted read-only at
 `/platform-private` so the default relative private paths still work from
 `/workspace`. If `~/.config/platform-infrastructure` exists, it is mounted
 read-only under the container home so env files that derive outside-Git secret
 paths from `$HOME` continue to work.
+
+Automated lint and default test targets use the sanitized profile described
+above instead of these operational mounts. Host-Podman integration targets stay
+outside the dev container and remain opt-in.
 
 See [Operator Runbook](operator-runbook.md) for the full homelab and dev bring-up sequence.
 

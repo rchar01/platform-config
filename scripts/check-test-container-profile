@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  printf 'Test container profile check failed: %s\n' "$1" >&2
+  exit 1
+}
+
+[[ ${PLATFORM_CONFIG_CONTAINER_PROFILE:-} == test ]] || fail 'test profile marker is missing'
+[[ ${PYTHONDONTWRITEBYTECODE:-} == 1 ]] || fail 'Python bytecode writes are not disabled'
+[[ ${PYTEST_ADDOPTS:-} == *'-p no:cacheprovider'* ]] || fail 'pytest cache provider is not disabled'
+[[ -z ${SSH_AUTH_SOCK:-} ]] || fail 'SSH agent is exposed'
+[[ $(id -u) == ${PLATFORM_CONFIG_EXPECT_UID:-unset} ]] || fail 'container UID does not match host UID'
+[[ $(id -g) == ${PLATFORM_CONFIG_EXPECT_GID:-unset} ]] || fail 'container GID does not match host GID'
+
+workspace_options="$(findmnt -n -o OPTIONS --target /workspace)"
+ansible_options="$(findmnt -n -o OPTIONS --target /workspace/.ansible)"
+[[ ,$workspace_options, == *,ro,* ]] || fail '/workspace is not read-only'
+[[ ,$ansible_options, == *,rw,* ]] || fail '/workspace/.ansible is not writable'
+[[ ! -w /workspace ]] || fail '/workspace is writable'
+[[ -w /workspace/.ansible ]] || fail '/workspace/.ansible is not writable by the test user'
+
+for forbidden_path in \
+  /platform-private \
+  /tmp/platform-home/.ssh \
+  /tmp/platform-home/.config/platform-infrastructure \
+  /tmp/ssh-agent \
+  /run/podman/podman.sock \
+  "/run/user/$(id -u)/podman/podman.sock"; do
+  [[ ! -e $forbidden_path && ! -L $forbidden_path ]] || fail "forbidden path is exposed: $forbidden_path"
+done
+
+probe="/workspace/.ansible/profile-check.$$"
+printf '#!/bin/sh\nexit 0\n' >"$probe"
+chmod 0700 "$probe"
+"$probe" || fail '/workspace/.ansible does not permit fixture execution'
+rm -f "$probe"
+
+printf 'Test container profile check passed\n'

@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.12-slim
+FROM docker.io/library/python:3.14.7-slim-trixie@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910
 
 ENV ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.ansible/collections \
     DEBIAN_FRONTEND=noninteractive \
@@ -10,15 +10,25 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
+        coreutils \
+        diffutils \
+        findutils \
+        gawk \
         git \
+        grep \
         make \
         openssh-client \
+        openssl \
+        sed \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
-COPY requirements-dev.txt requirements.yml /tmp/platform-config/
-RUN pip install -r /tmp/platform-config/requirements-dev.txt \
+COPY requirements-dev.txt requirements-test.txt requirements.yml /tmp/platform-config/
+RUN pip install \
+        -r /tmp/platform-config/requirements-dev.txt \
+        -r /tmp/platform-config/requirements-test.txt \
     && ansible-galaxy collection install \
         -r /tmp/platform-config/requirements.yml \
         -p /usr/share/ansible/collections
