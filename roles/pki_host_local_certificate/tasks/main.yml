@@ -1,0 +1,6 @@
+---
+- name: Refuse implicit host-local certificate role execution
+  ansible.builtin.fail:
+    msg: >-
+      Select the structural trust, request, or activate task entry point.
+      Normal role execution is intentionally unavailable.

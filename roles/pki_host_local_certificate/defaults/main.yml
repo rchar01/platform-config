@@ -1,0 +1,41 @@
+---
+pki_host_local_certificate_service: ""
+pki_host_local_certificate_target: ""
+pki_host_local_certificate_operation: ""
+pki_host_local_certificate_profile: server-p384-sha384-v1
+pki_host_local_certificate_inventory_sha256: ""
+pki_host_local_certificate_current_cert_sha256: ""
+pki_host_local_certificate_current_cert_path: ""
+pki_host_local_certificate_requester_principal: ""
+pki_host_local_certificate_response_principal: ""
+
+pki_host_local_certificate_common_name: ""
+pki_host_local_certificate_dns_sans: []
+pki_host_local_certificate_ip_sans: []
+pki_host_local_certificate_validity_days: 0
+pki_host_local_certificate_request_ttl_seconds: 0
+
+pki_host_local_certificate_request_signing_key_path: /etc/ssh/ssh_host_ed25519_key
+pki_host_local_certificate_request_namespace: platform-pki-csr-request-v1
+pki_host_local_certificate_deployment_signing_key_path: /etc/ssh/ssh_host_ed25519_key
+pki_host_local_certificate_deployment_namespace: platform-pki-csr-deployment-v1
+
+pki_host_local_certificate_trust_paths: {}
+pki_host_local_certificate_trust_sha256: {}
+pki_host_local_certificate_trust_sources: {}
+pki_host_local_certificate_trust_id: ""
+
+pki_host_local_certificate_state_root: ""
+pki_host_local_certificate_pending_root: ""
+pki_host_local_certificate_versions_root: ""
+pki_host_local_certificate_controller_exchange_root: ""
+
+pki_host_local_certificate_transport: ""
+pki_host_local_certificate_transport_host_key_sha256: ""
+
+pki_host_local_certificate_request_id: ""
+pki_host_local_certificate_artifact_manifest_sha256: ""
+pki_host_local_certificate_validation_boundary_sha256: ""
+pki_host_local_certificate_rollback_seconds: 0
+pki_host_local_certificate_request_helper_path: /usr/local/libexec/platform-pki-host-local-request
+pki_host_local_certificate_trust_helper_path: /usr/local/libexec/platform-pki-host-local-trust

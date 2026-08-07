@@ -1,0 +1,1162 @@
+#!/usr/bin/env python3
+"""Install one reviewed schema-2 host-local trust tree."""
+
+import argparse
+import base64
+import binascii
+import ctypes
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import signal
+import stat
+import struct
+import sys
+import time
+
+
+TRUST_NAMES = (
+    "approvers.allowed_signers",
+    "deployers.allowed_signers",
+    "policy",
+    "requesters.allowed_signers",
+    "responses.allowed_signers",
+)
+POLICY_PREFIX = (
+    "schema=2",
+    "request_namespace=platform-pki-csr-request-v1",
+    "approval_namespace=platform-pki-csr-approval-v1",
+    "response_namespace=platform-pki-csr-response-v1",
+    "deployment_namespace=platform-pki-csr-deployment-v1",
+    "request_max_age_seconds=604800",
+    "sole_operator_min_delay_seconds=86400",
+    "approval_max_age_seconds=86400",
+    "deployment_max_age_seconds=86400",
+    "clock_skew_seconds=300",
+)
+JOURNAL_FIELDS = (
+    "schema",
+    "trust_id",
+    "transaction_id",
+    "ingress_name",
+    "stage_name",
+    "target_name",
+    "ingress_device",
+    "ingress_inode",
+    "stage_device",
+    "stage_inode",
+    "approvers_sha256",
+    "deployers_sha256",
+    "policy_sha256",
+    "requesters_sha256",
+    "responses_sha256",
+)
+FINAL_STATE_NAMES = {
+    "lock",
+    "trust",
+    "active",
+    "rollback",
+    "validation-boundary",
+    "evidence",
+}
+EVIDENCE_FILES = {
+    "deployment",
+    "deployment.sig",
+    "validation-boundary",
+    "validation-result",
+    "validation-result.sig",
+}
+IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z")
+TRUST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+HEX_256_RE = re.compile(r"[0-9a-f]{64}\Z")
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+TRANSACTION_RE = re.compile(r"[0-9a-f]{32}\Z")
+PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9_@%+=:,.-]+\Z")
+MAX_TRUST_SIZE = 65536
+MAX_LIFECYCLE_SIZE = 1024 * 1024
+
+
+class TrustError(Exception):
+    pass
+
+
+def fail(message):
+    raise TrustError(message)
+
+
+def file_identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        metadata.st_gid,
+        stat.S_IMODE(metadata.st_mode),
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def directory_identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        metadata.st_gid,
+        stat.S_IMODE(metadata.st_mode),
+    )
+
+
+def trusted_ancestor_owners():
+    owners = {0}
+    try:
+        with open("/proc/self/uid_map", encoding="ascii") as stream:
+            uid_map = [line.split() for line in stream if line.strip()]
+        if uid_map != [["0", "0", "4294967295"]]:
+            with open("/proc/sys/kernel/overflowuid", encoding="ascii") as stream:
+                owners.add(int(stream.read().strip()))
+    except (OSError, ValueError):
+        pass
+    return owners
+
+
+def canonical_path(value, label):
+    if (
+        not value
+        or any(ord(char) < 0x21 or ord(char) > 0x7E for char in value)
+        or not value.startswith("/")
+        or value == "/"
+        or os.path.normpath(value) != value
+        or any(not PATH_COMPONENT_RE.fullmatch(part) for part in value.split("/")[1:])
+    ):
+        fail(f"{label} must be an absolute canonical non-root path")
+    return value
+
+
+class PinnedDirectory:
+    def __init__(self, path, descriptors, components):
+        self.path = path
+        self.descriptors = descriptors
+        self.components = components
+        self.descriptor = descriptors[-1]
+        self.identity = directory_identity(os.fstat(self.descriptor))
+
+    def recheck(self, label):
+        for index, component in enumerate(self.components):
+            try:
+                actual = os.stat(component, dir_fd=self.descriptors[index], follow_symlinks=False)
+            except OSError as exc:
+                fail(f"cannot reinspect {label}: {exc.strerror}")
+            expected = directory_identity(os.fstat(self.descriptors[index + 1]))
+            if not stat.S_ISDIR(actual.st_mode) or directory_identity(actual) != expected:
+                fail(f"{label} path binding changed")
+        if directory_identity(os.fstat(self.descriptor)) != self.identity:
+            fail(f"{label} descriptor identity changed")
+
+    def close(self):
+        for descriptor in reversed(self.descriptors):
+            os.close(descriptor)
+
+
+def pin_absolute_directory(path, label):
+    canonical_path(path, label)
+    components = path.split("/")[1:]
+    descriptors = [os.open("/", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))]
+    try:
+        for component in components:
+            descriptor = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptors[-1],
+            )
+            descriptors.append(descriptor)
+        pinned = PinnedDirectory(path, descriptors, components)
+        require_private_dir_fd(pinned.descriptor, label)
+        pinned.recheck(label)
+        return pinned
+    except Exception:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+
+
+def require_private_dir_fd(descriptor, label):
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        fail(f"{label} must be a root-owned mode-0700 directory")
+    return directory_identity(metadata)
+
+
+def open_private_dir_at(parent_descriptor, name, label):
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+    except OSError as exc:
+        fail(f"cannot open {label}: {exc.strerror}")
+    try:
+        identity = require_private_dir_fd(descriptor, label)
+        require_dir_binding(parent_descriptor, name, descriptor, identity, label)
+        return descriptor, identity
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def require_dir_binding(parent_descriptor, name, descriptor, expected, label):
+    try:
+        actual = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        fail(f"cannot reinspect {label}: {exc.strerror}")
+    if (
+        not stat.S_ISDIR(actual.st_mode)
+        or directory_identity(actual) != expected
+        or directory_identity(os.fstat(descriptor)) != expected
+    ):
+        fail(f"{label} path binding changed")
+
+
+def scan_directory_fd(descriptor, label):
+    try:
+        return {entry.name: entry.stat(follow_symlinks=False) for entry in os.scandir(descriptor)}
+    except OSError as exc:
+        fail(f"cannot inspect {label}: {exc.strerror}")
+
+
+def fsync_fd(descriptor, label):
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        fail(f"cannot fsync {label}: {exc.strerror}")
+
+
+def read_file_at(parent_descriptor, name, label, maximum=MAX_TRUST_SIZE, allow_empty=False, keep_open=False):
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NOATIME", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_descriptor)
+    except OSError as exc:
+        fail(f"cannot open {label}: {exc.strerror}")
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or before.st_gid != 0
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or (before.st_size <= 0 and not allow_empty)
+            or before.st_size > maximum
+        ):
+            fail(f"{label} must be a root-owned singly-linked mode-0600 bounded regular file")
+        data = b""
+        while len(data) <= maximum:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - len(data)))
+            if not chunk:
+                break
+            data += chunk
+        snapshot = file_identity(before)
+        if file_identity(os.fstat(descriptor)) != snapshot or len(data) != before.st_size:
+            fail(f"{label} changed while being read")
+        require_file_binding(parent_descriptor, name, descriptor, snapshot, label)
+        if keep_open:
+            return data, snapshot, descriptor
+        os.close(descriptor)
+        return data, snapshot
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def require_file_binding(parent_descriptor, name, descriptor, expected, label):
+    try:
+        actual = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        fail(f"cannot reinspect {label}: {exc.strerror}")
+    if file_identity(actual) != expected or file_identity(os.fstat(descriptor)) != expected:
+        fail(f"{label} path binding changed")
+
+
+def require_file_snapshot(parent_descriptor, name, expected, label):
+    try:
+        actual = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError as exc:
+        fail(f"cannot reinspect {label}: {exc.strerror}")
+    if file_identity(actual) != expected:
+        fail(f"{label} path binding changed")
+
+
+def validate_text(data, label):
+    if (
+        not data
+        or len(data) > MAX_TRUST_SIZE
+        or not data.endswith(b"\n")
+        or data.endswith(b"\n\n")
+        or any(byte < 0x20 and byte != 0x0A for byte in data)
+        or any(byte > 0x7E for byte in data)
+    ):
+        fail(f"{label} must be bounded printable ASCII with one trailing newline")
+    return data.decode("ascii")
+
+
+def decode_ssh_string(blob, offset, label):
+    if offset + 4 > len(blob):
+        fail(f"{label} contains a truncated Ed25519 public-key blob")
+    size = struct.unpack(">I", blob[offset : offset + 4])[0]
+    offset += 4
+    if offset + size > len(blob):
+        fail(f"{label} contains a truncated Ed25519 public-key blob")
+    return blob[offset : offset + size], offset + size
+
+
+def parse_allowed_signers(data, label):
+    records = {}
+    for line in validate_text(data, label).splitlines():
+        parts = line.split(" ")
+        if len(parts) != 3 or not IDENTITY_RE.fullmatch(parts[0]) or parts[1] != "ssh-ed25519":
+            fail(f"{label} contains a noncanonical no-options signer record")
+        if parts[0] in records:
+            fail(f"{label} contains a duplicate principal")
+        try:
+            blob = base64.b64decode(parts[2], validate=True)
+        except (binascii.Error, ValueError):
+            fail(f"{label} contains invalid base64 public-key data")
+        if base64.b64encode(blob).decode("ascii") != parts[2]:
+            fail(f"{label} contains noncanonical base64 public-key data")
+        algorithm, offset = decode_ssh_string(blob, 0, label)
+        public_key, offset = decode_ssh_string(blob, offset, label)
+        if algorithm != b"ssh-ed25519" or len(public_key) != 32 or offset != len(blob):
+            fail(f"{label} contains an invalid Ed25519 OpenSSH public-key blob")
+        records[parts[0]] = parts[2]
+    if not records:
+        fail(f"{label} must contain at least one signer")
+    return records
+
+
+def validate_policy(data, response_principal):
+    lines = validate_text(data, "trust policy").splitlines()
+    if len(lines) != 12 or tuple(lines[:10]) != POLICY_PREFIX:
+        fail("trust policy does not match the canonical schema-2 contract")
+    approver = re.fullmatch(r"approver_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[10])
+    response = re.fullmatch(r"response_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[11])
+    if not approver or not response or response.group(1) != response_principal:
+        fail("trust policy principals do not match the bootstrap contract")
+    return approver.group(1)
+
+
+def validate_tree_fd(descriptor, parent_descriptor, name, expected_identity, bindings, args, label):
+    require_dir_binding(parent_descriptor, name, descriptor, expected_identity, label)
+    entries = scan_directory_fd(descriptor, label)
+    if set(entries) != set(TRUST_NAMES):
+        fail(f"{label} must contain exactly the schema-2 five-file trust set")
+    contents = {}
+    snapshots = {}
+    for trust_name in TRUST_NAMES:
+        contents[trust_name], snapshots[trust_name] = read_file_at(
+            descriptor, trust_name, f"{label} file {trust_name}"
+        )
+        if hashlib.sha256(contents[trust_name]).hexdigest() != bindings[trust_name][1]:
+            fail(f"{label} digest mismatch for {trust_name}")
+    approver_principal = validate_policy(contents["policy"], args.response_principal)
+    requesters = parse_allowed_signers(contents["requesters.allowed_signers"], "requester trust")
+    approvers = parse_allowed_signers(contents["approvers.allowed_signers"], "approver trust")
+    responses = parse_allowed_signers(contents["responses.allowed_signers"], "response trust")
+    deployers = parse_allowed_signers(contents["deployers.allowed_signers"], "deployment trust")
+    if args.requester_principal not in requesters:
+        fail("requester principal is absent from requester trust")
+    if args.requester_principal not in deployers:
+        fail("requester principal is absent from deployment trust")
+    if set(approvers) != {approver_principal} or set(responses) != {args.response_principal}:
+        fail("approver or response trust does not exactly match the policy-pinned principal")
+    for trust_name in TRUST_NAMES:
+        require_file_snapshot(descriptor, trust_name, snapshots[trust_name], f"{label} file {trust_name}")
+    require_dir_binding(parent_descriptor, name, descriptor, expected_identity, label)
+    return contents, snapshots
+
+
+def ensure_directory_chain(path):
+    components = path.split("/")[1:]
+    current = "/"
+    missing = False
+    created = False
+    parent_metadata = os.lstat("/")
+    ancestor_owners = trusted_ancestor_owners()
+    for component in components:
+        current = os.path.join(current, component)
+        if not missing:
+            try:
+                metadata = os.lstat(current)
+            except FileNotFoundError:
+                mode = stat.S_IMODE(parent_metadata.st_mode)
+                if (
+                    parent_metadata.st_uid not in ancestor_owners
+                    or parent_metadata.st_gid not in ancestor_owners
+                    or mode & 0o022 and not mode & stat.S_ISVTX
+                ):
+                    fail("nearest existing state parent must be root-owned and not group- or world-writable")
+                missing = True
+            else:
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                    fail(f"state path component is unsafe: {current}")
+                mode = stat.S_IMODE(metadata.st_mode)
+                if metadata.st_uid not in ancestor_owners or metadata.st_gid not in ancestor_owners:
+                    fail(f"state path component has an unsafe owner: {current}")
+                if mode & 0o022 and not mode & stat.S_ISVTX:
+                    fail(f"state path component is unsafely writable: {current}")
+                parent_metadata = metadata
+                continue
+        parent = os.path.dirname(current)
+        try:
+            os.mkdir(current, 0o700)
+        except OSError as exc:
+            fail(f"cannot create protected state directory: {exc.strerror}")
+        parent_descriptor = os.open(
+            parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            fsync_fd(parent_descriptor, "parent of created state directory")
+        finally:
+            os.close(parent_descriptor)
+        created = True
+    return created
+
+
+def create_private_dir_at(parent_descriptor, name, label):
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_descriptor)
+    except OSError as exc:
+        fail(f"cannot create {label}: {exc.strerror}")
+    fsync_fd(parent_descriptor, f"parent of {label}")
+    return open_private_dir_at(parent_descriptor, name, label)
+
+
+def create_lock_at(state_descriptor):
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open("lock", flags, 0o600, dir_fd=state_descriptor)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        fail(f"cannot create canonical state lock: {exc.strerror}")
+    try:
+        fsync_fd(descriptor, "canonical state lock")
+    finally:
+        os.close(descriptor)
+    fsync_fd(state_descriptor, "state root")
+    return True
+
+
+def acquire_lock_at(state_descriptor):
+    data, snapshot, descriptor = read_file_at(
+        state_descriptor, "lock", "canonical state lock", maximum=0, allow_empty=True, keep_open=True
+    )
+    if data:
+        os.close(descriptor)
+        fail("canonical state lock must be empty")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        fail("another host-local request operation holds the state lock")
+    return descriptor, snapshot
+
+
+def write_file_at(parent_descriptor, name, data, label):
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(name, flags, 0o600, dir_fd=parent_descriptor)
+        offset = 0
+        while offset < len(data):
+            offset += os.write(descriptor, data[offset:])
+        fsync_fd(descriptor, label)
+        metadata = os.fstat(descriptor)
+        snapshot = file_identity(metadata)
+        require_file_binding(parent_descriptor, name, descriptor, snapshot, label)
+        return descriptor, snapshot
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        fail(f"cannot write {label}: {exc.strerror}")
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+
+
+def rename_noreplace(source_descriptor, source_name, destination_descriptor, destination_name, label):
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = getattr(libc, "renameat2", None)
+    if function is None:
+        fail("no-clobber directory publication is unavailable on this platform")
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    if function(source_descriptor, os.fsencode(source_name), destination_descriptor, os.fsencode(destination_name), 1) != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            fail(f"{label} destination already exists; trust rotation is prohibited")
+        fail(f"no-clobber {label} failed: {os.strerror(error)}")
+
+
+def fault(point):
+    if os.environ.get("PLATFORM_PKI_TRUST_PAUSE_AT") == point:
+        time.sleep(2)
+    if os.environ.get("PLATFORM_PKI_TRUST_CRASH_AT") == point:
+        os.kill(os.getpid(), signal.SIGKILL)
+    if os.environ.get("PLATFORM_PKI_TRUST_FAIL_AT") == point:
+        fail(f"injected trust failure at {point}")
+
+
+def serialize_journal(values):
+    return "".join(f"{name}={values[name]}\n" for name in JOURNAL_FIELDS).encode("ascii")
+
+
+def parse_journal(data):
+    lines = validate_text(data, "trust installation journal").splitlines()
+    if len(lines) != len(JOURNAL_FIELDS):
+        fail("trust installation journal has an invalid field count")
+    values = {}
+    for expected, line in zip(JOURNAL_FIELDS, lines):
+        if "=" not in line:
+            fail("trust installation journal is malformed")
+        name, value = line.split("=", 1)
+        if name != expected or not value:
+            fail("trust installation journal has invalid field order")
+        values[name] = value
+    return values
+
+
+def journal_values(args, transaction_id, ingress_identity, stage_identity, bindings):
+    return {
+        "schema": "2",
+        "trust_id": args.trust_id,
+        "transaction_id": transaction_id,
+        "ingress_name": f".ingress-{args.trust_id}",
+        "stage_name": f".stage-{args.trust_id}-{transaction_id}",
+        "target_name": args.trust_id,
+        "ingress_device": str(ingress_identity[0]),
+        "ingress_inode": str(ingress_identity[1]),
+        "stage_device": str(stage_identity[0]),
+        "stage_inode": str(stage_identity[1]),
+        "approvers_sha256": bindings["approvers.allowed_signers"][1],
+        "deployers_sha256": bindings["deployers.allowed_signers"][1],
+        "policy_sha256": bindings["policy"][1],
+        "requesters_sha256": bindings["requesters.allowed_signers"][1],
+        "responses_sha256": bindings["responses.allowed_signers"][1],
+    }
+
+
+def validate_journal(values, args, bindings):
+    expected = journal_values(
+        args,
+        values["transaction_id"],
+        (int(values["ingress_device"]), int(values["ingress_inode"])),
+        (int(values["stage_device"]), int(values["stage_inode"])),
+        bindings,
+    )
+    if (
+        values["schema"] != "2"
+        or not TRANSACTION_RE.fullmatch(values["transaction_id"])
+        or values != expected
+    ):
+        fail("trust installation journal does not match the requested frozen trust identity")
+
+
+def remove_file_at(parent_descriptor, name, expected, label):
+    require_file_snapshot(parent_descriptor, name, expected, label)
+    try:
+        os.unlink(name, dir_fd=parent_descriptor)
+    except OSError as exc:
+        fail(f"cannot remove {label}: {exc.strerror}")
+
+
+def remove_tree_at(parent_descriptor, name, descriptor, identity, snapshots, label):
+    require_dir_binding(parent_descriptor, name, descriptor, identity, label)
+    for index, child_name in enumerate(sorted(snapshots)):
+        remove_file_at(descriptor, child_name, snapshots[child_name], f"{label} file {child_name}")
+        if index == 0 and label in {"target trust ingress", "journal-bound trust ingress"}:
+            fault("after-ingress-cleanup-file")
+    fsync_fd(descriptor, label)
+    require_dir_binding(parent_descriptor, name, descriptor, identity, label)
+    try:
+        os.rmdir(name, dir_fd=parent_descriptor)
+    except OSError as exc:
+        fail(f"cannot remove {label}: {exc.strerror}")
+    fsync_fd(parent_descriptor, f"parent of {label}")
+
+
+def stage_snapshots(stage_descriptor, transaction_id):
+    entries = scan_directory_fd(stage_descriptor, "journal-owned trust stage")
+    prefix = f".partial-{transaction_id}-"
+    if any(name not in TRUST_NAMES and not name.startswith(prefix) for name in entries):
+        fail("journal-owned trust stage contains unexpected state")
+    snapshots = {}
+    for name, metadata in entries.items():
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > MAX_TRUST_SIZE
+        ):
+            fail(f"journal-owned trust stage file is unsafe: {name}")
+        snapshots[name] = file_identity(metadata)
+    return snapshots
+
+
+def partial_ingress_snapshots(ingress_descriptor):
+    entries = scan_directory_fd(ingress_descriptor, "journal-bound partial trust ingress")
+    if any(name not in TRUST_NAMES for name in entries):
+        fail("journal-bound partial trust ingress contains unexpected state")
+    snapshots = {}
+    for name, metadata in entries.items():
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size <= 0
+            or metadata.st_size > MAX_TRUST_SIZE
+        ):
+            fail(f"journal-bound partial trust ingress file is unsafe: {name}")
+        snapshots[name] = file_identity(metadata)
+    return snapshots
+
+
+def recover_empty_unjournaled_stage(trust_descriptor, trust_id, trust_entries):
+    pattern = re.compile(rf"\.stage-{re.escape(trust_id)}-([0-9a-f]{{32}})\Z")
+    candidates = [name for name in trust_entries if pattern.fullmatch(name)]
+    if not candidates:
+        return trust_entries, False
+    if len(candidates) != 1:
+        fail("multiple unjournaled trust stages require manual recovery")
+    name = candidates[0]
+    if trust_entries != {f".ingress-{trust_id}", name}:
+        fail("ambiguous unjournaled trust stage state requires manual recovery")
+    descriptor, identity = open_private_dir_at(
+        trust_descriptor, name, "unjournaled empty trust stage"
+    )
+    try:
+        if scan_directory_fd(descriptor, "unjournaled empty trust stage"):
+            fail("nonempty unjournaled trust stage requires manual recovery")
+        require_dir_binding(
+            trust_descriptor, name, descriptor, identity, "unjournaled empty trust stage"
+        )
+        os.rmdir(name, dir_fd=trust_descriptor)
+        fsync_fd(trust_descriptor, "state trust root")
+    except OSError as exc:
+        fail(f"cannot recover unjournaled empty trust stage: {exc.strerror}")
+    finally:
+        os.close(descriptor)
+    return trust_entries - {name}, True
+
+
+def validate_bindings(args):
+    if not TRUST_ID_RE.fullmatch(args.trust_id):
+        fail("trust ID is not canonical")
+    if not IDENTITY_RE.fullmatch(args.requester_principal) or not IDENTITY_RE.fullmatch(args.response_principal):
+        fail("trust principals are not canonical lowercase identity text")
+    supplied = {}
+    target_root = os.path.join(args.state_root, "trust", args.trust_id)
+    for name, path, digest in args.trust_binding:
+        if name in supplied or name not in TRUST_NAMES:
+            fail("trust bindings must name each schema-2 trust file exactly once")
+        canonical_path(path, f"target trust path {name}")
+        if path != os.path.join(target_root, name) or not HEX_256_RE.fullmatch(digest):
+            fail(f"target trust binding is not canonical for {name}")
+        supplied[name] = (path, digest)
+    if set(supplied) != set(TRUST_NAMES):
+        fail("exactly five target trust bindings are required")
+    return supplied
+
+
+def validate_lifecycle_file(state_descriptor, name):
+    read_file_at(state_descriptor, name, f"shared lifecycle file {name}", maximum=MAX_LIFECYCLE_SIZE)
+
+
+def validate_evidence(state_descriptor):
+    evidence_descriptor, evidence_identity = open_private_dir_at(state_descriptor, "evidence", "shared evidence root")
+    try:
+        for request_id, request_metadata in scan_directory_fd(evidence_descriptor, "shared evidence root").items():
+            if not REQUEST_ID_RE.fullmatch(request_id) or not stat.S_ISDIR(request_metadata.st_mode):
+                fail("shared evidence root contains an invalid request directory")
+            request_descriptor, request_identity = open_private_dir_at(evidence_descriptor, request_id, "shared evidence request directory")
+            try:
+                for digest, digest_metadata in scan_directory_fd(request_descriptor, "shared evidence request directory").items():
+                    if not HEX_256_RE.fullmatch(digest) or not stat.S_ISDIR(digest_metadata.st_mode):
+                        fail("shared evidence request directory contains an invalid deployment directory")
+                    deployment_descriptor, deployment_identity = open_private_dir_at(
+                        request_descriptor, digest, "shared evidence deployment directory"
+                    )
+                    try:
+                        if set(scan_directory_fd(deployment_descriptor, "shared evidence deployment directory")) != EVIDENCE_FILES:
+                            fail("shared evidence deployment directory has an invalid file set")
+                        for file_name in EVIDENCE_FILES:
+                            read_file_at(
+                                deployment_descriptor,
+                                file_name,
+                                f"shared evidence file {file_name}",
+                                maximum=MAX_LIFECYCLE_SIZE,
+                            )
+                        require_dir_binding(
+                            request_descriptor,
+                            digest,
+                            deployment_descriptor,
+                            deployment_identity,
+                            "shared evidence deployment directory",
+                        )
+                    finally:
+                        os.close(deployment_descriptor)
+                require_dir_binding(
+                    evidence_descriptor,
+                    request_id,
+                    request_descriptor,
+                    request_identity,
+                    "shared evidence request directory",
+                )
+            finally:
+                os.close(request_descriptor)
+        require_dir_binding(state_descriptor, "evidence", evidence_descriptor, evidence_identity, "shared evidence root")
+    finally:
+        os.close(evidence_descriptor)
+
+
+def validate_final_state(state, state_descriptor, trust_descriptor, trust_identity, bindings, args):
+    state.recheck("state root")
+    entries = set(scan_directory_fd(state_descriptor, "state root"))
+    if not {"lock", "trust"}.issubset(entries) or not entries.issubset(FINAL_STATE_NAMES):
+        fail("state root contains unexpected or unresolved lifecycle state")
+    require_dir_binding(state_descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+    if set(scan_directory_fd(trust_descriptor, "state trust root")) != {args.trust_id}:
+        fail("state trust root contains another trust ID or unexpected state")
+    target_descriptor, target_identity = open_private_dir_at(trust_descriptor, args.trust_id, "installed trust tree")
+    try:
+        validate_tree_fd(
+            target_descriptor, trust_descriptor, args.trust_id, target_identity, bindings, args, "installed trust tree"
+        )
+    finally:
+        os.close(target_descriptor)
+    for name in ("active", "rollback", "validation-boundary"):
+        if name in entries:
+            validate_lifecycle_file(state_descriptor, name)
+    if "evidence" in entries:
+        validate_evidence(state_descriptor)
+    state.recheck("state root")
+    require_dir_binding(state_descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+
+
+def prepare(args):
+    canonical_path(args.state_root, "state root")
+    if not TRUST_ID_RE.fullmatch(args.trust_id):
+        fail("trust ID is not canonical")
+    changed = ensure_directory_chain(args.state_root)
+    state = pin_absolute_directory(args.state_root, "state root")
+    lock_descriptor = None
+    trust_descriptor = None
+    ingress_descriptor = None
+    try:
+        changed = create_lock_at(state.descriptor) or changed
+        lock_descriptor, lock_snapshot = acquire_lock_at(state.descriptor)
+        entries = set(scan_directory_fd(state.descriptor, "state root"))
+        if not entries.issubset({"lock", "trust", "trust-install.journal"}):
+            fail("state root contains unexpected state")
+        if "trust" not in entries:
+            trust_descriptor, trust_identity = create_private_dir_at(state.descriptor, "trust", "state trust root")
+            changed = True
+        else:
+            trust_descriptor, trust_identity = open_private_dir_at(state.descriptor, "trust", "state trust root")
+        trust_entries = set(scan_directory_fd(trust_descriptor, "state trust root"))
+        allowed = {f".ingress-{args.trust_id}"}
+        if "trust-install.journal" in entries:
+            data, _, journal_descriptor = read_file_at(
+                state.descriptor, "trust-install.journal", "trust installation journal", keep_open=True
+            )
+            try:
+                values = parse_journal(data)
+            finally:
+                os.close(journal_descriptor)
+            if values["trust_id"] != args.trust_id:
+                fail("trust installation journal belongs to another trust identity")
+            allowed.add(values["stage_name"])
+        else:
+            trust_entries, recovered_orphan = recover_empty_unjournaled_stage(
+                trust_descriptor, args.trust_id, trust_entries
+            )
+            changed = changed or recovered_orphan
+        if args.trust_id in trust_entries:
+            fail("target trust is already installed; prepare cannot rotate or replace it")
+        if not trust_entries.issubset(allowed):
+            fail("state trust root contains another trust ID or unexpected state")
+        ingress_name = f".ingress-{args.trust_id}"
+        if ingress_name not in trust_entries:
+            ingress_descriptor, ingress_identity = create_private_dir_at(
+                trust_descriptor, ingress_name, "target trust ingress"
+            )
+            changed = True
+        else:
+            ingress_descriptor, ingress_identity = open_private_dir_at(
+                trust_descriptor, ingress_name, "target trust ingress"
+            )
+            ingress_entries = scan_directory_fd(ingress_descriptor, "target trust ingress")
+            if any(name not in TRUST_NAMES for name in ingress_entries):
+                fail("target trust ingress contains unexpected state")
+            for name in ingress_entries:
+                read_file_at(ingress_descriptor, name, f"target trust ingress file {name}")
+        state.recheck("state root")
+        require_file_binding(state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock")
+        require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        require_dir_binding(trust_descriptor, ingress_name, ingress_descriptor, ingress_identity, "target trust ingress")
+        print(
+            json.dumps(
+                {"status": "prepared" if changed else "existing", "ingress_dir": os.path.join(args.state_root, "trust", ingress_name)},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    finally:
+        if ingress_descriptor is not None:
+            os.close(ingress_descriptor)
+        if trust_descriptor is not None:
+            os.close(trust_descriptor)
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
+        state.close()
+
+
+def remove_journal(state, state_descriptor, journal_descriptor, journal_snapshot):
+    state.recheck("state root")
+    require_file_binding(
+        state_descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+    )
+    fault("before-journal-removal")
+    state.recheck("state root")
+    require_file_binding(
+        state_descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+    )
+    os.unlink("trust-install.journal", dir_fd=state_descriptor)
+    fsync_fd(state_descriptor, "state root")
+
+
+def recover(state, state_descriptor, trust_descriptor, trust_identity, args, bindings):
+    entries = set(scan_directory_fd(state_descriptor, "state root"))
+    if "trust-install.journal" not in entries:
+        return False
+    if args.check:
+        fail("trust installation recovery is required before check mode can succeed")
+    if entries != {"lock", "trust", "trust-install.journal"}:
+        fail("trust recovery found unexpected state-root entries")
+    data, journal_snapshot, journal_descriptor = read_file_at(
+        state_descriptor, "trust-install.journal", "trust installation journal", keep_open=True
+    )
+    ingress_descriptor = None
+    stage_descriptor = None
+    target_descriptor = None
+    try:
+        values = parse_journal(data)
+        validate_journal(values, args, bindings)
+        require_dir_binding(state_descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        trust_entries = set(scan_directory_fd(trust_descriptor, "state trust root"))
+        stage_exists = values["stage_name"] in trust_entries
+        target_exists = values["target_name"] in trust_entries
+        if stage_exists and target_exists:
+            fail("trust recovery found both staged and published state")
+        stage_expected = (int(values["stage_device"]), int(values["stage_inode"]))
+        if target_exists:
+            allowed_entries = {values["target_name"], values["ingress_name"]}
+            if not trust_entries.issubset(allowed_entries):
+                fail("published trust recovery found unexpected trust-root state")
+            target_descriptor, target_identity = open_private_dir_at(
+                trust_descriptor, values["target_name"], "recovered installed trust tree"
+            )
+            if target_identity[:2] != stage_expected:
+                fail("recovered installed trust tree does not match journaled stage identity")
+            validate_tree_fd(
+                target_descriptor,
+                trust_descriptor,
+                values["target_name"],
+                target_identity,
+                bindings,
+                args,
+                "recovered installed trust tree",
+            )
+            ingress_files = None
+            if values["ingress_name"] in trust_entries:
+                ingress_descriptor, ingress_identity = open_private_dir_at(
+                    trust_descriptor, values["ingress_name"], "journal-bound trust ingress"
+                )
+                if ingress_identity[:2] != (int(values["ingress_device"]), int(values["ingress_inode"])):
+                    fail("journal-bound trust ingress identity changed")
+                ingress_files = partial_ingress_snapshots(ingress_descriptor)
+            fault("before-recovery-cleanup")
+            state.recheck("state root")
+            require_dir_binding(state_descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+            require_dir_binding(
+                trust_descriptor, values["target_name"], target_descriptor, target_identity, "recovered installed trust tree"
+            )
+            require_file_binding(
+                state_descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+            )
+            if ingress_descriptor is not None:
+                require_dir_binding(
+                    trust_descriptor, values["ingress_name"], ingress_descriptor, ingress_identity, "journal-bound trust ingress"
+                )
+                remove_tree_at(
+                    trust_descriptor,
+                    values["ingress_name"],
+                    ingress_descriptor,
+                    ingress_identity,
+                    ingress_files,
+                    "journal-bound trust ingress",
+                )
+            fault("after-ingress-cleanup")
+            require_dir_binding(
+                trust_descriptor, values["target_name"], target_descriptor, target_identity, "recovered installed trust tree"
+            )
+            remove_journal(state, state_descriptor, journal_descriptor, journal_snapshot)
+            return True
+        ingress_descriptor, ingress_identity = open_private_dir_at(
+            trust_descriptor, values["ingress_name"], "journal-bound trust ingress"
+        )
+        if ingress_identity[:2] != (int(values["ingress_device"]), int(values["ingress_inode"])):
+            fail("journal-bound trust ingress identity changed")
+        if not stage_exists:
+            fail("trust recovery cannot find the exact journaled stage or published target")
+        stage_descriptor, stage_identity = open_private_dir_at(
+            trust_descriptor, values["stage_name"], "journal-owned trust stage"
+        )
+        if stage_identity[:2] != stage_expected:
+            fail("journal-owned trust stage identity changed; replacement is retained")
+        snapshots = stage_snapshots(stage_descriptor, values["transaction_id"])
+        fault("before-stage-recovery-removal")
+        state.recheck("state root")
+        require_dir_binding(state_descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        require_dir_binding(
+            trust_descriptor, values["stage_name"], stage_descriptor, stage_identity, "journal-owned trust stage"
+        )
+        require_file_binding(
+            state_descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+        )
+        remove_tree_at(
+            trust_descriptor,
+            values["stage_name"],
+            stage_descriptor,
+            stage_identity,
+            snapshots,
+            "journal-owned trust stage",
+        )
+        remove_journal(state, state_descriptor, journal_descriptor, journal_snapshot)
+        return False
+    finally:
+        if target_descriptor is not None:
+            os.close(target_descriptor)
+        if stage_descriptor is not None:
+            os.close(stage_descriptor)
+        if ingress_descriptor is not None:
+            os.close(ingress_descriptor)
+        os.close(journal_descriptor)
+
+
+def populate_stage(stage_descriptor, contents, transaction_id):
+    for index, name in enumerate(TRUST_NAMES):
+        partial = f".partial-{transaction_id}-{index}"
+        descriptor, snapshot = write_file_at(stage_descriptor, partial, contents[name], f"partial staged trust file {name}")
+        try:
+            require_file_binding(stage_descriptor, partial, descriptor, snapshot, f"partial staged trust file {name}")
+        finally:
+            os.close(descriptor)
+        rename_noreplace(stage_descriptor, partial, stage_descriptor, name, "staged trust file publication")
+        fsync_fd(stage_descriptor, "trust staging directory")
+
+
+def install(args):
+    args.state_root = canonical_path(args.state_root, "state root")
+    bindings = validate_bindings(args)
+    if not os.path.lexists(args.state_root):
+        fail("state root, canonical lock, helper, and protected ingress must exist before check mode or installation")
+    state = pin_absolute_directory(args.state_root, "state root")
+    lock_descriptor = None
+    trust_descriptor = None
+    ingress_descriptor = None
+    stage_descriptor = None
+    target_descriptor = None
+    journal_descriptor = None
+    try:
+        lock_descriptor, lock_snapshot = acquire_lock_at(state.descriptor)
+        trust_descriptor, trust_identity = open_private_dir_at(state.descriptor, "trust", "state trust root")
+        state_entries = set(scan_directory_fd(state.descriptor, "state root"))
+        if "trust-install.journal" not in state_entries:
+            trust_entries = set(scan_directory_fd(trust_descriptor, "state trust root"))
+            _, recovered_orphan = recover_empty_unjournaled_stage(
+                trust_descriptor, args.trust_id, trust_entries
+            )
+            if recovered_orphan:
+                state.recheck("state root")
+                require_file_binding(
+                    state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock"
+                )
+                require_dir_binding(
+                    state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root"
+                )
+        if recover(state, state.descriptor, trust_descriptor, trust_identity, args, bindings):
+            validate_final_state(state, state.descriptor, trust_descriptor, trust_identity, bindings, args)
+            print(json.dumps({"status": "existing", "trust_dir": os.path.join(args.state_root, "trust", args.trust_id), "trust_id": args.trust_id}, sort_keys=True, separators=(",", ":")))
+            return
+        trust_entries = set(scan_directory_fd(trust_descriptor, "state trust root"))
+        if args.trust_id in trust_entries:
+            validate_final_state(state, state.descriptor, trust_descriptor, trust_identity, bindings, args)
+            print(json.dumps({"status": "existing", "trust_dir": os.path.join(args.state_root, "trust", args.trust_id), "trust_id": args.trust_id}, sort_keys=True, separators=(",", ":")))
+            return
+        ingress_name = f".ingress-{args.trust_id}"
+        if trust_entries != {ingress_name} or set(scan_directory_fd(state.descriptor, "state root")) != {"lock", "trust"}:
+            fail("initial trust install found another trust ID, missing ingress, or unexpected state")
+        ingress_descriptor, ingress_identity = open_private_dir_at(
+            trust_descriptor, ingress_name, "target trust ingress"
+        )
+        contents, ingress_files = validate_tree_fd(
+            ingress_descriptor, trust_descriptor, ingress_name, ingress_identity, bindings, args, "target trust ingress"
+        )
+        state.recheck("state root")
+        require_file_binding(state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock")
+        require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        if args.check:
+            print(json.dumps({"status": "would-install", "trust_dir": os.path.join(args.state_root, "trust", args.trust_id), "trust_id": args.trust_id}, sort_keys=True, separators=(",", ":")))
+            return
+
+        transaction_id = secrets.token_hex(16)
+        if not TRANSACTION_RE.fullmatch(transaction_id):
+            fail("secure trust transaction identity generation failed")
+        stage_name = f".stage-{args.trust_id}-{transaction_id}"
+        stage_descriptor, stage_identity = create_private_dir_at(
+            trust_descriptor, stage_name, "trust staging directory"
+        )
+        fault("after-stage-create-before-journal")
+        values = journal_values(args, transaction_id, ingress_identity, stage_identity, bindings)
+        journal_descriptor, journal_snapshot = write_file_at(
+            state.descriptor, "trust-install.journal", serialize_journal(values), "trust installation journal"
+        )
+        fsync_fd(state.descriptor, "state root")
+        fault("after-journal")
+        state.recheck("state root")
+        require_file_binding(state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock")
+        require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        require_dir_binding(trust_descriptor, ingress_name, ingress_descriptor, ingress_identity, "target trust ingress")
+        require_dir_binding(trust_descriptor, stage_name, stage_descriptor, stage_identity, "trust staging directory")
+        require_file_binding(
+            state.descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+        )
+        populate_stage(stage_descriptor, contents, transaction_id)
+        fsync_fd(stage_descriptor, "trust staging directory")
+        fsync_fd(trust_descriptor, "state trust root")
+        fault("after-stage")
+        validate_tree_fd(stage_descriptor, trust_descriptor, stage_name, stage_identity, bindings, args, "staged trust tree")
+        fault("before-publication")
+        state.recheck("state root")
+        require_file_binding(state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock")
+        require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        require_dir_binding(trust_descriptor, ingress_name, ingress_descriptor, ingress_identity, "target trust ingress")
+        for name in TRUST_NAMES:
+            require_file_snapshot(
+                ingress_descriptor, name, ingress_files[name], f"target trust ingress file {name}"
+            )
+        require_dir_binding(trust_descriptor, stage_name, stage_descriptor, stage_identity, "staged trust tree")
+        require_file_binding(
+            state.descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+        )
+        if args.trust_id in scan_directory_fd(trust_descriptor, "state trust root"):
+            fail("trust publication destination appeared; rotation is prohibited")
+        rename_noreplace(trust_descriptor, stage_name, trust_descriptor, args.trust_id, "complete trust tree publication")
+        fsync_fd(trust_descriptor, "state trust root")
+        require_dir_binding(trust_descriptor, args.trust_id, stage_descriptor, stage_identity, "published trust tree")
+        fault("after-publication")
+        validate_tree_fd(
+            stage_descriptor, trust_descriptor, args.trust_id, stage_identity, bindings, args, "installed trust tree"
+        )
+        fault("before-cleanup")
+        state.recheck("state root")
+        require_file_binding(state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock")
+        require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
+        require_dir_binding(trust_descriptor, args.trust_id, stage_descriptor, stage_identity, "installed trust tree")
+        require_dir_binding(trust_descriptor, ingress_name, ingress_descriptor, ingress_identity, "target trust ingress")
+        for name in TRUST_NAMES:
+            require_file_snapshot(
+                ingress_descriptor, name, ingress_files[name], f"target trust ingress file {name}"
+            )
+        require_file_binding(
+            state.descriptor, "trust-install.journal", journal_descriptor, journal_snapshot, "trust installation journal"
+        )
+        remove_tree_at(
+            trust_descriptor,
+            ingress_name,
+            ingress_descriptor,
+            ingress_identity,
+            ingress_files,
+            "target trust ingress",
+        )
+        fault("after-ingress-cleanup")
+        require_dir_binding(trust_descriptor, args.trust_id, stage_descriptor, stage_identity, "installed trust tree")
+        remove_journal(state, state.descriptor, journal_descriptor, journal_snapshot)
+        validate_final_state(state, state.descriptor, trust_descriptor, trust_identity, bindings, args)
+        print(json.dumps({"status": "installed", "trust_dir": os.path.join(args.state_root, "trust", args.trust_id), "trust_id": args.trust_id}, sort_keys=True, separators=(",", ":")))
+    finally:
+        if journal_descriptor is not None:
+            os.close(journal_descriptor)
+        if target_descriptor is not None:
+            os.close(target_descriptor)
+        if stage_descriptor is not None:
+            os.close(stage_descriptor)
+        if ingress_descriptor is not None:
+            os.close(ingress_descriptor)
+        if trust_descriptor is not None:
+            os.close(trust_descriptor)
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
+        state.close()
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    prepare_parser = subparsers.add_parser("prepare")
+    prepare_parser.add_argument("--state-root", required=True)
+    prepare_parser.add_argument("--trust-id", required=True)
+    install_parser = subparsers.add_parser("install")
+    install_parser.add_argument("--check", action="store_true")
+    install_parser.add_argument("--state-root", required=True)
+    install_parser.add_argument("--trust-id", required=True)
+    install_parser.add_argument("--requester-principal", required=True)
+    install_parser.add_argument("--response-principal", required=True)
+    install_parser.add_argument("--trust-binding", action="append", nargs=3, metavar=("NAME", "TARGET", "SHA256"), required=True)
+    return parser
+
+
+def main():
+    os.umask(0o077)
+    if os.geteuid() != 0 or os.getegid() != 0:
+        fail("effective uid and gid 0 are required")
+    args = build_parser().parse_args()
+    if args.subcommand == "prepare":
+        prepare(args)
+    else:
+        install(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (TrustError, UnicodeDecodeError, ValueError) as exc:
+        print(f"platform-pki-host-local-trust: {exc}", file=sys.stderr)
+        raise SystemExit(1)

@@ -2,6 +2,52 @@
 
 The dev registry is a Zot OCI registry deployed by `zot_registry` on hosts in the `registry` group. Registry client smoke tooling is installed by `registry_client_tools` on hosts in the `registry_clients` group.
 
+## Host-Local PKI Development
+
+`playbooks/registry-pki-trust.yml`, `playbooks/registry-pki-request.yml`, and
+`playbooks/registry-pki-activate.yml` are operator-only host-local certificate
+entry points. They are not imported by `site.yml` or normal registry
+convergence.
+
+The trust playbook is a separate initial-install-only bootstrap. It requires an
+explicit exact five-key `pki_host_local_certificate_trust_sources` mapping to
+mode-`0600` reviewed public files outside this repository and matching values
+in `pki_host_local_certificate_trust_sha256`. A fixed action plugin pins each
+controller source and ancestor by descriptor, validates metadata and digest,
+rechecks identity throughout transfer, and sends only the validated in-memory
+bytes to protected target ingress. It validates schema-2 policy, lowercase
+principals, Ed25519 OpenSSH public-key blobs, matching requester membership in
+request and deployment trust, and exact policy-pinned approver and response
+sets. The target helper holds the
+same state lock used by request generation, pins the target state hierarchy,
+validates protected ingress, journals the stage device and inode, stages on the
+trust filesystem, fsyncs the transaction, and publishes the complete five-file
+directory with a descriptor-relative no-clobber rename. Recovery and cleanup
+mutate only journal-bound descriptor-relative entries. It accepts only initial
+install or an inode-preserving exact protected no-op. The no-op permits validated
+canonical `active`, `rollback`, `validation-boundary`, and `evidence` lifecycle
+siblings but rejects unresolved journals and unknown state. It does not
+implement trust rotation.
+
+The request entry point validates preinstalled frozen target trust, installs the
+reviewed request helper, and generates or revalidates one root-owned local P-384
+key, CSR, canonical request, and SSH signature. It never installs trust and does
+not collect the three public request files yet. The activation entry point still
+fails before mutation and cannot install a certificate or restart Zot.
+
+Trust check mode is non-mutating. Exact installed trust can be revalidated; an
+absent install requires the helper, protected state root and lock, and complete
+protected ingress to exist already before it can report `would-install`.
+Interrupted journaled state fails rather than being recovered in check mode.
+Request check mode similarly runs the request helper's complete non-mutating
+preflight and requires the reviewed helper and state lock to be installed
+already; it fails rather than reporting incomplete readiness.
+
+Do not use these playbooks against a live registry until request collection and
+the remaining public verification gate are complete. Certificate activation,
+rollback, service validation, and deployment evidence remain blocked. Existing
+`zot_registry` managed TLS behavior remains unchanged.
+
 ## Registry Client Tools
 
 `registry_client_tools` installs tools needed by optional registry smoke tests. It is wired into `playbooks/registry.yml` and currently installs:

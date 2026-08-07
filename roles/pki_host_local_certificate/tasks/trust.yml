@@ -1,0 +1,131 @@
+---
+- name: Load host-local certificate trust bootstrap validation
+  ansible.builtin.import_tasks: validate_trust.yml
+
+- name: Inspect host-local certificate helper directory
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_trust_helper_path | dirname }}"
+    follow: false
+  register: pki_host_local_certificate_trust_helper_directory
+
+- name: Validate existing host-local certificate trust helper directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pki_host_local_certificate_trust_helper_directory.stat.exists
+        or (
+          pki_host_local_certificate_trust_helper_directory.stat.isdir
+          and not pki_host_local_certificate_trust_helper_directory.stat.islnk
+          and pki_host_local_certificate_trust_helper_directory.stat.uid == 0
+          and pki_host_local_certificate_trust_helper_directory.stat.gid == 0
+          and pki_host_local_certificate_trust_helper_directory.stat.mode == '0755'
+        )
+    fail_msg: Existing host-local certificate trust helper directory metadata is unsafe.
+
+- name: Create absent host-local certificate trust helper directory
+  ansible.builtin.file:
+    path: "{{ pki_host_local_certificate_trust_helper_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode and not pki_host_local_certificate_trust_helper_directory.stat.exists
+
+- name: Inspect installed host-local certificate trust helper
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_trust_helper_path }}"
+    follow: false
+  register: pki_host_local_certificate_installed_trust_helper
+
+- name: Require installed trust helper for non-mutating bootstrap preflight
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_installed_trust_helper.stat.exists
+      - pki_host_local_certificate_installed_trust_helper.stat.isreg
+      - not pki_host_local_certificate_installed_trust_helper.stat.islnk
+      - pki_host_local_certificate_installed_trust_helper.stat.uid == 0
+      - pki_host_local_certificate_installed_trust_helper.stat.gid == 0
+      - pki_host_local_certificate_installed_trust_helper.stat.mode == '0755'
+    fail_msg: Install the reviewed trust helper before using check mode.
+  when: ansible_check_mode
+
+- name: Install host-local certificate trust helper
+  ansible.builtin.copy:
+    src: platform-pki-host-local-trust
+    dest: "{{ pki_host_local_certificate_trust_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode
+
+- name: Inspect target host-local certificate trust directory
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_state_root }}/trust/{{ pki_host_local_certificate_trust_id }}"
+    follow: false
+  register: pki_host_local_certificate_target_trust
+
+- name: Prepare protected target trust ingress
+  ansible.builtin.command:
+    argv:
+      - "{{ pki_host_local_certificate_trust_helper_path }}"
+      - prepare
+      - --state-root
+      - "{{ pki_host_local_certificate_state_root }}"
+      - --trust-id
+      - "{{ pki_host_local_certificate_trust_id }}"
+  register: pki_host_local_certificate_trust_prepare_result
+  changed_when: (pki_host_local_certificate_trust_prepare_result.stdout | from_json).status == 'prepared'
+  check_mode: false
+  when: not ansible_check_mode and not pki_host_local_certificate_target_trust.stat.exists
+
+- name: Transfer pinned reviewed public trust into protected target ingress
+  platform_pki_trust_ingress:
+    sources: "{{ pki_host_local_certificate_trust_sources }}"
+    sha256: "{{ pki_host_local_certificate_trust_sha256 }}"
+    ingress_root: >-
+      {{ pki_host_local_certificate_state_root }}/trust/.ingress-{{ pki_host_local_certificate_trust_id }}
+  when: not ansible_check_mode and not pki_host_local_certificate_target_trust.stat.exists
+
+- name: Install or validate complete host-local certificate trust tree
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          pki_host_local_certificate_trust_helper_path,
+          'install',
+          '--state-root', pki_host_local_certificate_state_root,
+          '--trust-id', pki_host_local_certificate_trust_id,
+          '--requester-principal', pki_host_local_certificate_requester_principal,
+          '--response-principal', pki_host_local_certificate_response_principal,
+          '--trust-binding', 'policy', pki_host_local_certificate_trust_paths['policy'], pki_host_local_certificate_trust_sha256['policy'],
+          '--trust-binding', 'requesters.allowed_signers', pki_host_local_certificate_trust_paths['requesters.allowed_signers'], pki_host_local_certificate_trust_sha256['requesters.allowed_signers'],
+          '--trust-binding', 'approvers.allowed_signers', pki_host_local_certificate_trust_paths['approvers.allowed_signers'], pki_host_local_certificate_trust_sha256['approvers.allowed_signers'],
+          '--trust-binding', 'responses.allowed_signers', pki_host_local_certificate_trust_paths['responses.allowed_signers'], pki_host_local_certificate_trust_sha256['responses.allowed_signers'],
+          '--trust-binding', 'deployers.allowed_signers', pki_host_local_certificate_trust_paths['deployers.allowed_signers'], pki_host_local_certificate_trust_sha256['deployers.allowed_signers']
+        ]
+        + (['--check'] if ansible_check_mode or pki_host_local_certificate_target_trust.stat.exists else [])
+      }}
+  register: pki_host_local_certificate_trust_install_result
+  changed_when: (pki_host_local_certificate_trust_install_result.stdout | from_json).status == 'installed'
+  check_mode: false
+
+- name: Validate safe trust helper result
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pki_host_local_certificate_trust_install_result.stdout | from_json).keys() | list | sort
+        == ['status', 'trust_dir', 'trust_id']
+      - >-
+        (pki_host_local_certificate_trust_install_result.stdout | from_json).status
+        in ['existing', 'installed', 'would-install']
+      - >-
+        (pki_host_local_certificate_trust_install_result.stdout | from_json).trust_id
+        == pki_host_local_certificate_trust_id
+      - >-
+        (pki_host_local_certificate_trust_install_result.stdout | from_json).trust_dir
+        == pki_host_local_certificate_state_root ~ '/trust/' ~ pki_host_local_certificate_trust_id
+      - >-
+        not ansible_check_mode
+        or (pki_host_local_certificate_trust_install_result.stdout | from_json).status
+          in ['existing', 'would-install']
+    fail_msg: The trust helper returned an unsafe or incomplete public result.

@@ -1,0 +1,193 @@
+---
+- name: Exercise registry host-local PKI boundary
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    pki_host_local_certificate_service: registry-dev
+    pki_host_local_certificate_target: localhost
+    pki_host_local_certificate_operation: migrate
+    pki_host_local_certificate_inventory_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    pki_host_local_certificate_current_cert_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    pki_host_local_certificate_current_cert_path: /etc/zot/tls/tls.crt
+    pki_host_local_certificate_requester_principal: localhost
+    pki_host_local_certificate_response_principal: offline-response
+    pki_host_local_certificate_common_name: registry.dev
+    pki_host_local_certificate_dns_sans:
+      - registry.dev
+      - localhost
+    pki_host_local_certificate_ip_sans:
+      - 192.0.2.61
+    pki_host_local_certificate_validity_days: 397
+    pki_host_local_certificate_request_ttl_seconds: 3600
+    pki_host_local_certificate_trust_id: reviewed-v1
+    pki_host_local_certificate_state_root: /var/lib/platform-config/pki/host-local/registry-dev
+    pki_host_local_certificate_pending_root: /etc/zot/tls-pending
+    pki_host_local_certificate_versions_root: /etc/zot/tls-versions
+    pki_host_local_certificate_controller_exchange_root: /tmp/platform-pki-exchange
+    pki_host_local_certificate_transport: sftp
+    pki_host_local_certificate_transport_host_key_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    pki_host_local_certificate_trust_paths:
+      policy: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/policy
+      requesters.allowed_signers: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/requesters.allowed_signers
+      approvers.allowed_signers: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/approvers.allowed_signers
+      responses.allowed_signers: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/responses.allowed_signers
+      deployers.allowed_signers: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/deployers.allowed_signers
+    pki_host_local_certificate_trust_sha256:
+      policy: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      requesters.allowed_signers: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      approvers.allowed_signers: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+      responses.allowed_signers: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      deployers.allowed_signers: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  tasks:
+    - name: Require a foreign target identity to fail before the terminal stop
+      block:
+        - name: Run foreign-target boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_target: another-host
+            pki_host_local_certificate_requester_principal: another-host
+
+        - name: Reject an accepted foreign target
+          ansible.builtin.fail:
+            msg: Foreign target identity was accepted.
+      rescue:
+        - name: Assert foreign target failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Require valid activation inputs to reach only the terminal mutation stop
+      block:
+        - name: Run valid non-mutating activation boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: activate
+          vars:
+            pki_host_local_certificate_request_ttl_seconds: 0
+            pki_host_local_certificate_request_id: '0123456789abcdef0123456789abcdef'
+            pki_host_local_certificate_artifact_manifest_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+            pki_host_local_certificate_validation_boundary_sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+            pki_host_local_certificate_rollback_seconds: 1209600
+
+        - name: Reject an unexpected successful activation boundary run
+          ansible.builtin.fail:
+            msg: Valid activation contract bypassed the required terminal mutation stop.
+      rescue:
+        - name: Assert valid activation inputs reached the terminal mutation stop
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('target request and activation mutations are not implemented')
+
+    - name: Require an unsafe target-state root to fail before the terminal stop
+      block:
+        - name: Run unsafe-path boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_state_root: /
+
+        - name: Reject an accepted unsafe path
+          ansible.builtin.fail:
+            msg: Unsafe target-state root was accepted.
+      rescue:
+        - name: Assert unsafe path failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Require malformed SAN input to fail before the terminal stop
+      block:
+        - name: Run malformed-SAN boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_dns_sans:
+              - registry.dev,malicious.example
+
+        - name: Reject an accepted malformed SAN
+          ansible.builtin.fail:
+            msg: Malformed DNS SAN was accepted.
+      rescue:
+        - name: Assert malformed SAN failed element validation
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.results[0].msg is search('canonical DNS identity')
+
+    - name: Require an IP literal in DNS SANs to fail before the terminal stop
+      block:
+        - name: Run confused-SAN boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_dns_sans:
+              - 192.0.2.61
+
+        - name: Reject an accepted IP literal as a DNS SAN
+          ansible.builtin.fail:
+            msg: IP literal was accepted as a DNS SAN.
+      rescue:
+        - name: Assert IP literal failed DNS identity validation
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.results[0].msg is search('canonical DNS identity')
+
+    - name: Require terminal dot path components to fail before the terminal stop
+      block:
+        - name: Run terminal-dot-path boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_controller_exchange_root: /tmp/..
+
+        - name: Reject an accepted terminal dot path component
+          ansible.builtin.fail:
+            msg: Terminal dot path component was accepted.
+      rescue:
+        - name: Assert terminal dot path failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Require coercive numeric input to fail before the terminal stop
+      block:
+        - name: Run string-TTL boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_request_ttl_seconds: '3600'
+
+        - name: Reject an accepted string TTL
+          ansible.builtin.fail:
+            msg: String request TTL was accepted.
+      rescue:
+        - name: Assert string TTL failed request validation
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('issuance contract')
+
+    - name: Require a trailing control character to fail before the terminal stop
+      block:
+        - name: Run trailing-newline-path boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_controller_exchange_root: |
+              /tmp/platform-pki-exchange
+
+        - name: Reject an accepted trailing control character
+          ansible.builtin.fail:
+            msg: Trailing control character was accepted.
+      rescue:
+        - name: Assert trailing control character failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')

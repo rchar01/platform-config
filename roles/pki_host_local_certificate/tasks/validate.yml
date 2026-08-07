@@ -1,0 +1,97 @@
+---
+- name: Validate host-local certificate common contract
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_service is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - pki_host_local_certificate_target is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - pki_host_local_certificate_target == inventory_hostname
+      - pki_host_local_certificate_requester_principal == pki_host_local_certificate_target
+      - pki_host_local_certificate_response_principal is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - pki_host_local_certificate_operation in ['issue', 'migrate', 'renew']
+      - pki_host_local_certificate_profile == 'server-p384-sha384-v1'
+      - pki_host_local_certificate_inventory_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_current_cert_sha256 == 'none' or pki_host_local_certificate_current_cert_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_common_name is match('^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+      - pki_host_local_certificate_dns_sans is sequence
+      - pki_host_local_certificate_dns_sans is not string
+      - pki_host_local_certificate_dns_sans is not mapping
+      - pki_host_local_certificate_dns_sans | length > 0
+      - pki_host_local_certificate_ip_sans is sequence
+      - pki_host_local_certificate_ip_sans is not string
+      - pki_host_local_certificate_ip_sans is not mapping
+      - pki_host_local_certificate_validity_days is integer
+      - pki_host_local_certificate_validity_days is not boolean
+      - pki_host_local_certificate_validity_days > 0
+      - pki_host_local_certificate_validity_days <= 397
+      - pki_host_local_certificate_request_signing_key_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_request_signing_key_path is not search('(^|/)\.\.?(/|$)')
+      - pki_host_local_certificate_request_namespace == 'platform-pki-csr-request-v1'
+      - pki_host_local_certificate_deployment_signing_key_path == '/etc/ssh/ssh_host_ed25519_key'
+      - pki_host_local_certificate_deployment_namespace == 'platform-pki-csr-deployment-v1'
+      - pki_host_local_certificate_trust_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+      - pki_host_local_certificate_trust_paths.keys() | list | sort == pki_host_local_certificate_required_trust_names
+      - pki_host_local_certificate_trust_sha256.keys() | list | sort == pki_host_local_certificate_required_trust_names
+      - pki_host_local_certificate_state_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_pending_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_versions_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_state_root is not search('(^|/)\.\.?(/|$)')
+      - pki_host_local_certificate_pending_root is not search('(^|/)\.\.?(/|$)')
+      - pki_host_local_certificate_versions_root is not search('(^|/)\.\.?(/|$)')
+      - not pki_host_local_certificate_pending_root.startswith(pki_host_local_certificate_state_root ~ '/')
+      - not pki_host_local_certificate_state_root.startswith(pki_host_local_certificate_pending_root ~ '/')
+      - not pki_host_local_certificate_versions_root.startswith(pki_host_local_certificate_state_root ~ '/')
+      - not pki_host_local_certificate_state_root.startswith(pki_host_local_certificate_versions_root ~ '/')
+      - not pki_host_local_certificate_versions_root.startswith(pki_host_local_certificate_pending_root ~ '/')
+      - not pki_host_local_certificate_pending_root.startswith(pki_host_local_certificate_versions_root ~ '/')
+      - pki_host_local_certificate_controller_exchange_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - "'//' not in pki_host_local_certificate_controller_exchange_root"
+      - pki_host_local_certificate_controller_exchange_root is not search('(^|/)\.\.?(/|$)')
+      - pki_host_local_certificate_controller_exchange_root != '/'
+      - not pki_host_local_certificate_controller_exchange_root.startswith('/etc/zot')
+      - not pki_host_local_certificate_controller_exchange_root.startswith('/var/lib/platform-config/pki/host-local')
+      - pki_host_local_certificate_transport in ['ssh', 'sftp']
+      - pki_host_local_certificate_transport_host_key_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_request_helper_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_request_helper_path is not search('(^|/)\.\.?(/|$)')
+    fail_msg: Host-local certificate inputs do not satisfy the frozen schema-2 contract.
+  vars:
+    pki_host_local_certificate_required_trust_names:
+      - approvers.allowed_signers
+      - deployers.allowed_signers
+      - policy
+      - requesters.allowed_signers
+      - responses.allowed_signers
+
+- name: Validate host-local certificate trust bindings
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.value
+        == pki_host_local_certificate_state_root ~ '/trust/'
+        ~ pki_host_local_certificate_trust_id ~ '/' ~ item.key
+      - pki_host_local_certificate_trust_sha256[item.key] is match('^[0-9a-f]{64}$')
+    fail_msg: Each frozen trust file requires an absolute path and exact SHA-256 digest.
+  loop: "{{ pki_host_local_certificate_trust_paths | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Validate host-local certificate DNS identities
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is not match('^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$')
+      - item is match('^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')
+    fail_msg: Each DNS SAN must be one complete, canonical DNS identity.
+  loop: "{{ pki_host_local_certificate_dns_sans }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Validate host-local certificate IPv4 identities
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$')
+    fail_msg: The registry pilot accepts only canonical IPv4 SAN values.
+  loop: "{{ pki_host_local_certificate_ip_sans }}"
+  loop_control:
+    label: "{{ item }}"

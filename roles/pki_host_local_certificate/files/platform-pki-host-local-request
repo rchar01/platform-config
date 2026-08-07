@@ -1,0 +1,1408 @@
+#!/usr/bin/env python3
+"""Create or validate one target-local host certificate request."""
+
+import argparse
+import base64
+import binascii
+import ctypes
+import errno
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import secrets
+import signal
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+import time
+
+
+REQUEST_FIELDS = (
+    "schema",
+    "request_id",
+    "nonce",
+    "created_epoch",
+    "expires_epoch",
+    "operation",
+    "service",
+    "target",
+    "requester_principal",
+    "inventory_sha256",
+    "csr_sha256",
+    "csr_spki_sha256",
+    "current_cert_sha256",
+    "profile",
+    "response_principal",
+)
+TRUST_NAMES = (
+    "approvers.allowed_signers",
+    "deployers.allowed_signers",
+    "policy",
+    "requesters.allowed_signers",
+    "responses.allowed_signers",
+)
+PROFILE = "server-p384-sha384-v1"
+REQUEST_NAMESPACE = "platform-pki-csr-request-v1"
+HEX_256_RE = re.compile(r"[0-9a-f]{64}\Z")
+IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z")
+SERVICE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
+NONCE_RE = re.compile(r"[0-9a-f]{64}\Z")
+PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9_@%+=:,.-]+\Z")
+EXPECTED_FILES = {"tls.key", "tls.csr", "request", "request.sig"}
+EVIDENCE_FILES = {
+    "deployment",
+    "deployment.sig",
+    "validation-boundary",
+    "validation-result",
+    "validation-result.sig",
+}
+JOURNAL_FIELDS = ("schema", "request_id", "stage_name", "pending_root")
+MAX_PROTOCOL_SIZE = 1024 * 1024
+
+
+class RequestError(Exception):
+    pass
+
+
+def fail(message):
+    raise RequestError(message)
+
+
+def printable_ascii(value, label):
+    if not value or any(ord(char) < 0x21 or ord(char) > 0x7E for char in value):
+        fail(f"{label} must be non-empty printable ASCII without whitespace")
+
+
+def canonical_path(value, label):
+    printable_ascii(value, label)
+    if not value.startswith("/") or value == "/" or os.path.normpath(value) != value:
+        fail(f"{label} must be an absolute canonical non-root path")
+    if any(not PATH_COMPONENT_RE.fullmatch(part) for part in value.split("/")[1:]):
+        fail(f"{label} contains an unsafe path component")
+    if os.path.realpath(value) != value:
+        fail(f"{label} contains a symlinked path component")
+    return value
+
+
+def path_contains(root, path):
+    try:
+        return os.path.commonpath((root, path)) == root
+    except ValueError:
+        return False
+
+
+def metadata_tuple(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        stat.S_IMODE(metadata.st_mode),
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def directory_identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        stat.S_IMODE(metadata.st_mode),
+    )
+
+
+def require_dir(path, label, exact_mode=0o700):
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        fail(f"cannot inspect {label}: {exc.strerror}")
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        fail(f"{label} must be a non-symlink directory")
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != exact_mode:
+        fail(f"{label} must be root-owned with mode {exact_mode:04o}")
+    return metadata_tuple(metadata)
+
+
+def require_parent_dir(path, label):
+    parent = os.path.dirname(path)
+    try:
+        metadata = os.lstat(parent)
+    except OSError as exc:
+        fail(f"cannot inspect parent of {label}: {exc.strerror}")
+    mode = stat.S_IMODE(metadata.st_mode)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or mode & 0o022
+    ):
+        fail(f"parent of {label} must be a root-owned non-writable directory")
+
+
+def read_safe_file(path, label, exact_mode=None):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NOATIME", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open {label}: {exc.strerror}")
+    try:
+        before = os.fstat(descriptor)
+        mode = stat.S_IMODE(before.st_mode)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid() or before.st_nlink != 1:
+            fail(f"{label} must be a root-owned singly-linked regular file")
+        if exact_mode is not None and mode != exact_mode:
+            fail(f"{label} must have mode {exact_mode:04o}")
+        if exact_mode is None and mode & 0o022:
+            fail(f"{label} must not be group- or world-writable")
+        if before.st_size <= 0 or before.st_size > MAX_PROTOCOL_SIZE:
+            fail(f"{label} has an invalid size")
+        chunks = []
+        remaining = MAX_PROTOCOL_SIZE + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if metadata_tuple(before) != metadata_tuple(after) or len(data) != before.st_size:
+            fail(f"{label} changed while being read")
+        return data, metadata_tuple(before)
+    finally:
+        os.close(descriptor)
+
+
+def require_unchanged(path, expected, label):
+    try:
+        actual = metadata_tuple(os.lstat(path))
+    except OSError as exc:
+        fail(f"cannot reinspect {label}: {exc.strerror}")
+    if actual != expected:
+        fail(f"{label} changed during validation")
+
+
+def open_safe_descriptor(path, label, exact_mode=0o600):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NOATIME", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open {label}: {exc.strerror}")
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != exact_mode
+    ):
+        os.close(descriptor)
+        fail(f"{label} must be a root-owned singly-linked mode-{exact_mode:04o} regular file")
+    return descriptor, metadata_tuple(metadata)
+
+
+def copy_to_memfd(source_descriptor, size, label):
+    if not hasattr(os, "memfd_create") or not hasattr(os, "sendfile"):
+        fail(f"anonymous validation staging is unavailable for {label}")
+    try:
+        descriptor = os.memfd_create(label, getattr(os, "MFD_CLOEXEC", 0))
+        os.fchmod(descriptor, 0o600)
+        offset = 0
+        while offset < size:
+            written = os.sendfile(descriptor, source_descriptor, offset, size - offset)
+            if written == 0:
+                fail(f"cannot stage exact {label} bytes for validation")
+            offset += written
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor
+    except Exception:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        raise
+
+
+def scan_directory(path, label):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NOATIME", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            return [(entry.name, entry.stat(follow_symlinks=False)) for entry in os.scandir(descriptor)]
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        fail(f"cannot inspect {label}: {exc.strerror}")
+
+
+def run_command(arguments, label, input_bytes=None, pass_fds=()):
+    try:
+        result = subprocess.run(
+            arguments,
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+            env={**os.environ, "LC_ALL": "C"},
+            pass_fds=pass_fds,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        fail(f"cannot execute {label}")
+    if result.returncode != 0:
+        fail(f"{label} failed")
+    return result.stdout
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def decode_ssh_string(blob, offset, label):
+    if offset + 4 > len(blob):
+        fail(f"{label} contains a truncated Ed25519 public-key blob")
+    size = struct.unpack(">I", blob[offset : offset + 4])[0]
+    offset += 4
+    if offset + size > len(blob):
+        fail(f"{label} contains a truncated Ed25519 public-key blob")
+    return blob[offset : offset + size], offset + size
+
+
+def parse_allowed_signers(data, label):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        fail(f"{label} is not ASCII")
+    if not text.endswith("\n") or "\r" in text:
+        fail(f"{label} is not canonically newline-terminated")
+    records = {}
+    for line in text.splitlines():
+        parts = line.split(" ")
+        if len(parts) != 3 or not IDENTITY_RE.fullmatch(parts[0]) or parts[1] != "ssh-ed25519":
+            fail(f"{label} contains a noncanonical signer record")
+        try:
+            decoded = base64.b64decode(parts[2], validate=True)
+        except (binascii.Error, ValueError):
+            fail(f"{label} contains invalid key data")
+        if base64.b64encode(decoded).decode("ascii") != parts[2] or parts[0] in records:
+            fail(f"{label} contains duplicate or noncanonical key data")
+        algorithm, offset = decode_ssh_string(decoded, 0, label)
+        public_key, offset = decode_ssh_string(decoded, offset, label)
+        if algorithm != b"ssh-ed25519" or len(public_key) != 32 or offset != len(decoded):
+            fail(f"{label} contains an invalid Ed25519 OpenSSH public-key blob")
+        records[parts[0]] = (parts[1], parts[2])
+    if not records:
+        fail(f"{label} is empty")
+    return records
+
+
+def validate_policy(data, response_principal):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        fail("trust policy is not ASCII")
+    if not text.endswith("\n") or "\r" in text:
+        fail("trust policy is not canonically newline-terminated")
+    lines = text.splitlines()
+    fixed = (
+        "schema=2",
+        f"request_namespace={REQUEST_NAMESPACE}",
+        "approval_namespace=platform-pki-csr-approval-v1",
+        "response_namespace=platform-pki-csr-response-v1",
+        "deployment_namespace=platform-pki-csr-deployment-v1",
+        "request_max_age_seconds=604800",
+        "sole_operator_min_delay_seconds=86400",
+        "approval_max_age_seconds=86400",
+        "deployment_max_age_seconds=86400",
+        "clock_skew_seconds=300",
+    )
+    if len(lines) != 12 or tuple(lines[:10]) != fixed:
+        fail("trust policy does not match the frozen schema-2 contract")
+    approver_match = re.fullmatch(r"approver_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[10])
+    response_match = re.fullmatch(r"response_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[11])
+    if not approver_match or not response_match or response_match.group(1) != response_principal:
+        fail("trust policy principals do not match the request contract")
+    return approver_match.group(1)
+
+
+def validate_trust(bindings, response_principal, requester_principal):
+    supplied = {}
+    for name, path, digest in bindings:
+        if name in supplied or name not in TRUST_NAMES:
+            fail("trust bindings must name each frozen trust file exactly once")
+        canonical_path(path, f"trust path {name}")
+        if not HEX_256_RE.fullmatch(digest):
+            fail(f"trust digest for {name} is not canonical SHA-256")
+        supplied[name] = (path, digest)
+    if set(supplied) != set(TRUST_NAMES):
+        fail("exactly five frozen trust bindings are required")
+
+    parents = {os.path.dirname(path) for path, _ in supplied.values()}
+    if len(parents) != 1:
+        fail("frozen trust files must share one directory")
+    trust_dir = parents.pop()
+    require_dir(trust_dir, "frozen trust directory")
+    names = {name for name, _ in scan_directory(trust_dir, "frozen trust directory")}
+    if names != set(TRUST_NAMES):
+        fail("frozen trust directory contains unexpected entries")
+
+    contents = {}
+    snapshots = {}
+    for name in TRUST_NAMES:
+        path, expected_digest = supplied[name]
+        if os.path.basename(path) != name:
+            fail(f"trust binding path does not end with {name}")
+        data, snapshot = read_safe_file(path, f"frozen trust file {name}", 0o600)
+        if sha256(data) != expected_digest:
+            fail(f"frozen trust digest mismatch for {name}")
+        contents[name] = data
+        snapshots[name] = snapshot
+
+    approver = validate_policy(contents["policy"], response_principal)
+    requester_records = parse_allowed_signers(contents["requesters.allowed_signers"], "requester trust")
+    approver_records = parse_allowed_signers(contents["approvers.allowed_signers"], "approver trust")
+    response_records = parse_allowed_signers(contents["responses.allowed_signers"], "response trust")
+    deployment_records = parse_allowed_signers(contents["deployers.allowed_signers"], "deployment trust")
+    if requester_principal not in requester_records:
+        fail("requester principal is absent from frozen requester trust")
+    if requester_principal not in deployment_records:
+        fail("requester principal is absent from frozen deployment trust")
+    if set(approver_records) != {approver} or set(response_records) != {response_principal}:
+        fail("pinned approver or response trust contains unexpected principals")
+    for name in TRUST_NAMES:
+        require_unchanged(supplied[name][0], snapshots[name], f"frozen trust file {name}")
+    return trust_dir, requester_records[requester_principal]
+
+
+def validate_dns(value, label):
+    printable_ascii(value, label)
+    if len(value) > 253 or value.endswith("."):
+        fail(f"{label} is not a canonical DNS name")
+    labels = value.split(".")
+    if any(
+        not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", part)
+        for part in labels
+    ):
+        fail(f"{label} is not a canonical DNS name")
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return
+    fail(f"{label} is an IP address, not a DNS name")
+
+
+def validate_ipv4(value, label):
+    printable_ascii(value, label)
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        fail(f"{label} is not a canonical IPv4 address")
+    if not isinstance(parsed, ipaddress.IPv4Address) or str(parsed) != value:
+        fail(f"{label} is not a canonical IPv4 address; IPv6 is unsupported")
+
+
+def canonical_decimal(value, label, minimum, maximum):
+    if not re.fullmatch(r"0|[1-9][0-9]*", value):
+        fail(f"{label} must be canonical decimal")
+    parsed = int(value)
+    if parsed < minimum or parsed > maximum:
+        fail(f"{label} is outside its allowed range")
+    return parsed
+
+
+def validate_arguments(args):
+    for value, label, pattern in (
+        (args.service, "service", SERVICE_RE),
+        (args.target, "target", IDENTITY_RE),
+        (args.requester_principal, "requester principal", IDENTITY_RE),
+        (args.response_principal, "response principal", IDENTITY_RE),
+    ):
+        printable_ascii(value, label)
+        if not pattern.fullmatch(value):
+            fail(f"{label} is not canonical")
+    if args.target != args.requester_principal:
+        fail("target and requester principal must be identical")
+    if args.operation not in {"issue", "migrate", "renew"}:
+        fail("operation must be issue, migrate, or renew")
+    if args.profile != PROFILE or args.request_namespace != REQUEST_NAMESPACE:
+        fail("profile or request namespace is not the frozen value")
+    if not HEX_256_RE.fullmatch(args.inventory_sha256):
+        fail("inventory digest is not canonical SHA-256")
+    args.request_ttl_seconds = canonical_decimal(
+        args.request_ttl_seconds, "request TTL", 1, 604800
+    )
+    validate_dns(args.common_name, "common name")
+    if not args.dns_san:
+        fail("at least one DNS SAN is required")
+    for value in args.dns_san:
+        validate_dns(value, "DNS SAN")
+    for value in args.ip_san:
+        validate_ipv4(value, "IP SAN")
+    if len(set(args.dns_san)) != len(args.dns_san) or len(set(args.ip_san)) != len(args.ip_san):
+        fail("SAN values must not be repeated")
+
+    args.state_root = canonical_path(args.state_root, "state root")
+    args.pending_root = canonical_path(args.pending_root, "pending root")
+    args.request_signing_key = canonical_path(args.request_signing_key, "request signing key")
+    if path_contains(args.state_root, args.pending_root) or path_contains(args.pending_root, args.state_root):
+        fail("state and pending roots must not overlap")
+
+    if args.operation == "issue":
+        if args.current_cert_sha256 != "none" or args.current_cert_path is not None:
+            fail("issue requires current certificate digest none and no current certificate path")
+    else:
+        if not HEX_256_RE.fullmatch(args.current_cert_sha256) or args.current_cert_path is None:
+            fail("migrate and renew require a current certificate path and SHA-256 digest")
+        args.current_cert_path = canonical_path(args.current_cert_path, "current certificate path")
+
+    input_paths = [args.request_signing_key]
+    if args.current_cert_path:
+        input_paths.append(args.current_cert_path)
+    for _, path, digest in args.trust_binding:
+        canonical_path(path, "trust binding path")
+        if not HEX_256_RE.fullmatch(digest):
+            fail("trust binding digest is not canonical SHA-256")
+        input_paths.append(path)
+    if len(set(input_paths)) != len(input_paths):
+        fail("input file paths must be distinct")
+    if any(path_contains(args.pending_root, path) for path in input_paths):
+        fail("input files must be outside the pending root")
+
+
+def validate_tools():
+    for command in ("openssl", "ssh-keygen"):
+        if shutil.which(command) is None:
+            fail(f"required command is unavailable: {command}")
+
+
+def validate_signing_key(path, expected_key):
+    _, snapshot = read_safe_file(path, "request signing key", 0o600)
+    descriptor, opened_snapshot = open_safe_descriptor(path, "request signing key")
+    staged_descriptor = None
+    try:
+        staged_descriptor = copy_to_memfd(
+            descriptor, opened_snapshot[5], "request-signing-key"
+        )
+        reference = f"/proc/self/fd/{staged_descriptor}"
+        public = run_command(
+            ["ssh-keygen", "-y", "-f", reference],
+            "request signing key validation",
+            pass_fds=(staged_descriptor,),
+        )
+    finally:
+        os.close(descriptor)
+    try:
+        parts = public.decode("ascii").strip().split(" ")
+    except UnicodeDecodeError:
+        fail("request signing public key is not ASCII")
+    if len(parts) < 2 or tuple(parts[:2]) != expected_key:
+        fail("request signing key does not match frozen requester trust")
+    require_unchanged(path, opened_snapshot, "request signing key")
+    require_unchanged(path, snapshot, "request signing key")
+    return staged_descriptor, opened_snapshot
+
+
+def validate_current_certificate(args):
+    if args.current_cert_path is None:
+        return
+    data, snapshot = read_safe_file(args.current_cert_path, "current certificate")
+    if sha256(data) != args.current_cert_sha256:
+        fail("current certificate digest mismatch")
+    descriptor, opened_snapshot = open_safe_descriptor(
+        args.current_cert_path, "current certificate", stat.S_IMODE(os.lstat(args.current_cert_path).st_mode)
+    )
+    staged_descriptor = None
+    try:
+        staged_descriptor = copy_to_memfd(
+            descriptor, opened_snapshot[5], "current-certificate"
+        )
+        run_command(
+            ["openssl", "x509", "-in", f"/proc/self/fd/{staged_descriptor}", "-noout"],
+            "current certificate validation",
+            pass_fds=(staged_descriptor,),
+        )
+    finally:
+        if staged_descriptor is not None:
+            os.close(staged_descriptor)
+        os.close(descriptor)
+    require_unchanged(args.current_cert_path, opened_snapshot, "current certificate")
+    require_unchanged(args.current_cert_path, snapshot, "current certificate")
+
+
+def validate_completed_lifecycle_state(state_root, entries):
+    for name in ("active", "rollback", "validation-boundary"):
+        if name in entries:
+            read_safe_file(os.path.join(state_root, name), f"shared lifecycle file {name}", 0o600)
+    if "evidence" not in entries:
+        return
+    evidence_root = os.path.join(state_root, "evidence")
+    require_dir(evidence_root, "shared evidence root")
+    for request_id, request_metadata in scan_directory(evidence_root, "shared evidence root"):
+        if not REQUEST_ID_RE.fullmatch(request_id) or not stat.S_ISDIR(request_metadata.st_mode):
+            fail("shared evidence root contains an invalid request directory")
+        request_root = os.path.join(evidence_root, request_id)
+        require_dir(request_root, "shared evidence request directory")
+        for digest, digest_metadata in scan_directory(request_root, "shared evidence request directory"):
+            if not HEX_256_RE.fullmatch(digest) or not stat.S_ISDIR(digest_metadata.st_mode):
+                fail("shared evidence request directory contains an invalid deployment directory")
+            deployment_root = os.path.join(request_root, digest)
+            require_dir(deployment_root, "shared evidence deployment directory")
+            if {name for name, _ in scan_directory(deployment_root, "shared evidence deployment directory")} != EVIDENCE_FILES:
+                fail("shared evidence deployment directory has an invalid file set")
+            for name in EVIDENCE_FILES:
+                read_safe_file(os.path.join(deployment_root, name), f"shared evidence file {name}", 0o600)
+
+
+def inspect_state_root(state_root, trust_dir):
+    require_dir(state_root, "state root")
+    entries = {name for name, _ in scan_directory(state_root, "state root")}
+    allowed = {"lock"}
+    if os.path.lexists(os.path.join(state_root, "request.journal")):
+        allowed.add("request.journal")
+    for name in ("active", "rollback", "validation-boundary", "evidence"):
+        if name in entries:
+            allowed.add(name)
+    if path_contains(state_root, trust_dir):
+        relative = os.path.relpath(trust_dir, state_root).split(os.sep)
+        if len(relative) != 2 or relative[0] != "trust" or not PATH_COMPONENT_RE.fullmatch(relative[1]):
+            fail("trust directory is not in the canonical state trust location")
+        allowed.add("trust")
+        trust_root = os.path.join(state_root, "trust")
+        require_dir(trust_root, "state trust root")
+        if {name for name, _ in scan_directory(trust_root, "state trust root")} != {relative[1]}:
+            fail("state trust root contains unexpected entries")
+    if entries != allowed:
+        fail("state root contains unexpected entries")
+    validate_completed_lifecycle_state(state_root, entries)
+
+
+def acquire_state_lock(state_root, check):
+    lock_path = os.path.join(state_root, "lock")
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if not check:
+        flags |= os.O_CREAT
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        if check and exc.errno == errno.ENOENT:
+            fail("state lock is absent; bootstrap prerequisites before check mode")
+        fail(f"cannot open state lock: {exc.strerror}")
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            fail("state lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        fail("another host-local request operation holds the state lock")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor, metadata_tuple(metadata), directory_identity(os.lstat(state_root))
+
+
+def acquire_pending_lock(pending_root):
+    parent = os.path.dirname(pending_root)
+    require_dir(parent, "pending-root parent", stat.S_IMODE(os.lstat(parent).st_mode))
+    metadata = os.lstat(parent)
+    if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o022:
+        fail("pending-root parent must be root-owned and not group- or world-writable")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(parent, flags)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        fail("another operation holds the pending-root parent lock")
+    except OSError as exc:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        fail(f"cannot lock pending-root parent: {exc.strerror}")
+    return descriptor, directory_identity(os.fstat(descriptor))
+
+
+def require_lock_bindings(args, lock_snapshot, state_identity, pending_parent_identity):
+    if directory_identity(os.lstat(args.state_root)) != state_identity:
+        fail("state root changed while locked")
+    if metadata_tuple(os.lstat(os.path.join(args.state_root, "lock"))) != lock_snapshot:
+        fail("state lock path changed while locked")
+    if directory_identity(os.lstat(os.path.dirname(args.pending_root))) != pending_parent_identity:
+        fail("pending-root parent changed while locked")
+
+
+def open_pinned_pending_root(pending_root):
+    require_dir(pending_root, "pending root")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(pending_root, flags)
+    except OSError as exc:
+        fail(f"cannot pin pending root: {exc.strerror}")
+    return descriptor, directory_identity(os.fstat(descriptor))
+
+
+def require_pending_binding(pending_root, pending_identity):
+    if pending_identity is None:
+        if os.path.lexists(pending_root):
+            fail("pending root appeared during check mode")
+        return
+    if directory_identity(os.lstat(pending_root)) != pending_identity:
+        fail("pending root changed while locked")
+
+
+def fsync_dir(path):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def create_private_dir(path, label):
+    require_parent_dir(path, label)
+    try:
+        os.mkdir(path, 0o700)
+    except OSError as exc:
+        fail(f"cannot create {label}: {exc.strerror}")
+    require_dir(path, label)
+    fsync_dir(os.path.dirname(path))
+
+
+def parse_request(data):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        fail("pending request is not ASCII")
+    if not text.endswith("\n") or "\r" in text:
+        fail("pending request is not canonically newline-terminated")
+    lines = text.splitlines()
+    if len(lines) != len(REQUEST_FIELDS):
+        fail("pending request has the wrong field count")
+    record = {}
+    for expected, line in zip(REQUEST_FIELDS, lines):
+        if "=" not in line:
+            fail("pending request contains malformed text")
+        key, value = line.split("=", 1)
+        if key != expected or not value or any(ord(char) < 0x20 or ord(char) > 0x7E for char in value):
+            fail("pending request has invalid field order or text")
+        record[key] = value
+    return record
+
+
+def public_spki_from_key(key_reference, descriptors):
+    return run_command(
+        ["openssl", "pkey", "-in", key_reference, "-pubout", "-outform", "DER"],
+        "private key public-key extraction",
+        pass_fds=descriptors,
+    )
+
+
+def public_spki_from_csr(csr_reference, descriptors):
+    pem = run_command(
+        ["openssl", "req", "-in", csr_reference, "-pubkey", "-noout"],
+        "CSR public-key extraction",
+        pass_fds=descriptors,
+    )
+    return run_command(
+        ["openssl", "pkey", "-pubin", "-outform", "DER"],
+        "CSR public-key conversion",
+        pem,
+    )
+
+
+def validate_csr(key_path, csr_path, common_name, dns_sans, ip_sans):
+    key_descriptor, key_snapshot = open_safe_descriptor(key_path, "private key")
+    try:
+        csr_descriptor, csr_snapshot = open_safe_descriptor(csr_path, "CSR")
+    except Exception:
+        os.close(key_descriptor)
+        raise
+    staged_key = None
+    staged_csr = None
+    try:
+        staged_key = copy_to_memfd(key_descriptor, key_snapshot[5], "private-key")
+        staged_csr = copy_to_memfd(csr_descriptor, csr_snapshot[5], "certificate-request")
+        descriptors = (staged_key, staged_csr)
+        key_reference = f"/proc/self/fd/{staged_key}"
+        csr_reference = f"/proc/self/fd/{staged_csr}"
+        run_command(
+            ["openssl", "req", "-in", csr_reference, "-verify", "-noout"],
+            "CSR signature validation",
+            pass_fds=descriptors,
+        )
+        subject = run_command(
+            ["openssl", "req", "-in", csr_reference, "-noout", "-subject", "-nameopt", "RFC2253"],
+            "CSR subject inspection",
+            pass_fds=descriptors,
+        ).decode("ascii", "strict").strip()
+        text = run_command(
+            ["openssl", "req", "-in", csr_reference, "-noout", "-text"],
+            "CSR profile inspection",
+            pass_fds=descriptors,
+        ).decode("ascii", "strict")
+        key_spki = public_spki_from_key(key_reference, descriptors)
+        csr_spki = public_spki_from_csr(csr_reference, descriptors)
+    finally:
+        if staged_csr is not None:
+            os.close(staged_csr)
+        if staged_key is not None:
+            os.close(staged_key)
+        os.close(csr_descriptor)
+        os.close(key_descriptor)
+    if subject != f"subject=CN={common_name}":
+        fail("CSR common name does not match the request")
+    if "Public-Key: (384 bit)" not in text or "ASN1 OID: secp384r1" not in text:
+        fail("CSR key profile is not EC P-384")
+    if len(re.findall(r"^\s*Signature Algorithm: ecdsa-with-SHA384\s*$", text, re.MULTILINE)) != 1:
+        fail("CSR signature profile is not SHA-384")
+    extensions = re.findall(r"^\s+X509v3 ([^:]+):( critical)?\s*$", text, re.MULTILINE)
+    if extensions != [("Subject Alternative Name", "")]:
+        fail("CSR contains unexpected requested extensions")
+    lines = text.splitlines()
+    try:
+        attribute_start = lines.index("        Attributes:")
+        signature_start = next(
+            index
+            for index, line in enumerate(lines[attribute_start + 1 :], attribute_start + 1)
+            if line.startswith("    Signature Algorithm:")
+        )
+    except (ValueError, StopIteration):
+        fail("CSR attribute structure is malformed")
+    headers = [
+        line.strip()
+        for line in lines[attribute_start + 1 : signature_start]
+        if line.startswith("            ") and not line.startswith("                ")
+    ]
+    if headers != ["Requested Extensions:"]:
+        fail("CSR contains unexpected attributes")
+    san_index = next(
+        (index for index, line in enumerate(lines) if "X509v3 Subject Alternative Name:" in line),
+        None,
+    )
+    if san_index is None or san_index + 1 >= len(lines):
+        fail("CSR SAN extension is missing")
+    san_values = [value.strip() for value in lines[san_index + 1].strip().split(",")]
+    expected = [f"DNS:{value}" for value in dns_sans] + [f"IP Address:{value}" for value in ip_sans]
+    if san_values != expected:
+        fail("CSR SANs do not exactly match the request")
+
+    if key_spki != csr_spki:
+        fail("private key and CSR public keys differ")
+    public_text = run_command(
+        ["openssl", "pkey", "-pubin", "-inform", "DER", "-text", "-noout"],
+        "public-key profile validation",
+        key_spki,
+    ).decode("ascii", "strict")
+    if "ASN1 OID: secp384r1" not in public_text:
+        fail("private key public profile is not EC P-384")
+    require_unchanged(key_path, key_snapshot, "private key")
+    require_unchanged(csr_path, csr_snapshot, "CSR")
+    return sha256(csr_spki)
+
+
+def verify_request_signature(request_path, signature_path, allowed_signers, principal, namespace):
+    request_data, request_snapshot = read_safe_file(request_path, "pending request", 0o600)
+    _, signature_snapshot = read_safe_file(signature_path, "pending request signature", 0o600)
+    _, trust_snapshot = read_safe_file(allowed_signers, "frozen requester trust", 0o600)
+    signature_descriptor, opened_signature = open_safe_descriptor(
+        signature_path, "pending request signature"
+    )
+    try:
+        trust_descriptor, opened_trust = open_safe_descriptor(
+            allowed_signers, "frozen requester trust"
+        )
+    except Exception:
+        os.close(signature_descriptor)
+        raise
+    staged_signature = None
+    staged_trust = None
+    try:
+        staged_signature = copy_to_memfd(
+            signature_descriptor, opened_signature[5], "request-signature"
+        )
+        staged_trust = copy_to_memfd(
+            trust_descriptor, opened_trust[5], "requester-trust"
+        )
+        run_command(
+            [
+                "ssh-keygen",
+                "-Y",
+                "verify",
+                "-f",
+                f"/proc/self/fd/{staged_trust}",
+                "-I",
+                principal,
+                "-n",
+                namespace,
+                "-s",
+                f"/proc/self/fd/{staged_signature}",
+            ],
+            "request signature validation",
+            request_data,
+            (staged_signature, staged_trust),
+        )
+    finally:
+        if staged_trust is not None:
+            os.close(staged_trust)
+        if staged_signature is not None:
+            os.close(staged_signature)
+        os.close(trust_descriptor)
+        os.close(signature_descriptor)
+    require_unchanged(request_path, request_snapshot, "pending request")
+    require_unchanged(signature_path, signature_snapshot, "pending request signature")
+    require_unchanged(allowed_signers, trust_snapshot, "frozen requester trust")
+    require_unchanged(signature_path, opened_signature, "pending request signature")
+    require_unchanged(allowed_signers, opened_trust, "frozen requester trust")
+
+
+def validate_pending_directory(path, args, requesters_path, expected_request_id=None):
+    require_dir(path, "pending request directory")
+    names = {name for name, _ in scan_directory(path, "pending request directory")}
+    if names != EXPECTED_FILES:
+        fail("pending request directory does not contain the exact four-file protocol set")
+
+    contents = {}
+    snapshots = {}
+    for name in sorted(EXPECTED_FILES):
+        contents[name], snapshots[name] = read_safe_file(
+            os.path.join(path, name), f"pending protocol file {name}", 0o600
+        )
+    record = parse_request(contents["request"])
+    request_id = expected_request_id or os.path.basename(path)
+    now = int(time.time())
+    if (
+        record["schema"] != "1"
+        or record["request_id"] != request_id
+        or not REQUEST_ID_RE.fullmatch(record["request_id"])
+        or not NONCE_RE.fullmatch(record["nonce"])
+    ):
+        fail("pending request identity is invalid")
+    created = canonical_decimal(record["created_epoch"], "created epoch", 0, 2**63 - 1)
+    expires = canonical_decimal(record["expires_epoch"], "expires epoch", 0, 2**63 - 1)
+    if created > now or expires < now or expires - created != args.request_ttl_seconds:
+        fail("pending request is expired, future-dated, or has a conflicting lifetime")
+    expected_fields = {
+        "operation": args.operation,
+        "service": args.service,
+        "target": args.target,
+        "requester_principal": args.requester_principal,
+        "inventory_sha256": args.inventory_sha256,
+        "current_cert_sha256": args.current_cert_sha256,
+        "profile": args.profile,
+        "response_principal": args.response_principal,
+    }
+    if any(record[name] != value for name, value in expected_fields.items()):
+        fail("pending request conflicts with supplied request bindings")
+    if record["csr_sha256"] != sha256(contents["tls.csr"]):
+        fail("pending CSR digest binding is invalid")
+
+    spki_digest = validate_csr(
+        os.path.join(path, "tls.key"),
+        os.path.join(path, "tls.csr"),
+        args.common_name,
+        args.dns_san,
+        args.ip_san,
+    )
+    if record["csr_spki_sha256"] != spki_digest:
+        fail("pending CSR SPKI digest binding is invalid")
+    verify_request_signature(
+        os.path.join(path, "request"),
+        os.path.join(path, "request.sig"),
+        requesters_path,
+        args.requester_principal,
+        args.request_namespace,
+    )
+    for name in EXPECTED_FILES:
+        require_unchanged(os.path.join(path, name), snapshots[name], f"pending protocol file {name}")
+    return {
+        "status": "existing",
+        "request_id": request_id,
+        "request_sha256": sha256(contents["request"]),
+        "csr_sha256": sha256(contents["tls.csr"]),
+        "csr_spki_sha256": spki_digest,
+        "pending_dir": path,
+    }
+
+
+def inspect_pending_root(args, requesters_path):
+    if not os.path.lexists(args.pending_root):
+        return None
+    require_dir(args.pending_root, "pending root")
+    entries = scan_directory(args.pending_root, "pending root")
+    if not entries:
+        return None
+    if len(entries) != 1:
+        fail("multiple or unexpected pending request entries exist")
+    name, metadata = entries[0]
+    if not REQUEST_ID_RE.fullmatch(name) or not stat.S_ISDIR(metadata.st_mode):
+        fail("pending root contains staging, symlinked, or unexpected state")
+    return validate_pending_directory(os.path.join(args.pending_root, name), args, requesters_path)
+
+
+def write_new_file(path, data):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        offset = 0
+        while offset < len(data):
+            offset += os.write(descriptor, data[offset:])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def request_fault(point):
+    if os.environ.get("PLATFORM_PKI_REQUEST_PAUSE_AT") == point:
+        time.sleep(2)
+    if os.environ.get("PLATFORM_PKI_REQUEST_CRASH_AT") == point:
+        os.kill(os.getpid(), signal.SIGKILL)
+    if os.environ.get("PLATFORM_PKI_REQUEST_FAIL_AT") == point:
+        fail(f"injected request failure at {point}")
+
+
+def journal_content(request_id, stage_name, pending_root):
+    values = {
+        "schema": "1",
+        "request_id": request_id,
+        "stage_name": stage_name,
+        "pending_root": pending_root,
+    }
+    return "".join(f"{name}={values[name]}\n" for name in JOURNAL_FIELDS).encode("ascii")
+
+
+def parse_journal(data):
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail("request recovery journal is not ASCII")
+    if len(lines) != len(JOURNAL_FIELDS) or not data.endswith(b"\n"):
+        fail("request recovery journal is malformed")
+    record = {}
+    for expected, line in zip(JOURNAL_FIELDS, lines):
+        if "=" not in line:
+            fail("request recovery journal is malformed")
+        key, value = line.split("=", 1)
+        if key != expected or not value:
+            fail("request recovery journal field order is invalid")
+        record[key] = value
+    return record
+
+
+def remove_journal(state_root, snapshot):
+    journal = os.path.join(state_root, "request.journal")
+    require_unchanged(journal, snapshot, "request recovery journal")
+    os.unlink(journal)
+    fsync_dir(state_root)
+
+
+def recover_request(args, requesters_path, pending_identity):
+    journal_path = os.path.join(args.state_root, "request.journal")
+    if not os.path.lexists(journal_path):
+        return
+    data, snapshot = read_safe_file(journal_path, "request recovery journal", 0o600)
+    record = parse_journal(data)
+    if (
+        record["schema"] != "1"
+        or not REQUEST_ID_RE.fullmatch(record["request_id"])
+        or record["stage_name"] != f".stage-{record['request_id']}"
+        or record["pending_root"] != args.pending_root
+    ):
+        fail("request recovery journal identity is invalid")
+    require_unchanged(journal_path, snapshot, "request recovery journal")
+    require_pending_binding(args.pending_root, pending_identity)
+    stage = os.path.join(args.pending_root, record["stage_name"])
+    destination = os.path.join(args.pending_root, record["request_id"])
+    stage_exists = os.path.lexists(stage)
+    destination_exists = os.path.lexists(destination)
+    if stage_exists and destination_exists:
+        fail("request recovery found both staging and published state")
+    if destination_exists:
+        validate_pending_directory(
+            destination, args, requesters_path, record["request_id"]
+        )
+        if args.check:
+            fail("request recovery is required before check mode can succeed")
+        require_pending_binding(args.pending_root, pending_identity)
+        request_fault("before-recovery-journal-removal")
+        require_pending_binding(args.pending_root, pending_identity)
+        remove_journal(args.state_root, snapshot)
+        return
+    if stage_exists:
+        require_dir(stage, "journal-owned request staging directory")
+        entries = scan_directory(stage, "journal-owned request staging directory")
+        allowed = EXPECTED_FILES | {"request.cnf"}
+        if any(name not in allowed or not stat.S_ISREG(metadata.st_mode) for name, metadata in entries):
+            fail("journal-owned request staging directory contains unexpected state")
+        for name, _ in entries:
+            path = os.path.join(stage, name)
+            _, file_snapshot = read_safe_file(path, f"journal-owned staging file {name}", 0o600)
+            require_unchanged(path, file_snapshot, f"journal-owned staging file {name}")
+        if args.check:
+            fail("request recovery is required before check mode can succeed")
+        require_pending_binding(args.pending_root, pending_identity)
+        for name, _ in entries:
+            os.unlink(os.path.join(stage, name))
+        fsync_dir(stage)
+        os.rmdir(stage)
+        fsync_dir(args.pending_root)
+    if args.check:
+        fail("request recovery is required before check mode can succeed")
+    require_pending_binding(args.pending_root, pending_identity)
+    request_fault("before-recovery-journal-removal")
+    require_pending_binding(args.pending_root, pending_identity)
+    remove_journal(args.state_root, snapshot)
+
+
+def secure_generated_file(path, label):
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1:
+            fail(f"generated {label} is unsafe")
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def request_content(values):
+    return "".join(f"{name}={values[name]}\n" for name in REQUEST_FIELDS).encode("ascii")
+
+
+def rename_noreplace(source, destination):
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = getattr(libc, "renameat2", None)
+    if function is None:
+        fail("no-clobber rename is unavailable on this platform")
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    if function(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            fail("request publication destination already exists")
+        fail(f"no-clobber request publication failed: {os.strerror(error)}")
+
+
+def create_request(
+    args,
+    requesters_path,
+    signing_key_descriptor,
+    signing_key_snapshot,
+    lock_snapshot,
+    state_identity,
+    pending_parent_identity,
+    pending_identity,
+):
+    request_id = secrets.token_hex(16)
+    nonce = secrets.token_hex(32)
+    if not REQUEST_ID_RE.fullmatch(request_id) or not NONCE_RE.fullmatch(nonce):
+        fail("secure random request identity generation failed")
+    stage = os.path.join(args.pending_root, f".stage-{request_id}")
+    destination = os.path.join(args.pending_root, request_id)
+    journal_path = os.path.join(args.state_root, "request.journal")
+    write_new_file(
+        journal_path,
+        journal_content(request_id, os.path.basename(stage), args.pending_root),
+    )
+    _, journal_snapshot = read_safe_file(
+        journal_path, "request recovery journal", 0o600
+    )
+    fsync_dir(args.state_root)
+    require_lock_bindings(
+        args, lock_snapshot, state_identity, pending_parent_identity
+    )
+    request_fault("after-journal")
+    try:
+        os.mkdir(stage, 0o700)
+    except OSError as exc:
+        fail(f"cannot create protected request staging directory: {exc.strerror}")
+    require_dir(stage, "request staging directory")
+    fsync_dir(args.pending_root)
+    request_fault("after-stage")
+
+    config = (
+        "[req]\n"
+        "prompt = no\n"
+        "distinguished_name = dn\n"
+        "req_extensions = ext\n\n"
+        "[dn]\n"
+        f"CN = {args.common_name}\n\n"
+        "[ext]\n"
+        "subjectAltName = "
+        + ",".join([f"DNS:{value}" for value in args.dns_san] + [f"IP:{value}" for value in args.ip_san])
+        + "\n"
+    ).encode("ascii")
+    config_path = os.path.join(stage, "request.cnf")
+    key_path = os.path.join(stage, "tls.key")
+    csr_path = os.path.join(stage, "tls.csr")
+    manifest_path = os.path.join(stage, "request")
+    signature_path = os.path.join(stage, "request.sig")
+    write_new_file(config_path, config)
+    run_command(
+        [
+            "openssl",
+            "genpkey",
+            "-algorithm",
+            "EC",
+            "-pkeyopt",
+            "ec_paramgen_curve:secp384r1",
+            "-out",
+            key_path,
+        ],
+        "P-384 private key generation",
+    )
+    secure_generated_file(key_path, "private key")
+    request_fault("after-key")
+    run_command(
+        [
+            "openssl",
+            "req",
+            "-new",
+            "-sha384",
+            "-key",
+            key_path,
+            "-config",
+            config_path,
+            "-out",
+            csr_path,
+        ],
+        "SHA-384 CSR generation",
+    )
+    secure_generated_file(csr_path, "CSR")
+    request_fault("after-csr")
+    csr_data, _ = read_safe_file(csr_path, "staged CSR", 0o600)
+    spki_digest = validate_csr(
+        key_path, csr_path, args.common_name, args.dns_san, args.ip_san
+    )
+    created = int(time.time())
+    values = {
+        "schema": "1",
+        "request_id": request_id,
+        "nonce": nonce,
+        "created_epoch": str(created),
+        "expires_epoch": str(created + args.request_ttl_seconds),
+        "operation": args.operation,
+        "service": args.service,
+        "target": args.target,
+        "requester_principal": args.requester_principal,
+        "inventory_sha256": args.inventory_sha256,
+        "csr_sha256": sha256(csr_data),
+        "csr_spki_sha256": spki_digest,
+        "current_cert_sha256": args.current_cert_sha256,
+        "profile": args.profile,
+        "response_principal": args.response_principal,
+    }
+    manifest = request_content(values)
+    write_new_file(manifest_path, manifest)
+    request_fault("before-signing")
+    run_command(
+        [
+            "ssh-keygen",
+            "-Y",
+            "sign",
+            "-f",
+            f"/proc/self/fd/{signing_key_descriptor}",
+            "-n",
+            args.request_namespace,
+            manifest_path,
+        ],
+        "request signing",
+        pass_fds=(signing_key_descriptor,),
+    )
+    require_unchanged(
+        args.request_signing_key, signing_key_snapshot, "request signing key"
+    )
+    secure_generated_file(signature_path, "request signature")
+    request_fault("after-signature")
+    verify_request_signature(
+        manifest_path,
+        signature_path,
+        requesters_path,
+        args.requester_principal,
+        args.request_namespace,
+    )
+    # Transient configuration is removed only after all generated protocol bytes validate.
+    _, config_snapshot = read_safe_file(config_path, "staged OpenSSL configuration", 0o600)
+    require_unchanged(config_path, config_snapshot, "staged OpenSSL configuration")
+    os.unlink(config_path)
+    fsync_dir(stage)
+    staged_result = validate_pending_directory(stage, args, requesters_path, request_id)
+    if staged_result["request_id"] != request_id:
+        fail("staged request identity changed during validation")
+    if {name for name, _ in scan_directory(stage, "request staging directory")} != EXPECTED_FILES:
+        fail("staged request does not contain the exact four-file protocol set")
+    for name in EXPECTED_FILES:
+        _, snapshot = read_safe_file(os.path.join(stage, name), f"staged protocol file {name}", 0o600)
+        require_unchanged(os.path.join(stage, name), snapshot, f"staged protocol file {name}")
+    fsync_dir(stage)
+    request_fault("before-publication")
+    pending_entries = {name for name, _ in scan_directory(args.pending_root, "pending root")}
+    if pending_entries != {os.path.basename(stage)}:
+        fail("pending root changed before request publication")
+    require_lock_bindings(
+        args, lock_snapshot, state_identity, pending_parent_identity
+    )
+    require_pending_binding(args.pending_root, pending_identity)
+    rename_noreplace(stage, destination)
+    fsync_dir(args.pending_root)
+    require_lock_bindings(
+        args, lock_snapshot, state_identity, pending_parent_identity
+    )
+    require_pending_binding(args.pending_root, pending_identity)
+    request_fault("after-publication")
+    result = validate_pending_directory(destination, args, requesters_path)
+    request_fault("before-publication-journal-removal")
+    require_pending_binding(args.pending_root, pending_identity)
+    remove_journal(args.state_root, journal_snapshot)
+    result["status"] = "created"
+    return result
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    request = subparsers.add_parser("request")
+    request.add_argument("--check", action="store_true")
+    request.add_argument("--service", required=True)
+    request.add_argument("--target", required=True)
+    request.add_argument("--requester-principal", required=True)
+    request.add_argument("--operation", required=True)
+    request.add_argument("--profile", required=True)
+    request.add_argument("--inventory-sha256", required=True)
+    request.add_argument("--current-cert-sha256", required=True)
+    request.add_argument("--current-cert-path")
+    request.add_argument("--common-name", required=True)
+    request.add_argument("--dns-san", action="append", default=[])
+    request.add_argument("--ip-san", action="append", default=[])
+    request.add_argument("--response-principal", required=True)
+    request.add_argument("--request-ttl-seconds", required=True)
+    request.add_argument("--request-signing-key", required=True)
+    request.add_argument("--request-namespace", required=True)
+    request.add_argument("--trust-binding", action="append", nargs=3, metavar=("NAME", "PATH", "SHA256"), required=True)
+    request.add_argument("--state-root", required=True)
+    request.add_argument("--pending-root", required=True)
+    return parser
+
+
+def main():
+    os.umask(0o077)
+    args = build_parser().parse_args()
+    if os.geteuid() != 0:
+        fail("effective uid 0 is required")
+    validate_arguments(args)
+    validate_tools()
+
+    state_exists = os.path.lexists(args.state_root)
+    pending_exists = os.path.lexists(args.pending_root)
+    if state_exists:
+        require_dir(args.state_root, "state root")
+    elif pending_exists:
+        fail("pending root exists without the lock-bearing state root")
+    elif args.check:
+        fail("state root and canonical lock must exist in check mode")
+    else:
+        create_private_dir(args.state_root, "state root")
+        state_exists = True
+
+    lock_descriptor, lock_snapshot, state_identity = acquire_state_lock(
+        args.state_root, args.check
+    )
+    pending_lock_descriptor, pending_parent_identity = acquire_pending_lock(
+        args.pending_root
+    )
+    signing_key_descriptor = None
+    pending_root_descriptor = None
+    try:
+        trust_dir, requester_key = validate_trust(
+            args.trust_binding, args.response_principal, args.requester_principal
+        )
+        signing_key_descriptor, signing_key_snapshot = validate_signing_key(
+            args.request_signing_key, requester_key
+        )
+        validate_current_certificate(args)
+        if state_exists:
+            inspect_state_root(args.state_root, trust_dir)
+
+        if not pending_exists and not args.check:
+            create_private_dir(args.pending_root, "pending root")
+            pending_exists = True
+        if pending_exists:
+            pending_root_descriptor, pending_identity = open_pinned_pending_root(
+                args.pending_root
+            )
+        else:
+            pending_identity = None
+
+        trust_paths = {name: path for name, path, _ in args.trust_binding}
+        require_lock_bindings(
+            args, lock_snapshot, state_identity, pending_parent_identity
+        )
+        require_pending_binding(args.pending_root, pending_identity)
+        recover_request(
+            args, trust_paths["requesters.allowed_signers"], pending_identity
+        )
+        require_lock_bindings(
+            args, lock_snapshot, state_identity, pending_parent_identity
+        )
+        require_pending_binding(args.pending_root, pending_identity)
+        existing = inspect_pending_root(args, trust_paths["requesters.allowed_signers"])
+        require_pending_binding(args.pending_root, pending_identity)
+        if existing is not None:
+            print(json.dumps(existing, sort_keys=True, separators=(",", ":")))
+            return
+        if args.check:
+            result = {"status": "would-create", "pending_dir": args.pending_root}
+            print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+            return
+        result = create_request(
+            args,
+            trust_paths["requesters.allowed_signers"],
+            signing_key_descriptor,
+            signing_key_snapshot,
+            lock_snapshot,
+            state_identity,
+            pending_parent_identity,
+            pending_identity,
+        )
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    finally:
+        if signing_key_descriptor is not None:
+            os.close(signing_key_descriptor)
+        if pending_root_descriptor is not None:
+            os.close(pending_root_descriptor)
+        os.close(pending_lock_descriptor)
+        os.close(lock_descriptor)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RequestError as exc:
+        print(f"platform-pki-host-local-request: {exc}", file=sys.stderr)
+        raise SystemExit(1)

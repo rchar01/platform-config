@@ -1,0 +1,10 @@
+---
+- name: Create an authenticated host-local registry certificate request
+  hosts: registry
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run structurally fixed registry certificate request boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: request

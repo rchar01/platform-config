@@ -24,6 +24,9 @@ main() {
   run_test "Kubernetes bastion Phase 1 safety" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-phase1-safety.sh"
   run_test "Kubernetes bastion access reconciliation" "${SCRIPT_DIR}/scenarios/test-k8s-bastion-access-reconciliation.sh"
   run_test "Bootstrap token issuer staging workflow" "${SCRIPT_DIR}/scenarios/test-bootstrap-token-issuer-staging.sh"
+  run_test "Registry host-local PKI boundary" "${SCRIPT_DIR}/scenarios/test-registry-pki-boundary.sh"
+  run_test "Host-local PKI trust helper" "${SCRIPT_DIR}/scenarios/test-pki-host-local-trust-helper.sh"
+  run_test "Host-local PKI request helper" "${SCRIPT_DIR}/scenarios/test-pki-host-local-request-helper.sh"
 }
 
 main "$@"

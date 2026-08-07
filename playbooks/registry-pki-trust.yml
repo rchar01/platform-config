@@ -1,0 +1,10 @@
+---
+- name: Bootstrap reviewed host-local registry certificate trust
+  hosts: registry
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run structurally fixed registry certificate trust bootstrap boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: trust

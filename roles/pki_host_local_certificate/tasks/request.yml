@@ -1,0 +1,30 @@
+---
+- name: Load host-local certificate common validation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Validate host-local certificate request contract
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_request_ttl_seconds is integer
+      - pki_host_local_certificate_request_ttl_seconds is not boolean
+      - pki_host_local_certificate_request_ttl_seconds > 0
+      - pki_host_local_certificate_request_ttl_seconds <= 604800
+      - >-
+        (pki_host_local_certificate_operation == 'issue' and pki_host_local_certificate_current_cert_sha256 == 'none')
+        or (pki_host_local_certificate_operation in ['migrate', 'renew'] and pki_host_local_certificate_current_cert_sha256 != 'none')
+      - pki_host_local_certificate_request_id | length == 0
+      - pki_host_local_certificate_artifact_manifest_sha256 | length == 0
+      - pki_host_local_certificate_validation_boundary_sha256 | length == 0
+      - pki_host_local_certificate_rollback_seconds is integer
+      - pki_host_local_certificate_rollback_seconds == 0
+      - >-
+        (pki_host_local_certificate_operation == 'issue' and pki_host_local_certificate_current_cert_path | length == 0)
+        or (
+          pki_host_local_certificate_operation in ['migrate', 'renew']
+          and pki_host_local_certificate_current_cert_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+          and pki_host_local_certificate_current_cert_path is not search('(^|/)\.\.?(/|$)')
+        )
+    fail_msg: Request inputs conflict with the authenticated host-local issuance contract.
+
+- name: Run host-local certificate request preflight or mutation
+  ansible.builtin.import_tasks: request_apply.yml

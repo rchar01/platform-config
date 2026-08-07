@@ -1,0 +1,49 @@
+---
+- name: Validate host-local certificate trust bootstrap contract
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_target is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - pki_host_local_certificate_target == inventory_hostname
+      - pki_host_local_certificate_requester_principal == pki_host_local_certificate_target
+      - pki_host_local_certificate_response_principal is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - pki_host_local_certificate_trust_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+      - pki_host_local_certificate_trust_paths.keys() | list | sort == pki_host_local_certificate_required_trust_names
+      - pki_host_local_certificate_trust_sha256.keys() | list | sort == pki_host_local_certificate_required_trust_names
+      - pki_host_local_certificate_trust_sources.keys() | list | sort == pki_host_local_certificate_required_trust_names
+      - pki_host_local_certificate_state_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_state_root is not search('(^|/)\.\.?(/|$)')
+      - pki_host_local_certificate_trust_helper_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_trust_helper_path is not search('(^|/)\.\.?(/|$)')
+    fail_msg: Trust bootstrap inputs do not satisfy the frozen schema-2 target contract.
+  vars:
+    pki_host_local_certificate_required_trust_names:
+      - approvers.allowed_signers
+      - deployers.allowed_signers
+      - policy
+      - requesters.allowed_signers
+      - responses.allowed_signers
+
+- name: Validate host-local certificate target trust bindings
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.value
+        == pki_host_local_certificate_state_root ~ '/trust/'
+        ~ pki_host_local_certificate_trust_id ~ '/' ~ item.key
+      - pki_host_local_certificate_trust_sha256[item.key] is match('^[0-9a-f]{64}$')
+    fail_msg: Each target trust file requires its exact canonical path and SHA-256 digest.
+  loop: "{{ pki_host_local_certificate_trust_paths | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Validate host-local certificate controller trust source mapping
+  ansible.builtin.assert:
+    that:
+      - item.value is string
+      - item.value is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - item.value is not search('(^|/)\.\.?(/|$)')
+      - item.value.endswith('/' ~ item.key)
+    fail_msg: Each reviewed controller trust source must be an explicit canonical outside-Git file path.
+  loop: "{{ pki_host_local_certificate_trust_sources | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
