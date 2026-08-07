@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ansible_test_helpers import run_playbook
+from ansible_test_helpers import assert_failed_with, run_playbook
 from conftest import CommandRunner
 
 
@@ -150,8 +150,18 @@ def test_keepalived_vip_rejects_unsafe_inputs(
     output = isolated_test_dir / case_id
     output.mkdir()
     variables = {"keepalived_vip_test_output_dir": str(output), **extra_vars}
-    run_playbook(
-        command_runner,
-        repo_root / "tests/fixtures/keepalived-vip/render.yml",
-        extra_vars=(variables,),
-    ).assert_failure()
+    expected = {
+        "priority-255": "requires a safe name/interface",
+        "duplicate-priority": "must use its inventory-host assignment",
+        "extra-instance": "Keepalived cluster members require",
+        "remote-priority-255": "must use its inventory-host assignment",
+        "decimal-priority": "cluster priorities must be integers without coercion",
+    }.get(case_id, "Keepalived VIP requires")
+    assert_failed_with(
+        run_playbook(
+            command_runner,
+            repo_root / "tests/fixtures/keepalived-vip/render.yml",
+            extra_vars=(variables,),
+        ),
+        expected,
+    )

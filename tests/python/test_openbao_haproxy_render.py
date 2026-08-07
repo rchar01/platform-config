@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ansible_test_helpers import run_playbook
+from ansible_test_helpers import assert_failed_with, run_playbook
 from conftest import CommandRunner
 
 
@@ -103,8 +103,19 @@ def test_openbao_haproxy_rejects_unsafe_inputs(
     output = isolated_test_dir / case_id
     output.mkdir()
     variables = {"openbao_haproxy_test_output_dir": str(output), **extra_vars}
-    run_playbook(
-        command_runner,
-        repo_root / "tests/fixtures/openbao-haproxy/render.yml",
-        extra_vars=(variables,),
-    ).assert_failure()
+    expected = {
+        "malformed-dns": "OpenBao HAProxy backends require",
+        "unsafe-name": "OpenBao HAProxy backends require",
+        "invalid-source": "must be a restricted, network-normalized IPv4 CIDR",
+        "open-client": "must be a restricted, network-normalized IPv4 CIDR",
+        "open-stats": "must be a restricted, network-normalized IPv4 CIDR",
+        "unnormalized-source": "must be a restricted, network-normalized IPv4 CIDR",
+    }.get(case_id, "OpenBao HAProxy requires")
+    assert_failed_with(
+        run_playbook(
+            command_runner,
+            repo_root / "tests/fixtures/openbao-haproxy/render.yml",
+            extra_vars=(variables,),
+        ),
+        expected,
+    )

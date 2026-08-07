@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ansible_test_helpers import run_playbook
+from ansible_test_helpers import assert_failed_with, run_playbook
 from conftest import CommandRunner
 
 
@@ -136,8 +136,22 @@ def test_external_probe_rejects_unsafe_inputs(
     output = isolated_test_dir / case_id
     output.mkdir()
     variables = {"platform_external_probe_test_output_dir": str(output), **extra_vars}
-    run_playbook(
-        command_runner,
-        repo_root / "tests/fixtures/platform-external-probe/render.yml",
-        extra_vars=(variables,),
-    ).assert_failure()
+    expected = {
+        "plain-http": "must use HTTPS without URL credentials",
+        "url-credentials": "must use HTTPS without URL credentials",
+        "wrong-host": "must use HTTPS without URL credentials",
+        "status-only": "must use HTTPS without URL credentials",
+        "mtls-no-ca": "must use HTTPS without URL credentials",
+        "invalid-vip": "VIP ownership observations require safe labels",
+        "invalid-metrics": (
+            "External probe lifecycle inputs must use safe systemd and absolute path names"
+        ),
+    }.get(case_id, "External probes require")
+    assert_failed_with(
+        run_playbook(
+            command_runner,
+            repo_root / "tests/fixtures/platform-external-probe/render.yml",
+            extra_vars=(variables,),
+        ),
+        expected,
+    )
