@@ -154,6 +154,44 @@ class CommandRunner:
         return value
 
 
+class NamespaceRootRunner:
+    def __init__(
+        self,
+        command_runner: CommandRunner,
+        prefix: Sequence[str],
+    ) -> None:
+        self.command_runner = command_runner
+        self.prefix = tuple(prefix)
+
+    def argv(
+        self, argv: Sequence[str | os.PathLike[str]]
+    ) -> tuple[str, ...]:
+        return (*self.prefix, *(os.fspath(argument) for argument in argv))
+
+    def environment(
+        self, additions: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
+        environment = self.command_runner.environment.copy()
+        if additions:
+            environment.update(additions)
+        return environment
+
+    def run(
+        self,
+        argv: Sequence[str | os.PathLike[str]],
+        *,
+        environment: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+        redactions: Sequence[str] = (),
+    ) -> CommandResult:
+        return self.command_runner.run(
+            self.argv(argv),
+            environment=environment,
+            timeout=timeout,
+            redactions=redactions,
+        )
+
+
 @pytest.fixture(scope="session")
 def repo_root() -> Path:
     root = Path(__file__).resolve().parents[2]
@@ -223,3 +261,20 @@ def test_environment(
 @pytest.fixture
 def command_runner(repo_root: Path, test_environment: Mapping[str, str]) -> CommandRunner:
     return CommandRunner(repo_root, test_environment)
+
+
+@pytest.fixture
+def namespace_root_runner(command_runner: CommandRunner) -> NamespaceRootRunner:
+    if os.geteuid() == 0 and os.getegid() == 0:
+        return NamespaceRootRunner(command_runner, ())
+
+    prefix = ("unshare", "-Ur", "--")
+    probe = command_runner.run(
+        [*prefix, "sh", "-c", '[ "$(id -u):$(id -g)" = 0:0 ]'],
+    )
+    if probe.returncode != 0:
+        pytest.fail(
+            "PKI tests require effective UID/GID 0 or working unshare -Ur\n"
+            + probe.diagnostics()
+        )
+    return NamespaceRootRunner(command_runner, prefix)
