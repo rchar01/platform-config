@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+minversion = "9.1"
+testpaths = ["tests/python"]
+python_files = ["test_*.py"]
+addopts = [
+  "-p", "no:cacheprovider",
+  "--strict-config",
+  "--strict-markers",
+  "--tb=short",
+  "-ra",
+]
+filterwarnings = ["default"]
+required_plugins = ["pytest-xdist==3.8.0"]
+xfail_strict = true

@@ -37,6 +37,8 @@ make check-dev-toolchain
 make check-test-container-profile
 make check-container-wrapper
 make test
+make test-shell
+make test-python
 make test-keepalived-vip-rocky
 make test-podman-host-rocky
 make test-platform-external-probe-alloy
@@ -51,6 +53,14 @@ make test-openbao-rocky
 `ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. These Make targets use the development image through a sanitized test profile: the public repository is mounted read-only at `/workspace`, invocation-local writable state is overlaid at `/workspace/.ansible`, and private configuration, SSH files, the external secret store, the SSH agent, and the Podman socket are not exposed. Their configuration excludes `.ansible/` and the vendored bastion runtime.
 
 `make check-dev-toolchain` reports the Python, pytest, Ansible, lint, shell, crypto, and GNU utility versions used by tests and runs `python -m pip check`. `make check-test-container-profile` verifies the sanitized mount, identity, cache, executable-scratch, and secret-isolation contract. `make check-container-wrapper` verifies success, failure, SIGINT/SIGTERM interruption status, and temporary-state cleanup. All three checks are included in `make verify`.
+
+During the Python migration, `make test` remains the authoritative legacy shell
+suite and `make test-shell` is its explicit coexistence alias. `make test-python`
+runs the pytest harness plus migrated scenarios through the same sanitized test
+container profile; `make verify` runs both suites.
+A legacy scenario remains in `tests/run-all.sh` until its case-level mapping,
+positive and negative behavior, failure diagnostics, and no-mutation behavior
+have passed beside the Python replacement on the same source revision.
 
 Run `make deps` after changing `Containerfile.dev`, `requirements-dev.txt`, `requirements-test.txt`, or `requirements.yml`. The generic container wrapper builds only when the local image is absent; it does not detect a stale existing image.
 
