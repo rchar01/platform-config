@@ -18,6 +18,9 @@ import pytest
 from conftest import NamespaceRootRunner
 
 
+pytestmark = pytest.mark.pki
+
+
 TRUST_NAMES = (
     "policy",
     "requesters.allowed_signers",
@@ -437,6 +440,7 @@ def test_request_succeeds_after_trust_bootstrap(trust_case: TrustCase) -> None:
     assert json.loads(result.stdout)["status"] == "created"
 
 
+@pytest.mark.serial
 def test_lock_contention_is_rejected(trust_case: TrustCase) -> None:
     state = trust_case.work / "lock-state"
     install_trust(trust_case, state)
@@ -818,6 +822,7 @@ def test_ambiguous_unjournaled_stage_is_rejected_and_preserved(
     assert foreign.stat().st_ino == foreign_inode
 
 
+@pytest.mark.serial
 def test_ingress_mutation_publication_race_is_rejected(
     trust_case: TrustCase,
 ) -> None:
@@ -840,6 +845,7 @@ def test_ingress_mutation_publication_race_is_rejected(
         stop_owned_process(process)
 
 
+@pytest.mark.serial
 def test_destination_conflict_publication_race_is_rejected(
     trust_case: TrustCase,
 ) -> None:
@@ -861,6 +867,7 @@ def test_destination_conflict_publication_race_is_rejected(
         stop_owned_process(process)
 
 
+@pytest.mark.serial
 def test_lock_replacement_publication_race_is_rejected(
     trust_case: TrustCase,
 ) -> None:
@@ -886,6 +893,7 @@ REPLACEMENT_CASES = ("state", "trust", "ingress", "stage", "journal")
 
 
 @pytest.mark.parametrize("replacement", REPLACEMENT_CASES, ids=REPLACEMENT_CASES)
+@pytest.mark.serial
 def test_target_replacement_publication_race_is_rejected(
     trust_case: TrustCase,
     replacement: str,

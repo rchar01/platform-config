@@ -18,10 +18,11 @@ ANSIBLE_INVENTORY ?= ansible-inventory
 ANSIBLE_LINT ?= ansible-lint
 YAMLLINT ?= yamllint
 TEST_IN_CONTAINER ?= $(IN_CONTAINER)
+TEST_WORKERS ?= 2
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-shell test-python check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-etcd-image test-monitoring-etcd-cluster test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-etcd-image test-monitoring-etcd-cluster test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -45,6 +46,7 @@ help:
 	@printf '  %-24s %s\n' 'LIMIT' 'Optional Ansible --limit value'
 	@printf '  %-24s %s\n' 'EXTRA_ARGS' 'Extra arguments passed to Ansible commands'
 	@printf '  %-24s %s\n' 'STAGING_MODE' 'Issuer workflow mode: preflight, rollback_rehearsal, or validate'
+	@printf '  %-24s %s\n' 'TEST_WORKERS' 'Parallel pytest worker count, default: 2'
 	@printf '\n%s\n' 'Examples:'
 	@printf '  %s\n' 'make deps'
 	@printf '  %s\n' 'make shell'
@@ -113,16 +115,14 @@ check-test-container-profile:
 check-container-wrapper:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" bash scripts/check-container-wrapper
 
-## Run repository tests
+## Run the authoritative serial pytest suite
 test:
-	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" bash tests/run-all.sh
+	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" python -m pytest -n 0
 
-## Run the authoritative legacy shell test suite
-test-shell: test
-
-## Run the Python test harness and migrated tests
-test-python:
-	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" python -m pytest
+## Run parallel-safe tests, then timing-sensitive tests serially
+test-parallel:
+	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" python -m pytest -n "$(TEST_WORKERS)" -m "not serial"
+	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" python -m pytest -n 0 -m serial
 
 ## Run the opt-in Keepalived role test in disposable Rocky systemd
 test-keepalived-vip-rocky:
@@ -161,7 +161,7 @@ test-openbao-rocky:
 	@bash tests/scenarios/test-openbao-rocky.sh
 
 ## Run all local static checks
-verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test test-python
+verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test
 
 ## Deploy and validate the bootstrap token issuer staging candidate
 deploy-bootstrap-token-issuer-staging: _guard-staging-mode

@@ -37,8 +37,7 @@ make check-dev-toolchain
 make check-test-container-profile
 make check-container-wrapper
 make test
-make test-shell
-make test-python
+make test-parallel
 make test-keepalived-vip-rocky
 make test-podman-host-rocky
 make test-platform-external-probe-alloy
@@ -54,13 +53,12 @@ make test-openbao-rocky
 
 `make check-dev-toolchain` reports the Python, pytest, Ansible, lint, shell, crypto, and GNU utility versions used by tests and runs `python -m pip check`. `make check-test-container-profile` verifies the sanitized mount, identity, cache, executable-scratch, and secret-isolation contract. `make check-container-wrapper` verifies success, failure, SIGINT/SIGTERM interruption status, and temporary-state cleanup. All three checks are included in `make verify`.
 
-During the Python migration, `make test` remains the authoritative legacy shell
-suite and `make test-shell` is its explicit coexistence alias. `make test-python`
-runs the pytest harness plus migrated scenarios through the same sanitized test
-container profile; `make verify` runs both suites.
-A legacy scenario remains in `tests/run-all.sh` until its case-level mapping,
-positive and negative behavior, failure diagnostics, and no-mutation behavior
-have passed beside the Python replacement on the same source revision.
+`make test` runs the complete authoritative pytest suite serially. PKI helper
+tests feature-probe `unshare -Ur` and fail when effective namespace root is
+unavailable instead of silently skipping required coverage. `make test-parallel`
+runs tests not marked `serial` with `TEST_WORKERS=2` by default, then runs the
+timing-sensitive child-process tests serially. The two selections are disjoint
+and together cover the same collected tests as `make test`.
 
 Run `make deps` after changing `Containerfile.dev`, `requirements-dev.txt`, `requirements-test.txt`, or `requirements.yml`. The generic container wrapper builds only when the local image is absent; it does not detect a stale existing image.
 

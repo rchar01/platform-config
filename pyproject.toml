@@ -10,5 +10,9 @@ addopts = [
   "-ra",
 ]
 filterwarnings = ["default"]
+markers = [
+  "pki: host-local PKI helper and role tests",
+  "serial: tests that coordinate timing-sensitive child processes",
+]
 required_plugins = ["pytest-xdist==3.8.0"]
 xfail_strict = true

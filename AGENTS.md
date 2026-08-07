@@ -22,6 +22,9 @@
 - Main syntax checks use a private inventory: `make syntax ENV=dev` and `make syntax ENV=dev PLAYBOOK=playbooks/k8s-bastion-access.yml`.
 - Bastion smoke checks after apply: `make smoke-k8s-bastion ENV=dev LIMIT=k8s-bastion-01`.
 - Lint checks: `make lint` and `make yamllint`.
+- Default tests: `make test` runs the authoritative serial pytest suite.
+- Supplemental parallel tests: `make test-parallel`; override worker count with
+  `TEST_WORKERS=<count>`.
 - Helper scripts source `../platform-private/config/<env>.ansible.env` when present; use `PLATFORM_CONFIG_INVENTORY=...`, `PLATFORM_CONFIG_ENV_FILE=...`, or `-i/--inventory` overrides for focused runs.
 
 ## How To Investigate

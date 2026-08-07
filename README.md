@@ -78,6 +78,8 @@ make syntax ENV=dev
 make check ENV=dev
 make lint
 make yamllint
+make test
+make test-parallel
 make verify
 make deploy-bootstrap-token-issuer-staging ENV=dev LIMIT=k8s-bastion-01 STAGING_MODE=preflight
 make smoke-firewalld ENV=dev

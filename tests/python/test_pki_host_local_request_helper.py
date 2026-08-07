@@ -19,6 +19,9 @@ import pytest
 from conftest import CommandResult, NamespaceRootRunner
 
 
+pytestmark = pytest.mark.pki
+
+
 REQUEST_FIELDS = (
     "schema",
     "request_id",
@@ -792,6 +795,7 @@ def test_postpublication_crash_check_is_non_mutating_and_apply_recovers(
     assert not os.path.lexists(state / "request.journal")
 
 
+@pytest.mark.serial
 def test_recovery_rejects_replaced_pending_root(
     request_scenario: RequestScenario,
 ) -> None:
@@ -820,6 +824,7 @@ def test_recovery_rejects_replaced_pending_root(
     assert _json_result(request_scenario.run(state=state, pending=pending))["status"] == "existing"
 
 
+@pytest.mark.serial
 def test_recovery_rejects_replaced_journal(
     request_scenario: RequestScenario,
 ) -> None:
@@ -850,6 +855,7 @@ def test_recovery_rejects_replaced_journal(
     assert _json_result(request_scenario.run(state=state, pending=pending))["status"] == "existing"
 
 
+@pytest.mark.serial
 def test_concurrent_publication_creates_exactly_one_request(
     request_scenario: RequestScenario,
 ) -> None:
@@ -888,6 +894,7 @@ def test_concurrent_publication_creates_exactly_one_request(
     assert len(statuses) in {1, 2}
 
 
+@pytest.mark.serial
 def test_publication_rejects_replaced_state_lock(
     request_scenario: RequestScenario,
 ) -> None:
@@ -915,6 +922,7 @@ def test_publication_rejects_replaced_state_lock(
     _json_result(request_scenario.run(state=state, pending=pending))
 
 
+@pytest.mark.serial
 def test_publication_rejects_replaced_pending_root(
     request_scenario: RequestScenario,
 ) -> None:
@@ -940,6 +948,7 @@ def test_publication_rejects_replaced_pending_root(
     _json_result(request_scenario.run(state=state, pending=pending))
 
 
+@pytest.mark.serial
 def test_publication_rejects_replaced_journal(
     request_scenario: RequestScenario,
 ) -> None:
@@ -969,6 +978,7 @@ def test_publication_rejects_replaced_journal(
     _json_result(request_scenario.run(state=state, pending=pending))
 
 
+@pytest.mark.serial
 def test_signing_rejects_replaced_private_key(
     request_scenario: RequestScenario,
 ) -> None:
