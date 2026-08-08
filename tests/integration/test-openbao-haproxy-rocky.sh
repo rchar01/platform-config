@@ -18,7 +18,7 @@ fail() {
 
 run_playbook() {
   podman exec \
-    --env ANSIBLE_COLLECTIONS_PATH=/workspace/.ansible/collections \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections \
     --env ANSIBLE_ROLES_PATH=/workspace/roles \
     --workdir /workspace \
     "$CONTAINER" \
@@ -66,6 +66,9 @@ podman exec "$CONTAINER" dnf -qy install \
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
+podman exec "$CONTAINER" ansible-galaxy collection install \
+  -r /workspace/requirements.yml \
+  -p /root/.ansible/collections >/dev/null
 
 podman exec "$CONTAINER" mkdir -p /etc/openbao/tls /etc/openbao-haproxy-test
 podman exec "$CONTAINER" openssl req -x509 -newkey rsa:2048 -nodes -days 1 \

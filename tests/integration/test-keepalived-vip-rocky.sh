@@ -18,7 +18,7 @@ fail() {
 
 run_playbook() {
   podman exec \
-    --env ANSIBLE_COLLECTIONS_PATH=/workspace/.ansible/collections \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections \
     --env ANSIBLE_ROLES_PATH=/workspace/roles \
     --workdir /workspace \
     "$CONTAINER" \
@@ -48,6 +48,9 @@ podman exec "$CONTAINER" dnf -qy install iproute python3-pip >/dev/null
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
+podman exec "$CONTAINER" ansible-galaxy collection install \
+  -r /workspace/requirements.yml \
+  -p /root/.ansible/collections >/dev/null
 podman exec "$CONTAINER" ip link add vrrp-test type dummy
 podman exec "$CONTAINER" ip address add 192.0.2.10/24 dev vrrp-test
 podman exec "$CONTAINER" ip link set vrrp-test up
