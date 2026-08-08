@@ -159,7 +159,8 @@ paths from `$HOME` continue to work.
 
 Automated lint and default test targets use the sanitized profile described
 above instead of these operational mounts. Host-Podman integration targets stay
-outside the dev container and remain opt-in.
+outside the dev container, remain opt-in, and use the Bash drivers under
+`tests/integration/`.
 
 See [Operator Runbook](operator-runbook.md) for the full homelab and dev bring-up sequence.
 

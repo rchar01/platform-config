@@ -126,39 +126,39 @@ test-parallel:
 
 ## Run the opt-in Keepalived role test in disposable Rocky systemd
 test-keepalived-vip-rocky:
-	@bash tests/scenarios/test-keepalived-vip-rocky.sh
+	@bash tests/integration/test-keepalived-vip-rocky.sh
 
 ## Run the opt-in Podman host and Quadlet integration check
 test-podman-host-rocky:
-	@bash tests/scenarios/test-podman-host-rocky.sh
+	@bash tests/integration/test-podman-host-rocky.sh
 
 ## Run the opt-in external probe and exact Alloy integration check
 test-platform-external-probe-alloy:
-	@bash tests/scenarios/test-platform-external-probe-alloy.sh
+	@bash tests/integration/test-platform-external-probe-alloy.sh
 
 ## Run the opt-in OpenBao HAProxy integration check
 test-openbao-haproxy-rocky:
-	@bash tests/scenarios/test-openbao-haproxy-rocky.sh
+	@bash tests/integration/test-openbao-haproxy-rocky.sh
 
 ## Run the opt-in monitoring HAProxy Phase 0 capability check
 test-monitoring-haproxy-capabilities:
-	@bash tests/scenarios/test-monitoring-haproxy-capabilities.sh
+	@bash tests/integration/test-monitoring-haproxy-capabilities.sh
 
 ## Qualify the exact monitoring etcd image and disposable runtime
 test-monitoring-etcd-image:
-	@bash tests/scenarios/test-monitoring-etcd-image.sh
+	@bash tests/integration/test-monitoring-etcd-image.sh
 
 ## Exercise disposable monitoring etcd mTLS and quorum behavior
 test-monitoring-etcd-cluster:
-	@bash tests/scenarios/test-monitoring-etcd-cluster.sh
+	@bash tests/integration/test-monitoring-etcd-cluster.sh
 
 ## Validate OpenBao configuration with the exact 2.6.1 image
 test-openbao-image:
-	@bash tests/scenarios/test-openbao-image.sh
+	@bash tests/integration/test-openbao-image.sh
 
 ## Run the opt-in OpenBao role test in disposable Rocky systemd
 test-openbao-rocky:
-	@bash tests/scenarios/test-openbao-rocky.sh
+	@bash tests/integration/test-openbao-rocky.sh
 
 ## Run all local static checks
 verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test
