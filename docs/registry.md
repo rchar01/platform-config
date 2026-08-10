@@ -32,8 +32,13 @@ implement trust rotation.
 The request entry point validates preinstalled frozen target trust, installs the
 reviewed request helper, and generates or revalidates one root-owned local P-384
 key, CSR, canonical request, and SSH signature. It never installs trust and does
-not collect the three public request files yet. The activation entry point still
-fails before mutation and cannot install a certificate or restart Zot.
+not collect the three public request files yet. The separate
+`scripts/platform-pki-gitlab-package` helper can validate and publish an already
+collected canonical request package to one exact GitLab Generic Package
+coordinate; it does not collect from the target or create the receipt or stage
+manifest. See [GitLab PKI Package Exchange](pki-gitlab-package.md). The
+activation entry point still fails before mutation and cannot install a
+certificate or restart Zot.
 
 Trust check mode is non-mutating. Exact installed trust can be revalidated; an
 absent install requires the helper, protected state root and lock, and complete
@@ -43,8 +48,9 @@ Request check mode similarly runs the request helper's complete non-mutating
 preflight and requires the reviewed helper and state lock to be installed
 already; it fails rather than reporting incomplete readiness.
 
-Do not use these playbooks against a live registry until request collection and
-the remaining public verification gate are complete. Certificate activation,
+Do not use these playbooks or publish a real package until request collection,
+exact GitLab `18.11.3-ce.0` runtime qualification, project controls, and the
+remaining public verification gate are complete. Certificate activation,
 rollback, service validation, and deployment evidence remain blocked. Existing
 `zot_registry` managed TLS behavior remains unchanged.
 

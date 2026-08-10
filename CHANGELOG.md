@@ -7,6 +7,21 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added a fail-closed GitLab Generic Package request publisher for host-local
+  PKI public artifacts, with canonical request, receipt, manifest, CSR,
+  signature, trust, status, pagination, partial-resume, and digest validation.
+
+### Security
+
+- Kept PKI leaf keys and GitLab token bytes outside package payloads, command
+  arguments, URLs, output, and the public repository; conflicting or ambiguous
+  package coordinates fail without deletion or repair.
+- Rejected trailing or additional data in CSR and SSH-signature armor and
+  metadata drift in pinned package, trust, configuration, and credential sources
+  during publication.
+
 ## [1.1.0] - 2026-07-25
 
 ### Added

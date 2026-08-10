@@ -38,6 +38,8 @@ and other secrets belong outside Git.
 
 - [Registry](registry.md): Zot registry access, authentication, OCI smoke tests,
   client tools, Kubernetes pulls, and image-signing considerations.
+- [GitLab PKI Package Exchange](pki-gitlab-package.md): Protected request-package
+  publication, GitLab controls, and remaining host-local PKI transport gates.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
   access configuration, installation, issuer staging validation, smoke tests,
   and reconciliation.

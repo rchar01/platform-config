@@ -4,7 +4,9 @@ This file gives a short, release-oriented view of what changed between versions.
 
 ## Unreleased
 
-No user-visible changes yet.
+- Add a protected GitLab Generic Package publisher for validated host-local PKI
+  request packages. Target collection, live publication, signing, and
+  certificate activation remain separately blocked.
 
 ## v1.1.0 - 2026-07-25
 
