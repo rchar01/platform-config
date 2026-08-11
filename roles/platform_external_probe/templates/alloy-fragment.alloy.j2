@@ -36,6 +36,7 @@ prometheus.exporter.blackbox "platform_external_probe" {
       observer    = {{ platform_external_probe_observer_id | to_json }},
       environment = {{ platform_external_probe_environment | to_json }},
       service     = {{ target.service | to_json }},
+      endpoint    = {{ target.name | to_json }},
       address_mode = {{ target.address_mode | to_json }},
     }
   }

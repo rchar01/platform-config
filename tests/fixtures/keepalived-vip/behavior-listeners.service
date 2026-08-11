@@ -1,0 +1,11 @@
+[Unit]
+Description=Keepalived behavior fixture listeners
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/platform-test-listeners
+
+[Install]
+WantedBy=multi-user.target

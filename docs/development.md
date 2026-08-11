@@ -40,6 +40,7 @@ make test
 make test-parallel
 make verify-parallel
 make test-keepalived-vip-rocky
+make test-keepalived-vip-behavior
 make test-podman-host-rocky
 make test-platform-external-probe-alloy
 make test-openbao-haproxy-rocky
@@ -77,6 +78,16 @@ Run `make deps` after changing `Containerfile.dev`, `requirements-dev.txt`, `req
 systemd container with `NET_ADMIN` for a dummy interface, keeps Keepalived stopped,
 and verifies role convergence, candidate rejection, and stale peer-rule removal.
 
+`make test-keepalived-vip-behavior` builds a cacheable Rocky 10.1 fixture image
+with exact Keepalived `2.2.8-9.el10`, then converges three systemd containers on
+an invocation-local internal Podman network. It verifies one preferred VIP owner,
+process-loss failover, a repeated preferred-node loss, the 60-second failback
+delay, tracked-service hard faults through all three priorities, no owner when all
+nodes are faulted, recovery, and node-local ownership metrics from the same live
+topology. The lane uses only its dynamically allocated fixture subnet and removes
+its labeled containers and network; it does not exercise target networking,
+partitions, firewalld, production timing, or deployed observers.
+
 `make test-podman-host-rocky` is also opt-in. It installs the exact approved
 Podman package in a privileged disposable Rocky 10.1 systemd container, verifies
 check-mode non-mutation, keeps the API socket disabled, exercises native Quadlet
@@ -101,7 +112,9 @@ container. It verifies SHA-256 and exact package identity, disabled service/time
 lifecycle, native complete-config validation and candidate preservation,
 idempotency, exact kernel VIP ownership metrics, and runtime blackbox results
 against controlled strict TLS, redirect, status, body, and client-certificate
-fixtures.
+fixtures. The checksum-verified RPM is reused from the ignored `.artifacts/`
+cache; an invocation lock prevents concurrent tests from publishing a partial
+download, and a missing or invalid cache entry is downloaded again.
 
 `make test-monitoring-artifact-identities` is a Phase 0 identity check for the
 exact Garage, Loki, Mimir, and Grafana image candidates recorded in

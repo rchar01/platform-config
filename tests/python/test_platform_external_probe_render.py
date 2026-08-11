@@ -69,6 +69,8 @@ def test_external_probe_fragment_has_strict_blackbox_contract(
         r'Host: \\"bao[.]example[.]invalid\\"',
         r"valid_status_codes: \[200\]",
         r'observer\s*=\s*"monitoring-example-01"',
+        r'environment\s*=\s*"dev"',
+        r'endpoint\s*=\s*"openbao_vip"',
         r'address_mode\s*=\s*"vip"',
         r'^prometheus[.]exporter[.]unix "platform_vip_ownership"',
     ):
@@ -97,6 +99,8 @@ def test_vip_ownership_render_contract(rendered_probe: dict[str, str]) -> None:
         r"mv -f -- .*metrics_path",
         r"if \[\[ .*published.* -eq 0 \]\]",
         r"^trap cleanup EXIT$",
+        r'environment="dev",endpoint="openbao_vip"',
+        r'vip="192[.]0[.]2[.]200"',
     ):
         assert re.search(pattern, collector, re.MULTILINE), pattern
     assert not re.search(
@@ -121,6 +125,8 @@ def test_vip_ownership_render_contract(rendered_probe: dict[str, str]) -> None:
         ("status-only", {"platform_external_probe_test_required_body_regexes": []}),
         ("mtls-no-ca", {"platform_external_probe_test_target_2_ca_file": "", "platform_external_probe_test_target_2_client_cert_file": "/run/secrets/probe.crt", "platform_external_probe_test_target_2_client_key_file": "/run/secrets/probe.key"}),
         ("invalid-vip", {"platform_external_probe_test_vip": "not-an-address"}),
+        ("invalid-endpoint", {"platform_external_probe_test_endpoint": "INVALID-ENDPOINT"}),
+        ("unknown-endpoint", {"platform_external_probe_test_endpoint": "unknown_vip"}),
         ("invalid-metrics", {"platform_external_probe_metrics_path": "/tmp/vip-ownership.txt"}),
         ("incoherent-timer", {"platform_external_probe_test_timer_enabled": True, "platform_external_probe_test_timer_state": "stopped"}),
     ],
@@ -142,7 +148,9 @@ def test_external_probe_rejects_unsafe_inputs(
         "wrong-host": "must use HTTPS without URL credentials",
         "status-only": "must use HTTPS without URL credentials",
         "mtls-no-ca": "must use HTTPS without URL credentials",
-        "invalid-vip": "VIP ownership observations require safe labels",
+        "invalid-vip": "VIP ownership observations require safe service and endpoint labels",
+        "invalid-endpoint": "VIP ownership observations require safe service and endpoint labels",
+        "unknown-endpoint": "identify exactly one configured external probe target",
         "invalid-metrics": (
             "External probe lifecycle inputs must use safe systemd and absolute path names"
         ),

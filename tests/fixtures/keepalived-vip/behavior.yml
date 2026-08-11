@@ -1,0 +1,72 @@
+---
+- name: Converge one disposable Keepalived behavior member
+  hosts: all
+  connection: local
+  gather_facts: true
+  vars:
+    keepalived_vip_enabled: true
+    keepalived_vip_package_nevra: keepalived-0:2.2.8-9.el10.x86_64
+    keepalived_vip_cluster_members:
+      - name: keepalived-1
+        router_id: keepalived-1
+        instances:
+          TEST_VIP:
+            source_address: "{{ keepalived_vip_test_node_1_ip }}"
+            priority: 150
+      - name: keepalived-2
+        router_id: keepalived-2
+        instances:
+          TEST_VIP:
+            source_address: "{{ keepalived_vip_test_node_2_ip }}"
+            priority: 140
+      - name: keepalived-3
+        router_id: keepalived-3
+        instances:
+          TEST_VIP:
+            source_address: "{{ keepalived_vip_test_node_3_ip }}"
+            priority: 130
+    keepalived_vip_instances:
+      - name: TEST_VIP
+        interface: eth0
+        virtual_router_id: 51
+        priority: "{{ keepalived_vip_test_priority }}"
+        source_address: "{{ keepalived_vip_test_source_address }}"
+        peers: "{{ keepalived_vip_test_peers }}"
+        vip: "{{ keepalived_vip_test_vip }}/24"
+    keepalived_vip_track_service: platform-test-listeners.service
+    keepalived_vip_track_ports:
+      - 8200
+      - 8404
+    keepalived_vip_preempt_delay: 60
+    keepalived_vip_firewalld_manage: false
+    keepalived_vip_service_enabled: true
+    keepalived_vip_service_state: started
+
+    platform_external_probe_enabled: true
+    platform_external_probe_observer_id: "{{ inventory_hostname }}"
+    platform_external_probe_environment: test
+    platform_external_probe_targets:
+      - name: monitoring_vip
+        service: monitoring
+        address: "https://{{ keepalived_vip_test_vip }}/ready"
+        address_mode: vip
+        server_name: monitoring.example.invalid
+        host_header: monitoring.example.invalid
+        ca_file: /etc/pki/tls/certs/ca-bundle.crt
+        valid_status_codes:
+          - 200
+        required_body_regexes:
+          - ready
+        forbidden_body_regexes:
+          - failed
+    platform_external_probe_vip_ownership:
+      - service: monitoring
+        endpoint: monitoring_vip
+        instance: TEST_VIP
+        interface: eth0
+        vip: "{{ keepalived_vip_test_vip }}"
+    platform_external_probe_timer_enabled: false
+    platform_external_probe_timer_state: stopped
+  roles:
+    - keepalived_vip
+    - platform_external_probe

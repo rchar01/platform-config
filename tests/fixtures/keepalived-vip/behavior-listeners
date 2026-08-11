@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+
+pids=()
+cleanup() {
+  if ((${#pids[@]})); then
+    kill "${pids[@]}" >/dev/null 2>&1 || true
+    wait "${pids[@]}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+python3 -m http.server 8200 --bind 0.0.0.0 >/dev/null 2>&1 &
+pids+=("$!")
+python3 -m http.server 8404 --bind 0.0.0.0 >/dev/null 2>&1 &
+pids+=("$!")
+
+wait -n "${pids[@]}"

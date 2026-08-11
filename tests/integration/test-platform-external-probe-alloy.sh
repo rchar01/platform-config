@@ -5,16 +5,22 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/platform-external-probe/integration.yml
 RPM_URL=https://github.com/grafana/alloy/releases/download/v1.18.1/alloy-1.18.1-1.amd64.rpm
 RPM_SHA256=7dbdc068feae7feaafbc48fefb9b41b6c91af24984c13277bf0a9d1a298a4126
+CACHE_LOCK_TIMEOUT="${PLATFORM_EXTERNAL_PROBE_CACHE_LOCK_TIMEOUT:-120}"
+DOWNLOAD_TIMEOUT="${PLATFORM_EXTERNAL_PROBE_DOWNLOAD_TIMEOUT:-300}"
 ARTIFACT_DIR="${ROOT_DIR}/.artifacts"
 mkdir -p "$ARTIFACT_DIR"
-RPM_PATH="$(mktemp "${ARTIFACT_DIR}/alloy-1.18.1-1.amd64.XXXXXX.rpm")"
+RPM_PATH="${ARTIFACT_DIR}/alloy-1.18.1-1.amd64.rpm"
+RPM_LOCK_PATH="${RPM_PATH}.lock"
+RPM_TEMP_PATH=""
 RPM_CONTAINER_PATH="/workspace/.artifacts/${RPM_PATH##*/}"
 ROCKY_IMAGE="${PLATFORM_EXTERNAL_PROBE_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 CONTAINER="platform-config-external-probe-test-$$"
 
 cleanup() {
   podman rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  rm -f -- "$RPM_PATH"
+  if [[ -n "$RPM_TEMP_PATH" ]]; then
+    rm -f -- "$RPM_TEMP_PATH"
+  fi
 }
 trap cleanup EXIT
 
@@ -23,9 +29,35 @@ fail() {
   exit 1
 }
 
-curl --fail --location --silent --show-error --output "$RPM_PATH" "$RPM_URL"
-printf '%s  %s\n' "$RPM_SHA256" "$RPM_PATH" | sha256sum --check --status \
-  || fail 'Grafana Alloy 1.18.1 RPM checksum mismatch'
+if [[ ! "$CACHE_LOCK_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] \
+  || ((CACHE_LOCK_TIMEOUT > 3600)); then
+  fail 'PLATFORM_EXTERNAL_PROBE_CACHE_LOCK_TIMEOUT must be an integer from 1 to 3600 seconds'
+fi
+if [[ ! "$DOWNLOAD_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] \
+  || ((DOWNLOAD_TIMEOUT > 3600)); then
+  fail 'PLATFORM_EXTERNAL_PROBE_DOWNLOAD_TIMEOUT must be an integer from 1 to 3600 seconds'
+fi
+
+exec 9>"$RPM_LOCK_PATH"
+flock -w "$CACHE_LOCK_TIMEOUT" 9 \
+  || fail "Timed out waiting for the Alloy RPM cache lock after ${CACHE_LOCK_TIMEOUT}s"
+if ! printf '%s  %s\n' "$RPM_SHA256" "$RPM_PATH" \
+  | sha256sum --check --status 2>/dev/null; then
+  RPM_TEMP_PATH="$(mktemp "${ARTIFACT_DIR}/alloy-1.18.1-1.amd64.XXXXXX.rpm")"
+  curl --connect-timeout 15 \
+    --max-time "$DOWNLOAD_TIMEOUT" \
+    --fail \
+    --location \
+    --silent \
+    --show-error \
+    --output "$RPM_TEMP_PATH" \
+    "$RPM_URL"
+  printf '%s  %s\n' "$RPM_SHA256" "$RPM_TEMP_PATH" | sha256sum --check --status \
+    || fail 'Grafana Alloy 1.18.1 RPM checksum mismatch'
+  mv -f -- "$RPM_TEMP_PATH" "$RPM_PATH"
+  RPM_TEMP_PATH=""
+fi
+flock -u 9
 
 run_playbook() {
   podman exec \
@@ -209,9 +241,9 @@ if ! podman exec "$CONTAINER" systemctl start platform-external-probe-ownership.
   fail 'VIP ownership collector service failed'
 fi
 ownership_metrics="$(podman exec "$CONTAINER" /usr/bin/cat /var/lib/alloy/platform-external-probe/vip-ownership.prom)"
-grep -q 'platform_vip_owned{service="openbao",node="openbao-test-01",instance="OPENBAO",interface="vrrp-test"} 1' <<<"$ownership_metrics" \
+grep -q 'platform_vip_owned{service="openbao",node="openbao-test-01",environment="test",endpoint="openbao_vip",instance="OPENBAO",interface="vrrp-test",vip="192.0.2.200"} 1' <<<"$ownership_metrics" \
   || fail 'VIP ownership collector did not report the exact local address'
-grep -q 'platform_vip_ownership_collection_success{service="openbao",node="openbao-test-01",instance="OPENBAO"} 1' <<<"$ownership_metrics" \
+grep -q 'platform_vip_ownership_collection_success{service="openbao",node="openbao-test-01",environment="test",endpoint="openbao_vip",instance="OPENBAO",interface="vrrp-test",vip="192.0.2.200"} 1' <<<"$ownership_metrics" \
   || fail 'VIP ownership collector did not report successful interface inspection'
 timestamp_line="$(grep -m1 'platform_vip_ownership_observation_timestamp_seconds{' <<<"$ownership_metrics")"
 timestamp_before="${timestamp_line##* }"
@@ -224,13 +256,13 @@ fi
 podman exec "$CONTAINER" ip address flush dev vrrp-test
 podman exec "$CONTAINER" systemctl start platform-external-probe-ownership.service
 ownership_metrics="$(podman exec "$CONTAINER" /usr/bin/cat /var/lib/alloy/platform-external-probe/vip-ownership.prom)"
-grep -q 'platform_vip_owned{service="openbao",node="openbao-test-01",instance="OPENBAO",interface="vrrp-test"} 0' <<<"$ownership_metrics" \
+grep -q 'platform_vip_owned{service="openbao",node="openbao-test-01",environment="test",endpoint="openbao_vip",instance="OPENBAO",interface="vrrp-test",vip="192.0.2.200"} 0' <<<"$ownership_metrics" \
   || fail 'VIP ownership collector reported an absent address as local'
 
 podman exec "$CONTAINER" ip address add 192.0.2.199 peer 192.0.2.200 dev vrrp-test
 podman exec "$CONTAINER" systemctl start platform-external-probe-ownership.service
 ownership_metrics="$(podman exec "$CONTAINER" /usr/bin/cat /var/lib/alloy/platform-external-probe/vip-ownership.prom)"
-grep -q 'platform_vip_owned{service="openbao",node="openbao-test-01",instance="OPENBAO",interface="vrrp-test"} 0' <<<"$ownership_metrics" \
+grep -q 'platform_vip_owned{service="openbao",node="openbao-test-01",environment="test",endpoint="openbao_vip",instance="OPENBAO",interface="vrrp-test",vip="192.0.2.200"} 0' <<<"$ownership_metrics" \
   || fail 'VIP ownership collector mistook a peer address for local ownership'
 podman exec "$CONTAINER" ip address flush dev vrrp-test
 podman exec "$CONTAINER" ip address add 192.0.2.200/24 dev vrrp-test

@@ -38,8 +38,22 @@
           - ready
         forbidden_body_regexes:
           - failed
+      - name: openbao_vip
+        service: openbao
+        address: https://192.0.2.200/ready
+        address_mode: vip
+        server_name: bao.example.invalid
+        host_header: bao.example.invalid
+        ca_file: /etc/platform-test-pki/ca.crt
+        valid_status_codes:
+          - 200
+        required_body_regexes:
+          - initialized
+        forbidden_body_regexes:
+          - sealed
     platform_external_probe_vip_ownership:
       - service: openbao
+        endpoint: openbao_vip
         instance: OPENBAO
         interface: vrrp-test
         vip: 192.0.2.200

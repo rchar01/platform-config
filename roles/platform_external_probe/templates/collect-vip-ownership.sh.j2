@@ -44,10 +44,10 @@ timestamp="$(date +%s)"
       fi
     done <<<"$addresses"
   fi
-  printf 'platform_vip_owned{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}",interface="{{ vip.interface }}"} %s\n' "$owned"
-  printf 'platform_keepalived_active{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}"} %s\n' "$keepalived_active"
-  printf 'platform_vip_ownership_collection_success{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}"} %s\n' "$collection_success"
-  printf 'platform_vip_ownership_observation_timestamp_seconds{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",instance="{{ vip.instance }}"} %s\n' "$timestamp"
+  printf 'platform_vip_owned{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ vip.endpoint }}",instance="{{ vip.instance }}",interface="{{ vip.interface }}",vip="{{ vip.vip }}"} %s\n' "$owned"
+  printf 'platform_keepalived_active{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ vip.endpoint }}",instance="{{ vip.instance }}",interface="{{ vip.interface }}",vip="{{ vip.vip }}"} %s\n' "$keepalived_active"
+  printf 'platform_vip_ownership_collection_success{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ vip.endpoint }}",instance="{{ vip.instance }}",interface="{{ vip.interface }}",vip="{{ vip.vip }}"} %s\n' "$collection_success"
+  printf 'platform_vip_ownership_observation_timestamp_seconds{service="{{ vip.service }}",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ vip.endpoint }}",instance="{{ vip.instance }}",interface="{{ vip.interface }}",vip="{{ vip.vip }}"} %s\n' "$timestamp"
 {% endfor %}
 } >"$tmp_path"
 

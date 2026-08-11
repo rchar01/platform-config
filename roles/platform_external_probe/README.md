@@ -59,6 +59,25 @@ Unexpected collector failures remove the previous textfile so stale ownership is
 not presented as current evidence; consumers must still require a fresh
 observation timestamp.
 
+Each VIP ownership entry requires an `endpoint` that names exactly one configured
+`address_mode: vip` probe target with the same service and literal VIP address:
+
+```yaml
+platform_external_probe_vip_ownership:
+  - service: monitoring
+    endpoint: monitoring_vip
+    instance: MONITORING
+    interface: eth0
+    vip: 192.0.2.200
+```
+
+Blackbox samples expose stable `observer`, `environment`, `service`, `endpoint`,
+and `address_mode` labels. Every ownership metric exposes `service`, `node`,
+`environment`, `endpoint`, `instance`, `interface`, and literal `vip` labels so
+consumers can correlate endpoint results with exact node-local ownership. Keep
+these values bounded and stable; do not put URLs, credentials, or dynamic error
+details in labels.
+
 Real endpoints and policy belong in `platform-private/config`; CA, client-key,
 token, and other credential files remain outside Git. This role only references
 their installed absolute paths.

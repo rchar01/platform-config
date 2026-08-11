@@ -91,6 +91,34 @@ def test_keepalived_vip_systemd_ordering_contract(
     )
 
 
+def test_keepalived_vip_behavior_harness_contract(repo_root: Path) -> None:
+    fixture = (repo_root / "tests/fixtures/keepalived-vip/behavior.yml").read_text(
+        encoding="utf-8"
+    )
+    harness = (
+        repo_root / "tests/integration/test-keepalived-vip-behavior.sh"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "keepalived-0:2.2.8-9.el10.x86_64",
+        "keepalived_vip_preempt_delay: 60",
+        "platform-test-listeners.service",
+        "platform_external_probe_vip_ownership:",
+        "endpoint: monitoring_vip",
+    ):
+        assert required in fixture
+    for required in (
+        "podman network create",
+        "--internal",
+        "Repeated preferred-node failure",
+        "All-fault state retained a VIP owner",
+        "platform_vip_ownership_collection_success",
+        "podman network exists",
+    ):
+        assert required in harness
+    assert "192.0.2." not in fixture
+    assert "192.0.2." not in harness
+
+
 @pytest.mark.parametrize("priority", [1, 254])
 def test_keepalived_vip_accepts_priority_boundaries(
     priority: int,

@@ -71,6 +71,7 @@
             forbidden_body_regexes: "{{ platform_external_probe_test_forbidden_body_regexes }}"
         platform_external_probe_vip_ownership:
           - service: openbao
+            endpoint: "{{ platform_external_probe_test_endpoint | default('openbao_vip') }}"
             instance: "{{ platform_external_probe_test_instance }}"
             interface: eth0
             vip: "{{ platform_external_probe_test_vip }}"

@@ -1,12 +1,50 @@
 ---
+- name: Select external probe target for VIP ownership observation
+  ansible.builtin.set_fact:
+    platform_external_probe_vip_targets: >-
+      {{
+        platform_external_probe_targets
+        | selectattr(
+            'name',
+            'equalto',
+            platform_external_probe_vip.endpoint | default('')
+          )
+        | list
+      }}
+
 - name: Assert external VIP ownership target is detect-only and bounded
   ansible.builtin.assert:
     that:
       - platform_external_probe_vip.service | default('') is match('^[A-Za-z0-9_.-]+$')
+      - platform_external_probe_vip.endpoint | default('') is match('^[a-z][a-z0-9_]*$')
       - platform_external_probe_vip.instance | default('') is match('^[A-Za-z0-9_.-]+$')
       - platform_external_probe_vip.interface | default('') is match('^[A-Za-z0-9_.:-]+$')
       - platform_external_probe_vip.vip | default('') is match('^(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})([.](25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$')
       - "'/' not in (platform_external_probe_vip.vip | default(''))"
     fail_msg: >-
-      VIP ownership observations require safe labels, one interface, and one
-      literal IPv4 address without a prefix.
+      VIP ownership observations require safe service and endpoint labels, one
+      interface, and one literal IPv4 address without a prefix.
+
+- name: Assert external VIP ownership endpoint identifies one probe target
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_vip_targets | length == 1
+    fail_msg: >-
+      VIP ownership endpoint
+      {{ platform_external_probe_vip.endpoint | default('undefined') }} must
+      identify exactly one configured external probe target.
+
+- name: Assert external VIP ownership endpoint matches service and address
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_vip_targets[0].service == platform_external_probe_vip.service
+      - platform_external_probe_vip_targets[0].address_mode == 'vip'
+      - >-
+        platform_external_probe_vip_targets[0].address is match(
+          '^https://'
+          ~ (platform_external_probe_vip.vip | regex_escape)
+          ~ '(?::[0-9]+)?(?:/|$)'
+        )
+    fail_msg: >-
+      VIP ownership endpoint {{ platform_external_probe_vip.endpoint }} must use
+      the same service and literal VIP through a typed VIP probe target.

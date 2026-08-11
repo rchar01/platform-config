@@ -1,0 +1,30 @@
+FROM docker.io/rockylinux/rockylinux:10.1
+
+RUN dnf -qy install \
+      iproute \
+      keepalived-0:2.2.8-9.el10.x86_64 \
+      procps-ng \
+      python3-pip \
+      systemd
+
+# Runtime members have only an internal network; the role must use the exact
+# package and repository metadata captured while this fixture image is built.
+RUN printf '\ncacheonly=True\n' >> /etc/dnf/dnf.conf
+
+RUN python3 -m pip -q install \
+      --root-user-action=ignore \
+      'ansible-core>=2.20,<2.21'
+
+COPY requirements.yml /tmp/platform-config-requirements.yml
+RUN ansible-galaxy collection install \
+      -r /tmp/platform-config-requirements.yml \
+      -p /root/.ansible/collections \
+    && rm -f /tmp/platform-config-requirements.yml
+
+COPY tests/fixtures/keepalived-vip/behavior-listeners /usr/local/libexec/platform-test-listeners
+COPY tests/fixtures/keepalived-vip/behavior-listeners.service /etc/systemd/system/platform-test-listeners.service
+RUN chmod 0755 /usr/local/libexec/platform-test-listeners \
+    && chmod 0644 /etc/systemd/system/platform-test-listeners.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
