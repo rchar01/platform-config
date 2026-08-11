@@ -51,6 +51,7 @@ make test-monitoring-garage-cluster
 make test-monitoring-garage-loki
 make test-monitoring-garage-loki-cluster
 make test-monitoring-garage-mimir
+make test-monitoring-grafana-postgresql
 make test-openbao-image
 make test-openbao-rocky
 ```
@@ -189,6 +190,31 @@ harness-only settings, not deployment defaults. The lane does not prove
 production retention periods, concurrent-writer conditional semantics,
 partitions, replacement, capacity, backup/restore, disk-full, or corruption
 behavior.
+
+`make test-monitoring-grafana-postgresql` runs a three-member qualification with
+the locked Grafana `13.1.3` image against the locally qualified Linux/AMD64
+PostgreSQL `18.4` and Patroni `4.1.4` candidate digest from the sibling
+`postgres-patroni` repository. It first starts a separate process that must
+reject an untrusted PostgreSQL CA, then starts all three Grafana members against
+one empty database and requires exactly 713 unique successful migrations with
+no failed migration. The lane
+deliberately holds Grafana's PostgreSQL advisory migration lock and requires a
+restarted contender's structured log to report lock acquisition failure. It
+then releases the lock under a bounded 20-attempt `on-failure` restart policy
+and requires duplicate-free migrations before all three processes become
+healthy. The lane creates a dashboard through Grafana's HTTP API, requires it
+from every member, proves two-member continuity while one Grafana process is
+stopped, and then recovers that member. It also recreates one Grafana process
+with empty local state, disconnects PostgreSQL from the application network,
+observes database degradation, reconnects PostgreSQL, and requires all three
+Grafana processes and the dashboard to recover. The invocation-local bridge
+and PKI, single PostgreSQL member, direct application ports, generated
+credentials, and short timeouts are harness-only settings. The lane pulls the
+immutable Grafana and etcd references and requires
+`localhost/postgres-patroni:dev` at the recorded candidate digest; build the
+PostgreSQL image in `../postgres-patroni` first. It does not prove PostgreSQL HA
+failover or process restart, HAProxy/VIP behavior, production PKI,
+backup/restore, capacity, or managed-host deployment.
 
 `make test-openbao-haproxy-rocky` installs the approved exact HAProxy `3.0`
 package in a disposable Rocky systemd container. It verifies check mode, exact
