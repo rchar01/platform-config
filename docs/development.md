@@ -43,8 +43,13 @@ make test-podman-host-rocky
 make test-platform-external-probe-alloy
 make test-openbao-haproxy-rocky
 make test-monitoring-haproxy-capabilities
+make test-monitoring-artifact-identities
 make test-monitoring-etcd-image
 make test-monitoring-etcd-cluster
+make test-monitoring-garage-cluster
+make test-monitoring-garage-loki
+make test-monitoring-garage-loki-cluster
+make test-monitoring-garage-mimir
 make test-openbao-image
 make test-openbao-rocky
 ```
@@ -85,13 +90,86 @@ returns it to an idempotent disabled state without initialization side effects.
 The deactivation path also removes seeded persistent systemd enablement and
 proves a failed pre-Quadlet staging attempt remains masked across daemon reload.
 
-`make test-platform-external-probe-alloy` downloads the official Alloy `1.18.0`
+`make test-platform-external-probe-alloy` downloads the official Alloy `1.18.1`
 AMD64 RPM and converges both staged roles in a disposable Rocky systemd
 container. It verifies SHA-256 and exact package identity, disabled service/timer
 lifecycle, native complete-config validation and candidate preservation,
 idempotency, exact kernel VIP ownership metrics, and runtime blackbox results
 against controlled strict TLS, redirect, status, body, and client-certificate
 fixtures.
+
+`make test-monitoring-artifact-identities` is a Phase 0 identity check for the
+exact Garage, Loki, Mimir, and Grafana image candidates recorded in
+`tests/fixtures/monitoring-artifacts/candidates.json`. It resolves each mutable
+qualification tag from one registry response, verifies the locked index and
+Linux/AMD64 manifest digests, pulls through the immutable index reference, and
+checks platform, configured user, entrypoint, command, and native version output
+under a read-only, capability-free container. The same lock records Alloy's
+exact RPM identity and distinguishes normally stabilized candidates from recent
+patches selected for focused qualification under the security-update policy. This
+target proves artifact identity only; it does not prove Garage S3 semantics,
+Loki/Mimir/Grafana compatibility, signatures, provenance, or production
+readiness.
+
+`make test-monitoring-garage-cluster` forms an invocation-local Garage `2.3.0`
+cluster from the locked immutable image. It runs three explicit non-root,
+read-only-root containers in distinct zones, commits one RF=3 consistent layout,
+and uses real AWS Signature Version 4 requests to verify object operations,
+query signing, ranges, wrong-secret rejection, and denied cross-bucket read,
+write, and delete behavior without side effects. It then requires read/write
+continuity with one node stopped, a `503` without quorum plus post-recovery object
+absence, and full three-node health after restart. This disposable lane does not
+prove Loki/Mimir compatibility, HAProxy TLS forwarding, data-volume replacement,
+partition behavior, disk-full or corruption recovery, backup/restore, or
+production capacity.
+
+`make test-monitoring-garage-loki` extends that exact RF=3 lane with Loki
+`3.7.6` in isolated single-process `target=all` mode. It sends a native log
+canary, queries it, flushes TSDB data to a dedicated Garage bucket, then starts
+Loki with empty local state and requires the canary to remain queryable from
+Garage-backed storage. Cross-bucket denied writes in both credential directions
+must remain absent. The harness-only settings disable Loki tenancy, use one
+in-memory ring member, and use plaintext S3 on the invocation-local network;
+they are not deployment defaults and do not prove the planned three-node Loki
+ring, retention, compaction, or failure behavior.
+
+`make test-monitoring-garage-loki-cluster` is a separate opt-in extension of
+the same Garage bootstrap. It runs the locked Loki `3.7.6` index digest
+`sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952`
+as three hardened `target=all` containers with stable identities and distinct
+persistent WAL, token, and compactor paths. The check requires all three
+`/ready` endpoints, exact member names from the JSON memberlist response, and
+three active ingester, scheduler, ruler, and compactor ring members from
+metrics. It also requires exactly one process to report the stable active
+compactor metric. A canary written to one node must be queryable through
+another; after a retained-state node is stopped and both survivors report it
+unhealthy, a second write must succeed and both canaries must remain queryable
+through the other survivor. Restarting the same
+container must preserve its token hashes, rejoin without a manual memberlist
+operation, restore all readiness and ring evidence, and query both canaries.
+After flushing, the lane restarts all three members with empty local state and
+requires both canaries to remain queryable from Garage-backed storage. Its
+disabled tenancy, plaintext internal S3, short failure-detection timing, local
+ruler storage, and isolated bridge are harness-only settings, not deployment
+defaults. The leader metric proves election state, not that compaction ran; the
+lane does not exercise or prove compaction, retention, TLS or authentication,
+partitions, replacement, capacity, backup/restore, disk-full, or corruption
+behavior.
+
+`make test-monitoring-garage-mimir` extends the RF=3 lane with exact Mimir
+`3.1.4` in an isolated single-process configuration. A dependency-free
+Prometheus remote-write client sends one metric canary; the test requires an
+immediate query, Garage TSDB block objects, persisted ruler and integrated
+Alertmanager configurations, then all three reads from a second Mimir process
+with empty local state. The exact image runs as explicit UID/GID `10001` with a
+read-only root, and cross-bucket denied writes must remain absent. Three separate
+Garage buckets prevent blocks, ruler, and
+Alertmanager data from sharing a namespace. The harness-only topology uses a
+single-process distributor memberlist ring plus in-memory ingester, ruler, and
+Alertmanager rings. Its replication factor one, disabled tenancy, short block
+intervals, and plaintext S3 are not deployment defaults and do not prove
+compaction, concurrent-writer safety, three-node rings, mutable Alertmanager
+state recovery, retention, or failures.
 
 `make test-openbao-haproxy-rocky` installs the approved exact HAProxy `3.0`
 package in a disposable Rocky systemd container. It verifies check mode, exact

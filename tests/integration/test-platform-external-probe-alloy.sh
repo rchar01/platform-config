@@ -3,10 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/platform-external-probe/integration.yml
-RPM_URL=https://github.com/grafana/alloy/releases/download/v1.18.0/alloy-1.18.0-1.amd64.rpm
-RPM_SHA256=d8800c642f97895a20b5d7b86b51fc8729b452708223efe72c27cd13004c37c0
-RPM_PATH="$(mktemp "${ROOT_DIR}/.alloy-1.18.0-1.amd64.XXXXXX.rpm")"
-RPM_CONTAINER_PATH="/workspace/${RPM_PATH##*/}"
+RPM_URL=https://github.com/grafana/alloy/releases/download/v1.18.1/alloy-1.18.1-1.amd64.rpm
+RPM_SHA256=7dbdc068feae7feaafbc48fefb9b41b6c91af24984c13277bf0a9d1a298a4126
+ARTIFACT_DIR="${ROOT_DIR}/.artifacts"
+mkdir -p "$ARTIFACT_DIR"
+RPM_PATH="$(mktemp "${ARTIFACT_DIR}/alloy-1.18.1-1.amd64.XXXXXX.rpm")"
+RPM_CONTAINER_PATH="/workspace/.artifacts/${RPM_PATH##*/}"
 ROCKY_IMAGE="${PLATFORM_EXTERNAL_PROBE_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 CONTAINER="platform-config-external-probe-test-$$"
 
@@ -23,7 +25,7 @@ fail() {
 
 curl --fail --location --silent --show-error --output "$RPM_PATH" "$RPM_URL"
 printf '%s  %s\n' "$RPM_SHA256" "$RPM_PATH" | sha256sum --check --status \
-  || fail 'Grafana Alloy 1.18.0 RPM checksum mismatch'
+  || fail 'Grafana Alloy 1.18.1 RPM checksum mismatch'
 
 run_playbook() {
   podman exec \
@@ -169,9 +171,9 @@ run_playbook --check >/dev/null
 run_playbook >/dev/null
 
 package_identity="$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' alloy)"
-[[ "$package_identity" == alloy-0:1.18.0-1.x86_64 ]] \
+[[ "$package_identity" == alloy-0:1.18.1-1.x86_64 ]] \
   || fail "Grafana Alloy package identity mismatch: ${package_identity}"
-podman exec "$CONTAINER" /usr/bin/alloy --version | grep -q 'version v1[.]18[.]0' \
+podman exec "$CONTAINER" /usr/bin/alloy --version | grep -q 'version v1[.]18[.]1' \
   || fail 'Grafana Alloy executable version mismatch'
 podman exec "$CONTAINER" /usr/bin/alloy validate /etc/alloy/config.alloy \
   || fail 'Grafana Alloy rejected the composed configuration'
@@ -186,7 +188,7 @@ newer_package_identity="$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHN
   || fail "Synthetic newer Alloy package was not installed: ${newer_package_identity}"
 run_playbook >/dev/null
 package_identity="$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' alloy)"
-[[ "$package_identity" == alloy-0:1.18.0-1.x86_64 ]] \
+[[ "$package_identity" == alloy-0:1.18.1-1.x86_64 ]] \
   || fail "Grafana Alloy did not downgrade to the approved identity: ${package_identity}"
 podman exec "$CONTAINER" /usr/bin/alloy validate /etc/alloy/config.alloy \
   || fail 'Downgraded Grafana Alloy rejected the composed configuration'
@@ -483,4 +485,4 @@ if ! grep -qE 'changed=0.*failed=0' <<<"$handoff_output"; then
   fail 'Second native-to-Quadlet handoff convergence was not idempotent'
 fi
 
-printf 'Platform external probe Alloy 1.18.0 integration check passed\n'
+printf 'Platform external probe Alloy 1.18.1 integration check passed\n'

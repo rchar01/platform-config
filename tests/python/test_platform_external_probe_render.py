@@ -37,10 +37,10 @@ def test_external_probe_and_alloy_are_staged_by_default(repo_root: Path) -> None
     assert re.search(r"^platform_external_probe_enabled: false$", probe, re.MULTILINE)
     assert re.search(r"^platform_external_probe_timer_enabled: false$", probe, re.MULTILINE)
     assert re.search(r"^grafana_alloy_enabled: false$", alloy, re.MULTILINE)
-    assert re.search(r"^grafana_alloy_version: 1[.]18[.]0$", alloy, re.MULTILINE)
+    assert re.search(r"^grafana_alloy_version: 1[.]18[.]1$", alloy, re.MULTILINE)
     assert re.search(
         r"^grafana_alloy_download_checksum: "
-        r"sha256:d8800c642f97895a20b5d7b86b51fc8729b452708223efe72c27cd13004c37c0$",
+        r"sha256:7dbdc068feae7feaafbc48fefb9b41b6c91af24984c13277bf0a9d1a298a4126$",
         alloy,
         re.MULTILINE,
     )

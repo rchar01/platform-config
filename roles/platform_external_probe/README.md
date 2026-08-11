@@ -46,7 +46,7 @@ Every HTTPS target requires:
 - explicit accepted status codes; and
 - positive and negative body regular expressions.
 
-The embedded Alloy `1.18.0` blackbox exporter supports regular-expression body
+The embedded Alloy `1.18.1` blackbox exporter supports regular-expression body
 checks, not semantic JSON parsing. For OpenBao, exact HTTP `200` plus required
 `initialized`, `sealed`, and `standby` predicates provides the planned active-node
 signal, but malformed JSON with matching text remains a documented limitation.

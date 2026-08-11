@@ -164,11 +164,11 @@
     - name: Assert Grafana Alloy inputs are configured safely
       ansible.builtin.assert:
         that:
-          - grafana_alloy_version == '1.18.0'
+          - grafana_alloy_version == '1.18.1'
           - grafana_alloy_arch == 'amd64'
-          - grafana_alloy_rpm_name == 'alloy-1.18.0-1.amd64.rpm'
-          - grafana_alloy_download_checksum == 'sha256:d8800c642f97895a20b5d7b86b51fc8729b452708223efe72c27cd13004c37c0'
-          - grafana_alloy_package_nevra == 'alloy-0:1.18.0-1.x86_64'
+          - grafana_alloy_rpm_name == 'alloy-1.18.1-1.amd64.rpm'
+          - grafana_alloy_download_checksum == 'sha256:7dbdc068feae7feaafbc48fefb9b41b6c91af24984c13277bf0a9d1a298a4126'
+          - grafana_alloy_package_nevra == 'alloy-0:1.18.1-1.x86_64'
           - grafana_alloy_enabled is boolean
           - grafana_alloy_service_enabled is boolean
           - grafana_alloy_service_state in ['started', 'stopped']
@@ -195,7 +195,7 @@
           - "'/usr/share/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
           - "'/usr/share/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
         fail_msg: >-
-          Grafana Alloy requires the approved 1.18.0 RPM identity, a coherent
+          Grafana Alloy requires the locked 1.18.1 RPM candidate, a coherent
           disabled or active service state, at least one output, and strict
           outside-Git file references for authenticated remote write.
 
@@ -265,7 +265,7 @@
       ansible.builtin.assert:
         that:
           - grafana_alloy_target_architecture.stdout == 'x86_64'
-        fail_msg: "The approved Grafana Alloy RPM supports only x86_64 targets."
+        fail_msg: "The locked Grafana Alloy RPM candidate supports only x86_64 targets."
 
     - name: Ensure Grafana Alloy cache and state directories exist
       ansible.builtin.file:

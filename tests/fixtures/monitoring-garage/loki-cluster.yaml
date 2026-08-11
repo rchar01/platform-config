@@ -1,0 +1,75 @@
+---
+auth_enabled: false
+
+analytics:
+  reporting_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: ${LOKI_DATA_DIR}
+  persist_tokens: true
+  replication_factor: 3
+  ring:
+    kvstore:
+      store: memberlist
+    heartbeat_period: 1s
+    heartbeat_timeout: 10s
+    instance_id: ${LOKI_NODE_NAME}
+    instance_interface_names:
+      - eth0
+  storage:
+    s3:
+      endpoint: garage-1:3900
+      insecure: true
+      region: garage
+      bucketnames: loki-cluster
+      s3forcepathstyle: true
+      access_key_id: ${LOKI_CLUSTER_S3_ACCESS_KEY_ID}
+      secret_access_key: ${LOKI_CLUSTER_S3_SECRET_ACCESS_KEY}
+
+memberlist:
+  node_name: ${LOKI_NODE_NAME}
+  randomize_node_name: false
+  join_members:
+    - loki-cluster-1:7946
+    - loki-cluster-2:7946
+    - loki-cluster-3:7946
+  dead_node_reclaim_time: 5s
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: s3
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: ${LOKI_DATA_DIR}/tsdb-active
+    cache_location: ${LOKI_DATA_DIR}/tsdb-cache
+
+ingester:
+  lifecycler:
+    min_ready_duration: 0s
+    unregister_on_shutdown: false
+  wal:
+    enabled: true
+    dir: ${LOKI_DATA_DIR}/wal
+    flush_on_shutdown: true
+
+compactor:
+  working_directory: ${LOKI_DATA_DIR}/compactor
+
+ruler:
+  enable_sharding: true
+  rule_path: ${LOKI_DATA_DIR}/rules-temp
+  storage:
+    type: local
+    local:
+      directory: ${LOKI_DATA_DIR}/rules

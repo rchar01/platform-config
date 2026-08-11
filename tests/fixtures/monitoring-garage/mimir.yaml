@@ -1,0 +1,93 @@
+---
+target: all,alertmanager
+multitenancy_enabled: false
+no_auth_tenant: garage-compat
+
+server:
+  http_listen_port: 8080
+
+activity_tracker:
+  filepath: ""
+
+distributor:
+  ring:
+    kvstore:
+      store: memberlist
+
+ingester:
+  ring:
+    min_ready_duration: 0s
+    final_sleep: 0s
+    kvstore:
+      store: inmemory
+    replication_factor: 1
+
+blocks_storage:
+  backend: s3
+  s3:
+    endpoint: garage-1:3900
+    region: garage
+    bucket_name: mimir-blocks
+    access_key_id: ${MIMIR_S3_ACCESS_KEY_ID}
+    secret_access_key: ${MIMIR_S3_SECRET_ACCESS_KEY}
+    insecure: true
+    signature_version: v4
+    bucket_lookup_type: path
+  tsdb:
+    dir: /data/tsdb
+    block_ranges_period: [1m]
+    retention_period: 5m
+    ship_interval: 1s
+    head_compaction_interval: 1s
+    head_compaction_idle_timeout: 5s
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+    sync_interval: 5s
+    ignore_blocks_within: 0s
+
+compactor:
+  data_dir: /data/compactor
+  cleanup_interval: 2s
+
+querier:
+  query_store_after: 0s
+
+ruler:
+  rule_path: /data/ruler
+  alertmanager_url: http://127.0.0.1:8080/alertmanager
+  ring:
+    kvstore:
+      store: inmemory
+
+ruler_storage:
+  backend: s3
+  s3:
+    endpoint: garage-1:3900
+    region: garage
+    bucket_name: mimir-ruler
+    access_key_id: ${MIMIR_S3_ACCESS_KEY_ID}
+    secret_access_key: ${MIMIR_S3_SECRET_ACCESS_KEY}
+    insecure: true
+    signature_version: v4
+    bucket_lookup_type: path
+
+alertmanager:
+  data_dir: /data/alertmanager
+  fallback_config_file: /etc/mimir/alertmanager-fallback.yaml
+  external_url: http://mimir:8080/alertmanager
+  sharding_ring:
+    replication_factor: 1
+    kvstore:
+      store: inmemory
+
+alertmanager_storage:
+  backend: s3
+  s3:
+    endpoint: garage-1:3900
+    region: garage
+    bucket_name: mimir-alertmanager
+    access_key_id: ${MIMIR_S3_ACCESS_KEY_ID}
+    secret_access_key: ${MIMIR_S3_SECRET_ACCESS_KEY}
+    insecure: true
+    signature_version: v4
+    bucket_lookup_type: path

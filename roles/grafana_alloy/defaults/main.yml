@@ -1,11 +1,11 @@
 ---
 grafana_alloy_enabled: false
-grafana_alloy_version: 1.18.0
+grafana_alloy_version: 1.18.1
 grafana_alloy_arch: amd64
 grafana_alloy_rpm_name: "alloy-{{ grafana_alloy_version }}-1.{{ grafana_alloy_arch }}.rpm"
 grafana_alloy_download_url: "https://github.com/grafana/alloy/releases/download/v{{ grafana_alloy_version }}/{{ grafana_alloy_rpm_name }}"
-grafana_alloy_download_checksum: sha256:d8800c642f97895a20b5d7b86b51fc8729b452708223efe72c27cd13004c37c0
-grafana_alloy_package_nevra: alloy-0:1.18.0-1.x86_64
+grafana_alloy_download_checksum: sha256:7dbdc068feae7feaafbc48fefb9b41b6c91af24984c13277bf0a9d1a298a4126
+grafana_alloy_package_nevra: alloy-0:1.18.1-1.x86_64
 grafana_alloy_cache_dir: /var/cache/platform/grafana-alloy
 
 grafana_alloy_config_dir: /etc/alloy

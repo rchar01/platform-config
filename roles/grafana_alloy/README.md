@@ -1,7 +1,7 @@
 # grafana_alloy
 
 Owns the one host-native Grafana Alloy process used by Linux VM collection and
-shared external probe features. The role pins the official Alloy `1.18.0`
+shared external probe features. The role pins the official Alloy `1.18.1`
 `linux/amd64` RPM by SHA-256 and exact installed NEVRA, validates the complete
 candidate configuration with that binary before replacement, and is disabled and
 stopped by default.

@@ -22,7 +22,7 @@ TEST_WORKERS ?= 2
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-etcd-image test-monitoring-etcd-cluster test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -144,6 +144,10 @@ test-openbao-haproxy-rocky:
 test-monitoring-haproxy-capabilities:
 	@bash tests/integration/test-monitoring-haproxy-capabilities.sh
 
+## Resolve and qualify exact monitoring component image identities
+test-monitoring-artifact-identities:
+	@bash tests/integration/test-monitoring-artifact-identities.sh
+
 ## Qualify the exact monitoring etcd image and disposable runtime
 test-monitoring-etcd-image:
 	@bash tests/integration/test-monitoring-etcd-image.sh
@@ -151,6 +155,22 @@ test-monitoring-etcd-image:
 ## Exercise disposable monitoring etcd mTLS and quorum behavior
 test-monitoring-etcd-cluster:
 	@bash tests/integration/test-monitoring-etcd-cluster.sh
+
+## Exercise disposable Garage RF=3 quorum and signed S3 behavior
+test-monitoring-garage-cluster:
+	@bash tests/integration/test-monitoring-garage-cluster.sh
+
+## Exercise Loki writes, Garage upload, and fresh-state query compatibility
+test-monitoring-garage-loki:
+	@MONITORING_GARAGE_TEST_LOKI=true bash tests/integration/test-monitoring-garage-cluster.sh
+
+## Exercise a disposable three-node Loki ring and one-node loss
+test-monitoring-garage-loki-cluster:
+	@MONITORING_GARAGE_TEST_LOKI_CLUSTER=true bash tests/integration/test-monitoring-garage-cluster.sh
+
+## Exercise Mimir blocks, ruler, and Alertmanager persistence through Garage
+test-monitoring-garage-mimir:
+	@MONITORING_GARAGE_TEST_MIMIR=true bash tests/integration/test-monitoring-garage-cluster.sh
 
 ## Validate OpenBao configuration with the exact 2.6.1 image
 test-openbao-image:
