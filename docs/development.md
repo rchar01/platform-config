@@ -38,6 +38,7 @@ make check-test-container-profile
 make check-container-wrapper
 make test
 make test-parallel
+make verify-parallel
 make test-keepalived-vip-rocky
 make test-podman-host-rocky
 make test-platform-external-probe-alloy
@@ -63,7 +64,10 @@ tests feature-probe `unshare -Ur` and fail when effective namespace root is
 unavailable instead of silently skipping required coverage. `make test-parallel`
 runs tests not marked `serial` with `TEST_WORKERS=2` by default, then runs the
 timing-sensitive child-process tests serially. The two selections are disjoint
-and together cover the same collected tests as `make test`.
+and together cover the same collected tests as `make test`. For faster local
+feedback, `make verify-parallel` runs the same toolchain, container-boundary,
+wrapper, lint, and YAML checks as `make verify`, but uses `make test-parallel`.
+It is supplemental; run serial `make verify` as the authoritative merge check.
 
 Run `make deps` after changing `Containerfile.dev`, `requirements-dev.txt`, `requirements-test.txt`, or `requirements.yml`. The generic container wrapper builds only when the local image is absent; it does not detect a stale existing image.
 
@@ -156,20 +160,24 @@ lane does not exercise or prove compaction, retention, TLS or authentication,
 partitions, replacement, capacity, backup/restore, disk-full, or corruption
 behavior.
 
-`make test-monitoring-garage-mimir` extends the RF=3 lane with exact Mimir
-`3.1.4` in an isolated single-process configuration. A dependency-free
-Prometheus remote-write client sends one metric canary; the test requires an
-immediate query, Garage TSDB block objects, persisted ruler and integrated
-Alertmanager configurations, then all three reads from a second Mimir process
-with empty local state. The exact image runs as explicit UID/GID `10001` with a
-read-only root, and cross-bucket denied writes must remain absent. Three separate
-Garage buckets prevent blocks, ruler, and
-Alertmanager data from sharing a namespace. The harness-only topology uses a
-single-process distributor memberlist ring plus in-memory ingester, ruler, and
-Alertmanager rings. Its replication factor one, disabled tenancy, short block
-intervals, and plaintext S3 are not deployment defaults and do not prove
-compaction, concurrent-writer safety, three-node rings, mutable Alertmanager
-state recovery, retention, or failures.
+`make test-monitoring-garage-mimir` extends the RF=3 lane with three hardened
+Mimir `3.1.4` `target=all` containers using stable memberlist identities,
+distinct zones and local state, and replication factor three for the ingester,
+store-gateway, and integrated Alertmanager rings. A dependency-free Prometheus
+remote-write client sends one canary under full health and another while one
+member is stopped; cross-node queries must return both. The stopped container
+must retain its ingester and store-gateway token hashes, rejoin all six checked
+rings, and query both canaries after restart. The lane also requires ruler alert
+delivery, replicated mutable Alertmanager silence state, complete TSDB block
+objects covering the node-loss write, and recovery of both canaries, ruler and
+Alertmanager configuration, the silence, and the alert after all three local
+state directories are erased. Separate least-privilege Garage credentials and
+buckets isolate blocks, ruler, and Alertmanager storage and all cross-bucket
+writes must remain denied and absent. Disabled tenancy, short synchronization
+and failure-detection intervals, and plaintext S3 on an invocation-local bridge
+are harness-only settings, not deployment defaults. The lane does not prove
+compaction, retention, concurrent-writer conditional semantics, partitions,
+replacement, capacity, backup/restore, disk-full, or corruption behavior.
 
 `make test-openbao-haproxy-rocky` installs the approved exact HAProxy `3.0`
 package in a disposable Rocky systemd container. It verifies check mode, exact

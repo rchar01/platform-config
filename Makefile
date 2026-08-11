@@ -22,7 +22,7 @@ TEST_WORKERS ?= 2
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -168,7 +168,7 @@ test-monitoring-garage-loki:
 test-monitoring-garage-loki-cluster:
 	@MONITORING_GARAGE_TEST_LOKI_CLUSTER=true bash tests/integration/test-monitoring-garage-cluster.sh
 
-## Exercise Mimir blocks, ruler, and Alertmanager persistence through Garage
+## Exercise three-node Mimir failure and Garage recovery behavior
 test-monitoring-garage-mimir:
 	@MONITORING_GARAGE_TEST_MIMIR=true bash tests/integration/test-monitoring-garage-cluster.sh
 
@@ -182,6 +182,9 @@ test-openbao-rocky:
 
 ## Run all local static checks
 verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test
+
+## Run local static checks with supplemental parallel pytest
+verify-parallel: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test-parallel
 
 ## Deploy and validate the bootstrap token issuer staging candidate
 deploy-bootstrap-token-issuer-staging: _guard-staging-mode

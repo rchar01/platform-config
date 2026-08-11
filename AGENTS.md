@@ -25,6 +25,8 @@
 - Default tests: `make test` runs the authoritative serial pytest suite.
 - Supplemental parallel tests: `make test-parallel`; override worker count with
   `TEST_WORKERS=<count>`.
+- Supplemental fast verification: `make verify-parallel`; use serial
+  `make verify` as the authoritative merge oracle.
 - Helper scripts source `../platform-private/config/<env>.ansible.env` when present; use `PLATFORM_CONFIG_INVENTORY=...`, `PLATFORM_CONFIG_ENV_FILE=...`, or `-i/--inventory` overrides for focused runs.
 
 ## How To Investigate
