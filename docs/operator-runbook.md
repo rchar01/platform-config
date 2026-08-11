@@ -632,6 +632,11 @@ Before configuring dev GitLab runners, confirm homelab GitLab is reachable from 
 
 Runner authentication tokens are created in GitLab and stored outside Git. Do not put runner tokens in public examples, plain private vars, shell history, or logs.
 
+For a controlled host that cannot use the normal Ansible workflow, follow
+[Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md). The
+manual procedure reproduces only the runner service, not the complete managed
+host baseline.
+
 Create GitLab group runners before running the runner playbook. Use pre-created runner authentication tokens from the GitLab UI; these usually start with `glrt-`. Recommended group runner tags are:
 
 | Runner | Tags |

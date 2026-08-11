@@ -38,6 +38,9 @@ and other secrets belong outside Git.
 
 - [Registry](registry.md): Zot registry access, authentication, OCI smoke tests,
   client tools, Kubernetes pulls, and image-signing considerations.
+- [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
+  Reproduce the Podman Quadlet runner service without Ansible, including TLS,
+  registration, verification, migration, and Kubernetes-tooling boundaries.
 - [GitLab PKI Package Exchange](pki-gitlab-package.md): Protected request-package
   publication, GitLab controls, and remaining host-local PKI transport gates.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
