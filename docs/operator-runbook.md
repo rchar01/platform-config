@@ -496,6 +496,33 @@ Native equivalents remain supported:
 ./scripts/in-container sh -c '. ../platform-private/config/dev.ansible.env && ansible-playbook -i "$PLATFORM_CONFIG_INVENTORY" playbooks/site.yml --check --diff'
 ```
 
+## Container Runtime Kernel Policy
+
+Podman and RKE2 require OverlayFS. By default, the public
+`container_runtime_kernel` role enables the explicit
+`platform-container-runtime-overlayfs-exception.service`, which loads the
+module with `modprobe --ignore-install overlay` without changing third-party
+files under `/etc/modprobe.d`. This is an intentional, auditable exception for
+container-runtime hosts whose baseline replaces normal module loading with an
+`install overlay ...` command.
+
+Private inventory can disable the managed exception where normal host policy
+already permits OverlayFS:
+
+```yaml
+container_runtime_overlayfs_policy_exception_enabled: false
+```
+
+The role proves normal policy can load OverlayFS before removing an existing
+managed exception unit. An install override or blacklist fails closed and
+preserves the working unit. The role never unloads OverlayFS and never changes
+the Podman storage driver.
+
+After applying a container-runtime playbook, verify the selected policy state
+through the relevant smoke target. Enabled mode must show the managed unit as
+enabled and active; disabled mode must show it absent. Both modes require
+`/sys/module/overlay`.
+
 ## Homelab Bring-Up
 
 Homelab owns shared homelab services such as GitLab CE. Dev may depend on them, but dev does not configure them.
@@ -692,7 +719,7 @@ make smoke-rke2 ENV=dev
 make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 ```
 
-RKE2 uses the dev Zot registry through `registries.yaml`. On Enterprise Linux 10, the role installs `kernel-modules-extra` for `br_netfilter`; `overlay` is provided by `kernel-modules-core`. It then manages both modules and the Kubernetes networking sysctls. Set `rke2_reboot_for_kernel_modules: true` only where the role may perform a controlled serial reboot when the installed module package targets a newer kernel. On clean nodes, the role verifies the exact boot target and module availability after reboot before installing or starting RKE2. An installed node must be active, API-healthy where applicable, and Kubernetes `Ready` before reboot; it must return `Ready` before the serial play advances.
+RKE2 uses the dev Zot registry through `registries.yaml`. On Enterprise Linux 10, the role installs `kernel-modules-extra` for `br_netfilter`; `overlay` is provided by `kernel-modules-core`. After its guarded kernel transition, RKE2 consumes the shared container-runtime OverlayFS policy and continues to own `br_netfilter` plus the Kubernetes networking sysctls. Set `rke2_reboot_for_kernel_modules: true` only where the role may perform a controlled serial reboot when the installed module package targets a newer kernel. On clean nodes, the role verifies the exact boot target and module availability after reboot before installing or starting RKE2. An installed node must be active, API-healthy where applicable, and Kubernetes `Ready` before reboot; it must return `Ready` before the serial play advances.
 
 Kernel transitions use `/var/lib/rke2-kernel-reboot-target` to record the exact expected kernel and `/var/lib/rke2-kernel-reboot-readiness` to retain pending cluster-readiness validation for an existing node. An interruption after the target marker is written but before reboot fails closed on the next run; boot the recorded target, verify both required modules, and rerun the role. Clean nodes need only complete that kernel verification. For existing nodes, a retained readiness marker automatically resumes the service, API, and Kubernetes `Ready` gates without issuing another reboot. Remove the target marker manually only after the recorded kernel and modules are verified, and remove the readiness marker only after the installed node is healthy and `Ready`.
 

@@ -1,0 +1,232 @@
+---
+- name: Set reused storage layout device facts
+  ansible.builtin.set_fact:
+    storage_volume_reuse_partition_number: >-
+      {{ storage_volume_reuse_layout.partition_number | default(storage_volume_default_partition_number) }}
+    storage_volume_reuse_pv_device: >-
+      {{
+        storage_volume_reuse_layout.pv_device
+        | default(
+          storage_volume_reuse_layout.device
+          ~ '-part'
+          ~ (storage_volume_reuse_layout.partition_number | default(storage_volume_default_partition_number))
+        )
+      }}
+    storage_volume_reuse_requested_volumes: >-
+      {{
+        storage_volumes
+        | selectattr('layout', 'defined')
+        | selectattr('layout', 'equalto', storage_volume_reuse_layout.name)
+        | list
+      }}
+
+- name: Check reused storage source and PV paths
+  ansible.builtin.stat:
+    path: "{{ storage_volume_reuse_path }}"
+  loop:
+    - "{{ storage_volume_reuse_layout.device }}"
+    - "{{ storage_volume_reuse_pv_device }}"
+  loop_control:
+    loop_var: storage_volume_reuse_path
+  register: storage_volume_reuse_path_stats
+
+- name: Require reused storage source and PV paths to exist
+  ansible.builtin.assert:
+    that:
+      - storage_volume_reuse_path_stats.results | length == 2
+      - storage_volume_reuse_path_stats.results[0].stat.exists
+      - storage_volume_reuse_path_stats.results[1].stat.exists
+    fail_msg: >-
+      Reused layout {{ storage_volume_reuse_layout.name }} requires its reviewed source
+      and PV paths to exist.
+
+- name: Resolve reused storage paths to canonical devices
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ storage_volume_reuse_path }}"
+  loop:
+    - "{{ storage_volume_reuse_layout.device }}"
+    - "{{ storage_volume_reuse_pv_device }}"
+  loop_control:
+    loop_var: storage_volume_reuse_path
+  register: storage_volume_reuse_canonical_paths
+  changed_when: false
+  check_mode: false
+
+- name: Set reused storage canonical path facts
+  ansible.builtin.set_fact:
+    storage_volume_reuse_source_canonical: >-
+      {{ storage_volume_reuse_canonical_paths.results[0].stdout | trim }}
+    storage_volume_reuse_pv_canonical: >-
+      {{ storage_volume_reuse_canonical_paths.results[1].stdout | trim }}
+
+- name: Inspect reused storage block topology
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -d
+      - -n
+      - -p
+      - -r
+      - -o
+      - "{{ storage_volume_reuse_topology_field }}"
+      - "{{ storage_volume_reuse_topology_path }}"
+  loop:
+    - field: TYPE
+      path: "{{ storage_volume_reuse_source_canonical }}"
+    - field: TYPE
+      path: "{{ storage_volume_reuse_pv_canonical }}"
+    - field: PKNAME
+      path: "{{ storage_volume_reuse_pv_canonical }}"
+    - field: PARTN
+      path: "{{ storage_volume_reuse_pv_canonical }}"
+  loop_control:
+    loop_var: storage_volume_reuse_topology
+  vars:
+    storage_volume_reuse_topology_field: "{{ storage_volume_reuse_topology.field }}"
+    storage_volume_reuse_topology_path: "{{ storage_volume_reuse_topology.path }}"
+  register: storage_volume_reuse_topology_results
+  changed_when: false
+  check_mode: false
+
+- name: Inspect configured reused storage PV identity
+  ansible.builtin.command:
+    argv:
+      - pvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - pv_name,pv_uuid,vg_name,vg_uuid
+      - "{{ storage_volume_reuse_pv_canonical }}"
+  register: storage_volume_reuse_pv_report
+  changed_when: false
+  check_mode: false
+
+- name: Inspect all PVs in reused storage volume group
+  ansible.builtin.command:
+    argv:
+      - pvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - pv_name,pv_uuid,vg_name,vg_uuid
+      - --select
+      - "vg_name={{ storage_volume_reuse_layout.vg_name }}"
+  register: storage_volume_reuse_vg_pv_report
+  changed_when: false
+  check_mode: false
+
+- name: Inspect reused storage volume group capacity and identity
+  ansible.builtin.command:
+    argv:
+      - vgs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - vg_name,vg_uuid,vg_size,vg_free,vg_extent_size,pv_count
+      - "{{ storage_volume_reuse_layout.vg_name }}"
+  register: storage_volume_reuse_vg_report
+  changed_when: false
+  check_mode: false
+
+- name: Inspect existing logical volumes in reused storage volume group
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - vg_name,lv_name,lv_uuid,lv_size
+      - "{{ storage_volume_reuse_layout.vg_name }}"
+  register: storage_volume_reuse_lv_report
+  changed_when: false
+  check_mode: false
+
+- name: Parse reused storage LVM reports
+  ansible.builtin.set_fact:
+    storage_volume_reuse_pv_rows: "{{ (storage_volume_reuse_pv_report.stdout | from_json).report[0].pv }}"
+    storage_volume_reuse_vg_pv_rows: "{{ (storage_volume_reuse_vg_pv_report.stdout | from_json).report[0].pv }}"
+    storage_volume_reuse_vg_rows: "{{ (storage_volume_reuse_vg_report.stdout | from_json).report[0].vg }}"
+    storage_volume_reuse_lv_rows: "{{ (storage_volume_reuse_lv_report.stdout | from_json).report[0].lv }}"
+
+- name: Require one live PV before resolving its canonical path
+  ansible.builtin.assert:
+    that:
+      - storage_volume_reuse_vg_pv_rows | length == 1
+    fail_msg: >-
+      Reused layout {{ storage_volume_reuse_layout.name }} supports exactly one reviewed PV;
+      the live VG topology differs.
+
+- name: Resolve live reused storage PV to its canonical device
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ storage_volume_reuse_vg_pv_rows[0].pv_name | trim }}"
+  register: storage_volume_reuse_live_pv_canonical
+  changed_when: false
+  check_mode: false
+
+- name: Inspect filesystems on requested existing logical volumes
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - -o
+      - value
+      - -s
+      - TYPE
+      - "/dev/{{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_requested_volume.lv_name }}"
+  loop: "{{ storage_volume_reuse_requested_volumes }}"
+  loop_control:
+    loop_var: storage_volume_reuse_requested_volume
+    label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
+  register: storage_volume_reuse_filesystems
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_reuse_filesystems.rc not in [0, 2]
+  when: >-
+    storage_volume_reuse_lv_rows
+    | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
+    | list
+    | length == 1
+
+- name: Inspect mount targets for requested existing logical volumes
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --raw
+      - --output
+      - TARGET
+      - --source
+      - "/dev/{{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_requested_volume.lv_name }}"
+  loop: "{{ storage_volume_reuse_requested_volumes }}"
+  loop_control:
+    loop_var: storage_volume_reuse_requested_volume
+    label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
+  register: storage_volume_reuse_mount_targets
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_reuse_mount_targets.rc not in [0, 1]
+  when: >-
+    storage_volume_reuse_lv_rows
+    | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
+    | list
+    | length == 1
+
+- name: Verify reused storage topology and capacity
+  ansible.builtin.include_tasks: verify_reused_layout.yml

@@ -13,7 +13,106 @@
       - disabled
       - indirect
       - static
+    container_runtime_kernel_smoke_unit_path: /etc/systemd/system/platform-container-runtime-overlayfs-exception.service
+    container_runtime_kernel_smoke_unit_content: |
+      [Unit]
+      Description=Platform container runtime OverlayFS policy exception
+      Documentation=man:modprobe(8)
+      DefaultDependencies=no
+      Conflicts=shutdown.target
+      Before=sysinit.target shutdown.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/modprobe --ignore-install overlay
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=sysinit.target
   tasks:
+    - name: Check loaded OverlayFS state
+      ansible.builtin.stat:
+        path: /sys/module/overlay
+      register: container_runtime_kernel_smoke_overlayfs
+
+    - name: Require loaded OverlayFS
+      ansible.builtin.assert:
+        that:
+          - container_runtime_kernel_smoke_overlayfs.stat.isdir | default(false)
+        fail_msg: "OverlayFS is not loaded."
+
+    - name: Check managed OverlayFS exception unit
+      ansible.builtin.stat:
+        path: "{{ container_runtime_kernel_smoke_unit_path }}"
+      register: container_runtime_kernel_smoke_unit
+
+    - name: Read managed OverlayFS exception unit
+      ansible.builtin.slurp:
+        src: "{{ container_runtime_kernel_smoke_unit_path }}"
+      register: container_runtime_kernel_smoke_unit_data
+      when: container_runtime_overlayfs_policy_exception_enabled | default(true) | bool
+
+    - name: Check managed OverlayFS exception enabled state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - platform-container-runtime-overlayfs-exception.service
+      register: container_runtime_kernel_smoke_unit_enabled
+      changed_when: false
+      when: container_runtime_overlayfs_policy_exception_enabled | default(true) | bool
+
+    - name: Check managed OverlayFS exception active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - platform-container-runtime-overlayfs-exception.service
+      register: container_runtime_kernel_smoke_unit_active
+      changed_when: false
+      when: container_runtime_overlayfs_policy_exception_enabled | default(true) | bool
+
+    - name: Assert managed OverlayFS exception state
+      ansible.builtin.assert:
+        that:
+          - container_runtime_kernel_smoke_unit.stat.isreg | default(false)
+          - container_runtime_kernel_smoke_unit.stat.pw_name == 'root'
+          - container_runtime_kernel_smoke_unit.stat.gr_name == 'root'
+          - container_runtime_kernel_smoke_unit.stat.mode == '0644'
+          - (container_runtime_kernel_smoke_unit_data.content | b64decode) == container_runtime_kernel_smoke_unit_content
+          - container_runtime_kernel_smoke_unit_enabled.stdout == 'enabled'
+          - container_runtime_kernel_smoke_unit_active.stdout == 'active'
+        fail_msg: "Managed OverlayFS policy exception state is invalid."
+      when: container_runtime_overlayfs_policy_exception_enabled | default(true) | bool
+
+    - name: Assert managed OverlayFS exception is absent when disabled
+      ansible.builtin.assert:
+        that:
+          - not (container_runtime_kernel_smoke_unit.stat.exists | default(false))
+        fail_msg: "Managed OverlayFS policy exception remains while disabled."
+      when: not (container_runtime_overlayfs_policy_exception_enabled | default(true) | bool)
+
+    - name: Inspect normal OverlayFS policy when exception is disabled
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/modprobe
+          - --showconfig
+      register: container_runtime_kernel_smoke_modprobe_config
+      changed_when: false
+      when: not (container_runtime_overlayfs_policy_exception_enabled | default(true) | bool)
+
+    - name: Assert normal OverlayFS policy is unrestricted
+      ansible.builtin.assert:
+        that:
+          - >-
+            (container_runtime_kernel_smoke_modprobe_config.stdout
+            | regex_search('(?m)^install[ \t]+overlay(?:[ \t]|$)')) is none
+          - >-
+            (container_runtime_kernel_smoke_modprobe_config.stdout
+            | regex_search('(?m)^blacklist[ \t]+overlay(?:[ \t]|$)')) is none
+        fail_msg: "Normal OverlayFS policy is restricted while the managed exception is disabled."
+      when: not (container_runtime_overlayfs_policy_exception_enabled | default(true) | bool)
+
     - name: Check Podman version
       ansible.builtin.command:
         argv:
@@ -48,11 +147,6 @@
             | list
             | length > 0
         fail_msg: "No known Podman Quadlet generator path exists."
-
-    - name: Reload systemd manager configuration
-      ansible.builtin.systemd_service:
-        daemon_reload: true
-      changed_when: false
 
     - name: Check Podman socket enabled state
       ansible.builtin.command:

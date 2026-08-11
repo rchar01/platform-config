@@ -26,7 +26,6 @@ k8s_bastion_os_packages:
   - git
   - gzip
   - openssl
-  - podman
   - python3
   - sudo
   - tar

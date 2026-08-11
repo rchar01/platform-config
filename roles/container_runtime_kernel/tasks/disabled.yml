@@ -1,0 +1,58 @@
+---
+- name: Inspect normal modprobe policy
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/modprobe
+      - --showconfig
+  register: container_runtime_kernel_modprobe_config
+  check_mode: false
+  changed_when: false
+
+- name: Reject normal policy that restricts OverlayFS
+  ansible.builtin.assert:
+    that:
+      - >-
+        (container_runtime_kernel_modprobe_config.stdout
+        | regex_search('(?m)^install[ \t]+overlay(?:[ \t]|$)')) is none
+      - >-
+        (container_runtime_kernel_modprobe_config.stdout
+        | regex_search('(?m)^blacklist[ \t]+overlay(?:[ \t]|$)')) is none
+    fail_msg: >-
+      Normal OverlayFS loading cannot be proven while an install override or
+      blacklist is configured. The managed exception unit has been preserved.
+
+- name: Load OverlayFS through normal module policy
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/modprobe
+      - overlay
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Verify normal policy loaded OverlayFS
+  ansible.builtin.stat:
+    path: /sys/module/overlay
+  register: container_runtime_kernel_overlayfs_normal_module
+  when: not ansible_check_mode
+
+- name: Require OverlayFS loaded through normal policy
+  ansible.builtin.assert:
+    that:
+      - container_runtime_kernel_overlayfs_normal_module.stat.isdir | default(false)
+    fail_msg: >-
+      Normal module policy did not load OverlayFS. The managed exception unit has been preserved.
+  when: not ansible_check_mode
+
+- name: Stop and disable the managed OverlayFS exception
+  ansible.builtin.systemd_service:
+    name: platform-container-runtime-overlayfs-exception.service
+    enabled: false
+    state: stopped
+  when: container_runtime_kernel_overlayfs_unit.stat.exists | default(false)
+
+- name: Remove the managed OverlayFS exception unit
+  ansible.builtin.file:
+    path: /etc/systemd/system/platform-container-runtime-overlayfs-exception.service
+    state: absent
+  notify: Reload systemd after removing the OverlayFS exception
+  when: container_runtime_kernel_overlayfs_unit.stat.exists | default(false)

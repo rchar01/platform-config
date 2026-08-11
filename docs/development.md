@@ -90,8 +90,12 @@ partitions, firewalld, production timing, or deployed observers.
 
 `make test-podman-host-rocky` is also opt-in. It installs the exact approved
 Podman package in a privileged disposable Rocky 10.1 systemd container, verifies
-check-mode non-mutation, keeps the API socket disabled, exercises native Quadlet
-generation without starting the generated service, and requires idempotency.
+the OverlayFS exception against an external deny policy without altering that
+policy, verifies check-mode non-mutation and fail-closed disabled-mode handling,
+keeps the API socket disabled, exercises native Quadlet generation without
+starting the generated service, and requires enabled-mode idempotency. The
+container shares its host kernel, so successful disabled-mode module loading and
+unit removal remain a managed-host check rather than a disposable-container test.
 
 `make test-openbao-image` is also opt-in. It pulls the exact approved OpenBao
 `2.6.1` `linux/amd64` manifest, verifies its version and non-root identity, and
@@ -314,4 +318,6 @@ Managed hosts need:
 - outbound HTTPS access or a configured corporate proxy/mirror for external CLI downloads
 - writable `/usr/local/bin`, `/usr/local/sbin`, `/usr/local/lib/bastion`, `/etc/bastion`, and `/etc/systemd/system`
 
-The `k8s_bastion_access` role installs required OS packages where possible, including Podman and runtime support packages.
+The `k8s-bastion-access.yml` playbook applies `podman_host` for Podman and its
+kernel prerequisite, then `k8s_bastion_access` installs the remaining OS and
+runtime support packages.

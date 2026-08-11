@@ -1,0 +1,5 @@
+---
+- name: Reload systemd after removing the OverlayFS exception
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: not ansible_check_mode

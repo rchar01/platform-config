@@ -1,0 +1,48 @@
+---
+- name: Inspect the managed OverlayFS exception unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/platform-container-runtime-overlayfs-exception.service
+  register: container_runtime_kernel_overlayfs_unit
+
+- name: Inspect the loaded OverlayFS module
+  ansible.builtin.stat:
+    path: /sys/module/overlay
+  register: container_runtime_kernel_overlayfs_module
+
+- name: Inspect OverlayFS module availability
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/modinfo
+      - overlay
+  register: container_runtime_kernel_overlayfs_modinfo
+  check_mode: false
+  changed_when: false
+  failed_when: false
+
+- name: Require OverlayFS support from the running kernel
+  ansible.builtin.assert:
+    that:
+      - >-
+        container_runtime_kernel_overlayfs_modinfo.rc == 0
+        or (container_runtime_kernel_overlayfs_module.stat.isdir | default(false))
+    fail_msg: >-
+      The running kernel does not provide the OverlayFS module required by the
+      container runtime.
+
+- name: Manage the OverlayFS policy exception
+  ansible.builtin.include_tasks: enabled.yml
+  when:
+    - container_runtime_overlayfs_policy_exception_enabled | bool
+
+- name: Use normal OverlayFS module policy
+  ansible.builtin.include_tasks: disabled.yml
+  when:
+    - not (container_runtime_overlayfs_policy_exception_enabled | bool)
+
+- name: Report OverlayFS check-mode state
+  ansible.builtin.debug:
+    msg: >-
+      OverlayFS is {{ 'loaded' if container_runtime_kernel_overlayfs_module.stat.isdir | default(false) else 'not loaded' }};
+      the managed policy exception unit is
+      {{ 'present' if container_runtime_kernel_overlayfs_unit.stat.exists | default(false) else 'absent' }}.
+  when: ansible_check_mode

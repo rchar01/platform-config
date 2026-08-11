@@ -1,5 +1,5 @@
 ---
-- name: Validate bounded storage layout behavior
+- name: Reject reused storage without explicit noninitialization
   hosts: localhost
   gather_facts: false
   vars:
@@ -7,21 +7,15 @@
       - name: test_data
         device: /dev/disk/by-id/example-test-data
         vg_name: test_data
-        capacity_gib: "{{ test_capacity_gib | default(20) | int }}"
+        capacity_gib: 20
         required_free_gib: 4
-        initialize: "{{ test_initialize | default(false) | bool }}"
-        reuse_existing_vg: "{{ test_reuse_existing_vg | default(false) | bool }}"
+        reuse_existing_vg: true
     storage_volumes:
       - name: test_primary
         layout: test_data
         lv_name: primary
         size_gib: 8
         mountpoint: /srv/test/primary
-      - name: test_staging
-        layout: test_data
-        lv_name: staging
-        size_gib: 2
-        mountpoint: /srv/test/staging
   tasks:
     - name: Run storage layout validation only
       ansible.builtin.include_role:

@@ -66,7 +66,11 @@ Bastion hosts need:
 - writable `/usr/local/bin`, `/usr/local/sbin`, `/usr/local/lib/bastion`, `/etc/bastion`, and `/etc/systemd/system`
 - outbound HTTPS access or private inventory overrides for a corporate artifact proxy/mirror
 
-The role installs OS packages from `k8s_bastion_os_packages` and downloads external tools from `k8s_bastion_external_tools`.
+The supported playbook applies `podman_host` after `bastion_host`, then runs
+`k8s_bastion_access`. Use `podman_host_*` variables for Podman packages and
+socket behavior. `k8s_bastion_access` installs the remaining OS packages from
+`k8s_bastion_os_packages` and downloads external tools from
+`k8s_bastion_external_tools`.
 
 ## External Tool Mirrors
 

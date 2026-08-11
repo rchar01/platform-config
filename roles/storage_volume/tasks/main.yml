@@ -8,6 +8,18 @@
     state: present
   when: storage_volumes | length > 0
 
+- name: Initialize reused storage layout state
+  ansible.builtin.set_fact:
+    storage_volume_reuse_layout_state: {}
+
+- name: Verify reused storage volume groups before mutation
+  ansible.builtin.include_tasks: reuse_existing_vg.yml
+  loop: "{{ storage_volume_layouts }}"
+  loop_control:
+    loop_var: storage_volume_reuse_layout
+    label: "{{ storage_volume_reuse_layout.name }}"
+  when: storage_volume_reuse_layout.reuse_existing_vg | default(false) | bool
+
 - name: Manage storage volumes
   ansible.builtin.include_tasks: volume.yml
   loop: "{{ storage_volumes }}"

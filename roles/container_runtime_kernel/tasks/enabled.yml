@@ -1,0 +1,68 @@
+---
+- name: Install the OverlayFS policy exception unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/platform-container-runtime-overlayfs-exception.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Platform container runtime OverlayFS policy exception
+      Documentation=man:modprobe(8)
+      DefaultDependencies=no
+      Conflicts=shutdown.target
+      Before=sysinit.target shutdown.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/modprobe --ignore-install overlay
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=sysinit.target
+  register: container_runtime_kernel_overlayfs_unit_install
+
+- name: Enable and start the OverlayFS policy exception
+  ansible.builtin.systemd_service:
+    name: platform-container-runtime-overlayfs-exception.service
+    enabled: true
+    state: started
+    daemon_reload: "{{ container_runtime_kernel_overlayfs_unit_install.changed }}"
+  when: not ansible_check_mode
+
+- name: Inspect OverlayFS exception enabled state in check mode
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - platform-container-runtime-overlayfs-exception.service
+  register: container_runtime_kernel_overlayfs_check_enabled
+  check_mode: false
+  changed_when: container_runtime_kernel_overlayfs_check_enabled.stdout != 'enabled'
+  failed_when: false
+  when: ansible_check_mode
+
+- name: Inspect OverlayFS exception active state in check mode
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - platform-container-runtime-overlayfs-exception.service
+  register: container_runtime_kernel_overlayfs_check_active
+  check_mode: false
+  changed_when: container_runtime_kernel_overlayfs_check_active.stdout != 'active'
+  failed_when: false
+  when: ansible_check_mode
+
+- name: Verify OverlayFS is loaded through the policy exception
+  ansible.builtin.stat:
+    path: /sys/module/overlay
+  register: container_runtime_kernel_overlayfs_enabled_module
+  when: not ansible_check_mode
+
+- name: Require loaded OverlayFS
+  ansible.builtin.assert:
+    that:
+      - container_runtime_kernel_overlayfs_enabled_module.stat.isdir | default(false)
+    fail_msg: "The managed OverlayFS policy exception did not load the overlay module."
+  when: not ansible_check_mode

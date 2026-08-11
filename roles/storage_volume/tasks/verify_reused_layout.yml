@@ -1,0 +1,168 @@
+---
+- name: Require exact reused storage topology and identities
+  ansible.builtin.assert:
+    that:
+      - storage_volume_reuse_source_canonical | length > 0
+      - storage_volume_reuse_pv_canonical | length > 0
+      - storage_volume_reuse_source_canonical != storage_volume_reuse_pv_canonical
+      - storage_volume_reuse_topology_results.results[0].stdout | trim == 'disk'
+      - storage_volume_reuse_topology_results.results[1].stdout | trim == 'part'
+      - storage_volume_reuse_topology_results.results[2].stdout | trim == storage_volume_reuse_source_canonical
+      - storage_volume_reuse_topology_results.results[3].stdout | trim | int == storage_volume_reuse_partition_number | int
+      - storage_volume_reuse_pv_rows | length == 1
+      - storage_volume_reuse_vg_pv_rows | length == 1
+      - storage_volume_reuse_vg_rows | length == 1
+      - storage_volume_reuse_live_pv_canonical.stdout | trim == storage_volume_reuse_pv_canonical
+      - storage_volume_reuse_pv_rows[0].pv_name | trim == storage_volume_reuse_vg_pv_rows[0].pv_name | trim
+      - storage_volume_reuse_pv_rows[0].pv_uuid | trim | length > 0
+      - storage_volume_reuse_pv_rows[0].pv_uuid | trim == storage_volume_reuse_vg_pv_rows[0].pv_uuid | trim
+      - storage_volume_reuse_pv_rows[0].vg_name | trim == storage_volume_reuse_layout.vg_name
+      - storage_volume_reuse_vg_pv_rows[0].vg_name | trim == storage_volume_reuse_layout.vg_name
+      - storage_volume_reuse_vg_rows[0].vg_name | trim == storage_volume_reuse_layout.vg_name
+      - storage_volume_reuse_pv_rows[0].vg_uuid | trim | length > 0
+      - storage_volume_reuse_pv_rows[0].vg_uuid | trim == storage_volume_reuse_vg_pv_rows[0].vg_uuid | trim
+      - storage_volume_reuse_pv_rows[0].vg_uuid | trim == storage_volume_reuse_vg_rows[0].vg_uuid | trim
+      - storage_volume_reuse_vg_rows[0].pv_count | int == 1
+      - storage_volume_reuse_vg_rows[0].vg_size | int > 0
+      - storage_volume_reuse_vg_rows[0].vg_free | int >= 0
+      - storage_volume_reuse_vg_rows[0].vg_free | int <= storage_volume_reuse_vg_rows[0].vg_size | int
+      - storage_volume_reuse_vg_rows[0].vg_extent_size | int > 0
+    fail_msg: >-
+      Reused layout {{ storage_volume_reuse_layout.name }} does not match its reviewed
+      source, partition, one-PV VG, or LVM identities.
+
+- name: Validate requested existing logical volumes
+  ansible.builtin.assert:
+    that:
+      - >-
+        storage_volume_reuse_matching_lvs | length == 0
+        or storage_volume_reuse_matching_lvs | length == 1
+      - >-
+        storage_volume_reuse_matching_lvs | length == 0
+        or storage_volume_reuse_matching_lvs[0].vg_name | trim == storage_volume_reuse_layout.vg_name
+      - >-
+        storage_volume_reuse_matching_lvs | length == 0
+        or storage_volume_reuse_matching_lvs[0].lv_uuid | trim | length > 0
+      - >-
+        storage_volume_reuse_matching_lvs | length == 0
+        or storage_volume_reuse_matching_lvs[0].lv_size | int
+           == (
+             (
+               storage_volume_reuse_requested_volume.size_gib | int * 1073741824
+               + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+             )
+             // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+           ) * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+    fail_msg: >-
+      Existing logical volume {{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_requested_volume.lv_name }}
+      has an unexpected identity or size; refusing to shrink or resize it.
+  loop: "{{ storage_volume_reuse_requested_volumes }}"
+  loop_control:
+    loop_var: storage_volume_reuse_requested_volume
+    label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
+  vars:
+    storage_volume_reuse_matching_lvs: >-
+      {{
+        storage_volume_reuse_lv_rows
+        | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
+        | list
+      }}
+
+- name: Require expected filesystems on requested existing logical volumes
+  ansible.builtin.assert:
+    that:
+      - storage_volume_reuse_filesystem.rc == 0
+      - >-
+        storage_volume_reuse_filesystem.stdout | trim
+        == storage_volume_reuse_filesystem.storage_volume_reuse_requested_volume.fstype
+           | default(storage_volume_default_fstype)
+    fail_msg: >-
+      Existing logical volume {{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_filesystem.storage_volume_reuse_requested_volume.lv_name }}
+      has no filesystem or an unexpected filesystem; refusing to format it.
+  loop: "{{ storage_volume_reuse_filesystems.results | default([]) }}"
+  loop_control:
+    loop_var: storage_volume_reuse_filesystem
+    label: "{{ storage_volume_reuse_filesystem.storage_volume_reuse_requested_volume.lv_name }}"
+  when: not storage_volume_reuse_filesystem.skipped | default(false)
+
+- name: Require requested existing logical volumes to use only declared mountpoints
+  ansible.builtin.assert:
+    that:
+      - storage_volume_reuse_mount_target.rc in [0, 1]
+      - >-
+        storage_volume_reuse_mount_target.rc == 1
+        or storage_volume_reuse_mount_target.stdout_lines | length > 0
+      - >-
+        storage_volume_reuse_mount_target.rc == 1
+        or (
+          storage_volume_reuse_mount_target.stdout_lines
+          | difference(
+              [storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.mountpoint]
+            )
+          | length == 0
+        )
+    fail_msg: >-
+      Existing logical volume {{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.lv_name }}
+      is mounted outside its declared mountpoint; refusing to reuse it.
+  loop: "{{ storage_volume_reuse_mount_targets.results | default([]) }}"
+  loop_control:
+    loop_var: storage_volume_reuse_mount_target
+    label: "{{ storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.lv_name }}"
+  when: not storage_volume_reuse_mount_target.skipped | default(false)
+
+- name: Initialize missing reused storage allocation
+  ansible.builtin.set_fact:
+    storage_volume_reuse_missing_bytes: 0
+
+- name: Calculate missing reused storage allocation
+  ansible.builtin.set_fact:
+    storage_volume_reuse_missing_bytes: >-
+      {{
+        storage_volume_reuse_missing_bytes | int
+        + (
+          (
+            storage_volume_reuse_requested_volume.size_gib | int * 1073741824
+            + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+          )
+          // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        ) * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+  loop: "{{ storage_volume_reuse_requested_volumes }}"
+  loop_control:
+    loop_var: storage_volume_reuse_requested_volume
+    label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
+  when: >-
+    storage_volume_reuse_lv_rows
+    | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
+    | list
+    | length == 0
+
+- name: Require reused storage capacity before logical volume mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        storage_volume_reuse_vg_rows[0].vg_free | int
+        >= storage_volume_reuse_missing_bytes | int
+           + (storage_volume_reuse_layout.required_free_gib | default(0) | int * 1073741824)
+    fail_msg: >-
+      Reused layout {{ storage_volume_reuse_layout.name }} lacks free VG space for all
+      missing requested logical volumes plus required headroom; no LV was changed.
+
+- name: Record verified reused storage layout state
+  ansible.builtin.set_fact:
+    storage_volume_reuse_layout_state: >-
+      {{
+        storage_volume_reuse_layout_state
+        | combine(
+          {
+            storage_volume_reuse_layout.name: {
+              'existing_lv_names': storage_volume_reuse_lv_rows | map(attribute='lv_name') | list,
+              'missing_bytes': storage_volume_reuse_missing_bytes | int,
+              'pv_device': storage_volume_reuse_pv_canonical,
+              'vg_free_bytes': storage_volume_reuse_vg_rows[0].vg_free | int,
+              'vg_size_bytes': storage_volume_reuse_vg_rows[0].vg_size | int,
+              'vg_extent_bytes': storage_volume_reuse_vg_rows[0].vg_extent_size | int
+            }
+          }
+        )
+      }}

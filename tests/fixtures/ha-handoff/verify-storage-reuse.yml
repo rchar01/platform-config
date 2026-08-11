@@ -1,0 +1,132 @@
+---
+- name: Verify existing storage VG safety assertions
+  hosts: localhost
+  gather_facts: false
+  vars:
+    storage_volume_reuse_layout:
+      name: test_data
+      device: /dev/disk/by-id/example-test-data
+      pv_device: /dev/disk/by-id/example-test-data-part1
+      partition_number: 1
+      vg_name: test_data
+      capacity_gib: 20
+      required_free_gib: 4
+      initialize: false
+      reuse_existing_vg: true
+    storage_volume_reuse_requested_volumes:
+      - name: test_primary
+        layout: test_data
+        lv_name: primary
+        size_gib: 8
+        mountpoint: /srv/test/primary
+      - name: test_staging
+        layout: test_data
+        lv_name: staging
+        size_gib: 2
+        mountpoint: /srv/test/staging
+    storage_volume_reuse_partition_number: 1
+    storage_volume_reuse_source_canonical: /dev/sdb
+    storage_volume_reuse_pv_canonical: /dev/sdb1
+    storage_volume_reuse_topology_results:
+      results:
+        - stdout: disk
+        - stdout: part
+        - stdout: /dev/sdb
+        - stdout: "1"
+    storage_volume_reuse_pv_rows:
+      - pv_name: /dev/sdb1
+        pv_uuid: pv-reviewed
+        vg_name: "{{ 'other_data' if test_storage_reuse_scenario | default('valid') == 'wrong_vg' else 'test_data' }}"
+        vg_uuid: vg-reviewed
+    storage_volume_reuse_vg_pv_rows:
+      - pv_name: /dev/sdb1
+        pv_uuid: pv-reviewed
+        vg_name: test_data
+        vg_uuid: vg-reviewed
+    storage_volume_reuse_vg_rows:
+      - vg_name: test_data
+        vg_uuid: vg-reviewed
+        vg_size: "21474836480"
+        vg_free: "{{ 5368709120 if test_storage_reuse_scenario | default('valid') == 'insufficient' else 6442450944 }}"
+        vg_extent_size: "4194304"
+        pv_count: "{{ 2 if test_storage_reuse_scenario | default('valid') == 'extra_pv' else 1 }}"
+    storage_volume_reuse_lv_rows:
+      - vg_name: test_data
+        lv_name: primary
+        lv_uuid: lv-primary
+        lv_size: "{{ 7516192768 if test_storage_reuse_scenario | default('valid') == 'wrong_size' else 8589934592 }}"
+    storage_volume_reuse_live_pv_canonical:
+      stdout: /dev/sdb1
+    storage_volume_reuse_filesystems:
+      results:
+        - rc: 0
+          stdout: "{{ 'ext4' if test_storage_reuse_scenario | default('valid') == 'wrong_filesystem' else 'xfs' }}"
+          storage_volume_reuse_requested_volume:
+            name: test_primary
+            layout: test_data
+            lv_name: primary
+            size_gib: 8
+            mountpoint: /srv/test/primary
+    storage_volume_reuse_mount_targets:
+      results:
+        - rc: 1
+          stdout: ""
+          stdout_lines: []
+          storage_volume_reuse_requested_volume:
+            name: test_primary
+            layout: test_data
+            lv_name: primary
+            size_gib: 8
+            mountpoint: /srv/test/primary
+    storage_volume_reuse_layout_state: {}
+  tasks:
+    - name: Add an unexpected second PV to the observed VG
+      ansible.builtin.set_fact:
+        storage_volume_reuse_vg_pv_rows: >-
+          {{
+            storage_volume_reuse_vg_pv_rows
+            + [
+              {
+                'pv_name': '/dev/sdc1',
+                'pv_uuid': 'pv-unreviewed',
+                'vg_name': 'test_data',
+                'vg_uuid': 'vg-reviewed'
+              }
+            ]
+          }}
+      when: test_storage_reuse_scenario | default('valid') == 'extra_pv'
+
+    - name: Represent a pre-existing logical volume without a filesystem
+      ansible.builtin.set_fact:
+        storage_volume_reuse_filesystems:
+          results:
+            - rc: 2
+              stdout: ""
+              storage_volume_reuse_requested_volume:
+                name: test_primary
+                layout: test_data
+                lv_name: primary
+                size_gib: 8
+                mountpoint: /srv/test/primary
+      when: test_storage_reuse_scenario | default('valid') == 'blank_filesystem'
+
+    - name: Represent a pre-existing logical volume mounted elsewhere
+      ansible.builtin.set_fact:
+        storage_volume_reuse_mount_targets:
+          results:
+            - rc: 0
+              stdout: /srv/test/other
+              stdout_lines:
+                - /srv/test/other
+              storage_volume_reuse_requested_volume:
+                name: test_primary
+                layout: test_data
+                lv_name: primary
+                size_gib: 8
+                mountpoint: /srv/test/primary
+      when: test_storage_reuse_scenario | default('valid') == 'wrong_mountpoint'
+
+    - name: Run reused storage verification only
+      ansible.builtin.include_role:
+        name: storage_volume
+        tasks_from: verify_reused_layout.yml

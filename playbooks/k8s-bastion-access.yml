@@ -4,4 +4,5 @@
   become: true
   roles:
     - bastion_host
+    - podman_host
     - k8s_bastion_access

@@ -16,6 +16,17 @@ mountpoints; validates the allocation sum before making changes; and verifies VG
 free space after convergence. `capacity_gib` is a lower bound checked against the
 live disk, not permission to consume the whole device.
 
+To add logical volumes to a reviewed existing one-PV VG, set
+`reuse_existing_vg: true` and explicitly set `initialize: false` on the layout.
+Before any LV change, the role resolves the stable source and PV paths, requires
+the expected disk/partition relationship, and verifies the PV and VG identities
+and exact one-PV membership. It inspects all requested existing LVs and their
+filesystems, rejects size or filesystem mismatches, and rejects an existing LV
+mounted anywhere other than its declared mountpoint. It requires enough live VG
+free space for only the missing requested LVs plus `required_free_gib`. Reuse mode
+never partitions or changes VG membership. Check mode runs these read-only checks
+but does not create a missing LV or filesystem.
+
 Example:
 
 ```yaml
@@ -40,6 +51,7 @@ storage_volume_layouts:
     capacity_gib: 20
     required_free_gib: 4
     initialize: false
+    reuse_existing_vg: true
 
 storage_volumes:
   - name: service_primary
@@ -58,3 +70,12 @@ Set the layout's `initialize` value to `true` only in reviewed private inventory
 after the stable device and empty state have been confirmed. Layout-backed
 volumes intentionally cannot override disk, VG, partition, PV, or initialization
 settings individually.
+
+Do not set `reuse_existing_vg` for a new disk. Existing-VG reuse supports one
+partition-backed PV whose canonical parent is the configured source disk. It
+fails closed when the requested PV belongs to another VG, the VG has additional
+PVs, an existing requested LV has a different size or filesystem, or live free
+space cannot satisfy all missing allocations and required headroom. An existing
+requested LV must be unmounted or mounted only at its declared mountpoint. The
+preflight is a safety check against reviewed topology, not a migration or VG
+repair mechanism; stop concurrent storage administration while applying it.

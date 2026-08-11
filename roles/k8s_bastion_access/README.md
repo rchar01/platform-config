@@ -8,6 +8,11 @@ The default source layout is the `platform-config` vendor submodule:
 
 This role owns the host configuration previously handled by bootstrap scripts: external tool downloads, runtime command installation, `/etc/bastion` files, login profile, systemd services, timers, policy-driven user bootstrap orchestration, and optional cluster RBAC binding for policy groups.
 
+The supported `k8s-bastion-access.yml` playbook applies `podman_host` before this
+role. `podman_host` owns Podman packages and the shared container-runtime kernel
+prerequisite; this role owns the remaining bastion OS packages and runtime
+configuration.
+
 The role targets a clean Rocky host. It does not provision VMs, manage Proxmox/OpenTofu resources, or clean up existing Kubernetes node state.
 
 Real kubeconfigs, final rendered policy files, CA files, and tokens belong in `platform-private`, not this public repository.

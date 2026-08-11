@@ -477,6 +477,23 @@
     - ansible_check_mode
     - item.rc != 0
 
+- name: Select RKE2 kernel modules handled directly
+  ansible.builtin.set_fact:
+    rke2_direct_kernel_modules: >-
+      {{
+        rke2_kernel_modules
+        | reject('equalto', 'overlay')
+        | list
+        if container_runtime_overlayfs_policy_exception_enabled | default(true) | bool
+        else rke2_kernel_modules
+      }}
+
+- name: Prepare the RKE2 container runtime kernel
+  ansible.builtin.include_role:
+    name: container_runtime_kernel
+  when:
+    - not ansible_check_mode or rke2_unavailable_kernel_modules | length == 0
+
 - name: Persist RKE2 kernel modules
   ansible.builtin.copy:
     dest: /etc/modules-load.d/rke2.conf
@@ -484,7 +501,7 @@
     group: root
     mode: "0644"
     content: |
-      {% for module in rke2_kernel_modules %}
+      {% for module in rke2_direct_kernel_modules %}
       {{ module }}
       {% endfor %}
 
@@ -492,7 +509,7 @@
   community.general.modprobe:
     name: "{{ item }}"
     state: present
-  loop: "{{ rke2_kernel_modules }}"
+  loop: "{{ rke2_direct_kernel_modules }}"
   when: not ansible_check_mode
 
 - name: Configure RKE2 sysctl settings

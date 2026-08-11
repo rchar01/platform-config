@@ -3,6 +3,74 @@
   hosts: k8s_bastion
   become: true
   tasks:
+    - name: Check bastion Podman version
+      ansible.builtin.command:
+        argv:
+          - podman
+          - --version
+      changed_when: false
+
+    - name: Check bastion OverlayFS state
+      ansible.builtin.stat:
+        path: /sys/module/overlay
+      register: k8s_bastion_smoke_overlayfs
+
+    - name: Require bastion OverlayFS
+      ansible.builtin.assert:
+        that:
+          - k8s_bastion_smoke_overlayfs.stat.isdir | default(false)
+        fail_msg: OverlayFS is not loaded on the Kubernetes bastion.
+
+    - name: Check bastion OverlayFS exception unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/platform-container-runtime-overlayfs-exception.service
+      register: k8s_bastion_smoke_overlayfs_exception
+
+    - name: Check enabled bastion OverlayFS exception state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "{{ item }}"
+          - platform-container-runtime-overlayfs-exception.service
+      loop:
+        - is-enabled
+        - is-active
+      changed_when: false
+      when: container_runtime_overlayfs_policy_exception_enabled | default(true) | bool
+
+    - name: Require absent bastion OverlayFS exception when disabled
+      ansible.builtin.assert:
+        that:
+          - not (k8s_bastion_smoke_overlayfs_exception.stat.exists | default(false))
+        fail_msg: Managed OverlayFS exception remains on the Kubernetes bastion.
+      when: not (container_runtime_overlayfs_policy_exception_enabled | default(true) | bool)
+
+    - name: Check bastion Podman socket enabled state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - "{{ podman_host_socket_name | default('podman.socket') }}"
+      register: k8s_bastion_smoke_podman_socket_enabled
+      changed_when: false
+      failed_when: >-
+        k8s_bastion_smoke_podman_socket_enabled.rc == 0
+        or k8s_bastion_smoke_podman_socket_enabled.stdout != 'disabled'
+      when: podman_host_socket_manage | default(true) | bool
+
+    - name: Check bastion Podman socket inactive state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ podman_host_socket_name | default('podman.socket') }}"
+      register: k8s_bastion_smoke_podman_socket_active
+      changed_when: false
+      failed_when: >-
+        k8s_bastion_smoke_podman_socket_active.rc == 0
+        or k8s_bastion_smoke_podman_socket_active.stdout != 'inactive'
+      when: podman_host_socket_manage | default(true) | bool
+
     - name: Check bastion runtime version command
       ansible.builtin.command:
         cmd: bastion-version

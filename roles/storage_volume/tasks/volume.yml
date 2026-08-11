@@ -38,6 +38,8 @@
     storage_volume_mode: "{{ storage_volume.mode | default(storage_volume_default_mode) }}"
     storage_volume_initialize: >-
       {{ storage_volume.initialize | default(storage_volume_matching_layout.initialize | default(false)) }}
+    storage_volume_reuse_existing_vg: >-
+      {{ storage_volume_matching_layout.reuse_existing_vg | default(false) | bool }}
 
 - name: Set storage volume derived device facts
   ansible.builtin.set_fact:
@@ -50,6 +52,13 @@
         )
       }}
     storage_volume_lv_device: "/dev/{{ storage_volume_vg_name }}/{{ storage_volume_lv_name }}"
+    storage_volume_lv_preexisting: >-
+      {{
+        storage_volume.layout is defined
+        and storage_volume_reuse_existing_vg
+        and storage_volume_lv_name
+          in storage_volume_reuse_layout_state[storage_volume_matching_layout.name].existing_lv_names
+      }}
 
 - name: Validate storage volume configuration
   ansible.builtin.assert:
@@ -149,7 +158,9 @@
     part_start: 1MiB
     part_end: 100%
     state: present
-  when: not storage_volume_pv_device_stat.stat.exists
+  when:
+    - not storage_volume_reuse_existing_vg
+    - not storage_volume_pv_device_stat.stat.exists
 
 - name: Wait for storage volume partition device
   ansible.builtin.command:
@@ -159,6 +170,7 @@
   changed_when: false
   when:
     - not ansible_check_mode
+    - not storage_volume_reuse_existing_vg
     - not storage_volume_pv_device_stat.stat.exists
 
 - name: Refresh storage volume PV partition state
@@ -169,14 +181,24 @@
 - name: Track storage volume check-mode initialization state
   ansible.builtin.set_fact:
     storage_volume_skip_lvm_tasks: >-
-      {{ ansible_check_mode and not storage_volume_pv_device_after_partition_stat.stat.exists }}
+      {{
+        (ansible_check_mode and not storage_volume_pv_device_after_partition_stat.stat.exists)
+        or (
+          ansible_check_mode
+          and storage_volume_reuse_existing_vg
+          and not storage_volume_lv_preexisting
+        )
+      }}
 
 - name: Create storage volume group
   community.general.lvg:
     vg: "{{ storage_volume_vg_name }}"
     pvs: "{{ storage_volume_pv_device }}"
+    remove_extra_pvs: false
     state: present
-  when: not storage_volume_skip_lvm_tasks | bool
+  when:
+    - not storage_volume_reuse_existing_vg
+    - not storage_volume_skip_lvm_tasks | bool
 
 - name: Create storage logical volume
   community.general.lvol:

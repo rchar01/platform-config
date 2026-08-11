@@ -7,6 +7,10 @@ ROCKY_IMAGE="${PODMAN_HOST_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 PODMAN_NEVRA=podman-7:5.8.2-5.el10_2.x86_64
 CONTAINER="platform-config-podman-host-test-$$"
 CONTAINER_CREATED=false
+OVERLAY_DENY_PATH=/etc/modprobe.d/99-external-overlay-deny.conf
+OVERLAY_UNIT_PATH=/etc/systemd/system/platform-container-runtime-overlayfs-exception.service
+OVERLAY_DENY_CONTENT=$'blacklist overlay\ninstall overlay /bin/false'
+OVERLAY_UNIT_CONTENT=$'[Unit]\nDescription=Platform container runtime OverlayFS policy exception\nDocumentation=man:modprobe(8)\nDefaultDependencies=no\nConflicts=shutdown.target\nBefore=sysinit.target shutdown.target\n\n[Service]\nType=oneshot\nExecStart=/usr/sbin/modprobe --ignore-install overlay\nRemainAfterExit=yes\n\n[Install]\nWantedBy=sysinit.target'
 
 cleanup() {
   if [[ "$CONTAINER_CREATED" == true ]]; then
@@ -26,6 +30,26 @@ run_playbook() {
     --workdir /workspace \
     "$CONTAINER" \
     ansible-playbook -i localhost, -c local "$FIXTURE" "$@"
+}
+
+assert_external_deny_preserved() {
+  [[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a' "$OVERLAY_DENY_PATH")" == root:root:600 ]] \
+    || fail 'External OverlayFS deny policy metadata changed'
+  [[ "$(podman exec "$CONTAINER" cat "$OVERLAY_DENY_PATH")" == "$OVERLAY_DENY_CONTENT" ]] \
+    || fail 'External OverlayFS deny policy content changed'
+}
+
+assert_enabled_overlay_exception() {
+  [[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a' "$OVERLAY_UNIT_PATH")" == root:root:644 ]] \
+    || fail 'Managed OverlayFS exception unit metadata is invalid'
+  [[ "$(podman exec "$CONTAINER" cat "$OVERLAY_UNIT_PATH")" == "$OVERLAY_UNIT_CONTENT" ]] \
+    || fail 'Managed OverlayFS exception unit content is invalid'
+  [[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-container-runtime-overlayfs-exception.service)" == enabled ]] \
+    || fail 'Managed OverlayFS exception unit is not enabled'
+  podman exec "$CONTAINER" systemctl is-active --quiet platform-container-runtime-overlayfs-exception.service \
+    || fail 'Managed OverlayFS exception unit is not active'
+  podman exec "$CONTAINER" test -d /sys/module/overlay \
+    || fail 'OverlayFS is not loaded'
 }
 
 podman run \
@@ -64,10 +88,16 @@ elif [[ "$system_state" != running ]]; then
   fail "Disposable Rocky systemd did not become ready: ${system_state}"
 fi
 
-podman exec "$CONTAINER" dnf -qy install python3-pip >/dev/null
+podman exec "$CONTAINER" dnf -qy install kmod python3-pip >/dev/null
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
+
+podman exec "$CONTAINER" install -d -m 0755 /etc/modprobe.d
+podman exec "$CONTAINER" bash -c \
+  "umask 077 && printf '%s\n' 'blacklist overlay' 'install overlay /bin/false' > '$OVERLAY_DENY_PATH'"
+assert_external_deny_preserved
+overlay_module_before_check="$(podman exec "$CONTAINER" test -d /sys/module/overlay && printf loaded || printf absent)"
 
 run_playbook --check >/dev/null
 if podman exec "$CONTAINER" rpm -q podman >/dev/null 2>&1; then
@@ -76,8 +106,17 @@ fi
 if podman exec "$CONTAINER" test -e /etc/containers/systemd; then
   fail 'Podman host check mode created the Quadlet directory'
 fi
+if podman exec "$CONTAINER" test -e "$OVERLAY_UNIT_PATH"; then
+  fail 'Podman host check mode created the OverlayFS exception unit'
+fi
+[[ "$(podman exec "$CONTAINER" test -d /sys/module/overlay && printf loaded || printf absent)" == "$overlay_module_before_check" ]] \
+  || fail 'Podman host check mode changed the OverlayFS module state'
+assert_external_deny_preserved
 
-run_playbook >/dev/null
+if ! convergence_output="$(run_playbook 2>&1)"; then
+  printf '%s\n' "$convergence_output" >&2
+  fail 'Initial Podman host role convergence failed'
+fi
 package_identity="$(podman exec "$CONTAINER" \
   rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman)"
 [[ "$package_identity" == "$PODMAN_NEVRA" ]] \
@@ -89,8 +128,36 @@ package_identity="$(podman exec "$CONTAINER" \
 if podman exec "$CONTAINER" systemctl is-active --quiet podman.socket; then
   fail 'Podman socket is active'
 fi
+assert_enabled_overlay_exception
+assert_external_deny_preserved
+
+podman exec "$CONTAINER" bash -c "printf '%s\n' '# drift' >> '$OVERLAY_UNIT_PATH'"
+podman exec "$CONTAINER" systemctl disable --now \
+  platform-container-runtime-overlayfs-exception.service >/dev/null
+overlay_unit_drift_checksum="$(podman exec "$CONTAINER" sha256sum "$OVERLAY_UNIT_PATH")"
+if ! overlay_drift_check_output="$(run_playbook --check 2>&1)"; then
+  printf '%s\n' "$overlay_drift_check_output" >&2
+  fail 'Podman host check mode failed while reporting OverlayFS exception drift'
+fi
+if ! grep -qE 'changed=3.*failed=0' <<< "$overlay_drift_check_output"; then
+  printf '%s\n' "$overlay_drift_check_output" >&2
+  fail 'Podman host check mode did not report all OverlayFS exception drift'
+fi
+[[ "$(podman exec "$CONTAINER" sha256sum "$OVERLAY_UNIT_PATH")" == "$overlay_unit_drift_checksum" ]] \
+  || fail 'Podman host check mode changed the drifted OverlayFS exception unit'
+[[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-container-runtime-overlayfs-exception.service 2>/dev/null)" == disabled ]] \
+  || fail 'Podman host check mode enabled the drifted OverlayFS exception unit'
+if podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-container-runtime-overlayfs-exception.service; then
+  fail 'Podman host check mode started the drifted OverlayFS exception unit'
+fi
+assert_external_deny_preserved
+run_playbook >/dev/null
+assert_enabled_overlay_exception
+assert_external_deny_preserved
 
 podman exec "$CONTAINER" systemctl enable --now podman.socket >/dev/null
+overlay_unit_checksum_before_check="$(podman exec "$CONTAINER" sha256sum "$OVERLAY_UNIT_PATH")"
 if ! check_output="$(run_playbook --check 2>&1)"; then
   printf '%s\n' "$check_output" >&2
   fail 'Podman host check mode failed with an active socket'
@@ -99,6 +166,10 @@ fi
   || fail 'Podman host check mode disabled the Podman socket'
 podman exec "$CONTAINER" systemctl is-active --quiet podman.socket \
   || fail 'Podman host check mode stopped the Podman socket'
+[[ "$(podman exec "$CONTAINER" sha256sum "$OVERLAY_UNIT_PATH")" == "$overlay_unit_checksum_before_check" ]] \
+  || fail 'Podman host check mode changed the OverlayFS exception unit'
+assert_enabled_overlay_exception
+assert_external_deny_preserved
 run_playbook >/dev/null
 [[ "$(podman exec "$CONTAINER" systemctl is-enabled podman.socket 2>/dev/null)" == disabled ]] \
   || fail 'Podman socket was not disabled after convergence'
@@ -131,5 +202,16 @@ if ! grep -qE 'changed=0.*failed=0' <<< "$idempotent_output"; then
   printf '%s\n' "$idempotent_output" >&2
   fail 'Second Podman host role convergence was not idempotent'
 fi
+assert_enabled_overlay_exception
+assert_external_deny_preserved
+
+if disabled_denied_output="$(run_playbook -e container_runtime_overlayfs_policy_exception_enabled=false 2>&1)"; then
+  printf '%s\n' "$disabled_denied_output" >&2
+  fail 'Disabled mode removed the exception despite denied normal module policy'
+fi
+grep -q 'Normal OverlayFS loading cannot be proven' <<< "$disabled_denied_output" \
+  || fail 'Disabled mode did not report the normal-policy denial'
+assert_enabled_overlay_exception
+assert_external_deny_preserved
 
 printf '%s\n' "Podman host Rocky qualification passed (${package_identity})"

@@ -22,9 +22,19 @@
       - storage_volume_layout.required_free_gib | default(0) | int >= 0
       - storage_volume_layout.capacity_gib | int > storage_volume_layout.required_free_gib | default(0) | int
       - storage_volume_layout.initialize | default(false) is boolean
+      - storage_volume_layout.reuse_existing_vg | default(false) is boolean
+      - >-
+        not (storage_volume_layout.reuse_existing_vg | default(false) | bool)
+        or (
+          storage_volume_layout.initialize is defined
+          and storage_volume_layout.initialize is boolean
+          and not storage_volume_layout.initialize
+        )
       - storage_volume_layout.partition_number | default(storage_volume_default_partition_number) | int > 0
       - storage_volume_layout.pv_device is not defined or storage_volume_layout.pv_device is match('^/dev/disk/by-')
-    fail_msg: "Storage layouts require a stable device, VG, capacity, and valid initialization policy."
+    fail_msg: >-
+      Storage layouts require a stable device, VG, capacity, and valid initialization policy;
+      reuse_existing_vg: true requires explicit initialize: false.
   loop: "{{ storage_volume_layouts }}"
   loop_control:
     loop_var: storage_volume_layout
@@ -53,6 +63,7 @@
   ansible.builtin.assert:
     that:
       - storage_volume.lv_name is defined
+      - storage_volume.lv_name is match('^[a-zA-Z0-9_+.-]+$')
       - storage_volume.mountpoint is defined
       - storage_volume.mountpoint is match('^/')
       - >-

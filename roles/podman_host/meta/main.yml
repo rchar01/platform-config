@@ -1,0 +1,3 @@
+---
+dependencies:
+  - role: container_runtime_kernel
