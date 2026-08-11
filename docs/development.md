@@ -115,6 +115,9 @@ against controlled strict TLS, redirect, status, body, and client-certificate
 fixtures. The checksum-verified RPM is reused from the ignored `.artifacts/`
 cache; an invocation lock prevents concurrent tests from publishing a partial
 download, and a missing or invalid cache entry is downloaded again.
+The controlled HTTPS fixture also proves the locked Grafana `13.1.3`, Loki
+`3.7.6`, and Mimir `3.1.4` semantic profiles accept their exact healthy response
+contracts and reject degraded or non-ready bodies.
 
 `make test-monitoring-artifact-identities` is a Phase 0 identity check for the
 exact Garage, Loki, Mimir, and Grafana image candidates recorded in

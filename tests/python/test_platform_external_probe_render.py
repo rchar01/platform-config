@@ -72,10 +72,29 @@ def test_external_probe_fragment_has_strict_blackbox_contract(
         r'environment\s*=\s*"dev"',
         r'endpoint\s*=\s*"openbao_vip"',
         r'address_mode\s*=\s*"vip"',
+        r'\\n  grafana_health:',
+        r'\\n  loki_ready:',
+        r'\\n  mimir_ready:',
         r'^prometheus[.]exporter[.]unix "platform_vip_ownership"',
     ):
         assert re.search(pattern, fragment, re.MULTILINE), pattern
     assert not re.search(r"insecure_skip_verify: true|clustering", fragment)
+
+
+def test_locked_monitoring_probe_profile_contract(repo_root: Path) -> None:
+    profiles = (
+        repo_root / "roles/platform_external_probe/vars/main.yml"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "grafana_health:",
+        "path: /api/health",
+        "'\"database\"[[:space:]]*:[[:space:]]*\"ok\"'",
+        "'\"version\"[[:space:]]*:[[:space:]]*\"13[.]1[.]3\"'",
+        "loki_ready:",
+        "mimir_ready:",
+        "'^ready[[:space:]]*$'",
+    ):
+        assert required in profiles
 
 
 def test_complete_alloy_config_composes_probe_fragment(
@@ -121,12 +140,30 @@ def test_vip_ownership_render_contract(rendered_probe: dict[str, str]) -> None:
         ("duplicate-name", {"platform_external_probe_test_target_2_name": "openbao_dns"}),
         ("plain-http", {"platform_external_probe_test_target_2_address": "http://192.0.2.200:8200/v1/sys/health"}),
         ("url-credentials", {"platform_external_probe_test_target_2_address": "https://user:secret@192.0.2.200/v1/sys/health"}),
+        ("generic-query", {"platform_external_probe_test_target_2_address": "https://192.0.2.200/v1/sys/health?standbyok=true"}),
+        ("generic-fragment", {"platform_external_probe_test_target_2_address": "https://192.0.2.200/v1/sys/health#status"}),
+        ("generic-path-space", {"platform_external_probe_test_target_2_address": "https://192.0.2.200/v1/sys/health status"}),
+        ("generic-path-percent", {"platform_external_probe_test_target_2_address": "https://192.0.2.200/v1/sys/bad%20path"}),
+        ("generic-path-bare-percent", {"platform_external_probe_test_target_2_address": "https://192.0.2.200/v1/sys/bad%"}),
+        ("generic-path-invalid-percent", {"platform_external_probe_test_target_2_address": "https://192.0.2.200/v1/sys/bad%G0"}),
+        ("generic-authority-control", {"platform_external_probe_test_target_2_address": "https://192.0.2.200\u0007/v1/sys/health"}),
+        ("generic-port-zero", {"platform_external_probe_test_target_2_address": "https://192.0.2.200:0/v1/sys/health"}),
+        ("generic-port-high", {"platform_external_probe_test_target_2_address": "https://192.0.2.200:65536/v1/sys/health"}),
         ("wrong-host", {"platform_external_probe_test_target_2_host_header": "wrong.example.invalid"}),
         ("status-only", {"platform_external_probe_test_required_body_regexes": []}),
         ("mtls-no-ca", {"platform_external_probe_test_target_2_ca_file": "", "platform_external_probe_test_target_2_client_cert_file": "/run/secrets/probe.crt", "platform_external_probe_test_target_2_client_key_file": "/run/secrets/probe.key"}),
         ("invalid-vip", {"platform_external_probe_test_vip": "not-an-address"}),
         ("invalid-endpoint", {"platform_external_probe_test_endpoint": "INVALID-ENDPOINT"}),
         ("unknown-endpoint", {"platform_external_probe_test_endpoint": "unknown_vip"}),
+        ("unknown-profile", {"platform_external_probe_test_grafana_profile": "unknown_profile"}),
+        ("profile-service", {"platform_external_probe_test_grafana_service": "loki"}),
+        ("profile-path", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid/ready"}),
+        ("profile-query-path", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid?next=/api/health"}),
+        ("profile-fragment-path", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid#/api/health"}),
+        ("profile-trailing-newline", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid/api/health\n"}),
+        ("profile-authority-newline", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid\n/api/health"}),
+        ("profile-authority-space", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid /api/health"}),
+        ("profile-override", {"platform_external_probe_locked_profiles": {}}),
         ("invalid-metrics", {"platform_external_probe_metrics_path": "/tmp/vip-ownership.txt"}),
         ("incoherent-timer", {"platform_external_probe_test_timer_enabled": True, "platform_external_probe_test_timer_state": "stopped"}),
     ],
@@ -145,12 +182,30 @@ def test_external_probe_rejects_unsafe_inputs(
     expected = {
         "plain-http": "must use HTTPS without URL credentials",
         "url-credentials": "must use HTTPS without URL credentials",
+        "generic-query": "must use HTTPS without URL credentials",
+        "generic-fragment": "must use HTTPS without URL credentials",
+        "generic-path-space": "must use HTTPS without URL credentials",
+        "generic-path-percent": "must use HTTPS without URL credentials",
+        "generic-path-bare-percent": "must use HTTPS without URL credentials",
+        "generic-path-invalid-percent": "must use HTTPS without URL credentials",
+        "generic-authority-control": "must use HTTPS without URL credentials",
+        "generic-port-zero": "must use HTTPS without URL credentials",
+        "generic-port-high": "must use HTTPS without URL credentials",
         "wrong-host": "must use HTTPS without URL credentials",
-        "status-only": "must use HTTPS without URL credentials",
+        "status-only": "Generic external targets require explicit status",
         "mtls-no-ca": "must use HTTPS without URL credentials",
         "invalid-vip": "VIP ownership observations require safe service and endpoint labels",
         "invalid-endpoint": "VIP ownership observations require safe service and endpoint labels",
         "unknown-endpoint": "identify exactly one configured external probe target",
+        "unknown-profile": "selects an unknown locked probe profile",
+        "profile-service": "Locked external probe profiles require their exact service and path",
+        "profile-path": "Locked external probe profiles require their exact service and path",
+        "profile-query-path": "must use HTTPS without URL credentials",
+        "profile-fragment-path": "must use HTTPS without URL credentials",
+        "profile-trailing-newline": "must use HTTPS without URL credentials",
+        "profile-authority-newline": "must use HTTPS without URL credentials",
+        "profile-authority-space": "must use HTTPS without URL credentials",
+        "profile-override": "Locked external probe profiles must match the role-owned contract",
         "invalid-metrics": (
             "External probe lifecycle inputs must use safe systemd and absolute path names"
         ),

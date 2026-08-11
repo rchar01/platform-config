@@ -358,6 +358,24 @@ assert_probe_result monitoring_mtls https://127.0.0.1:18445/ready 1 \
   'valid client certificate'
 assert_probe_result monitoring_vip https://127.0.0.1:18445/ready 0 \
   'missing client certificate rejection'
+assert_probe_result grafana_health https://127.0.0.1:18443/api/health 1 \
+  'Grafana 13.1.3 database health profile'
+assert_probe_result grafana_health https://127.0.0.1:18443/api/health-degraded 0 \
+  'Grafana degraded database rejection'
+assert_probe_result grafana_health https://127.0.0.1:18443/api/health-wrong-version 0 \
+  'Grafana wrong version rejection'
+assert_probe_result loki_ready https://127.0.0.1:18443/ready 1 \
+  'Loki 3.7.6 readiness profile'
+assert_probe_result loki_ready https://127.0.0.1:18443/ready-wrong-body 0 \
+  'Loki non-ready body rejection'
+assert_probe_result loki_ready https://127.0.0.1:18443/status 0 \
+  'Loki HTTP 503 readiness rejection'
+assert_probe_result mimir_ready https://127.0.0.1:18443/ready 1 \
+  'Mimir 3.1.4 readiness profile'
+assert_probe_result mimir_ready https://127.0.0.1:18443/ready-wrong-body 0 \
+  'Mimir non-ready body rejection'
+assert_probe_result mimir_ready https://127.0.0.1:18443/status 0 \
+  'Mimir HTTP 503 readiness rejection'
 
 printf '%s\n' \
   '#!/bin/bash' \

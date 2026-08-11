@@ -39,17 +39,36 @@ contract.
 Every HTTPS target requires:
 
 - a unique safe name and service label;
-- an `https://` address without embedded credentials;
+- an `https://` address with a DNS/IPv4-style authority, optional numeric port
+  from `1` through `65535`, and an optional unencoded safe path;
+- no credentials, query, fragment, whitespace, control characters, IPv6 literal,
+  or percent-encoded path;
 - separate `dns`, `vip`, or `direct` address-mode identity;
 - matching strict TLS `server_name` and HTTP `Host` values;
 - an absolute CA path and optional complete client-certificate/key pair;
 - explicit accepted status codes; and
 - positive and negative body regular expressions.
 
+Monitoring HTTP targets may instead select one role-owned semantic `profile`:
+
+| Profile | Required service and path | Success policy |
+| --- | --- | --- |
+| `grafana_health` | `grafana`, `/api/health` | HTTP `200`, database `ok`, exact Grafana `13.1.3` version |
+| `loki_ready` | `loki`, `/ready` | HTTP `200`, complete body matching `ready` for Loki `3.7.6` |
+| `mimir_ready` | `mimir`, `/ready` | HTTP `200`, complete body matching `ready` for Mimir `3.1.4` |
+
+Profile targets still provide the private address, address mode, CA, SNI/Host,
+and optional client identity, but omit caller-supplied status and body policy.
+Validation rejects unknown profiles, service/path mismatches, and attempts to
+override the locked policy. Generic targets remain available for strict services
+such as OpenBao whose explicit policy is supplied by the owning playbook.
+
 The embedded Alloy `1.18.1` blackbox exporter supports regular-expression body
 checks, not semantic JSON parsing. For OpenBao, exact HTTP `200` plus required
 `initialized`, `sealed`, and `standby` predicates provides the planned active-node
 signal, but malformed JSON with matching text remains a documented limitation.
+The same limitation applies to Grafana: its profile requires the locked version
+and database `ok` snippets, but does not structurally parse the response as JSON.
 
 VIP ownership is observed from exact kernel address presence on the configured
 interface. A hardened oneshot/timer writes fresh timestamped Prometheus textfile

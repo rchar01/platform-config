@@ -21,6 +21,9 @@
       - '"standby"[[:space:]]*:[[:space:]]*true'
     platform_external_probe_test_vip: 192.0.2.200
     platform_external_probe_test_instance: OPENBAO
+    platform_external_probe_test_grafana_profile: grafana_health
+    platform_external_probe_test_grafana_service: grafana
+    platform_external_probe_test_grafana_address: https://grafana.example.invalid/api/health
     platform_external_probe_test_timer_enabled: false
     platform_external_probe_test_timer_state: stopped
   tasks:
@@ -35,6 +38,10 @@
     - name: Load external probe role defaults
       ansible.builtin.include_vars:
         file: "{{ platform_external_probe_role_dir }}/defaults/main.yml"
+
+    - name: Load locked external probe profiles
+      ansible.builtin.include_vars:
+        file: "{{ platform_external_probe_role_dir }}/vars/main.yml"
 
     - name: Load Grafana Alloy role defaults
       ansible.builtin.include_vars:
@@ -69,6 +76,30 @@
               - 200
             required_body_regexes: "{{ platform_external_probe_test_required_body_regexes }}"
             forbidden_body_regexes: "{{ platform_external_probe_test_forbidden_body_regexes }}"
+          - name: grafana_health
+            service: "{{ platform_external_probe_test_grafana_service }}"
+            profile: "{{ platform_external_probe_test_grafana_profile }}"
+            address: "{{ platform_external_probe_test_grafana_address }}"
+            address_mode: vip
+            server_name: grafana.example.invalid
+            host_header: grafana.example.invalid
+            ca_file: /etc/pki/tls/certs/ca-bundle.crt
+          - name: loki_ready
+            service: loki
+            profile: loki_ready
+            address: https://loki.example.invalid/ready
+            address_mode: vip
+            server_name: loki.example.invalid
+            host_header: loki.example.invalid
+            ca_file: /etc/pki/tls/certs/ca-bundle.crt
+          - name: mimir_ready
+            service: mimir
+            profile: mimir_ready
+            address: https://mimir.example.invalid/ready
+            address_mode: vip
+            server_name: mimir.example.invalid
+            host_header: mimir.example.invalid
+            ca_file: /etc/pki/tls/certs/ca-bundle.crt
         platform_external_probe_vip_ownership:
           - service: openbao
             endpoint: "{{ platform_external_probe_test_endpoint | default('openbao_vip') }}"

@@ -1,4 +1,42 @@
 ---
+- name: Assert locked external probe profiles are canonical
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_external_probe_locked_profiles == {
+          'grafana_health': {
+            'service': 'grafana',
+            'path': '/api/health',
+            'valid_status_codes': [200],
+            'required_body_regexes': [
+              '"database"[[:space:]]*:[[:space:]]*"ok"',
+              '"version"[[:space:]]*:[[:space:]]*"13[.]1[.]3"'
+            ],
+            'forbidden_body_regexes': [
+              '"database"[[:space:]]*:[[:space:]]*"(failed|error|unknown)"'
+            ]
+          },
+          'loki_ready': {
+            'service': 'loki',
+            'path': '/ready',
+            'valid_status_codes': [200],
+            'required_body_regexes': ['^ready[[:space:]]*$'],
+            'forbidden_body_regexes': [
+              '(Application is stopping|not ready|Some services are not Running)'
+            ]
+          },
+          'mimir_ready': {
+            'service': 'mimir',
+            'path': '/ready',
+            'valid_status_codes': [200],
+            'required_body_regexes': ['^ready[[:space:]]*$'],
+            'forbidden_body_regexes': [
+              '(Application is stopping|not ready|Some services are not Running)'
+            ]
+          }
+        }
+    fail_msg: "Locked external probe profiles must match the role-owned contract."
+
 - name: Assert external probe inputs are configured safely
   ansible.builtin.assert:
     that:

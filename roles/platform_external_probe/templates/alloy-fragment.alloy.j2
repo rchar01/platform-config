@@ -1,12 +1,13 @@
 {% set blackbox_config %}
 modules:
 {% for target in platform_external_probe_targets %}
+{% set profile = platform_external_probe_locked_profiles.get(target.profile | default(''), {}) %}
   {{ target.name }}:
     prober: http
     timeout: {{ platform_external_probe_scrape_timeout }}
     http:
       method: GET
-      valid_status_codes: {{ target.valid_status_codes | to_json }}
+      valid_status_codes: {{ (profile.valid_status_codes if profile else target.valid_status_codes) | to_json }}
       follow_redirects: false
       fail_if_not_ssl: true
       headers:
@@ -20,8 +21,8 @@ modules:
         cert_file: {{ target.client_cert_file | to_json }}
         key_file: {{ target.client_key_file | to_json }}
 {% endif %}
-      fail_if_body_not_matches_regexp: {{ target.required_body_regexes | to_json }}
-      fail_if_body_matches_regexp: {{ target.forbidden_body_regexes | to_json }}
+      fail_if_body_not_matches_regexp: {{ (profile.required_body_regexes if profile else target.required_body_regexes) | to_json }}
+      fail_if_body_matches_regexp: {{ (profile.forbidden_body_regexes if profile else target.forbidden_body_regexes) | to_json }}
 {% endfor %}
 {% endset %}
 prometheus.exporter.blackbox "platform_external_probe" {

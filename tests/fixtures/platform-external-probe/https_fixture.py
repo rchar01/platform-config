@@ -21,6 +21,18 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/ready":
             self.send_response(200)
             body = b"ready\n"
+        elif self.path == "/ready-wrong-body":
+            self.send_response(200)
+            body = b"starting\n"
+        elif self.path == "/api/health":
+            self.send_response(200)
+            body = b'{"database":"ok","version":"13.1.3"}\n'
+        elif self.path == "/api/health-degraded":
+            self.send_response(200)
+            body = b'{"database":"failed","version":"13.1.3"}\n'
+        elif self.path == "/api/health-wrong-version":
+            self.send_response(200)
+            body = b'{"database":"ok","version":"13.1.30"}\n'
         elif self.path == "/redirect":
             self.send_response(302)
             self.send_header("Location", "/ready")

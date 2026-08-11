@@ -1,19 +1,32 @@
 ---
+- name: Select locked external HTTPS probe profile
+  ansible.builtin.set_fact:
+    platform_external_probe_target_profile_name: >-
+      {{ platform_external_probe_target.profile | default('') }}
+    platform_external_probe_target_profile: >-
+      {{
+        platform_external_probe_locked_profiles.get(
+          platform_external_probe_target.profile | default(''),
+          {}
+        )
+      }}
+
 - name: Assert external HTTPS probe target is strict
   ansible.builtin.assert:
     that:
       - platform_external_probe_target.name | default('') is match('^[a-z][a-z0-9_]*$')
       - platform_external_probe_target.service | default('') is match('^[A-Za-z0-9_.-]+$')
-      - platform_external_probe_target.address | default('') is match('^https://[^/@]+(?:/|$)')
+      - >-
+        platform_external_probe_target.address | default('') is match(
+          '^https://[A-Za-z0-9][A-Za-z0-9.-]*'
+          ~ '(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|'
+          ~ '65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?'
+          ~ '(?:/[A-Za-z0-9._~!$&()*+,;=:@/-]*)?\\Z'
+        )
       - platform_external_probe_target.address_mode | default('') in ['dns', 'vip', 'direct']
       - platform_external_probe_target.server_name | default('') is match('^[A-Za-z0-9.-]+$')
       - platform_external_probe_target.host_header | default('') == platform_external_probe_target.server_name | default('')
       - platform_external_probe_target.ca_file | default('') is match('^/')
-      - platform_external_probe_target.valid_status_codes | default([]) | length > 0
-      - platform_external_probe_target.valid_status_codes | default([]) | map('int') | select('lt', 100) | list | length == 0
-      - platform_external_probe_target.valid_status_codes | default([]) | map('int') | select('gt', 599) | list | length == 0
-      - platform_external_probe_target.required_body_regexes | default([]) | length > 0
-      - platform_external_probe_target.forbidden_body_regexes | default([]) | length > 0
       - (platform_external_probe_target.client_cert_file | default('') | length > 0) == (platform_external_probe_target.client_key_file | default('') | length > 0)
       - platform_external_probe_target.client_cert_file | default('') | length == 0 or platform_external_probe_target.client_cert_file is match('^/')
       - platform_external_probe_target.client_key_file | default('') | length == 0 or platform_external_probe_target.client_key_file is match('^/')
@@ -21,3 +34,48 @@
       External target {{ platform_external_probe_target.name | default('undefined') }}
       must use HTTPS without URL credentials, strict CA/SNI/Host identity, an
       explicit status policy, and positive and negative body checks.
+
+- name: Assert selected external HTTPS probe profile exists
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_external_probe_target_profile_name | length == 0
+        or platform_external_probe_target_profile | length > 0
+    fail_msg: >-
+      External target {{ platform_external_probe_target.name }} selects an
+      unknown locked probe profile.
+
+- name: Assert generic external HTTPS probe policy is complete
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_target.valid_status_codes | default([]) | length > 0
+      - platform_external_probe_target.valid_status_codes | map('int') | select('lt', 100) | list | length == 0
+      - platform_external_probe_target.valid_status_codes | map('int') | select('gt', 599) | list | length == 0
+      - platform_external_probe_target.required_body_regexes | default([]) | length > 0
+      - platform_external_probe_target.forbidden_body_regexes | default([]) | length > 0
+    fail_msg: >-
+      Generic external targets require explicit status, required-body, and
+      forbidden-body policy.
+  when: platform_external_probe_target_profile_name | length == 0
+
+- name: Assert locked external HTTPS probe profile matches its endpoint
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_target.service == platform_external_probe_target_profile.service
+      - >-
+        platform_external_probe_target.address is match(
+          '^https://[A-Za-z0-9][A-Za-z0-9.-]*'
+          ~ '(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|'
+          ~ '65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?'
+          ~ (platform_external_probe_target_profile.path | regex_escape)
+          ~ '\\Z'
+        )
+      - platform_external_probe_target.valid_status_codes is not defined
+      - platform_external_probe_target.required_body_regexes is not defined
+      - platform_external_probe_target.forbidden_body_regexes is not defined
+    fail_msg: >-
+      Locked external probe profiles require their exact service and path and
+      do not accept caller-supplied status or body policy.
+  when:
+    - platform_external_probe_target_profile_name | length > 0
+    - platform_external_probe_target_profile | length > 0
