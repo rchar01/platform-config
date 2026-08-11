@@ -40,6 +40,16 @@ declare -A LOKI_CLUSTER_CONTAINERS=()
 declare -A LOKI_CLUSTER_DATA_DIRS=()
 declare -A LOKI_CLUSTER_ENDPOINTS=()
 LOKI_CLUSTER_IPS=()
+MIMIR_CLUSTER_MEMBERS=(mimir-cluster-1 mimir-cluster-2 mimir-cluster-3)
+MIMIR_CLUSTER_NAMES_JSON='["mimir-cluster-1","mimir-cluster-2","mimir-cluster-3"]'
+LAST_MIMIR_CLUSTER_STATE=
+LAST_MIMIR_QUERY_RESPONSE=
+declare -A MIMIR_CLUSTER_CONTAINERS=()
+declare -A MIMIR_CLUSTER_DATA_DIRS=()
+declare -A MIMIR_CLUSTER_ENDPOINTS=()
+declare -A MIMIR_ACCESS_KEYS=()
+declare -A MIMIR_SECRET_KEYS=()
+MIMIR_CLUSTER_IPS=()
 
 fail() {
   printf '%s\n' "$1" >&2
@@ -315,9 +325,11 @@ timeout "$OPERATION_TIMEOUT" podman network create \
 [[ "$(timeout "$OPERATION_TIMEOUT" \
   podman network inspect --format '{{.Internal}}' "$NETWORK")" == false ]] \
   || fail 'Disposable Garage bridge network has an unexpected mode'
-if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
+if [[ "$TEST_LOKI_CLUSTER" == true || "$TEST_MIMIR" == true ]]; then
   network_subnet="$(timeout "$OPERATION_TIMEOUT" \
     podman network inspect --format '{{(index .Subnets 0).Subnet}}' "$NETWORK")"
+fi
+if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
   mapfile -t LOKI_CLUSTER_IPS < <(python3 - "$network_subnet" <<'PY'
 import ipaddress
 import sys
@@ -331,6 +343,21 @@ PY
   )
   [[ "${#LOKI_CLUSTER_IPS[@]}" == 3 ]] \
     || fail 'Could not derive three stable Loki addresses from the disposable network'
+fi
+if [[ "$TEST_MIMIR" == true ]]; then
+  mapfile -t MIMIR_CLUSTER_IPS < <(python3 - "$network_subnet" <<'PY'
+import ipaddress
+import sys
+
+network = ipaddress.ip_network(sys.argv[1])
+if network.num_addresses < 12:
+    raise SystemExit("disposable Podman subnet is too small for stable Mimir addresses")
+for offset in (7, 6, 5):
+    print(network[-offset])
+PY
+  )
+  [[ "${#MIMIR_CLUSTER_IPS[@]}" == 3 ]] \
+    || fail 'Could not derive three stable Mimir addresses from the disposable network'
 fi
 
 LAST_STAGE='container creation'
@@ -479,18 +506,20 @@ if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
 fi
 if [[ "$TEST_MIMIR" == true ]]; then
   LAST_STAGE='Mimir access-key creation'
-  mimir_key_json="$(garage_cli garage-1 json-api CreateKey '{"name":"mimir-compat"}')"
-  mimir_access_key="$(jq -er '.accessKeyId' <<< "$mimir_key_json")"
-  mimir_secret_key="$(jq -er '.secretAccessKey' <<< "$mimir_key_json")"
-  [[ "$mimir_access_key" =~ ^GK[0-9a-f]{24}$ ]] \
-    || fail 'Garage returned an invalid Mimir access-key ID'
-  [[ -n "$mimir_secret_key" ]] || fail 'Garage returned an empty Mimir secret key'
-  for bucket in mimir-blocks mimir-ruler mimir-alertmanager; do
+  for purpose in blocks ruler alertmanager; do
+    bucket="mimir-${purpose}"
+    mimir_key_json="$(garage_cli garage-1 json-api CreateKey \
+      "$(jq -nc --arg name "$bucket" '{name: $name}')")"
+    MIMIR_ACCESS_KEYS[$purpose]="$(jq -er '.accessKeyId' <<< "$mimir_key_json")"
+    MIMIR_SECRET_KEYS[$purpose]="$(jq -er '.secretAccessKey' <<< "$mimir_key_json")"
+    [[ "${MIMIR_ACCESS_KEYS[$purpose]}" =~ ^GK[0-9a-f]{24}$ ]] \
+      || fail "Garage returned an invalid Mimir ${purpose} access-key ID"
+    [[ -n "${MIMIR_SECRET_KEYS[$purpose]}" ]] \
+      || fail "Garage returned an empty Mimir ${purpose} secret key"
     garage_cli garage-1 bucket allow \
-      --read --write --owner "$bucket" --key "$mimir_access_key" >/dev/null
+      --read --write --owner "$bucket" --key "${MIMIR_ACCESS_KEYS[$purpose]}" >/dev/null
+    wait_for_s3_metadata "${MIMIR_ACCESS_KEYS[$purpose]}" "$bucket"
   done
-  wait_for_s3_metadata "$mimir_access_key" \
-    mimir-blocks mimir-ruler mimir-alertmanager
 fi
 
 initial_body="${TEST_DIR}/initial-body"
@@ -1054,73 +1083,274 @@ fi
 
 if [[ "$TEST_MIMIR" == true ]]; then
   LAST_STAGE='Mimir credential isolation'
-  s3_request "${S3_ENDPOINTS[garage-1]}" "$access_key" "$secret_key" \
-    --method PUT --bucket mimir-blocks --key 'qualification-key-denied.txt' \
-    --body-file "$initial_body" --output "$response_body" --expect-status 403 >/dev/null
-  s3_request "${S3_ENDPOINTS[garage-2]}" "$mimir_access_key" "$mimir_secret_key" \
-    --method GET --bucket mimir-blocks --key 'qualification-key-denied.txt' \
-    --output "$response_body" --expect-status 404 >/dev/null
-  s3_request "${S3_ENDPOINTS[garage-1]}" "$mimir_access_key" "$mimir_secret_key" \
-    --method PUT --bucket qualification --key 'mimir-key-denied.txt' \
-    --body-file "$initial_body" --output "$response_body" --expect-status 403 >/dev/null
-  s3_request "${S3_ENDPOINTS[garage-2]}" "$access_key" "$secret_key" \
-    --method GET --bucket qualification --key 'mimir-key-denied.txt' \
-    --output "$response_body" --expect-status 404 >/dev/null
-
-  LAST_STAGE='Mimir monolith startup'
-  mimir_data="${TEST_DIR}/mimir-data"
-  mkdir -p "$mimir_data"
-  start_mimir() {
-    local name=$1
-    timeout "$OPERATION_TIMEOUT" podman run \
-      --detach --name "$name" --label "$LABEL" --platform linux/amd64 --pull never \
-      --network "$NETWORK" --network-alias mimir --read-only \
-      --userns=keep-id:uid=10001,gid=10001 --user 10001:10001 --cap-drop all \
-      --security-opt no-new-privileges \
-      --env MIMIR_S3_ACCESS_KEY_ID="$mimir_access_key" \
-      --env MIMIR_S3_SECRET_ACCESS_KEY="$mimir_secret_key" \
-      --volume "${MIMIR_CONFIG}:/etc/mimir/mimir.yaml:ro,Z" \
-      --volume "${MIMIR_FALLBACK}:/etc/mimir/alertmanager-fallback.yaml:ro,Z" \
-      --volume "${mimir_data}:/data:Z" \
-      --publish 127.0.0.1::8080 --entrypoint /bin/mimir "$MIMIR_IMAGE" \
-      -config.file=/etc/mimir/mimir.yaml -config.expand-env=true
-  }
-  mimir_name="${RUN_ID}-mimir"
-  mimir_id="$(start_mimir "$mimir_name")"
-  CREATED_CONTAINERS+=("$mimir_id")
-  mimir_host="$(timeout "$OPERATION_TIMEOUT" podman port "$mimir_id" 8080/tcp)"
-  mimir_endpoint="http://${mimir_host}"
-  mimir_deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
-  until curl -fsS --connect-timeout 2 --max-time 3 "${mimir_endpoint}/ready" >/dev/null 2>&1; do
-    ((SECONDS < mimir_deadline)) || fail 'Mimir monolith did not become ready'
-    sleep 1
+  for purpose in blocks ruler alertmanager; do
+    bucket="mimir-${purpose}"
+    denied_key="qualification-key-denied-in-${purpose}.txt"
+    s3_request "${S3_ENDPOINTS[garage-1]}" "$access_key" "$secret_key" \
+      --method PUT --bucket "$bucket" --key "$denied_key" \
+      --body-file "$initial_body" --output "$response_body" --expect-status 403 >/dev/null
+    s3_request "${S3_ENDPOINTS[garage-2]}" \
+      "${MIMIR_ACCESS_KEYS[$purpose]}" "${MIMIR_SECRET_KEYS[$purpose]}" \
+      --method GET --bucket "$bucket" --key "$denied_key" \
+      --output "$response_body" --expect-status 404 >/dev/null
+    s3_request "${S3_ENDPOINTS[garage-1]}" \
+      "${MIMIR_ACCESS_KEYS[$purpose]}" "${MIMIR_SECRET_KEYS[$purpose]}" \
+      --method PUT --bucket qualification --key "mimir-${purpose}-key-denied.txt" \
+      --body-file "$initial_body" --output "$response_body" --expect-status 403 >/dev/null
+    s3_request "${S3_ENDPOINTS[garage-2]}" "$access_key" "$secret_key" \
+      --method GET --bucket qualification --key "mimir-${purpose}-key-denied.txt" \
+      --output "$response_body" --expect-status 404 >/dev/null
+  done
+  for source_purpose in blocks ruler alertmanager; do
+    for target_purpose in blocks ruler alertmanager; do
+      [[ "$source_purpose" != "$target_purpose" ]] || continue
+      denied_key="mimir-${source_purpose}-key-denied-in-${target_purpose}.txt"
+      s3_request "${S3_ENDPOINTS[garage-1]}" \
+        "${MIMIR_ACCESS_KEYS[$source_purpose]}" \
+        "${MIMIR_SECRET_KEYS[$source_purpose]}" \
+        --method PUT --bucket "mimir-${target_purpose}" --key "$denied_key" \
+        --body-file "$initial_body" --output "$response_body" --expect-status 403 >/dev/null
+      s3_request "${S3_ENDPOINTS[garage-2]}" \
+        "${MIMIR_ACCESS_KEYS[$target_purpose]}" \
+        "${MIMIR_SECRET_KEYS[$target_purpose]}" \
+        --method GET --bucket "mimir-${target_purpose}" --key "$denied_key" \
+        --output "$response_body" --expect-status 404 >/dev/null
+    done
   done
 
-  LAST_STAGE='Mimir remote write and immediate query'
+  mimir_cluster_metric_is() {
+    local metrics=$1
+    local name=$2
+    local state=$3
+    local value=$4
+
+    grep -Eq "^cortex_ring_members\\{name=\"${name}\",state=\"${state}\"\\} ${value}([.]0+)?$" \
+      <<< "$metrics"
+  }
+
+  wait_for_mimir_cluster() {
+    local deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
+    local member
+    local memberlist_status
+    local metrics
+    local ring
+    local all_converged
+
+    while ((SECONDS < deadline)); do
+      all_converged=true
+      for member in "${MIMIR_CLUSTER_MEMBERS[@]}"; do
+        if ! curl -fsS --connect-timeout 2 --max-time 3 \
+          "${MIMIR_CLUSTER_ENDPOINTS[$member]}/ready" >/dev/null 2>&1; then
+          LAST_MIMIR_CLUSTER_STATE="${member}: not ready"
+          all_converged=false
+          break
+        fi
+        if ! memberlist_status="$(curl -fsS --connect-timeout 2 --max-time 5 \
+          -H 'Accept: application/json' \
+          "${MIMIR_CLUSTER_ENDPOINTS[$member]}/memberlist" 2>/dev/null)" \
+          || ! jq -e --argjson expected "$MIMIR_CLUSTER_NAMES_JSON" \
+            '[.SortedMembers[].Name] | sort == ($expected | sort)' \
+            <<< "$memberlist_status" >/dev/null 2>&1; then
+          LAST_MIMIR_CLUSTER_STATE="${member}: memberlist=${memberlist_status:-no response}"
+          all_converged=false
+          break
+        fi
+        metrics="$(curl -fsS --connect-timeout 2 --max-time 5 \
+          "${MIMIR_CLUSTER_ENDPOINTS[$member]}/metrics" 2>/dev/null || true)"
+        for ring in ingester distributor store-gateway ruler compactor alertmanager; do
+          if ! mimir_cluster_metric_is "$metrics" "$ring" ACTIVE 3; then
+            LAST_MIMIR_CLUSTER_STATE="${member}: $(grep -E \
+              '^cortex_ring_members' <<< "$metrics" || true)"
+            all_converged=false
+            break 2
+          fi
+        done
+      done
+      if [[ "$all_converged" == true ]]; then
+        LAST_MIMIR_CLUSTER_STATE=
+        return 0
+      fi
+      sleep 1
+    done
+    return 1
+  }
+
+  wait_for_mimir_loss() {
+    local deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
+    local member
+    local metrics
+    local loss_visible
+
+    while ((SECONDS < deadline)); do
+      loss_visible=true
+      for member in mimir-cluster-1 mimir-cluster-2; do
+        metrics="$(curl -fsS --connect-timeout 2 --max-time 5 \
+          "${MIMIR_CLUSTER_ENDPOINTS[$member]}/metrics" 2>/dev/null || true)"
+        if ! mimir_cluster_metric_is "$metrics" ingester ACTIVE 2 \
+          || ! mimir_cluster_metric_is "$metrics" ingester Unhealthy 1; then
+          loss_visible=false
+          break
+        fi
+      done
+      [[ "$loss_visible" == true ]] && return 0
+      sleep 1
+    done
+    return 1
+  }
+
+  wait_for_mimir_query() {
+    local endpoint=$1
+    local start=$2
+    local end=$3
+    shift 3
+    local deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
+    local response
+    local value
+    local all_found
+
+    while ((SECONDS < deadline)); do
+      response="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+        --data-urlencode "query=${query_expression}" \
+        --data-urlencode "start=${start}" \
+        --data-urlencode "end=${end}" \
+        --data-urlencode 'step=1' \
+        "${endpoint}/prometheus/api/v1/query_range" 2>/dev/null || true)"
+      LAST_MIMIR_QUERY_RESPONSE="$response"
+      all_found=true
+      for value in "$@"; do
+        if ! jq -e --arg value "$value" '
+          .status == "success" and any(.data.result[].values[]; .[1] == $value)
+        ' <<< "$response" >/dev/null 2>&1; then
+          all_found=false
+          break
+        fi
+      done
+      [[ "$all_found" == true ]] && return 0
+      sleep 2
+    done
+    return 1
+  }
+
+  wait_for_mimir_alert() {
+    local endpoint=$1
+    local deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
+    local response
+
+    while ((SECONDS < deadline)); do
+      response="$(curl -fsS --connect-timeout 2 --max-time 10 \
+        "${endpoint}/alertmanager/api/v2/alerts" 2>/dev/null || true)"
+      if jq -e --arg case "$metric_case" '
+        any(.[]; .labels.alertname == "GarageCompatAlert" and .labels.case == $case)
+      ' <<< "$response" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 2
+    done
+    return 1
+  }
+
+  wait_for_mimir_silence() {
+    local endpoint=$1
+    local silence_id=$2
+    local deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
+
+    while ((SECONDS < deadline)); do
+      if curl -fsS --connect-timeout 2 --max-time 10 \
+        "${endpoint}/alertmanager/api/v2/silence/${silence_id}" 2>/dev/null \
+        | jq -e --arg id "$silence_id" '.id == $id and .status.state == "active"' \
+          >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 2
+    done
+    return 1
+  }
+
+  LAST_STAGE='three-node Mimir startup'
+  for index in 1 2 3; do
+    member="mimir-cluster-${index}"
+    data_dir="${TEST_DIR}/${member}-data"
+    container_name="${RUN_ID}-${member}"
+    mkdir -p "$data_dir"
+    MIMIR_CLUSTER_DATA_DIRS[$member]="$data_dir"
+    MIMIR_CLUSTER_CONTAINERS[$member]="$container_name"
+    container_id="$(timeout "$OPERATION_TIMEOUT" podman run \
+      --detach --name "$container_name" --hostname "$member" --label "$LABEL" \
+      --platform linux/amd64 --pull never --network "$NETWORK" \
+      --network-alias "$member" --ip "${MIMIR_CLUSTER_IPS[$((index - 1))]}" \
+      --read-only --userns=keep-id:uid=10001,gid=10001 --user 10001:10001 \
+      --cap-drop all --security-opt no-new-privileges \
+      --env MIMIR_NODE_NAME="$member" \
+      --env MIMIR_NODE_IP="${MIMIR_CLUSTER_IPS[$((index - 1))]}" \
+      --env MIMIR_ZONE="zone-${index}" \
+      --env MIMIR_BLOCKS_S3_ACCESS_KEY_ID="${MIMIR_ACCESS_KEYS[blocks]}" \
+      --env MIMIR_BLOCKS_S3_SECRET_ACCESS_KEY="${MIMIR_SECRET_KEYS[blocks]}" \
+      --env MIMIR_RULER_S3_ACCESS_KEY_ID="${MIMIR_ACCESS_KEYS[ruler]}" \
+      --env MIMIR_RULER_S3_SECRET_ACCESS_KEY="${MIMIR_SECRET_KEYS[ruler]}" \
+      --env MIMIR_ALERTMANAGER_S3_ACCESS_KEY_ID="${MIMIR_ACCESS_KEYS[alertmanager]}" \
+      --env MIMIR_ALERTMANAGER_S3_SECRET_ACCESS_KEY="${MIMIR_SECRET_KEYS[alertmanager]}" \
+      --volume "${MIMIR_CONFIG}:/etc/mimir/mimir.yaml:ro,z" \
+      --volume "${MIMIR_FALLBACK}:/etc/mimir/alertmanager-fallback.yaml:ro,z" \
+      --volume "${data_dir}:/data:Z" --publish 127.0.0.1::8080 \
+      --entrypoint /bin/mimir "$MIMIR_IMAGE" \
+      -config.file=/etc/mimir/mimir.yaml -config.expand-env=true)"
+    CREATED_CONTAINERS+=("$container_id")
+    inspect="$(timeout "$OPERATION_TIMEOUT" podman inspect "$container_id")"
+    jq -e --arg hostname "$member" '
+      .[0].Config.User == "10001:10001"
+      and .[0].Config.Hostname == $hostname
+      and .[0].HostConfig.ReadonlyRootfs == true
+      and ((.[0].HostConfig.CapAdd // []) | length == 0)
+      and ((.[0].HostConfig.SecurityOpt // [])
+        | any(startswith("no-new-privileges")))
+    ' <<< "$inspect" >/dev/null \
+      || fail "Mimir member ${member} does not have the required container hardening"
+    mimir_host="$(timeout "$OPERATION_TIMEOUT" podman port "$container_id" 8080/tcp)"
+    [[ "$mimir_host" =~ ^127[.]0[.]0[.]1:[0-9]+$ ]] \
+      || fail "Mimir member ${member} has an unsafe HTTP host endpoint: ${mimir_host}"
+    MIMIR_CLUSTER_ENDPOINTS[$member]="http://${mimir_host}"
+  done
+  [[ "$(printf '%s\n' "${MIMIR_CLUSTER_DATA_DIRS[@]}" | sort -u | wc -l)" == 3 ]] \
+    || fail 'Mimir members do not have three distinct local-state directories'
+
+  LAST_STAGE='initial Mimir memberlist and ring convergence'
+  wait_for_mimir_cluster \
+    || fail "Mimir cluster did not converge: ${LAST_MIMIR_CLUSTER_STATE}"
+  LAST_STAGE='Mimir runtime identity'
+  for member in "${MIMIR_CLUSTER_MEMBERS[@]}"; do
+    build_info="$(curl -fsS --connect-timeout 2 --max-time 5 \
+      "${MIMIR_CLUSTER_ENDPOINTS[$member]}/api/v1/status/buildinfo")"
+    jq -e --arg version "$MIMIR_VERSION" \
+      '.status == "success" and .data.version == $version' \
+      <<< "$build_info" >/dev/null \
+      || fail "Mimir member ${member} runtime version mismatch: ${build_info}"
+  done
+
+  LAST_STAGE='cross-node Mimir remote write and query'
   metric="garage_mimir_compat_value"
   metric_case="case-$RANDOM-$RANDOM"
+  query_expression="${metric}{case=\"${metric_case}\"}"
   metric_value=42.5
   metric_timestamp_ms="$(date +%s%3N)"
   metric_start=$((metric_timestamp_ms / 1000 - 60))
   metric_end=$((metric_timestamp_ms / 1000 + 60))
-  python3 "$REMOTE_WRITE_CLIENT" --url "${mimir_endpoint}/api/v1/push" \
+  python3 "$REMOTE_WRITE_CLIENT" \
+    --url "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/api/v1/push" \
     --metric "$metric" --case "$metric_case" --timestamp-ms "$metric_timestamp_ms" \
     --value "$metric_value"
-  query_expression="${metric}{case=\"${metric_case}\"}"
-  mimir_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
-    --data-urlencode "query=${query_expression}" \
-    "${mimir_endpoint}/prometheus/api/v1/query")"
-  jq -e --arg value "$metric_value" '
-    .status == "success" and any(.data.result[]; .value[1] == $value)
-  ' <<< "$mimir_query" >/dev/null || fail 'Mimir immediate query omitted the remote-write canary'
+  wait_for_mimir_query "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
+    "$metric_start" "$metric_end" "$metric_value" \
+    || fail 'Cross-node Mimir query omitted the initial remote-write canary'
 
+  LAST_STAGE='Mimir ruler and integrated Alertmanager replication'
   rule_file="${TEST_DIR}/mimir-rule.yaml"
   alert_file="${TEST_DIR}/mimir-alertmanager.yaml"
   cat > "$rule_file" <<EOF
 name: garage-compat
+interval: 2s
 rules:
   - alert: GarageCompatAlert
-    expr: ${metric} > 0
+    expr: ${query_expression} > 0
 EOF
   cat > "$alert_file" <<'EOF'
 alertmanager_config: |
@@ -1131,78 +1361,158 @@ alertmanager_config: |
 EOF
   curl -fsS --connect-timeout 2 --max-time 15 -X POST \
     -H 'Content-Type: application/yaml' --data-binary "@${rule_file}" \
-    "${mimir_endpoint}/prometheus/config/v1/rules/garage-compat" >/dev/null
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/prometheus/config/v1/rules/garage-compat" \
+    >/dev/null
   curl -fsS --connect-timeout 2 --max-time 15 -X POST \
     -H 'Content-Type: application/yaml' --data-binary "@${alert_file}" \
-    "${mimir_endpoint}/api/v1/alerts" >/dev/null
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/api/v1/alerts" >/dev/null
   curl -fsS --connect-timeout 2 --max-time 10 \
-    "${mimir_endpoint}/prometheus/config/v1/rules/garage-compat/garage-compat" \
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}/prometheus/config/v1/rules/garage-compat/garage-compat" \
     | grep -Fq 'GarageCompatAlert'
-  curl -fsS --connect-timeout 2 --max-time 10 "${mimir_endpoint}/api/v1/alerts" \
+  curl -fsS --connect-timeout 2 --max-time 10 \
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-3]}/api/v1/alerts" \
     | grep -Fq 'receiver: garage-persisted'
+  wait_for_mimir_alert "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
+    || fail 'Integrated Alertmanager did not receive the ruler canary alert'
+
+  silence_starts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  silence_ends="$(date -u -d '+1 hour' +'%Y-%m-%dT%H:%M:%SZ')"
+  silence_payload="$(jq -nc --arg case "$metric_case" --arg starts "$silence_starts" \
+    --arg ends "$silence_ends" '
+      {matchers: [{name: "case", value: $case, isRegex: false}],
+       startsAt: $starts, endsAt: $ends, createdBy: "garage-compat",
+       comment: "Garage compatibility silence"}
+    ')"
+  silence_response="$(curl -fsS --connect-timeout 2 --max-time 15 -X POST \
+    -H 'Content-Type: application/json' --data-binary "$silence_payload" \
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/alertmanager/api/v2/silences")"
+  silence_id="$(jq -er '.silenceID' <<< "$silence_response")"
+  wait_for_mimir_silence "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" "$silence_id" \
+    || fail 'Integrated Alertmanager did not replicate the qualification silence'
+
+  mimir_stopped_data="${MIMIR_CLUSTER_DATA_DIRS[mimir-cluster-3]}"
+  for token_file in ingester.tokens store-gateway.tokens; do
+    [[ -s "${mimir_stopped_data}/${token_file}" ]] \
+      || fail "Mimir member 3 did not persist ${token_file}"
+  done
+  mimir_token_snapshot="$(sha256sum \
+    "${mimir_stopped_data}/ingester.tokens" \
+    "${mimir_stopped_data}/store-gateway.tokens")"
+  mimir_stopped_id="$(timeout "$OPERATION_TIMEOUT" podman inspect --format '{{.Id}}' \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}")"
+
+  LAST_STAGE='one-node Mimir loss detection'
+  timeout "$OPERATION_TIMEOUT" podman stop --time 0 \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}" >/dev/null
+  wait_for_mimir_loss || fail 'Surviving Mimir members did not mark member 3 unhealthy'
+
+  LAST_STAGE='one-node-loss Mimir write and query'
+  loss_metric_value=84.5
+  loss_metric_timestamp_ms="$(date +%s%3N)"
+  metric_end=$((loss_metric_timestamp_ms / 1000 + 60))
+  python3 "$REMOTE_WRITE_CLIENT" \
+    --url "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/api/v1/push" \
+    --metric "$metric" --case "$metric_case" --timestamp-ms "$loss_metric_timestamp_ms" \
+    --value "$loss_metric_value"
+  wait_for_mimir_query "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
+    "$metric_start" "$metric_end" "$metric_value" "$loss_metric_value" \
+    || fail 'Surviving Mimir query omitted a canary after one-node loss'
+  wait_for_mimir_silence "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" "$silence_id" \
+    || fail 'Surviving Alertmanager omitted the qualification silence'
+
+  LAST_STAGE='same-node Mimir restart and ring convergence'
+  timeout "$OPERATION_TIMEOUT" podman start \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}" >/dev/null
+  [[ "$(timeout "$OPERATION_TIMEOUT" podman inspect --format '{{.Id}}' \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}")" == "$mimir_stopped_id" ]] \
+    || fail 'Mimir member 3 was replaced instead of restarted'
+  wait_for_mimir_cluster \
+    || fail "Restarted Mimir member did not rejoin all rings: ${LAST_MIMIR_CLUSTER_STATE}"
+  [[ "$(sha256sum \
+    "${mimir_stopped_data}/ingester.tokens" \
+    "${mimir_stopped_data}/store-gateway.tokens")" == "$mimir_token_snapshot" ]] \
+    || fail 'Restarted Mimir member did not retain its persisted ring tokens'
+  wait_for_mimir_query "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-3]}" \
+    "$metric_start" "$metric_end" "$metric_value" "$loss_metric_value" \
+    || fail 'Restarted Mimir member query omitted a qualification canary'
+  wait_for_mimir_silence "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-3]}" "$silence_id" \
+    || fail 'Restarted Alertmanager omitted the qualification silence'
 
   LAST_STAGE='Mimir TSDB block upload'
   mimir_deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
-  mimir_blocks=false
+  mimir_later_block=false
   while ((SECONDS < mimir_deadline)); do
-    s3_request "${S3_ENDPOINTS[garage-1]}" "$mimir_access_key" "$mimir_secret_key" \
+    s3_request "${S3_ENDPOINTS[garage-1]}" \
+      "${MIMIR_ACCESS_KEYS[blocks]}" "${MIMIR_SECRET_KEYS[blocks]}" \
       --method GET --bucket mimir-blocks --query 'list-type=2' \
       --output "$response_body" --expect-status 200 >/dev/null
+    mimir_block_listing="$(<"$response_body")"
     mapfile -t mimir_meta_keys < <(
-      grep -Eo 'garage-compat/[0-9A-Z]{26}/meta[.]json' "$response_body" || true
+      grep -Eo 'garage-compat/[0-9A-Z]{26}/meta[.]json' <<< "$mimir_block_listing" \
+        || true
     )
     for mimir_meta_key in "${mimir_meta_keys[@]}"; do
       mimir_block_id="${mimir_meta_key#garage-compat/}"
       mimir_block_id="${mimir_block_id%/meta.json}"
-      if grep -Fq "<Key>garage-compat/${mimir_block_id}/index</Key>" "$response_body" \
+      if grep -Fq \
+          "<Key>garage-compat/${mimir_block_id}/index</Key>" <<< "$mimir_block_listing" \
         && grep -Eq \
-          "<Key>garage-compat/${mimir_block_id}/chunks/[^<]+</Key>" "$response_body"; then
-        mimir_blocks=true
-        break 2
+          "<Key>garage-compat/${mimir_block_id}/chunks/[^<]+</Key>" \
+          <<< "$mimir_block_listing"; then
+        s3_request "${S3_ENDPOINTS[garage-1]}" \
+          "${MIMIR_ACCESS_KEYS[blocks]}" "${MIMIR_SECRET_KEYS[blocks]}" \
+          --method GET --bucket mimir-blocks --key "$mimir_meta_key" \
+          --output "$response_body" --expect-status 200 >/dev/null
+        # Prometheus block maxTime is exclusive; this tenant has no later writes.
+        if jq -e --argjson timestamp "$loss_metric_timestamp_ms" '
+          .minTime <= $timestamp
+          and .maxTime == ($timestamp + 1)
+          and .stats.numSeries == 1
+          and .stats.numSamples > 0
+        ' "$response_body" >/dev/null; then
+          mimir_later_block=true
+          break 2
+        fi
       fi
     done
     sleep 2
   done
-  [[ "$mimir_blocks" == true ]] || fail 'Mimir produced no complete Garage TSDB block'
+  [[ "$mimir_later_block" == true ]] \
+    || fail 'Mimir produced no complete Garage TSDB block ending at the node-loss canary'
 
-  LAST_STAGE='Mimir fresh-local-state recovery'
-  timeout 40 podman stop --time 30 "$mimir_name" >/dev/null
-  timeout "$OPERATION_TIMEOUT" podman rm "$mimir_name" >/dev/null
-  rm -rf -- "$mimir_data"
-  mkdir -p "$mimir_data"
-  mimir_fresh_name="${RUN_ID}-mimir-fresh"
-  mimir_fresh_id="$(start_mimir "$mimir_fresh_name")"
-  CREATED_CONTAINERS+=("$mimir_fresh_id")
-  mimir_fresh_host="$(timeout "$OPERATION_TIMEOUT" podman port "$mimir_fresh_id" 8080/tcp)"
-  mimir_fresh_endpoint="http://${mimir_fresh_host}"
-  mimir_deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
-  until curl -fsS --connect-timeout 2 --max-time 3 "${mimir_fresh_endpoint}/ready" >/dev/null 2>&1; do
-    ((SECONDS < mimir_deadline)) || fail 'Fresh-local-state Mimir did not become ready'
-    sleep 1
+  LAST_STAGE='empty-local-state Mimir cluster restart'
+  timeout 60 podman stop --time 30 \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-1]}" \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-2]}" \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}" >/dev/null
+  for member in "${MIMIR_CLUSTER_MEMBERS[@]}"; do
+    find "${MIMIR_CLUSTER_DATA_DIRS[$member]}" -mindepth 1 -delete
   done
-  persisted=false
-  while ((SECONDS < mimir_deadline)); do
-    mimir_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
-      --data-urlencode "query=${query_expression}" \
-      --data-urlencode "start=${metric_start}" \
-      --data-urlencode "end=${metric_end}" \
-      --data-urlencode 'step=1' \
-      "${mimir_fresh_endpoint}/prometheus/api/v1/query_range" 2>/dev/null || true)"
-    if jq -e --arg value "$metric_value" '
-      .status == "success" and any(.data.result[].values[]; .[1] == $value)
-    ' <<< "$mimir_query" >/dev/null 2>&1; then
-      persisted=true
-      break
-    fi
-    sleep 2
-  done
-  [[ "$persisted" == true ]] || fail 'Fresh-local-state Mimir did not query the Garage block'
+  timeout "$OPERATION_TIMEOUT" podman start \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-1]}" \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-2]}" \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}" >/dev/null
+  wait_for_mimir_cluster \
+    || fail "Empty-local-state Mimir cluster did not converge: ${LAST_MIMIR_CLUSTER_STATE}"
+  wait_for_mimir_query "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
+    "$metric_start" "$metric_end" "$metric_value" "$loss_metric_value" \
+    || fail "Empty-local-state Mimir cluster did not query both Garage-backed canaries: ${LAST_MIMIR_QUERY_RESPONSE:-no response}"
   curl -fsS --connect-timeout 2 --max-time 10 \
-    "${mimir_fresh_endpoint}/prometheus/config/v1/rules/garage-compat/garage-compat" \
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-3]}/prometheus/config/v1/rules/garage-compat/garage-compat" \
     | grep -Fq 'GarageCompatAlert'
-  curl -fsS --connect-timeout 2 --max-time 10 "${mimir_fresh_endpoint}/api/v1/alerts" \
+  curl -fsS --connect-timeout 2 --max-time 10 \
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}/api/v1/alerts" \
     | grep -Fq 'receiver: garage-persisted'
-  timeout 40 podman stop --time 30 "$mimir_fresh_name" >/dev/null
+  wait_for_mimir_silence "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}" "$silence_id" \
+    || fail 'Empty-local-state Alertmanager did not recover the Garage-backed silence'
+  wait_for_mimir_alert "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
+    || fail 'Empty-local-state ruler did not restore the canary alert'
+
+  LAST_STAGE='three-node Mimir shutdown'
+  timeout 60 podman stop --time 30 \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-1]}" \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-2]}" \
+    "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-3]}" >/dev/null
 fi
 
 LAST_STAGE='one-node-loss continuity'
