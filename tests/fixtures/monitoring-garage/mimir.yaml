@@ -75,6 +75,7 @@ compactor:
   data_dir: /data/compactor
   compaction_interval: 2s
   cleanup_interval: 2s
+  deletion_delay: 15s
   first_level_compaction_wait_period: 0s
   sharding_ring:
     kvstore:
@@ -160,4 +161,5 @@ alertmanager_storage:
     bucket_lookup_type: path
 
 limits:
+  compactor_blocks_retention_period: 10m
   compactor_tenant_shard_size: 1

@@ -151,14 +151,17 @@ unhealthy, a second write must succeed and both canaries must remain queryable
 through the other survivor. Restarting the same
 container must preserve its token hashes, rejoin without a manual memberlist
 operation, restore all readiness and ring evidence, and query both canaries.
-After flushing, the lane restarts all three members with empty local state and
-requires both canaries to remain queryable from Garage-backed storage. Its
-disabled tenancy, plaintext internal S3, short failure-detection timing, local
-ruler storage, and isolated bridge are harness-only settings, not deployment
-defaults. The leader metric proves election state, not that compaction ran; the
-lane does not exercise or prove compaction, retention, TLS or authentication,
-partitions, replacement, capacity, backup/restore, disk-full, or corruption
-behavior.
+The fixture uses separate expired and retained streams, a 24-hour retention
+period, and short compactor, deletion, and index-resynchronization intervals. It
+requires a compactor-produced TSDB index, successful compaction, retention-marker
+and sweeper metrics, and a reduced Garage chunk count while both current
+canaries remain queryable. The lane then restarts all three members with empty
+local state and requires both retained canaries to recover from Garage while the
+expired canary remains absent. Disabled tenancy, plaintext internal S3, short
+failure-detection and lifecycle timing, local ruler storage, and the isolated
+bridge are harness-only settings, not deployment defaults. The lane does not
+prove production retention periods, TLS or authentication, partitions,
+replacement, capacity, backup/restore, disk-full, or corruption behavior.
 
 `make test-monitoring-garage-mimir` extends the RF=3 lane with three hardened
 Mimir `3.1.4` `target=all` containers using stable memberlist identities,
@@ -171,13 +174,21 @@ rings, and query both canaries after restart. The lane also requires ruler alert
 delivery, replicated mutable Alertmanager silence state, complete TSDB block
 objects covering the node-loss write, and recovery of both canaries, ruler and
 Alertmanager configuration, the silence, and the alert after all three local
-state directories are erased. Separate least-privilege Garage credentials and
-buckets isolate blocks, ruler, and Alertmanager storage and all cross-bucket
-writes must remain denied and absent. Disabled tenancy, short synchronization
-and failure-detection intervals, and plaintext S3 on an invocation-local bridge
-are harness-only settings, not deployment defaults. The lane does not prove
-compaction, retention, concurrent-writer conditional semantics, partitions,
-replacement, capacity, backup/restore, disk-full, or corruption behavior.
+state directories are erased. A separate canary initially nine minutes old must
+first produce a complete block under a fixture-only 10-minute retention policy.
+The lane requires a successful multi-block compaction event, a retention mark
+whose block and `maxTime` match that canary, a positive block-cleaner metric, an
+exact-ULID physical deletion event, and absence of both the block-local and
+global-marker Garage objects. Current samples must remain queryable, and the
+fresh-state restart must recover them without recovering the expired sample.
+Separate least-privilege Garage credentials and buckets isolate blocks, ruler,
+and Alertmanager storage and all cross-bucket writes must remain denied and
+absent. Disabled tenancy, short synchronization, deletion, retention, and
+failure-detection intervals, and plaintext S3 on an invocation-local bridge are
+harness-only settings, not deployment defaults. The lane does not prove
+production retention periods, concurrent-writer conditional semantics,
+partitions, replacement, capacity, backup/restore, disk-full, or corruption
+behavior.
 
 `make test-openbao-haproxy-rocky` installs the approved exact HAProxy `3.0`
 package in a disposable Rocky systemd container. It verifies check mode, exact

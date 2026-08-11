@@ -19,9 +19,11 @@ READY_TIMEOUT="${MONITORING_GARAGE_READY_TIMEOUT:-120}"
 PULL_TIMEOUT="${MONITORING_GARAGE_PULL_TIMEOUT:-300}"
 TEST_LOKI="${MONITORING_GARAGE_TEST_LOKI:-false}"
 LOKI_READY_TIMEOUT="${MONITORING_GARAGE_LOKI_READY_TIMEOUT:-${READY_TIMEOUT}}"
+LOKI_LIFECYCLE_TIMEOUT="${MONITORING_GARAGE_LOKI_LIFECYCLE_TIMEOUT:-360}"
 TEST_LOKI_CLUSTER="${MONITORING_GARAGE_TEST_LOKI_CLUSTER:-false}"
 TEST_MIMIR="${MONITORING_GARAGE_TEST_MIMIR:-false}"
 MIMIR_READY_TIMEOUT="${MONITORING_GARAGE_MIMIR_READY_TIMEOUT:-240}"
+MIMIR_LIFECYCLE_TIMEOUT="${MONITORING_GARAGE_MIMIR_LIFECYCLE_TIMEOUT:-360}"
 MEMBERS=(garage-1 garage-2 garage-3)
 CREATED_CONTAINERS=()
 LAST_HEALTH=
@@ -119,7 +121,8 @@ done
 [[ "$TEST_MIMIR" == true || "$TEST_MIMIR" == false ]] \
   || fail 'MONITORING_GARAGE_TEST_MIMIR must be true or false'
 for timeout_name in OPERATION_TIMEOUT READY_TIMEOUT PULL_TIMEOUT \
-  LOKI_READY_TIMEOUT MIMIR_READY_TIMEOUT; do
+  LOKI_READY_TIMEOUT LOKI_LIFECYCLE_TIMEOUT MIMIR_READY_TIMEOUT \
+  MIMIR_LIFECYCLE_TIMEOUT; do
   [[ "${!timeout_name}" =~ ^[1-9][0-9]*$ ]] \
     || fail "${timeout_name} must be a positive integer"
 done
@@ -840,11 +843,13 @@ if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
     local endpoint=$1
     local timestamp=$2
     local token=$3
+    local lifecycle=${4:-retained}
     local payload
 
     payload="$(jq -nc --arg timestamp "$timestamp" --arg token "$token" \
-      --arg qualification "$loki_cluster_case" '
-      {streams: [{stream: {app: "garage-loki-cluster", qualification: $qualification},
+      --arg qualification "$loki_cluster_case" --arg lifecycle "$lifecycle" '
+      {streams: [{stream: {app: "garage-loki-cluster", qualification: $qualification,
+        lifecycle: $lifecycle},
         values: [[$timestamp, $token]]}]}
     ')"
     curl -fsS --connect-timeout 2 --max-time 10 \
@@ -886,6 +891,15 @@ if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
       sleep 1
     done
     return 1
+  }
+
+  loki_metric_positive() {
+    local metrics=$1
+    local name=$2
+    local labels=${3:-}
+
+    grep -Eq "^${name}(\\{[^}]*${labels}[^}]*\\})? [1-9][0-9]*([.]0+)?$" \
+      <<< "$metrics"
   }
 
   LAST_STAGE='Loki cluster credential isolation'
@@ -976,6 +990,20 @@ if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
 
   LAST_STAGE='cross-node Loki push and query'
   loki_cluster_case="case-$RANDOM-$RANDOM"
+  loki_cluster_expired_token="garage-loki-cluster-expired-$RANDOM-$RANDOM"
+  loki_cluster_expired_timestamp="$(date -d '-23 hours -59 minutes' +%s%N)"
+  loki_cluster_expired_start=$((loki_cluster_expired_timestamp - 60000000000))
+  loki_cluster_expired_end=$((loki_cluster_expired_timestamp + 60000000000))
+  loki_cluster_push "${LOKI_CLUSTER_ENDPOINTS[loki-cluster-1]}" \
+    "$loki_cluster_expired_timestamp" "$loki_cluster_expired_token" expired
+  for member in "${LOKI_CLUSTER_MEMBERS[@]}"; do
+    curl -fsS --connect-timeout 2 --max-time 30 -X POST \
+      "${LOKI_CLUSTER_ENDPOINTS[$member]}/flush" >/dev/null
+  done
+  wait_for_loki_cluster_query "${LOKI_CLUSTER_ENDPOINTS[loki-cluster-2]}" \
+    "$loki_cluster_expired_start" "$loki_cluster_expired_end" \
+    "$loki_cluster_expired_token" \
+    || fail 'Cross-node Loki query omitted the pre-retention canary'
   loki_cluster_initial_token="garage-loki-cluster-initial-$RANDOM-$RANDOM"
   loki_cluster_initial_timestamp="$(date +%s%N)"
   loki_cluster_start=$((loki_cluster_initial_timestamp - 60000000000))
@@ -1054,6 +1082,102 @@ if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
   done
   [[ "$loki_cluster_objects" == true ]] \
     || fail 'Three-node Loki flush produced no objects in its dedicated Garage bucket'
+  loki_cluster_initial_chunk_count="$(
+    grep -Eo '<Key>fake/[^<]+</Key>' "$response_body" | wc -l || true
+  )"
+  ((loki_cluster_initial_chunk_count >= 2)) \
+    || fail "Loki flush produced too few chunks to qualify retention: ${loki_cluster_initial_chunk_count}"
+
+  LAST_STAGE='Loki compaction and retention'
+  loki_lifecycle_deadline=$((SECONDS + LOKI_LIFECYCLE_TIMEOUT))
+  loki_lifecycle_complete=false
+  loki_compacted_index=false
+  loki_compaction_succeeded=false
+  loki_retention_marked=false
+  loki_retention_swept=false
+  while ((SECONDS < loki_lifecycle_deadline)); do
+    s3_request "${S3_ENDPOINTS[garage-1]}" \
+      "$loki_cluster_access_key" "$loki_cluster_secret_key" \
+      --method GET --bucket loki-cluster --query 'list-type=2' \
+      --output "$response_body" --expect-status 200 >/dev/null
+    loki_cluster_listing="$(<"$response_body")"
+    loki_cluster_chunk_count="$(
+      grep -Eo '<Key>fake/[^<]+</Key>' <<< "$loki_cluster_listing" \
+        | wc -l || true
+    )"
+    loki_cluster_metrics=
+    for member in "${LOKI_CLUSTER_MEMBERS[@]}"; do
+      loki_cluster_metrics+="$(curl -fsS --connect-timeout 2 --max-time 5 \
+        "${LOKI_CLUSTER_ENDPOINTS[$member]}/metrics" 2>/dev/null || true)"$'\n'
+    done
+    loki_expired_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+      --data-urlencode \
+        "query={app=\"garage-loki-cluster\",qualification=\"${loki_cluster_case}\"}" \
+      --data-urlencode "start=${loki_cluster_expired_start}" \
+      --data-urlencode "end=${loki_cluster_expired_end}" \
+      --data-urlencode 'direction=forward' \
+      --data-urlencode 'limit=20' \
+      "${LOKI_CLUSTER_ENDPOINTS[loki-cluster-1]}/loki/api/v1/query_range" \
+      2>/dev/null || true)"
+    loki_current_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+      --data-urlencode \
+        "query={app=\"garage-loki-cluster\",qualification=\"${loki_cluster_case}\"}" \
+      --data-urlencode "start=${loki_cluster_start}" \
+      --data-urlencode "end=${loki_cluster_end}" \
+      --data-urlencode 'direction=forward' \
+      --data-urlencode 'limit=20' \
+      "${LOKI_CLUSTER_ENDPOINTS[loki-cluster-2]}/loki/api/v1/query_range" \
+      2>/dev/null || true)"
+    loki_chunks_deleted=false
+    loki_expired_absent=false
+    loki_current_present=false
+    grep -Eq \
+      '<Key>index/index_[0-9]+/fake/[^<]*-compactor-[^<]*[.]tsdb([.]gz)?</Key>' \
+      <<< "$loki_cluster_listing" && loki_compacted_index=true
+    loki_metric_positive "$loki_cluster_metrics" \
+      loki_boltdb_shipper_compact_tables_operation_total 'status="success"' \
+      && loki_compaction_succeeded=true
+    loki_metric_positive "$loki_cluster_metrics" \
+      loki_boltdb_shipper_retention_marker_count_total \
+      && loki_retention_marked=true
+    loki_metric_positive "$loki_cluster_metrics" \
+      loki_boltdb_shipper_retention_sweeper_marker_files_deleted_total \
+      && loki_retention_swept=true
+    ((loki_cluster_chunk_count < loki_cluster_initial_chunk_count)) \
+      && loki_chunks_deleted=true
+    jq -e --arg token "$loki_cluster_expired_token" '
+        .status == "success"
+        and all(.data.result[].values[]; .[1] != $token)
+      ' <<< "$loki_expired_query" >/dev/null 2>&1 \
+      && loki_expired_absent=true
+    jq -e --arg initial "$loki_cluster_initial_token" \
+      --arg loss "$loki_cluster_loss_token" '
+        .status == "success"
+        and any(.data.result[].values[]; .[1] == $initial)
+        and any(.data.result[].values[]; .[1] == $loss)
+      ' <<< "$loki_current_query" >/dev/null 2>&1 \
+      && loki_current_present=true
+    # Warm querier index state can retain an expired chunk reference after the
+    # sweeper deletes the object. Cold-state absence is required below.
+    if [[ "$loki_compacted_index" == true \
+        && "$loki_compaction_succeeded" == true \
+        && "$loki_retention_marked" == true \
+        && "$loki_retention_swept" == true \
+        && "$loki_chunks_deleted" == true \
+        && "$loki_current_present" == true ]]; then
+      loki_lifecycle_complete=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$loki_lifecycle_complete" != true ]]; then
+    printf '%s\n' \
+      "Loki lifecycle evidence: compacted_index=${loki_compacted_index}, compaction_succeeded=${loki_compaction_succeeded}, retention_marked=${loki_retention_marked}, retention_swept=${loki_retention_swept}, chunks=${loki_cluster_chunk_count}/${loki_cluster_initial_chunk_count}, expired_absent=${loki_expired_absent}, current_present=${loki_current_present}" \
+      >&2
+    grep -E '^loki_boltdb_shipper_(compact_tables_operation_total|retention_marker_count_total|retention_sweeper_marker_files_deleted_total)' \
+      <<< "$loki_cluster_metrics" >&2 || true
+    fail 'Loki did not compact its index and physically delete only the expired canary'
+  fi
 
   LAST_STAGE='empty-local-state Loki cluster restart'
   timeout 40 podman stop --time 10 \
@@ -1073,6 +1197,19 @@ if [[ "$TEST_LOKI_CLUSTER" == true ]]; then
     "$loki_cluster_start" "$loki_cluster_end" \
     "$loki_cluster_initial_token" "$loki_cluster_loss_token" \
     || fail 'Empty-local-state Loki cluster did not query both Garage-backed canaries'
+  loki_expired_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+    --data-urlencode \
+      "query={app=\"garage-loki-cluster\",qualification=\"${loki_cluster_case}\"}" \
+    --data-urlencode "start=${loki_cluster_expired_start}" \
+    --data-urlencode "end=${loki_cluster_expired_end}" \
+    --data-urlencode 'direction=forward' \
+    --data-urlencode 'limit=20' \
+    "${LOKI_CLUSTER_ENDPOINTS[loki-cluster-2]}/loki/api/v1/query_range")"
+  jq -e --arg token "$loki_cluster_expired_token" '
+    .status == "success"
+    and all(.data.result[].values[]; .[1] != $token)
+  ' <<< "$loki_expired_query" >/dev/null \
+    || fail 'Empty-local-state Loki cluster recovered the expired Garage canary'
 
   LAST_STAGE='three-node Loki shutdown'
   timeout 40 podman stop --time 10 \
@@ -1266,6 +1403,15 @@ if [[ "$TEST_MIMIR" == true ]]; then
     return 1
   }
 
+  mimir_metric_positive() {
+    local metrics=$1
+    local name=$2
+    local labels=${3:-}
+
+    grep -Eq "^${name}(\\{[^}]*${labels}[^}]*\\})? [1-9][0-9]*([.]0+)?$" \
+      <<< "$metrics"
+  }
+
   LAST_STAGE='three-node Mimir startup'
   for index in 1 2 3; do
     member="mimir-cluster-${index}"
@@ -1325,6 +1471,62 @@ if [[ "$TEST_MIMIR" == true ]]; then
       <<< "$build_info" >/dev/null \
       || fail "Mimir member ${member} runtime version mismatch: ${build_info}"
   done
+
+  LAST_STAGE='cross-node Mimir remote write and query'
+  mimir_expired_metric="garage_mimir_retention_value"
+  mimir_expired_case="expired-$RANDOM-$RANDOM"
+  mimir_expired_query_expression="${mimir_expired_metric}{case=\"${mimir_expired_case}\"}"
+  mimir_expired_value=21.5
+  mimir_expired_timestamp_ms="$(date -d '-9 minutes' +%s%3N)"
+  mimir_expired_start=$((mimir_expired_timestamp_ms / 1000 - 60))
+  mimir_expired_end=$((mimir_expired_timestamp_ms / 1000 + 60))
+  python3 "$REMOTE_WRITE_CLIENT" \
+    --url "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/api/v1/push" \
+    --metric "$mimir_expired_metric" --case "$mimir_expired_case" \
+    --timestamp-ms "$mimir_expired_timestamp_ms" --value "$mimir_expired_value"
+  query_expression="$mimir_expired_query_expression"
+  wait_for_mimir_query "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
+    "$mimir_expired_start" "$mimir_expired_end" "$mimir_expired_value" \
+    || fail 'Cross-node Mimir query omitted the pre-retention canary'
+  LAST_STAGE='pre-retention Mimir TSDB block upload'
+  mimir_deadline=$((SECONDS + MIMIR_READY_TIMEOUT))
+  mimir_expired_block=false
+  while ((SECONDS < mimir_deadline)); do
+    s3_request "${S3_ENDPOINTS[garage-1]}" \
+      "${MIMIR_ACCESS_KEYS[blocks]}" "${MIMIR_SECRET_KEYS[blocks]}" \
+      --method GET --bucket mimir-blocks --query 'list-type=2' \
+      --output "$response_body" --expect-status 200 >/dev/null
+    mimir_block_listing="$(<"$response_body")"
+    mapfile -t mimir_meta_keys < <(
+      grep -Eo 'garage-compat/[0-9A-Z]{26}/meta[.]json' <<< "$mimir_block_listing" \
+        || true
+    )
+    for mimir_meta_key in "${mimir_meta_keys[@]}"; do
+      mimir_block_id="${mimir_meta_key#garage-compat/}"
+      mimir_block_id="${mimir_block_id%/meta.json}"
+      if grep -Fq \
+          "<Key>garage-compat/${mimir_block_id}/index</Key>" <<< "$mimir_block_listing" \
+        && grep -Eq \
+          "<Key>garage-compat/${mimir_block_id}/chunks/[^<]+</Key>" \
+          <<< "$mimir_block_listing" \
+        && s3_request "${S3_ENDPOINTS[garage-1]}" \
+          "${MIMIR_ACCESS_KEYS[blocks]}" "${MIMIR_SECRET_KEYS[blocks]}" \
+          --method GET --bucket mimir-blocks --key "$mimir_meta_key" \
+          --output "$response_body" --expect-status 200 >/dev/null 2>&1 \
+        && jq -e --argjson timestamp "$mimir_expired_timestamp_ms" '
+          .minTime <= $timestamp
+          and .maxTime == ($timestamp + 1)
+          and .stats.numSeries == 1
+          and .stats.numSamples > 0
+        ' "$response_body" >/dev/null; then
+        mimir_expired_block=true
+        break 2
+      fi
+    done
+    sleep 2
+  done
+  [[ "$mimir_expired_block" == true ]] \
+    || fail 'Mimir produced no complete Garage TSDB block for the pre-retention canary'
 
   LAST_STAGE='cross-node Mimir remote write and query'
   metric="garage_mimir_compat_value"
@@ -1480,6 +1682,118 @@ EOF
   [[ "$mimir_later_block" == true ]] \
     || fail 'Mimir produced no complete Garage TSDB block ending at the node-loss canary'
 
+  LAST_STAGE='Mimir compaction and retention'
+  mimir_lifecycle_deadline=$((SECONDS + MIMIR_LIFECYCLE_TIMEOUT))
+  mimir_lifecycle_complete=false
+  mimir_compaction_succeeded=false
+  mimir_retention_marked=false
+  mimir_retention_cleaned=false
+  mimir_retention_block_id=
+  mimir_retention_block_deleted=false
+  mimir_retention_delete_logged=false
+  mimir_cluster_logs=
+  for member in "${MIMIR_CLUSTER_MEMBERS[@]}"; do
+    mimir_cluster_logs+="$(timeout "$OPERATION_TIMEOUT" podman logs \
+      "${MIMIR_CLUSTER_CONTAINERS[$member]}" 2>&1 || true)"$'\n'
+  done
+  while ((SECONDS < mimir_lifecycle_deadline)); do
+    s3_request "${S3_ENDPOINTS[garage-1]}" \
+      "${MIMIR_ACCESS_KEYS[blocks]}" "${MIMIR_SECRET_KEYS[blocks]}" \
+      --method GET --bucket mimir-blocks --query 'list-type=2' \
+      --output "$response_body" --expect-status 200 >/dev/null
+    mimir_block_listing="$(<"$response_body")"
+    mimir_cluster_metrics=
+    for member in "${MIMIR_CLUSTER_MEMBERS[@]}"; do
+      mimir_cluster_metrics+="$(curl -fsS --connect-timeout 2 --max-time 5 \
+        "${MIMIR_CLUSTER_ENDPOINTS[$member]}/metrics" 2>/dev/null || true)"$'\n'
+      mimir_cluster_logs+="$(timeout "$OPERATION_TIMEOUT" podman logs --since 5s \
+        "${MIMIR_CLUSTER_CONTAINERS[$member]}" 2>&1 || true)"$'\n'
+    done
+    grep -Eq 'msg="compacted blocks" new_block_count=[1-9][0-9]*' \
+      <<< "$mimir_cluster_logs" && mimir_compaction_succeeded=true
+    mimir_metric_positive "$mimir_cluster_metrics" \
+      cortex_compactor_blocks_cleaned_total \
+      && mimir_retention_cleaned=true
+
+    if [[ -z "$mimir_retention_block_id" ]]; then
+      while IFS= read -r mimir_retention_line; do
+        if [[ "$mimir_retention_line" =~ block=([0-9A-Z]{26}) ]]; then
+          mimir_retention_block_id="${BASH_REMATCH[1]}"
+          mimir_retention_marked=true
+          break
+        fi
+      done < <(grep -E \
+        "msg=\"applied retention: marking block for deletion\" block=[0-9A-Z]{26} maxTime=$((mimir_expired_timestamp_ms + 1))" \
+        <<< "$mimir_cluster_logs" || true)
+    fi
+
+    if [[ -n "$mimir_retention_block_id" ]] \
+      && grep -Fq \
+        "msg=\"deleted block marked for deletion\" block=${mimir_retention_block_id}" \
+        <<< "$mimir_cluster_logs"; then
+      mimir_retention_delete_logged=true
+    fi
+    if [[ "$mimir_retention_delete_logged" == true \
+        && "$mimir_retention_cleaned" == true ]] \
+      && ! grep -Fq \
+        "<Key>garage-compat/${mimir_retention_block_id}/" \
+        <<< "$mimir_block_listing" \
+      && ! grep -Fq \
+        "<Key>garage-compat/markers/${mimir_retention_block_id}-deletion-mark.json</Key>" \
+        <<< "$mimir_block_listing"; then
+      mimir_retention_block_deleted=true
+    fi
+
+    mimir_expired_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+      --data-urlencode "query=${mimir_expired_query_expression}" \
+      --data-urlencode "start=${mimir_expired_start}" \
+      --data-urlencode "end=${mimir_expired_end}" \
+      --data-urlencode 'step=1' \
+      "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/prometheus/api/v1/query_range" \
+      2>/dev/null || true)"
+    mimir_current_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+      --data-urlencode "query=${query_expression}" \
+      --data-urlencode "start=${metric_start}" \
+      --data-urlencode "end=${metric_end}" \
+      --data-urlencode 'step=1' \
+      "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}/prometheus/api/v1/query_range" \
+      2>/dev/null || true)"
+    mimir_expired_absent=false
+    mimir_current_present=false
+    jq -e --arg value "$mimir_expired_value" '
+      .status == "success"
+      and all(.data.result[].values[]; .[1] != $value)
+    ' <<< "$mimir_expired_query" >/dev/null 2>&1 \
+      && mimir_expired_absent=true
+    jq -e --arg initial "$metric_value" --arg loss "$loss_metric_value" '
+      .status == "success"
+      and any(.data.result[].values[]; .[1] == $initial)
+      and any(.data.result[].values[]; .[1] == $loss)
+    ' <<< "$mimir_current_query" >/dev/null 2>&1 \
+      && mimir_current_present=true
+    # Query-frontend retention hides expired samples before the longer
+    # ingester-local block retention; cold-state absence is repeated below.
+    if [[ "$mimir_compaction_succeeded" == true \
+        && "$mimir_retention_marked" == true \
+        && "$mimir_retention_cleaned" == true \
+        && "$mimir_retention_delete_logged" == true \
+        && "$mimir_retention_block_deleted" == true \
+        && "$mimir_expired_absent" == true \
+        && "$mimir_current_present" == true ]]; then
+      mimir_lifecycle_complete=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$mimir_lifecycle_complete" != true ]]; then
+    printf '%s\n' \
+      "Mimir lifecycle evidence: compaction_succeeded=${mimir_compaction_succeeded}, retention_marked=${mimir_retention_marked}, retention_cleaned=${mimir_retention_cleaned}, retention_block=${mimir_retention_block_id:-none}, delete_logged=${mimir_retention_delete_logged}, block_deleted=${mimir_retention_block_deleted}, expired_absent=${mimir_expired_absent}, current_present=${mimir_current_present}" \
+      >&2
+    grep -E '^cortex_compactor_(group_compactions_total|blocks_marked_for_deletion_total|blocks_cleaned_total)' \
+      <<< "$mimir_cluster_metrics" >&2 || true
+    fail 'Mimir did not compact blocks and physically delete only the expired canary block'
+  fi
+
   LAST_STAGE='empty-local-state Mimir cluster restart'
   timeout 60 podman stop --time 30 \
     "${MIMIR_CLUSTER_CONTAINERS[mimir-cluster-1]}" \
@@ -1497,6 +1811,17 @@ EOF
   wait_for_mimir_query "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-2]}" \
     "$metric_start" "$metric_end" "$metric_value" "$loss_metric_value" \
     || fail "Empty-local-state Mimir cluster did not query both Garage-backed canaries: ${LAST_MIMIR_QUERY_RESPONSE:-no response}"
+  mimir_expired_query="$(curl -fsS --get --connect-timeout 2 --max-time 10 \
+    --data-urlencode "query=${mimir_expired_query_expression}" \
+    --data-urlencode "start=${mimir_expired_start}" \
+    --data-urlencode "end=${mimir_expired_end}" \
+    --data-urlencode 'step=1' \
+    "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-1]}/prometheus/api/v1/query_range")"
+  jq -e --arg value "$mimir_expired_value" '
+    .status == "success"
+    and all(.data.result[].values[]; .[1] != $value)
+  ' <<< "$mimir_expired_query" >/dev/null \
+    || fail 'Empty-local-state Mimir cluster recovered the expired Garage canary'
   curl -fsS --connect-timeout 2 --max-time 10 \
     "${MIMIR_CLUSTER_ENDPOINTS[mimir-cluster-3]}/prometheus/config/v1/rules/garage-compat/garage-compat" \
     | grep -Fq 'GarageCompatAlert'

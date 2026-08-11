@@ -164,11 +164,11 @@ test-monitoring-garage-cluster:
 test-monitoring-garage-loki:
 	@MONITORING_GARAGE_TEST_LOKI=true bash tests/integration/test-monitoring-garage-cluster.sh
 
-## Exercise a disposable three-node Loki ring and one-node loss
+## Exercise three-node Loki failure, compaction, retention, and Garage recovery
 test-monitoring-garage-loki-cluster:
 	@MONITORING_GARAGE_TEST_LOKI_CLUSTER=true bash tests/integration/test-monitoring-garage-cluster.sh
 
-## Exercise three-node Mimir failure and Garage recovery behavior
+## Exercise three-node Mimir failure, compaction, retention, and Garage recovery
 test-monitoring-garage-mimir:
 	@MONITORING_GARAGE_TEST_MIMIR=true bash tests/integration/test-monitoring-garage-cluster.sh
 
