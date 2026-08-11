@@ -128,7 +128,7 @@ podman exec "$CONTAINER" install -m 0640 \
   /workspace/tests/fixtures/monitoring-haproxy/roles.map \
   "$TEST_DIR/roles.map"
 
-for fixture in loki grafana s3 wrong untrusted patroni; do
+for fixture in loki mimir grafana s3 wrong untrusted patroni; do
   printf '%s\n' 200 | podman exec --interactive "$CONTAINER" \
     tee "/tmp/${fixture}.status" >/dev/null
 done
@@ -157,6 +157,14 @@ podman exec --detach "$CONTAINER" python3 \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
   --expected-host grafana-backend.test.invalid --node grafana \
   --status-file /tmp/grafana.status --sni-log /tmp/grafana.sni >/dev/null
+podman exec --detach "$CONTAINER" python3 \
+  /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
+  --bind 127.0.0.8 --port 18443 \
+  --cert "$TEST_DIR/mimir-backend.test.invalid.crt" \
+  --key "$TEST_DIR/mimir-backend.test.invalid.key" \
+  --client-ca "$TEST_DIR/client-ca/ca.crt" \
+  --expected-host mimir-backend.test.invalid --node mimir \
+  --status-file /tmp/mimir.status --sni-log /tmp/mimir.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
   --bind 127.0.0.4 --port 18443 \
@@ -272,6 +280,52 @@ grep -q '"node":"loki"' <<<"$query_response" \
   grafana.test.invalid /login)" == 403 ]] \
   || fail 'Monitoring HAProxy allowed the writer identity to reach Grafana'
 
+grafana_probe_response="$(client_request monitoring-probe GET \
+  grafana.test.invalid grafana.test.invalid /api/health)"
+grep -q '"node":"grafana"' <<<"$grafana_probe_response" \
+  || fail 'Monitoring HAProxy rejected the Grafana probe route'
+loki_probe_response="$(client_request monitoring-probe GET \
+  loki.test.invalid loki.test.invalid /ready)"
+grep -q '"node":"loki"' <<<"$loki_probe_response" \
+  || fail 'Monitoring HAProxy rejected the Loki probe route'
+mimir_probe_response="$(client_request monitoring-probe GET \
+  mimir.test.invalid mimir.test.invalid /ready)"
+grep -q '"node":"mimir"' <<<"$mimir_probe_response" \
+  || fail 'Monitoring HAProxy rejected the Mimir probe route'
+[[ "$(client_status monitoring-probe GET grafana.test.invalid \
+  grafana.test.invalid /login)" == 403 ]] \
+  || fail 'Monitoring probe identity reached an unapproved Grafana path'
+[[ "$(client_status monitoring-probe GET loki.test.invalid \
+  loki.test.invalid /loki/api/v1/query_range)" == 403 ]] \
+  || fail 'Monitoring probe identity queried Loki'
+[[ "$(client_status monitoring-probe POST loki.test.invalid \
+  loki.test.invalid /loki/api/v1/push --data '{}')" == 403 ]] \
+  || fail 'Monitoring probe identity wrote Loki data'
+[[ "$(client_status monitoring-probe POST mimir.test.invalid \
+  mimir.test.invalid /ready --data '{}')" == 403 ]] \
+  || fail 'Monitoring probe identity used an unapproved Mimir method'
+[[ "$(client_status monitoring-probe GET mimir.test.invalid \
+  mimir.test.invalid /prometheus/api/v1/query)" == 403 ]] \
+  || fail 'Monitoring probe identity queried Mimir'
+[[ "$(client_status monitoring-probe POST mimir.test.invalid \
+  mimir.test.invalid /api/v1/push --data '{}')" == 403 ]] \
+  || fail 'Monitoring probe identity wrote Mimir data'
+[[ "$(client_status monitoring-probe GET s3.test.invalid \
+  s3.test.invalid /health)" == 403 ]] \
+  || fail 'Monitoring probe identity reached S3'
+[[ "$(client_status monitoring-probe GET loki.test.invalid \
+  loki.test.invalid /api/health)" == 403 ]] \
+  || fail 'Monitoring probe used the Grafana health path on Loki'
+[[ "$(client_status monitoring-probe GET mimir.test.invalid \
+  mimir.test.invalid /api/health)" == 403 ]] \
+  || fail 'Monitoring probe used the Grafana health path on Mimir'
+[[ "$(client_status monitoring-probe GET grafana.test.invalid \
+  grafana.test.invalid /ready)" == 403 ]] \
+  || fail 'Monitoring probe used a readiness path on Grafana'
+[[ "$(client_status monitoring-probe GET s3.test.invalid \
+  s3.test.invalid /ready)" == 403 ]] \
+  || fail 'Monitoring probe used a readiness path on S3'
+
 assert_frontend_tls_rejected none s3.test.invalid
 assert_frontend_tls_rejected revoked-client
 assert_frontend_tls_rejected untrusted-client grafana.test.invalid
@@ -352,7 +406,7 @@ if grep -q '"node":"untrusted"' <<<"$untrusted_backend_response"; then
   fail 'Monitoring HAProxy forwarded to an untrusted-CA HTTPS backend'
 fi
 
-for fixture in loki grafana s3 patroni; do
+for fixture in loki mimir grafana s3 patroni; do
   for _ in {1..30}; do
     if podman exec "$CONTAINER" test -s "/tmp/${fixture}.sni"; then
       break
@@ -362,6 +416,8 @@ for fixture in loki grafana s3 patroni; do
 done
 podman exec "$CONTAINER" grep -qx loki-backend.test.invalid /tmp/loki.sni \
   || fail 'Monitoring HAProxy omitted Loki backend SNI'
+podman exec "$CONTAINER" grep -qx mimir-backend.test.invalid /tmp/mimir.sni \
+  || fail 'Monitoring HAProxy omitted Mimir backend SNI'
 podman exec "$CONTAINER" grep -qx grafana-backend.test.invalid /tmp/grafana.sni \
   || fail 'Monitoring HAProxy omitted Grafana backend SNI'
 podman exec "$CONTAINER" grep -qx s3-backend.test.invalid /tmp/s3.sni \

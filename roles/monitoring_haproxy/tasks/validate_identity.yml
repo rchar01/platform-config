@@ -12,6 +12,7 @@
           'grafana_browser',
           'grafana_loki_query',
           'grafana_mimir_query',
+          'monitoring_probe',
           'operator'
         ]
       - >-

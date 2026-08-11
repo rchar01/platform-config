@@ -15,6 +15,8 @@ Validated inputs include:
 - outside-Git frontend/client/backend TLS source paths;
 - exact escape-free RFC2253 subject-DN role mappings;
 - observed literal Loki, Mimir, Alertmanager, and operator method/path routes;
+- a mandatory least-privilege `monitoring_probe` identity with host-scoped
+  `GET /api/health` for Grafana and `GET /ready` for Loki and Mimir;
 - a dedicated management-source allowlist for operator routes;
 - unique, network-normalized `/24`-or-narrower source CIDRs, with operator
   sources contained by the outer HTTPS policy; and

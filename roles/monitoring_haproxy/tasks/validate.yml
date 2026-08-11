@@ -87,7 +87,7 @@
 - name: Assert monitoring HAProxy identity map is complete
   ansible.builtin.assert:
     that:
-      - monitoring_haproxy_identity_roles | length >= 8
+      - monitoring_haproxy_identity_roles | length >= 9
       - >-
         [
           'alloy_loki_writer',
@@ -97,6 +97,7 @@
           'grafana_browser',
           'grafana_loki_query',
           'grafana_mimir_query',
+          'monitoring_probe',
           'operator'
         ]
         | difference(monitoring_haproxy_identity_roles | map(attribute='role') | list)
@@ -114,6 +115,22 @@
   loop_control:
     loop_var: monitoring_haproxy_identity
     label: "{{ monitoring_haproxy_identity.role | default('invalid') }}"
+
+- name: Assert monitoring HAProxy probe routes match observer profiles
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_grafana_probe_routes
+        == [{'method': 'GET', 'path': '/api/health'}]
+      - >-
+        monitoring_haproxy_loki_probe_routes
+        == [{'method': 'GET', 'path': '/ready'}]
+      - >-
+        monitoring_haproxy_mimir_probe_routes
+        == [{'method': 'GET', 'path': '/ready'}]
+    fail_msg: >-
+      Monitoring HAProxy probes require exact host-scoped GET routes matching
+      the locked Grafana, Loki, and Mimir observer profiles.
 
 - name: Validate monitoring HAProxy route groups
   ansible.builtin.include_tasks: validate_route_group.yml
@@ -136,6 +153,15 @@
     - name: operator
       routes: "{{ monitoring_haproxy_operator_routes }}"
       methods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+    - name: grafana_probe
+      routes: "{{ monitoring_haproxy_grafana_probe_routes }}"
+      methods: [GET]
+    - name: loki_probe
+      routes: "{{ monitoring_haproxy_loki_probe_routes }}"
+      methods: [GET]
+    - name: mimir_probe
+      routes: "{{ monitoring_haproxy_mimir_probe_routes }}"
+      methods: [GET]
   loop_control:
     loop_var: monitoring_haproxy_route_group
     label: "{{ monitoring_haproxy_route_group.name }}"

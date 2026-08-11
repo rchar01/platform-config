@@ -38,6 +38,7 @@ issue_client alloy-writer-wrong-subject alloy-writer unauthorized
 issue_client grafana-loki-query
 issue_client grafana-browser grafana-browser users
 issue_client garage-s3 garage-s3 storage
+issue_client monitoring-probe monitoring-probe observers
 issue_client unmapped-client
 issue_client revoked-client
 issue_client haproxy-backend haproxy-backend backends
@@ -72,8 +73,9 @@ issue_server() {
 }
 
 issue_server frontend.test.invalid \
-  'DNS:loki.test.invalid,DNS:grafana.test.invalid,DNS:s3.test.invalid,DNS:bad-backend.test.invalid,DNS:untrusted-backend.test.invalid'
+  'DNS:loki.test.invalid,DNS:mimir.test.invalid,DNS:grafana.test.invalid,DNS:s3.test.invalid,DNS:bad-backend.test.invalid,DNS:untrusted-backend.test.invalid'
 issue_server loki-backend.test.invalid 'DNS:loki-backend.test.invalid'
+issue_server mimir-backend.test.invalid 'DNS:mimir-backend.test.invalid'
 issue_server grafana-backend.test.invalid 'DNS:grafana-backend.test.invalid'
 issue_server s3-backend.test.invalid 'DNS:s3-backend.test.invalid'
 issue_server other-backend.test.invalid 'DNS:other-backend.test.invalid'

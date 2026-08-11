@@ -52,6 +52,9 @@
         role: grafana_mimir_query
       - subject_dn: CN=monitoring-operator,OU=operators,O=platform,C=XX
         role: operator
+      - subject_dn: CN=monitoring-probe,OU=observers,O=platform,C=XX
+        role: >-
+          {{ monitoring_haproxy_test_probe_role | default('monitoring_probe') }}
     monitoring_haproxy_loki_writer_routes:
       - method: POST
         path: /loki/api/v1/push

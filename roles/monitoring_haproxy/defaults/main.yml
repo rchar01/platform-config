@@ -34,6 +34,15 @@ monitoring_haproxy_mimir_writer_routes: []
 monitoring_haproxy_mimir_query_routes: []
 monitoring_haproxy_alertmanager_routes: []
 monitoring_haproxy_operator_routes: []
+monitoring_haproxy_grafana_probe_routes:
+  - method: GET
+    path: /api/health
+monitoring_haproxy_loki_probe_routes:
+  - method: GET
+    path: /ready
+monitoring_haproxy_mimir_probe_routes:
+  - method: GET
+    path: /ready
 
 monitoring_haproxy_https_allowed_sources: []
 monitoring_haproxy_postgresql_allowed_sources: []
