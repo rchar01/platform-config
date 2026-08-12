@@ -1,6 +1,7 @@
 ---
-# This slice validates the locked frontend contract only. It intentionally does
-# not install HAProxy, render configuration, manage firewalld, or touch services.
+# This slice validates the locked frontend and private backend-port contracts. It
+# intentionally does not install HAProxy, render configuration, manage
+# firewalld, or touch services.
 monitoring_haproxy_contract_ready: false
 monitoring_haproxy_enabled: false
 monitoring_haproxy_service_enabled: false
@@ -53,6 +54,6 @@ monitoring_haproxy_postgresql_allowed_sources: []
 monitoring_haproxy_metrics_allowed_sources: []
 monitoring_haproxy_operator_allowed_sources: []
 
-# Backend topology and health wiring remain explicit Phase 1 blockers. The
-# validation-only slice preserves the private input without interpreting it.
+# Backend addresses, identities, and health wiring remain Phase 1 blockers. Port
+# values are interpreted only by the validation contract and have no defaults.
 monitoring_haproxy_backends: {}

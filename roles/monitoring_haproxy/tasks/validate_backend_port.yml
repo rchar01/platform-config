@@ -1,0 +1,22 @@
+---
+- name: Validate monitoring HAProxy backend port entry
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_backend_port.value is mapping
+      - monitoring_haproxy_backend_port.value.keys() | list | sort == ['port']
+      - monitoring_haproxy_backend_port.value.port is integer
+      - monitoring_haproxy_backend_port.value.port >= 1
+      - monitoring_haproxy_backend_port.value.port <= 65535
+    fail_msg: >-
+      Each monitoring HAProxy backend requires exactly one private integer port
+      between 1 and 65535.
+
+- name: Reject monitoring backend and HAProxy listener port collisions
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backend_port.value.port
+        not in monitoring_haproxy_listener_ports
+    fail_msg: >-
+      Monitoring HAProxy backend ports must not collide with HAProxy-owned HTTPS,
+      PostgreSQL frontend, or metrics listeners.

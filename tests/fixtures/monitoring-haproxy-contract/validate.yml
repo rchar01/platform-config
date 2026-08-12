@@ -14,8 +14,10 @@
       {{ monitoring_haproxy_test_service_state | default('stopped') }}
     monitoring_haproxy_package_nevra: >-
       {{ monitoring_haproxy_test_package_nevra | default('haproxy-0:3.0.5-6.el10_2.1.x86_64') }}
-    monitoring_haproxy_https_port: 443
-    monitoring_haproxy_postgresql_frontend_port: 5432
+    monitoring_haproxy_https_port: >-
+      {{ monitoring_haproxy_test_https_port | default(443) }}
+    monitoring_haproxy_postgresql_frontend_port: >-
+      {{ monitoring_haproxy_test_postgresql_frontend_port | default(5432) }}
     monitoring_haproxy_metrics_bind_address: >-
       {{ monitoring_haproxy_test_metrics_address | default('192.0.2.83') }}
     monitoring_haproxy_metrics_port: >-
@@ -88,5 +90,14 @@
       - 192.0.2.128/25
     monitoring_haproxy_operator_allowed_sources: >-
       {{ monitoring_haproxy_test_operator_sources | default(['203.0.113.0/28']) }}
+    monitoring_haproxy_backends: >-
+      {{ monitoring_haproxy_test_backends | default({
+        'grafana': {'port': 13001},
+        'loki': {'port': 13002},
+        'mimir': {'port': 13003},
+        'alertmanager': {'port': 13003},
+        's3': {'port': 13004},
+        'postgresql': {'port': 13005}
+      }) }}
   roles:
     - role: monitoring_haproxy

@@ -15,11 +15,53 @@
       - monitoring_haproxy_postgresql_frontend_port | int == 5432
       - monitoring_haproxy_metrics_port | int >= 1
       - monitoring_haproxy_metrics_port | int <= 65535
-      - monitoring_haproxy_metrics_port | int not in [443, 5432]
       - monitoring_haproxy_tenant is match('^[A-Za-z0-9_.-]+$')
     fail_msg: >-
       Monitoring HAProxy requires an explicitly ready contract, exact HAProxy
-      NEVRA, fixed client ports, a distinct metrics port, and a safe tenant.
+      NEVRA, fixed client ports, a valid metrics port, and a safe tenant.
+
+- name: Build monitoring HAProxy listener port contract
+  ansible.builtin.set_fact:
+    monitoring_haproxy_listener_ports:
+      - "{{ monitoring_haproxy_https_port }}"
+      - "{{ monitoring_haproxy_postgresql_frontend_port }}"
+      - "{{ monitoring_haproxy_metrics_port }}"
+
+- name: Assert monitoring HAProxy listener ports are unique
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_listener_ports | unique | length == 3
+    fail_msg: >-
+      Monitoring HAProxy requires unique HTTPS, PostgreSQL frontend, and metrics
+      listener ports.
+
+- name: Assert exact monitoring HAProxy backend service set
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_backends is mapping
+      - >-
+        monitoring_haproxy_backends.keys() | list | sort
+        == ['alertmanager', 'grafana', 'loki', 'mimir', 'postgresql', 's3']
+    fail_msg: >-
+      Monitoring HAProxy requires exactly Grafana, Loki, Mimir, integrated
+      Alertmanager, S3, and PostgreSQL backend port entries.
+
+- name: Validate monitoring HAProxy backend ports
+  ansible.builtin.include_tasks: validate_backend_port.yml
+  loop: "{{ monitoring_haproxy_backends | dict2items }}"
+  loop_control:
+    loop_var: monitoring_haproxy_backend_port
+    label: "{{ monitoring_haproxy_backend_port.key }}"
+
+- name: Require integrated Alertmanager to share the Mimir backend port
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backends.alertmanager.port
+        == monitoring_haproxy_backends.mimir.port
+    fail_msg: >-
+      The integrated Alertmanager must use the Mimir backend port; standalone
+      Alertmanager is outside the locked monitoring topology.
 
 - name: Assert monitoring HAProxy metrics bind address
   ansible.builtin.assert:

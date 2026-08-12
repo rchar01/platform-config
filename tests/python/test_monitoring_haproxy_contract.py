@@ -22,6 +22,18 @@ SCALAR = "requires an explicitly ready contract"
 LIFECYCLE = "Service activation remains unavailable"
 IDENTITY = "an escape-free canonical RFC2253 subject DN"
 SOURCE = "network-normalized IPv4 CIDR no broader than /24"
+BACKENDS = "requires exactly Grafana, Loki, Mimir"
+BACKEND_PORT = "requires exactly one private integer port"
+BACKEND_COLLISION = "must not collide with HAProxy-owned"
+INTEGRATED = "integrated Alertmanager must use the Mimir backend port"
+VALID_BACKENDS = {
+    "grafana": {"port": 13001},
+    "loki": {"port": 13002},
+    "mimir": {"port": 13003},
+    "alertmanager": {"port": 13003},
+    "s3": {"port": 13004},
+    "postgresql": {"port": 13005},
+}
 REJECTIONS = (
     Rejection("unready", {"monitoring_haproxy_test_contract_ready": False}, SCALAR),
     Rejection("string-ready", {"monitoring_haproxy_test_contract_ready": "true"}, SCALAR),
@@ -30,8 +42,54 @@ REJECTIONS = (
     Rejection("disabled-started", {"monitoring_haproxy_test_enabled": False, "monitoring_haproxy_test_service_state": "started"}, LIFECYCLE),
     Rejection("unpinned-package", {"monitoring_haproxy_test_package_nevra": "haproxy"}, SCALAR),
     Rejection("different-nevra", {"monitoring_haproxy_test_package_nevra": "haproxy-0:3.0.6-1.el10.x86_64"}, SCALAR),
-    Rejection("port-collision", {"monitoring_haproxy_test_metrics_port": 443}, SCALAR),
+    Rejection("port-collision", {"monitoring_haproxy_test_metrics_port": 443}, "unique HTTPS, PostgreSQL frontend, and metrics"),
     Rejection("string-port", {"monitoring_haproxy_test_metrics_port": "8405"}, SCALAR),
+    Rejection("backends-not-mapping", {"monitoring_haproxy_test_backends": []}, BACKENDS),
+    Rejection(
+        "missing-backend",
+        {"monitoring_haproxy_test_backends": {key: value for key, value in VALID_BACKENDS.items() if key != "s3"}},
+        BACKENDS,
+    ),
+    Rejection(
+        "unknown-backend",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "unknown": {"port": 13006}}},
+        BACKENDS,
+    ),
+    Rejection(
+        "backend-entry-not-mapping",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": 13001}},
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-extra-key",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 13001, "host": "fixture.invalid"}}},
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-string-port",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": "13001"}}},
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-zero-port",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 0}}},
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-high-port",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 65536}}},
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-listener-collision",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 443}}},
+        BACKEND_COLLISION,
+    ),
+    Rejection(
+        "integrated-port-mismatch",
+        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "alertmanager": {"port": 13006}}},
+        INTEGRATED,
+    ),
     Rejection("leading-zero-address", {"monitoring_haproxy_test_metrics_address": "192.168.001.83"}, "restricted valid IPv4 bind address"),
     Rejection("duplicate-dns", {"monitoring_haproxy_test_alertmanager_dns": "grafana.monitoring.example.invalid"}, "service DNS names must be unique"),
     Rejection("escaped-dn", {"monitoring_haproxy_test_writer_dn": r"CN=alloy\,loki,OU=telemetry,O=platform,C=XX"}, IDENTITY),
