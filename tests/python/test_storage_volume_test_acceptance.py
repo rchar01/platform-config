@@ -742,6 +742,14 @@ def test_storage_test_preflight_is_read_only_ordered_and_fail_closed(repo_root: 
     ):
         assert required in text
     assert "ansible.builtin.package" not in text
+    utility_probe = tasks[0]["ansible.builtin.command"]["argv"]
+    assert utility_probe == [
+        "/bin/sh",
+        "-c",
+        'command -v "$1" >/dev/null',
+        "storage-volume-test",
+        "{{ storage_volume_test_utility }}",
+    ]
 
 
 def test_storage_test_initialize_and_final_reuse_contracts(repo_root: Path) -> None:
