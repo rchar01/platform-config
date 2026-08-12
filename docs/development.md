@@ -42,6 +42,7 @@ make verify-parallel
 make test-keepalived-vip-rocky
 make test-keepalived-vip-behavior
 make test-podman-host-rocky
+make test-gitlab-runner-podman-rocky
 make test-platform-external-probe-alloy
 make test-openbao-haproxy-rocky
 make test-monitoring-haproxy-capabilities
@@ -96,6 +97,13 @@ keeps the API socket disabled, exercises native Quadlet generation without
 starting the generated service, and requires enabled-mode idempotency. The
 container shares its host kernel, so successful disabled-mode module loading and
 unit removal remain a managed-host check rather than a disposable-container test.
+
+`make test-gitlab-runner-podman-rocky` is an opt-in manager-socket integration
+check. It starts a privileged disposable Rocky 10.1 systemd target, pre-seeds a
+fake local Runner registration, enables the rootful Podman socket, and starts a
+digest-pinned Runner manager image. It verifies the exact manager-only socket mount,
+Quadlet SELinux label exception, check-mode non-mutation, opt-out removal, and
+idempotency without contacting a real GitLab instance or running a real CI job.
 
 `make test-openbao-image` is also opt-in. It pulls the exact approved OpenBao
 `2.6.1` `linux/amd64` manifest, verifies its version and non-root identity, and

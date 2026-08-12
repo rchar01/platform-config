@@ -669,7 +669,7 @@ Create GitLab group runners before running the runner playbook. Use pre-created 
 | Runner | Tags |
 |---|---|
 | registry runner | `dev`, `linux-amd64`, `registry` |
-| Kubernetes runner | `dev`, `linux-amd64`, `k8s` |
+| Kubernetes runner | `dev`, `linux-amd64`, `k8s`, `docker` |
 
 Store the token files outside Git and restrict them to the local owner:
 
@@ -696,7 +696,14 @@ make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 make smoke-runners ENV=dev
 ```
 
-The first runner iteration uses the shell executor inside containerized GitLab Runner services. It does not mount Docker or Podman sockets and does not enable privileged image-build support. BuildKit, Buildah, or rootless Podman build support belongs in a later explicit phase.
+The default runner remains a shell executor inside the persistent manager
+container and has no runtime socket. An opted-in Docker executor mounts the
+rootful Podman API socket into the manager only and creates disposable build,
+helper, and service containers per job. It requires a digest-pinned fallback
+image, `FF_NETWORK_PER_BUILD`, and `privileged = false`. Never put the socket or
+a static SSH key in Docker job volumes; use protected GitLab file variables for
+deployment SSH credentials. Container-image build capability remains a separate
+explicit design and is not enabled by this executor mode.
 
 The retired single-host Prometheus/Loki/Grafana stack is no longer deployable.
 Keep `monitoring_targets` empty until authenticated Loki and Mimir ingress,

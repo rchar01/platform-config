@@ -1,0 +1,205 @@
+---
+- name: Initialize GitLab Runner rollback status
+  ansible.builtin.set_fact:
+    gitlab_runner_rollback_config_failed: false
+    gitlab_runner_rollback_ca_failed: false
+    gitlab_runner_rollback_quadlet_failed: false
+    gitlab_runner_rollback_systemd_failed: false
+    gitlab_runner_rollback_socket_failed: false
+    gitlab_runner_rollback_service_failed: false
+    gitlab_runner_rollback_cleanup_failed: false
+  changed_when: false
+
+- name: Remove incomplete GitLab Runner backup
+  when:
+    - gitlab_runner_config_backup.path is defined
+    - not gitlab_runner_config_backup_ready | default(false) | bool
+  block:
+    - name: Delete incomplete GitLab Runner backup
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_config_backup.path }}"
+        state: absent
+      no_log: true
+  rescue:
+    - name: Record failed incomplete backup cleanup
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_cleanup_failed: true
+      changed_when: false
+
+- name: Restore Podman socket state
+  when:
+    - gitlab_runner_podman_socket_enabled_before_force is defined
+    - gitlab_runner_podman_socket_enabled_before_force.rc is defined
+    - gitlab_runner_podman_socket_active_before_force is defined
+    - gitlab_runner_podman_socket_active_before_force.rc is defined
+  block:
+    - name: Restore Podman socket enabled and active state
+      ansible.builtin.service:
+        name: "{{ podman_host_socket_name | default('podman.socket') }}"
+        enabled: "{{ gitlab_runner_podman_socket_enabled_before_force.stdout == 'enabled' }}"
+        state: "{{ 'started' if gitlab_runner_podman_socket_active_before_force.stdout == 'active' else 'stopped' }}"
+  rescue:
+    - name: Record failed Podman socket restoration
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_socket_failed: true
+      changed_when: false
+
+- name: Restore GitLab Runner configuration
+  when: gitlab_runner_config_backup_ready | default(false) | bool
+  block:
+    - name: Restore previous GitLab Runner configuration
+      ansible.builtin.copy:
+        src: "{{ gitlab_runner_config_backup.path }}"
+        dest: "{{ gitlab_runner_config_path | default('/etc/gitlab-runner/config.toml') }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Verify restored GitLab Runner configuration
+      ansible.builtin.stat:
+        path: "{{ gitlab_runner_config_path | default('/etc/gitlab-runner/config.toml') }}"
+        checksum_algorithm: sha256
+      register: gitlab_runner_rollback_config_stat
+
+    - name: Assert exact GitLab Runner configuration restoration
+      ansible.builtin.assert:
+        that:
+          - gitlab_runner_rollback_config_stat.stat.exists
+          - gitlab_runner_rollback_config_stat.stat.checksum == gitlab_runner_config_stat.stat.checksum
+        fail_msg: "Restored GitLab Runner configuration does not match the original."
+  rescue:
+    - name: Record failed GitLab Runner configuration restoration
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_config_failed: true
+      changed_when: false
+
+- name: Restore GitLab Runner CA state
+  block:
+    - name: Restore previous GitLab Runner CA certificate
+      ansible.builtin.copy:
+        content: "{{ gitlab_runner_ca_before_convergence.content | b64decode }}"
+        dest: "{{ gitlab_runner_tls_ca_cert_path | default('/etc/gitlab-runner/certs/gitlab-ca.crt') }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: gitlab_runner_ca_stat_before_convergence.stat.exists
+
+    - name: Remove newly introduced GitLab Runner CA certificate
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_tls_ca_cert_path | default('/etc/gitlab-runner/certs/gitlab-ca.crt') }}"
+        state: absent
+      when: not gitlab_runner_ca_stat_before_convergence.stat.exists
+  rescue:
+    - name: Record failed GitLab Runner CA restoration
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_ca_failed: true
+      changed_when: false
+
+- name: Restore GitLab Runner Quadlet state
+  block:
+    - name: Restore previous GitLab Runner Quadlet
+      ansible.builtin.copy:
+        content: "{{ gitlab_runner_quadlet_before_convergence.content | b64decode }}"
+        dest: "{{ gitlab_runner_quadlet_path | default('/etc/containers/systemd/gitlab-runner.container') }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: gitlab_runner_quadlet_stat_before_convergence.stat.exists
+
+    - name: Remove newly introduced GitLab Runner Quadlet
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_quadlet_path | default('/etc/containers/systemd/gitlab-runner.container') }}"
+        state: absent
+      when: not gitlab_runner_quadlet_stat_before_convergence.stat.exists
+  rescue:
+    - name: Record failed GitLab Runner Quadlet restoration
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_quadlet_failed: true
+      changed_when: false
+
+- name: Reload systemd after GitLab Runner rollback
+  block:
+    - name: Reload systemd manager after rollback
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+  rescue:
+    - name: Record failed systemd reload after rollback
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_systemd_failed: true
+      changed_when: false
+
+- name: Restore GitLab Runner service state
+  when:
+    - gitlab_runner_service_enabled_before_convergence.stdout != 'not-found'
+    - gitlab_runner_service_active_before_convergence.stdout != 'unknown'
+  block:
+    - name: Restore GitLab Runner persistent enablement state
+      ansible.builtin.service:
+        name: "{{ gitlab_runner_service_name | default('gitlab-runner.service') }}"
+        enabled: "{{ gitlab_runner_service_enabled_before_convergence.stdout == 'enabled' }}"
+      when: gitlab_runner_service_enabled_before_convergence.stdout in ['enabled', 'disabled']
+
+    - name: Restore GitLab Runner active state
+      ansible.builtin.service:
+        name: "{{ gitlab_runner_service_name | default('gitlab-runner.service') }}"
+        state: "{{ 'started' if gitlab_runner_service_active_before_convergence.stdout == 'active' else 'stopped' }}"
+  rescue:
+    - name: Record failed GitLab Runner service restoration
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_service_failed: true
+      changed_when: false
+
+- name: Stop newly introduced GitLab Runner service
+  when:
+    - gitlab_runner_service_enabled_before_convergence.stdout == 'not-found'
+    - gitlab_runner_service_active_before_convergence.stdout == 'unknown'
+  block:
+    - name: Stop GitLab Runner service absent before convergence
+      ansible.builtin.systemd_service:
+        name: "{{ gitlab_runner_service_name | default('gitlab-runner.service') }}"
+        state: stopped
+      failed_when: false
+  rescue:
+    - name: Record failed new GitLab Runner service cleanup
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_service_failed: true
+      changed_when: false
+
+- name: Record GitLab Runner rollback result
+  ansible.builtin.set_fact:
+    gitlab_runner_rollback_failed: >-
+      {{
+        gitlab_runner_rollback_config_failed
+        or gitlab_runner_rollback_ca_failed
+        or gitlab_runner_rollback_quadlet_failed
+        or gitlab_runner_rollback_systemd_failed
+        or gitlab_runner_rollback_socket_failed
+        or gitlab_runner_rollback_service_failed
+        or gitlab_runner_rollback_cleanup_failed
+      }}
+  changed_when: false
+
+- name: Record complete GitLab Runner rollback
+  ansible.builtin.set_fact:
+    gitlab_runner_rollback_complete: "{{ not gitlab_runner_rollback_failed | bool }}"
+  changed_when: false
+
+- name: Remove recovery backup after complete rollback
+  when:
+    - gitlab_runner_config_backup_ready | default(false) | bool
+    - not gitlab_runner_rollback_failed | bool
+  block:
+    - name: Delete recovery backup after complete rollback
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_config_backup.path }}"
+        state: absent
+      no_log: true
+  rescue:
+    - name: Record failed recovery backup cleanup
+      ansible.builtin.set_fact:
+        gitlab_runner_rollback_cleanup_failed: true
+        gitlab_runner_rollback_failed: true
+        gitlab_runner_rollback_complete: false
+      changed_when: false

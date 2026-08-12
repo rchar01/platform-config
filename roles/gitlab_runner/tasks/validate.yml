@@ -1,0 +1,117 @@
+---
+- name: Validate GitLab Runner registration inputs
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_gitlab_url | length > 0
+      - gitlab_runner_token_src | length > 0
+      - gitlab_runner_name | length > 0
+      - gitlab_runner_podman_socket_enabled is boolean
+      - gitlab_runner_registration_extra_args is sequence
+      - gitlab_runner_registration_extra_args is not string
+    fail_msg: >-
+      GitLab Runner registration inputs and socket settings must use the
+      documented types and required values.
+
+- name: Validate GitLab Runner Podman socket contract
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_executor == 'docker'
+      - podman_host_socket_enabled | default(false) | bool
+      - gitlab_runner_podman_socket_host_path is string
+      - gitlab_runner_podman_socket_host_path.startswith('/')
+      - not gitlab_runner_podman_socket_host_path.endswith('/')
+      - gitlab_runner_podman_socket_host_path.endswith('.sock')
+      - "':' not in gitlab_runner_podman_socket_host_path"
+      - "'\n' not in gitlab_runner_podman_socket_host_path"
+      - "'\r' not in gitlab_runner_podman_socket_host_path"
+      - "'/../' not in gitlab_runner_podman_socket_host_path"
+      - not gitlab_runner_podman_socket_host_path.endswith('/..')
+      - gitlab_runner_podman_socket_container_path is string
+      - gitlab_runner_podman_socket_container_path.startswith('/')
+      - not gitlab_runner_podman_socket_container_path.endswith('/')
+      - gitlab_runner_podman_socket_container_path.endswith('.sock')
+      - "':' not in gitlab_runner_podman_socket_container_path"
+      - "'\n' not in gitlab_runner_podman_socket_container_path"
+      - "'\r' not in gitlab_runner_podman_socket_container_path"
+      - "'/../' not in gitlab_runner_podman_socket_container_path"
+      - not gitlab_runner_podman_socket_container_path.endswith('/..')
+    fail_msg: >-
+      The manager-only Podman socket requires the Docker executor, an enabled
+      role-managed Podman socket, and safe absolute .sock paths.
+  when: gitlab_runner_podman_socket_enabled | bool
+
+- name: Validate GitLab Runner Docker executor contract
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_podman_socket_enabled | bool
+      - gitlab_runner_docker_host == 'unix://' ~ gitlab_runner_podman_socket_container_path
+      - gitlab_runner_docker_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
+      - gitlab_runner_docker_pull_policy == 'always'
+      - gitlab_runner_docker_network_per_build is boolean
+      - gitlab_runner_docker_network_per_build
+      - gitlab_runner_docker_volumes is sequence
+      - gitlab_runner_docker_volumes is not string
+      - gitlab_runner_docker_volumes | length > 0
+    fail_msg: >-
+      Docker executor mode requires the manager-only Podman socket, its exact
+      unix endpoint, an immutable sha256 image, always-pull policy, per-build
+      networking, and container-only volumes.
+  when: gitlab_runner_executor == 'docker'
+
+- name: Validate GitLab Runner Docker container-only volumes
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item.startswith('/')
+      - "':' not in item"
+      - "'\n' not in item"
+      - "'\r' not in item"
+      - "'/../' not in item"
+      - not item.endswith('/..')
+      - "'docker.sock' not in item | lower"
+      - "'podman.sock' not in item | lower"
+    fail_msg: >-
+      Docker executor volumes must be container-only absolute paths; host bind
+      mounts and Docker or Podman sockets are not allowed.
+  loop: "{{ gitlab_runner_docker_volumes }}"
+  when: gitlab_runner_executor == 'docker'
+
+- name: Reject role-managed registration overrides
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item not in ['-c', '-n', '-r', '-t', '-u', '--config', '--description', '--executor', '--name', '--non-interactive', '--registration-token', '--tls-ca-file', '--token', '--url']
+      - not (item | string).startswith('-c')
+      - not (item | string).startswith('-n')
+      - not (item | string).startswith('-r')
+      - not (item | string).startswith('-t')
+      - not (item | string).startswith('-u')
+      - not (item | string).startswith('--config=')
+      - not (item | string).startswith('--description=')
+      - not (item | string).startswith('--executor=')
+      - not (item | string).startswith('--name=')
+      - not (item | string).startswith('--registration-token=')
+      - not (item | string).startswith('--tls-ca-file=')
+      - not (item | string).startswith('--token=')
+      - not (item | string).startswith('--url=')
+    fail_msg: >-
+      Runner configuration path, identity, executor, GitLab connection, and
+      authentication options are managed by typed role variables and cannot be
+      overridden through gitlab_runner_registration_extra_args.
+  loop: "{{ gitlab_runner_registration_extra_args }}"
+
+- name: Reject unsafe Docker registration overrides
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - not (item | string).startswith('--docker-')
+      - item != '--feature-flags'
+      - not (item | string).startswith('--feature-flags=')
+      - "'docker.sock' not in item | string | lower"
+      - "'podman.sock' not in item | string | lower"
+    fail_msg: >-
+      Docker executor and feature-flag options are managed by typed role
+      variables and cannot be overridden through
+      gitlab_runner_registration_extra_args.
+  loop: "{{ gitlab_runner_registration_extra_args }}"
+  when: gitlab_runner_executor == 'docker'

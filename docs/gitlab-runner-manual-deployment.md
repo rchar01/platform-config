@@ -6,7 +6,7 @@ It is intended for a controlled migration or a host that cannot use the normal
 inventory workflow. Prefer the role for hosts that remain managed by
 `platform-config`.
 
-The current design runs GitLab Runner as a system Podman Quadlet with:
+The default design runs GitLab Runner as a system Podman Quadlet with:
 
 - `docker.io/gitlab/gitlab-runner:alpine-v18.11.3`;
 - the shell executor;
@@ -25,6 +25,10 @@ A runner tagged `k8s` is intended for Kubernetes-related jobs, but it is not a
 GitLab Kubernetes executor. Shell jobs run inside the persistent runner
 container. The `image:` keyword in `.gitlab-ci.yml` does not provide a job
 image to the shell executor.
+
+The role also provides an explicit Podman-backed Docker executor. It keeps the
+same permanent manager Quadlet but creates disposable build, helper, and service
+containers for jobs. Only the manager receives the rootful Podman API socket.
 
 ## Scope And Security
 
@@ -220,6 +224,63 @@ WantedBy=multi-user.target
 The `:Z` labels are required for these private SELinux bind mounts on the
 supported Rocky Linux hosts.
 
+### Optional Podman-Backed Docker Executor
+
+Use this mode only for a protected runner serving trusted projects. The rootful
+Podman API is host-root-equivalent if the manager is compromised.
+
+Enable the system socket:
+
+```bash
+sudo dnf install -y podman
+sudo systemctl enable --now podman.socket
+```
+
+GitLab documents `podman-plugins` as required for service-container network
+aliases. The qualified Rocky Linux 10.1 repositories do not currently provide
+that package, so do not use service aliases until an approved package source is
+available.
+
+Register one Docker executor with an immutable fallback image:
+
+```bash
+sudo podman run --rm -it \
+  --entrypoint gitlab-runner \
+  --volume /etc/gitlab-runner:/etc/gitlab-runner:Z \
+  --volume /var/lib/gitlab-runner:/home/gitlab-runner:Z \
+  docker.io/gitlab/gitlab-runner:alpine-v18.11.3 \
+  register \
+  --url https://gitlab.example.test \
+  --name example-k8s-runner-01 \
+  --executor docker \
+  --docker-host unix:///run/podman/podman.sock \
+  --docker-image docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 \
+  --docker-pull-policy always \
+  --docker-volumes /cache \
+  --feature-flags FF_NETWORK_PER_BUILD:true
+```
+
+Add the socket to the manager Quadlet, not to Docker job volumes:
+
+```ini
+[Container]
+Image=docker.io/gitlab/gitlab-runner:alpine-v18.11.3
+ContainerName=gitlab-runner
+Volume=/etc/gitlab-runner:/etc/gitlab-runner:Z
+Volume=/var/lib/gitlab-runner:/home/gitlab-runner:Z
+Volume=/run/podman/podman.sock:/run/podman/podman.sock
+SecurityLabelDisable=true
+```
+
+Do not add either socket path to `[runners.docker].volumes`. Mounting a Unix
+socket read-only does not make its API read-only. A job with the rootful socket
+could create privileged containers or mount host paths even when its own
+`privileged` setting is false.
+
+The manager automatically creates and removes per-job containers. Job
+containers receive GitLab's temporary `CI_JOB_TOKEN`, not the manager's runner
+authentication token or `/etc/gitlab-runner/config.toml`.
+
 ## 7. Start And Verify The Service
 
 Generate the systemd unit and start it:
@@ -269,9 +330,10 @@ project assignment have been validated.
 ## 9. Provide Kubernetes Tooling Deliberately
 
 The repository does not install `kubectl`, Helm, or other deployment tools in
-the runner image. It also does not mount a container-runtime socket. Because
-this is a shell executor, a job-level `image:` declaration does not add those
-tools.
+the manager image. In default shell mode, a job-level `image:` declaration does
+not add those tools. In Docker mode, select a qualified digest-pinned job image
+that contains the required tools; the manager socket still remains unavailable
+inside that job.
 
 Before running Kubernetes jobs, choose and qualify one explicit approach:
 
@@ -318,6 +380,10 @@ The manual values correspond to these role variables:
 | Optional CA source | `gitlab_runner_tls_ca_cert_src` |
 | Configuration directory | `gitlab_runner_config_dir` |
 | Data directory | `gitlab_runner_data_dir` |
+| Manager Podman socket | `gitlab_runner_podman_socket_enabled` |
+| Docker API endpoint | `gitlab_runner_docker_host` |
+| Docker fallback image | `gitlab_runner_docker_image` |
+| Docker pull policy | `gitlab_runner_docker_pull_policy` |
 | Additional registration flags | `gitlab_runner_registration_extra_args` |
 
 Runner tags must be configured on the pre-created runner in GitLab. A host that

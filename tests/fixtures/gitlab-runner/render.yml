@@ -1,0 +1,49 @@
+---
+- name: Render GitLab Runner role fixtures
+  hosts: localhost
+  gather_facts: false
+  vars:
+    gitlab_runner_role_dir: "{{ playbook_dir }}/../../../roles/gitlab_runner"
+    gitlab_runner_test_executor: shell
+    gitlab_runner_test_socket_enabled: false
+    gitlab_runner_test_podman_socket_enabled: false
+    gitlab_runner_test_socket_host_path: /run/podman/podman.sock
+    gitlab_runner_test_socket_container_path: /run/podman/podman.sock
+    gitlab_runner_test_docker_host: unix:///run/podman/podman.sock
+    gitlab_runner_test_docker_image: ""
+    gitlab_runner_test_docker_pull_policy: always
+    gitlab_runner_test_network_per_build: true
+    gitlab_runner_test_docker_volumes:
+      - /cache
+    gitlab_runner_test_registration_extra_args: []
+  tasks:
+    - name: Load GitLab Runner role defaults
+      ansible.builtin.include_vars:
+        file: "{{ gitlab_runner_role_dir }}/defaults/main.yml"
+
+    - name: Configure GitLab Runner render fixture inputs
+      ansible.builtin.set_fact:
+        gitlab_runner_gitlab_url: https://gitlab.example.invalid
+        gitlab_runner_token_src: /outside-git/gitlab-runner.token
+        gitlab_runner_name: example-runner
+        gitlab_runner_executor: "{{ gitlab_runner_test_executor }}"
+        gitlab_runner_podman_socket_enabled: "{{ gitlab_runner_test_socket_enabled }}"
+        podman_host_socket_enabled: "{{ gitlab_runner_test_podman_socket_enabled }}"
+        gitlab_runner_podman_socket_host_path: "{{ gitlab_runner_test_socket_host_path }}"
+        gitlab_runner_podman_socket_container_path: "{{ gitlab_runner_test_socket_container_path }}"
+        gitlab_runner_docker_host: "{{ gitlab_runner_test_docker_host }}"
+        gitlab_runner_docker_image: "{{ gitlab_runner_test_docker_image }}"
+        gitlab_runner_docker_pull_policy: "{{ gitlab_runner_test_docker_pull_policy }}"
+        gitlab_runner_docker_network_per_build: "{{ gitlab_runner_test_network_per_build }}"
+        gitlab_runner_docker_volumes: "{{ gitlab_runner_test_docker_volumes }}"
+        gitlab_runner_registration_extra_args: "{{ gitlab_runner_test_registration_extra_args }}"
+
+    - name: Validate GitLab Runner render fixture inputs
+      ansible.builtin.include_tasks: "{{ gitlab_runner_role_dir }}/tasks/validate.yml"
+
+    - name: Render GitLab Runner Quadlet fixture
+      ansible.builtin.template:
+        src: "{{ gitlab_runner_role_dir }}/templates/gitlab-runner.container.j2"
+        dest: "{{ gitlab_runner_test_output_path }}"
+        mode: "0600"
+      when: gitlab_runner_test_output_path | default('') | length > 0

@@ -1,52 +1,7 @@
 ---
-- name: Assert GitLab Runner registration inputs are configured
-  ansible.builtin.assert:
-    that:
-      - gitlab_runner_gitlab_url | length > 0
-      - gitlab_runner_token_src | length > 0
-      - gitlab_runner_name | length > 0
-    fail_msg: "gitlab_runner_gitlab_url, gitlab_runner_token_src, and gitlab_runner_name are required."
-
-- name: Check GitLab Runner token source on control node
-  ansible.builtin.stat:
-    path: "{{ gitlab_runner_token_src }}"
-  delegate_to: localhost
-  become: false
-  vars:
-    ansible_become: false
-  register: gitlab_runner_token_src_stat
-
-- name: Assert GitLab Runner token source exists on control node
-  ansible.builtin.assert:
-    that:
-      - gitlab_runner_token_src_stat.stat.exists
-      - gitlab_runner_token_src_stat.stat.isreg
-    fail_msg: "GitLab Runner token file does not exist on the control node: {{ gitlab_runner_token_src }}"
-
-- name: Assert GitLab Runner token source permissions are private
-  ansible.builtin.assert:
-    that:
-      - gitlab_runner_token_src_stat.stat.mode is match('^0?[46]00$')
-    fail_msg: "GitLab Runner token file should be readable only by its owner: {{ gitlab_runner_token_src }}"
-  when: gitlab_runner_token_src_stat.stat.exists
-
-- name: Assert GitLab Runner TLS CA source exists when configured
-  ansible.builtin.stat:
-    path: "{{ gitlab_runner_tls_ca_cert_src }}"
-  delegate_to: localhost
-  become: false
-  vars:
-    ansible_become: false
-  register: gitlab_runner_tls_ca_cert_src_stat
-  when: gitlab_runner_tls_ca_cert_src | length > 0
-
-- name: Validate GitLab Runner TLS CA source
-  ansible.builtin.assert:
-    that:
-      - gitlab_runner_tls_ca_cert_src_stat.stat.exists
-      - gitlab_runner_tls_ca_cert_src_stat.stat.isreg
-    fail_msg: "GitLab Runner TLS CA certificate file does not exist on the control node: {{ gitlab_runner_tls_ca_cert_src }}"
-  when: gitlab_runner_tls_ca_cert_src | length > 0
+- name: Preflight GitLab Runner configuration
+  ansible.builtin.include_tasks: preflight.yml
+  when: not gitlab_runner_preflight_complete | default(false) | bool
 
 - name: Ensure GitLab Runner directories exist
   ansible.builtin.file:
@@ -73,59 +28,208 @@
   notify: Restart GitLab Runner
   when: gitlab_runner_tls_ca_cert_src | length > 0
 
-- name: Check GitLab Runner configuration file
+- name: Check role-managed Podman socket
   ansible.builtin.stat:
-    path: "{{ gitlab_runner_config_path }}"
-  register: gitlab_runner_config_stat
+    path: "{{ gitlab_runner_podman_socket_host_path }}"
+  register: gitlab_runner_podman_socket_stat
+  when:
+    - gitlab_runner_podman_socket_enabled | bool
+    - not ansible_check_mode
 
-- name: Stop GitLab Runner before forced re-registration
-  ansible.builtin.systemd_service:
-    name: "{{ gitlab_runner_service_name }}"
-    state: stopped
-  failed_when: false
+- name: Assert role-managed Podman socket is available
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_podman_socket_stat.stat.exists
+      - gitlab_runner_podman_socket_stat.stat.issock
+    fail_msg: >-
+      The enabled Podman API socket is not available at
+      {{ gitlab_runner_podman_socket_host_path }}.
+  when:
+    - gitlab_runner_podman_socket_enabled | bool
+    - not ansible_check_mode
+
+- name: Prepare GitLab Runner configuration backup
   when:
     - gitlab_runner_force_register | bool
     - gitlab_runner_config_stat.stat.exists
     - not ansible_check_mode
+  block:
+    - name: Create temporary GitLab Runner configuration backup
+      ansible.builtin.tempfile:
+        state: file
+        path: "{{ gitlab_runner_config_dir }}"
+        prefix: .config.toml.ansible-
+      register: gitlab_runner_config_backup
+      no_log: true
 
-- name: Remove GitLab Runner configuration before forced re-registration
-  ansible.builtin.file:
-    path: "{{ gitlab_runner_config_path }}"
-    state: absent
-  when:
-    - gitlab_runner_force_register | bool
-    - gitlab_runner_config_stat.stat.exists
+    - name: Back up GitLab Runner configuration before forced re-registration
+      ansible.builtin.copy:
+        src: "{{ gitlab_runner_config_path }}"
+        dest: "{{ gitlab_runner_config_backup.path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
 
-- name: Refresh GitLab Runner configuration file state
-  ansible.builtin.stat:
-    path: "{{ gitlab_runner_config_path }}"
-  register: gitlab_runner_config_stat_after_force
+    - name: Mark GitLab Runner configuration backup ready
+      ansible.builtin.set_fact:
+        gitlab_runner_config_backup_ready: true
+      changed_when: false
+  rescue:
+    - name: Remove incomplete GitLab Runner configuration backup
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_config_backup.path }}"
+        state: absent
+      when: gitlab_runner_config_backup.path is defined
+      no_log: true
 
-- name: Register GitLab Runner with pre-created token
-  ansible.builtin.command:
-    argv: >-
-      {{
-        [
-          'podman', 'run', '--rm',
-          '--entrypoint', 'gitlab-runner',
-          '--volume', gitlab_runner_config_dir ~ ':/etc/gitlab-runner:' ~ gitlab_runner_quadlet_volume_label,
-          '--volume', gitlab_runner_data_dir ~ ':/home/gitlab-runner:' ~ gitlab_runner_quadlet_volume_label,
-          gitlab_runner_image,
-          'register',
-          '--non-interactive',
-          '--url', gitlab_runner_gitlab_url,
-          '--token', lookup('ansible.builtin.file', gitlab_runner_token_src) | trim,
-          '--name', gitlab_runner_name,
-          '--executor', gitlab_runner_executor
-        ]
-        + ([ '--tls-ca-file', gitlab_runner_container_tls_ca_cert_path ] if gitlab_runner_tls_ca_cert_src | length > 0 else [])
-        + gitlab_runner_registration_extra_args
-      }}
-  no_log: true
-  changed_when: true
-  when:
-    - not gitlab_runner_config_stat_after_force.stat.exists
-    - not ansible_check_mode
+    - name: Report GitLab Runner backup preparation failure
+      ansible.builtin.fail:
+        msg: "Unable to create the root-only GitLab Runner migration backup."
+
+- name: Converge GitLab Runner registration
+  block:
+    - name: Stop GitLab Runner before forced re-registration
+      ansible.builtin.systemd_service:
+        name: "{{ gitlab_runner_service_name }}"
+        state: stopped
+      when:
+        - gitlab_runner_force_register | bool
+        - gitlab_runner_config_stat.stat.exists
+        - not ansible_check_mode
+
+    - name: Remove GitLab Runner configuration before forced re-registration
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_config_path }}"
+        state: absent
+      when:
+        - gitlab_runner_force_register | bool
+        - gitlab_runner_config_stat.stat.exists
+
+    - name: Refresh GitLab Runner configuration file state
+      ansible.builtin.stat:
+        path: "{{ gitlab_runner_config_path }}"
+      register: gitlab_runner_config_stat_after_force
+
+    - name: Register GitLab Runner with pre-created token
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'podman', 'run', '--rm',
+              '--entrypoint', 'gitlab-runner',
+              '--volume', gitlab_runner_config_dir ~ ':/etc/gitlab-runner:' ~ gitlab_runner_quadlet_volume_label,
+              '--volume', gitlab_runner_data_dir ~ ':/home/gitlab-runner:' ~ gitlab_runner_quadlet_volume_label,
+              gitlab_runner_image,
+              'register',
+              '--non-interactive',
+              '--url', gitlab_runner_gitlab_url,
+              '--token', gitlab_runner_registration_token,
+              '--name', gitlab_runner_name,
+              '--executor', gitlab_runner_executor
+            ]
+            + ([ '--tls-ca-file', gitlab_runner_container_tls_ca_cert_path ] if gitlab_runner_tls_ca_cert_src | length > 0 else [])
+            + (
+                [
+                  '--docker-host', gitlab_runner_docker_host,
+                  '--docker-image', gitlab_runner_docker_image,
+                  '--docker-privileged=false',
+                  '--docker-services_privileged=false',
+                  '--docker-pull-policy', gitlab_runner_docker_pull_policy,
+                  '--feature-flags', 'FF_NETWORK_PER_BUILD:' ~ (gitlab_runner_docker_network_per_build | string | lower)
+                ]
+                + (['--docker-volumes'] | product(gitlab_runner_docker_volumes) | flatten)
+              if gitlab_runner_executor == 'docker' else [])
+            + gitlab_runner_registration_extra_args
+          }}
+      no_log: true
+      changed_when: true
+      register: gitlab_runner_registration_result
+      when:
+        - not gitlab_runner_config_stat_after_force.stat.exists
+        - not ansible_check_mode
+
+    - name: Read registered GitLab Runner contract
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - >-
+            import json, pathlib, sys, tomllib;
+            data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text());
+            print(json.dumps([{'name': item.get('name'), 'url': item.get('url'),
+            'tls_ca_file': item.get('tls-ca-file'),
+            'executor': item.get('executor'),
+            'docker': {'host': (item.get('docker') or {}).get('host'),
+            'image': (item.get('docker') or {}).get('image'),
+            'privileged': (item.get('docker') or {}).get('privileged'),
+            'services_privileged': (item.get('docker') or {}).get('services_privileged'),
+            'allowed_privileged_services': (item.get('docker') or {}).get('allowed_privileged_services'),
+            'pull_policy': (item.get('docker') or {}).get('pull_policy'),
+            'volumes': (item.get('docker') or {}).get('volumes')},
+            'network_per_build': (item.get('feature_flags') or {}).get('FF_NETWORK_PER_BUILD')}
+            for item in data.get('runners', [])]))
+          - "{{ gitlab_runner_config_path }}"
+      check_mode: false
+      changed_when: false
+      register: gitlab_runner_registered_contract_command
+      when:
+        - gitlab_runner_registration_result is changed
+        - not ansible_check_mode
+
+    - name: Validate registered GitLab Runner contract
+      ansible.builtin.assert:
+        that:
+          - gitlab_runner_registered_contract_command.stdout | from_json | length == 1
+          - (gitlab_runner_registered_contract_command.stdout | from_json | first).name == gitlab_runner_name
+          - (gitlab_runner_registered_contract_command.stdout | from_json | first).url == gitlab_runner_gitlab_url
+          - >-
+            (gitlab_runner_registered_contract_command.stdout | from_json | first).tls_ca_file
+            == (gitlab_runner_container_tls_ca_cert_path if gitlab_runner_tls_ca_cert_src | length > 0 else none)
+          - (gitlab_runner_registered_contract_command.stdout | from_json | first).executor == gitlab_runner_executor
+          - >-
+            gitlab_runner_executor != 'docker'
+            or (
+              (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.host == gitlab_runner_docker_host
+              and (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.image == gitlab_runner_docker_image
+              and (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.privileged == false
+              and (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.services_privileged == false
+              and (
+                (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.allowed_privileged_services == none
+                or (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.allowed_privileged_services == []
+              )
+              and (
+                (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.pull_policy == gitlab_runner_docker_pull_policy
+                or (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.pull_policy == [gitlab_runner_docker_pull_policy]
+              )
+              and (gitlab_runner_registered_contract_command.stdout | from_json | first).docker.volumes == gitlab_runner_docker_volumes
+              and (gitlab_runner_registered_contract_command.stdout | from_json | first).network_per_build == true
+            )
+        fail_msg: >-
+          GitLab Runner registration did not generate the declared executor
+          contract.
+      when:
+        - gitlab_runner_registration_result is changed
+        - not ansible_check_mode
+
+  rescue:
+    - name: Remove failed GitLab Runner configuration without previous state
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_config_path }}"
+        state: absent
+      when:
+        - not gitlab_runner_config_backup_ready | default(false) | bool
+        - not gitlab_runner_config_stat.stat.exists
+
+    - name: Roll back failed GitLab Runner registration
+      ansible.builtin.include_tasks: rollback.yml
+
+    - name: Report restored failed GitLab Runner registration
+      ansible.builtin.fail:
+        msg: >-
+          GitLab Runner registration failed. Automatic rollback was attempted;
+          recovery artifacts were retained if any rollback step failed.
 
 - name: Write GitLab Runner Quadlet unit
   ansible.builtin.template:
@@ -151,3 +255,16 @@
     enabled: "{{ gitlab_runner_service_enabled }}"
     state: "{{ gitlab_runner_service_state }}"
   when: not (ansible_check_mode and gitlab_runner_quadlet_result is changed)
+
+- name: Run standalone GitLab Runner handlers before backup cleanup
+  ansible.builtin.meta: flush_handlers
+  when: not gitlab_runner_defer_backup_cleanup | bool
+
+- name: Remove standalone migration backup after successful convergence
+  ansible.builtin.file:
+    path: "{{ gitlab_runner_config_backup.path }}"
+    state: absent
+  when:
+    - gitlab_runner_config_backup_ready | default(false) | bool
+    - not gitlab_runner_defer_backup_cleanup | bool
+  no_log: true

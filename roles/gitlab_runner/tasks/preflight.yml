@@ -1,0 +1,235 @@
+---
+- name: Validate GitLab Runner inputs
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Check GitLab Runner token source on control node
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_token_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: gitlab_runner_token_src_stat
+
+- name: Assert GitLab Runner token source exists on control node
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_token_src_stat.stat.exists
+      - gitlab_runner_token_src_stat.stat.isreg
+    fail_msg: "GitLab Runner token file does not exist on the control node: {{ gitlab_runner_token_src }}"
+
+- name: Assert GitLab Runner token source permissions are private
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_token_src_stat.stat.mode is match('^0?[46]00$')
+    fail_msg: "GitLab Runner token file should be readable only by its owner: {{ gitlab_runner_token_src }}"
+  when: gitlab_runner_token_src_stat.stat.exists
+
+- name: Read GitLab Runner token before socket changes
+  ansible.builtin.set_fact:
+    gitlab_runner_registration_token: >-
+      {{ lookup('ansible.builtin.file', gitlab_runner_token_src) | trim }}
+  no_log: true
+
+- name: Assert GitLab Runner TLS CA source exists when configured
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_tls_ca_cert_src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: gitlab_runner_tls_ca_cert_src_stat
+  when: gitlab_runner_tls_ca_cert_src | length > 0
+
+- name: Validate GitLab Runner TLS CA source
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_tls_ca_cert_src_stat.stat.exists
+      - gitlab_runner_tls_ca_cert_src_stat.stat.isreg
+    fail_msg: "GitLab Runner TLS CA certificate file does not exist on the control node: {{ gitlab_runner_tls_ca_cert_src }}"
+  when: gitlab_runner_tls_ca_cert_src | length > 0
+
+- name: Verify GitLab Runner TLS CA is readable before socket changes
+  ansible.builtin.set_fact:
+    gitlab_runner_tls_ca_preflight_digest: >-
+      {{ lookup('ansible.builtin.file', gitlab_runner_tls_ca_cert_src) | hash('sha256') }}
+  no_log: true
+  when: gitlab_runner_tls_ca_cert_src | length > 0
+
+- name: Check GitLab Runner configuration file
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_config_path }}"
+    checksum_algorithm: sha256
+  register: gitlab_runner_config_stat
+
+- name: Check GitLab Runner CA before convergence
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_tls_ca_cert_path }}"
+  register: gitlab_runner_ca_stat_before_convergence
+
+- name: Read existing GitLab Runner CA before convergence
+  ansible.builtin.slurp:
+    src: "{{ gitlab_runner_tls_ca_cert_path }}"
+  register: gitlab_runner_ca_before_convergence
+  when: gitlab_runner_ca_stat_before_convergence.stat.exists
+
+- name: Check GitLab Runner Quadlet before convergence
+  ansible.builtin.stat:
+    path: "{{ gitlab_runner_quadlet_path }}"
+  register: gitlab_runner_quadlet_stat_before_convergence
+
+- name: Read existing GitLab Runner Quadlet before convergence
+  ansible.builtin.slurp:
+    src: "{{ gitlab_runner_quadlet_path }}"
+  register: gitlab_runner_quadlet_before_convergence
+  when: gitlab_runner_quadlet_stat_before_convergence.stat.exists
+
+- name: Read Podman socket enabled state before forced migration
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ podman_host_socket_name | default('podman.socket') }}"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: gitlab_runner_podman_socket_enabled_before_force
+  when:
+    - podman_host_socket_manage | default(true) | bool
+    - not ansible_check_mode
+
+- name: Read Podman socket active state before forced migration
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ podman_host_socket_name | default('podman.socket') }}"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: gitlab_runner_podman_socket_active_before_force
+  when:
+    - podman_host_socket_manage | default(true) | bool
+    - not ansible_check_mode
+
+- name: Validate restorable Podman socket state
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_podman_socket_enabled_before_force.stdout in ['enabled', 'disabled', 'not-found']
+      - gitlab_runner_podman_socket_active_before_force.stdout in ['active', 'inactive', 'unknown']
+    fail_msg: >-
+      Podman socket state must be conventionally enabled, disabled, or absent
+      and active, inactive, or unknown for transactional Runner convergence.
+  when:
+    - podman_host_socket_manage | default(true) | bool
+    - not ansible_check_mode
+
+- name: Read GitLab Runner enabled state before convergence
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ gitlab_runner_service_name }}"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: gitlab_runner_service_enabled_before_convergence
+  when: not ansible_check_mode
+
+- name: Read GitLab Runner active state before convergence
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ gitlab_runner_service_name }}"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: gitlab_runner_service_active_before_convergence
+  when: not ansible_check_mode
+
+- name: Validate restorable GitLab Runner service state
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_service_enabled_before_convergence.stdout in ['enabled', 'disabled', 'generated', 'not-found']
+      - gitlab_runner_service_active_before_convergence.stdout in ['active', 'inactive', 'unknown']
+    fail_msg: >-
+      GitLab Runner service state must be conventionally enabled, disabled,
+      generated, or absent and active, inactive, or unknown for transactional
+      convergence.
+  when: not ansible_check_mode
+
+- name: Read existing GitLab Runner contract for migration safety
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - >-
+        import json, pathlib, sys, tomllib;
+        data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text());
+        print(json.dumps([{'name': item.get('name'), 'url': item.get('url'),
+        'tls_ca_file': item.get('tls-ca-file'),
+        'executor': item.get('executor'),
+        'docker': {'host': (item.get('docker') or {}).get('host'),
+        'image': (item.get('docker') or {}).get('image'),
+        'privileged': (item.get('docker') or {}).get('privileged'),
+        'services_privileged': (item.get('docker') or {}).get('services_privileged'),
+        'allowed_privileged_services': (item.get('docker') or {}).get('allowed_privileged_services'),
+        'pull_policy': (item.get('docker') or {}).get('pull_policy'),
+        'volumes': (item.get('docker') or {}).get('volumes')},
+        'network_per_build': (item.get('feature_flags') or {}).get('FF_NETWORK_PER_BUILD')}
+        for item in data.get('runners', [])]))
+      - "{{ gitlab_runner_config_path }}"
+  check_mode: false
+  changed_when: false
+  register: gitlab_runner_existing_identities_command
+  when:
+    - gitlab_runner_config_stat.stat.exists
+    - not gitlab_runner_force_register | bool
+
+- name: Validate existing GitLab Runner contract before migration
+  ansible.builtin.assert:
+    that:
+      - >-
+        gitlab_runner_existing_identities_command.stdout | from_json | length == 1
+        and (gitlab_runner_existing_identities_command.stdout | from_json | first).name == gitlab_runner_name
+        and (gitlab_runner_existing_identities_command.stdout | from_json | first).url == gitlab_runner_gitlab_url
+        and (
+          (gitlab_runner_existing_identities_command.stdout | from_json | first).tls_ca_file
+          == (gitlab_runner_container_tls_ca_cert_path if gitlab_runner_tls_ca_cert_src | length > 0 else none)
+        )
+        and (gitlab_runner_existing_identities_command.stdout | from_json | first).executor == gitlab_runner_executor
+        and (
+          gitlab_runner_executor != 'docker'
+          or (
+            (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.host == gitlab_runner_docker_host
+            and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.image == gitlab_runner_docker_image
+            and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.privileged == false
+            and (
+              (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.services_privileged == false
+              or (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.services_privileged == none
+            )
+            and (
+              (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.allowed_privileged_services == none
+              or (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.allowed_privileged_services == []
+            )
+            and (
+              (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.pull_policy == gitlab_runner_docker_pull_policy
+              or (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.pull_policy == [gitlab_runner_docker_pull_policy]
+            )
+            and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.volumes == gitlab_runner_docker_volumes
+            and (gitlab_runner_existing_identities_command.stdout | from_json | first).network_per_build == true
+          )
+        )
+    fail_msg: >-
+      Existing GitLab Runner configuration does not contain the one declared
+      executor contract. Pause jobs, create a root-only config.toml backup,
+      and run one controlled apply with gitlab_runner_force_register=true.
+  when:
+    - gitlab_runner_config_stat.stat.exists
+    - not gitlab_runner_force_register | bool
+
+- name: Mark GitLab Runner preflight complete
+  ansible.builtin.set_fact:
+    gitlab_runner_preflight_complete: true
+  changed_when: false
