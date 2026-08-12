@@ -2,11 +2,18 @@
 - name: Validate storage volume definitions
   ansible.builtin.include_tasks: validate.yml
 
-- name: Install storage volume packages
+- name: Collect installed storage volume packages
+  ansible.builtin.package_facts:
+    manager: auto
+  when: storage_volumes | length > 0
+
+- name: Install missing storage volume packages
   ansible.builtin.package:
     name: "{{ storage_volume_packages }}"
     state: present
-  when: storage_volumes | length > 0
+  when:
+    - storage_volumes | length > 0
+    - storage_volume_packages | difference(ansible_facts.packages) | length > 0
 
 - name: Initialize reused storage layout state
   ansible.builtin.set_fact:

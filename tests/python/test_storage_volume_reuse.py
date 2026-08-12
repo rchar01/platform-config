@@ -142,6 +142,22 @@ def test_reuse_preflight_precedes_mutation_and_is_read_only(repo_root: Path) -> 
             assert task["changed_when"] is False
 
 
+def test_preinstalled_storage_packages_skip_package_manager(repo_root: Path) -> None:
+    tasks = _load_yaml(repo_root / "roles/storage_volume/tasks/main.yml")
+    package_facts = _task(tasks, "Collect installed storage volume packages")
+    install = _task(tasks, "Install missing storage volume packages")
+
+    assert package_facts["ansible.builtin.package_facts"] == {"manager": "auto"}
+    assert install["ansible.builtin.package"] == {
+        "name": "{{ storage_volume_packages }}",
+        "state": "present",
+    }
+    assert (
+        "storage_volume_packages | difference(ansible_facts.packages) | length > 0"
+        in install["when"]
+    )
+
+
 def test_reuse_mode_guards_all_disk_and_vg_mutators(repo_root: Path) -> None:
     tasks = _load_yaml(repo_root / "roles/storage_volume/tasks/volume.yml")
     partition = _task(tasks, "Create LVM partition for storage volume")
