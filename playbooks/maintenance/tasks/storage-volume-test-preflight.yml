@@ -1,0 +1,172 @@
+---
+- name: Require storage inspection utilities without installing packages
+  ansible.builtin.command:
+    argv:
+      - "{{ storage_volume_test_utility }}"
+      - --help
+  loop:
+    - blkid
+    - findmnt
+    - lsblk
+    - lvs
+    - pvs
+    - realpath
+    - vgs
+    - wipefs
+    - xfs_info
+  loop_control:
+    loop_var: storage_volume_test_utility
+  register: storage_volume_test_utility_checks
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_utility_checks.rc not in [0, 1]
+
+- name: Resolve the reviewed storage fixture device
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ storage_volume_test_device }}"
+  register: storage_volume_test_device_realpath
+  changed_when: false
+  check_mode: false
+
+- name: Inspect pristine storage fixture disk identity
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --bytes
+      - --nodeps
+      - --output
+      - NAME,TYPE,SIZE,SERIAL
+      - "{{ storage_volume_test_device_realpath.stdout | trim }}"
+  register: storage_volume_test_disk_identity
+  changed_when: false
+  check_mode: false
+
+- name: Read the root filesystem source
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --raw
+      - --output
+      - SOURCE
+      - /
+  register: storage_volume_test_root_source
+  changed_when: false
+  check_mode: false
+
+- name: Read complete root block-device ancestry
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --paths
+      - --raw
+      - --noheadings
+      - --inverse
+      - --output
+      - NAME
+      - "{{ storage_volume_test_root_source.stdout | trim }}"
+  register: storage_volume_test_root_ancestry
+  changed_when: false
+  check_mode: false
+
+- name: Inspect all storage fixture descendants and mounts
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --bytes
+      - --output
+      - NAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINTS
+      - "{{ storage_volume_test_device_realpath.stdout | trim }}"
+  register: storage_volume_test_pristine_topology
+  changed_when: false
+  check_mode: false
+
+- name: Inspect pristine storage fixture blkid signatures
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - "{{ storage_volume_test_device_realpath.stdout | trim }}"
+  register: storage_volume_test_pristine_blkid
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_pristine_blkid.rc not in [0, 2]
+
+- name: Inspect pristine storage fixture wipefs signatures
+  ansible.builtin.command:
+    argv:
+      - wipefs
+      - --no-act
+      - --noheadings
+      - "{{ storage_volume_test_device_realpath.stdout | trim }}"
+  register: storage_volume_test_pristine_wipefs
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_pristine_wipefs.rc != 0
+
+- name: Check expected storage fixture partition path
+  ansible.builtin.stat:
+    path: "{{ storage_volume_test_pv_device }}"
+  register: storage_volume_test_expected_partition
+  check_mode: false
+
+- name: Inspect unexpected storage fixture volume group
+  ansible.builtin.command:
+    argv:
+      - vgs
+      - --noheadings
+      - "{{ storage_volume_test_vg_name }}"
+  register: storage_volume_test_pristine_vg
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_pristine_vg.rc not in [0, 5]
+
+- name: Inspect expected storage fixture mountpoints
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --mountpoint
+      - "{{ storage_volume_test_mountpoint }}"
+  loop:
+    - "{{ storage_volume_test_baseline_mountpoint }}"
+    - "{{ storage_volume_test_added_mountpoint }}"
+  loop_control:
+    loop_var: storage_volume_test_mountpoint
+  register: storage_volume_test_pristine_mounts
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_pristine_mounts.rc not in [0, 1]
+
+- name: Require completely pristine storage fixture state
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_device_realpath.stdout | trim | length > 0
+      - storage_volume_test_disk_rows | length == 1
+      - storage_volume_test_disk_rows[0].type == 'disk'
+      - storage_volume_test_disk_rows[0].size | int >= 32 * 1073741824
+      - storage_volume_test_expected_serial | default('') | length == 0 or storage_volume_test_disk_rows[0].serial | default('') == storage_volume_test_expected_serial
+      - storage_volume_test_device_realpath.stdout | trim not in storage_volume_test_root_ancestry.stdout_lines
+      - storage_volume_test_topology_rows | length == 1
+      - storage_volume_test_topology_rows[0].type == 'disk'
+      - storage_volume_test_topology_rows[0].children | default([]) | length == 0
+      - storage_volume_test_topology_rows[0].mountpoints | default([]) | select('string') | list | length == 0
+      - storage_volume_test_pristine_blkid.rc == 2
+      - storage_volume_test_pristine_wipefs.stdout | trim | length == 0
+      - not storage_volume_test_expected_partition.stat.exists
+      - storage_volume_test_pristine_vg.rc == 5
+      - storage_volume_test_pristine_mounts.results | selectattr('rc', 'ne', 1) | list | length == 0
+    fail_msg: >-
+      The storage fixture is not a pristine canonical whole disk of at least 32 GiB,
+      is related to root storage, has children, mounts, signatures, the expected PV
+      partition or VG, or an expected mountpoint is mounted. Recreate the VM; this
+      workflow provides no cleanup or repair path.
+  vars:
+    storage_volume_test_disk_rows: >-
+      {{ (storage_volume_test_disk_identity.stdout | from_json).blockdevices }}
+    storage_volume_test_topology_rows: >-
+      {{ (storage_volume_test_pristine_topology.stdout | from_json).blockdevices }}

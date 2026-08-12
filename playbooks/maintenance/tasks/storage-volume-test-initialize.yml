@@ -1,0 +1,59 @@
+---
+- name: Require normal mode for approved initialization
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+    fail_msg: >-
+      Approved storage fixture initialization is not permitted in check mode.
+
+- name: Rerun pristine checks immediately before initialization
+  ansible.builtin.include_tasks: storage-volume-test-preflight.yml
+
+- name: Create only the baseline storage fixture
+  ansible.builtin.include_role:
+    name: storage_volume
+  vars:
+    storage_volume_layouts:
+      - name: config_test
+        device: "{{ storage_volume_test_device }}"
+        pv_device: "{{ storage_volume_test_pv_device }}"
+        vg_name: "{{ storage_volume_test_vg_name }}"
+        capacity_gib: 32
+        required_free_gib: 12
+        partition_number: "{{ storage_volume_test_partition_number }}"
+        initialize: true
+        reuse_existing_vg: false
+    storage_volumes:
+      - name: config_test_baseline
+        layout: config_test
+        lv_name: baseline
+        size_gib: 8
+        mountpoint: "{{ storage_volume_test_baseline_mountpoint }}"
+
+- name: Write fixed storage fixture baseline sentinel
+  ansible.builtin.copy:
+    dest: "{{ storage_volume_test_baseline_mountpoint }}/.platform-config-storage-volume-test-baseline"
+    content: "platform-config storage-volume-test baseline\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Independently verify baseline-only storage fixture state
+  ansible.builtin.include_tasks: storage-volume-test-verify.yml
+  vars:
+    storage_volume_layouts:
+      - name: config_test
+        device: "{{ storage_volume_test_device }}"
+        pv_device: "{{ storage_volume_test_pv_device }}"
+        vg_name: "{{ storage_volume_test_vg_name }}"
+        capacity_gib: 32
+        required_free_gib: 12
+        partition_number: "{{ storage_volume_test_partition_number }}"
+        initialize: true
+        reuse_existing_vg: false
+    storage_volumes:
+      - name: config_test_baseline
+        layout: config_test
+        lv_name: baseline
+        size_gib: 8
+        mountpoint: "{{ storage_volume_test_baseline_mountpoint }}"

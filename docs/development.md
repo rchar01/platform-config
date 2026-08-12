@@ -57,6 +57,20 @@ make test-openbao-image
 make test-openbao-rocky
 ```
 
+Focused synthetic storage acceptance checks run inside the development
+container and do not contact hosts or mutate disks:
+
+```bash
+./scripts/in-container python -m pytest -q tests/python/test_storage_volume_test_acceptance.py
+./scripts/in-container ansible-playbook -i inventories/config-test/hosts.yml.example playbooks/maintenance/storage-volume-test.yml --syntax-check
+```
+
+These checks cover the isolated inventory, helper rejection paths, approvals,
+playbook contracts, and Make guards. They are not live evidence for partition,
+LVM, XFS, mount, idempotency, or reboot behavior; that evidence requires the
+explicit `storage-test-*` sequence against a disposable fixture described in
+[Storage Volume Acceptance Fixture](storage-volume-test.md).
+
 `ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. These Make targets use the development image through a sanitized test profile: the public repository is mounted read-only at `/workspace`, invocation-local writable state is overlaid at `/workspace/.ansible`, and private configuration, SSH files, the external secret store, the SSH agent, and the Podman socket are not exposed. Their configuration excludes `.ansible/` and the vendored bastion runtime.
 
 `make check-dev-toolchain` reports the Python, pytest, Ansible, lint, shell, crypto, and GNU utility versions used by tests and runs `python -m pip check`. `make check-test-container-profile` verifies the sanitized mount, identity, cache, executable-scratch, and secret-isolation contract. `make check-container-wrapper` verifies success, failure, SIGINT/SIGTERM interruption status, and temporary-state cleanup. All three checks are included in `make verify`.

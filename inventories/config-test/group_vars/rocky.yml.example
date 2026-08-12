@@ -1,0 +1,4 @@
+---
+platform_os_family: rocky
+ssh_server_package: openssh-server
+ssh_service_name: sshd

@@ -1,0 +1,89 @@
+---
+- name: Require normal mode and nonce for approved reboot
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - storage_volume_test_reboot_nonce | default('') is match('^[0-9a-f]{32}$')
+      - ansible_connection | default('ssh') == 'ssh'
+    fail_msg: >-
+      Approved reboot requires a helper-generated nonce, normal mode, and strict SSH.
+
+- name: Verify storage fixture before reboot
+  ansible.builtin.include_tasks: storage-volume-test-verify.yml
+
+- name: Write reboot nonce markers to both storage fixture mounts
+  ansible.builtin.copy:
+    dest: "{{ storage_volume_test_reboot_mountpoint }}/.platform-config-storage-volume-test-reboot"
+    content: "{{ storage_volume_test_reboot_nonce }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - "{{ storage_volume_test_baseline_mountpoint }}"
+    - "{{ storage_volume_test_added_mountpoint }}"
+  loop_control:
+    loop_var: storage_volume_test_reboot_mountpoint
+
+- name: Read boot ID before storage fixture reboot
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/sys/kernel/random/boot_id
+  register: storage_volume_test_boot_id_before
+  changed_when: false
+  check_mode: false
+
+- name: Sync storage fixture markers before reboot
+  ansible.builtin.command:
+    argv:
+      - sync
+  changed_when: false
+  check_mode: false
+
+- name: Reboot storage acceptance fixture
+  ansible.builtin.reboot:
+    reboot_timeout: 300
+    connect_timeout: 10
+    post_reboot_delay: 5
+
+- name: Read boot ID after storage fixture reboot
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/sys/kernel/random/boot_id
+  register: storage_volume_test_boot_id_after
+  changed_when: false
+  check_mode: false
+
+- name: Require a changed storage fixture boot ID
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_boot_id_before.stdout | trim | length > 0
+      - storage_volume_test_boot_id_after.stdout | trim | length > 0
+      - storage_volume_test_boot_id_after.stdout | trim != storage_volume_test_boot_id_before.stdout | trim
+    fail_msg: Storage fixture reboot did not produce a changed boot ID.
+
+- name: Verify storage fixture after reboot
+  ansible.builtin.include_tasks: storage-volume-test-verify.yml
+
+- name: Read reboot nonce markers after storage fixture reboot
+  ansible.builtin.slurp:
+    src: "{{ storage_volume_test_reboot_mountpoint }}/.platform-config-storage-volume-test-reboot"
+  loop:
+    - "{{ storage_volume_test_baseline_mountpoint }}"
+    - "{{ storage_volume_test_added_mountpoint }}"
+  loop_control:
+    loop_var: storage_volume_test_reboot_mountpoint
+  register: storage_volume_test_reboot_markers
+  check_mode: false
+
+- name: Require exact nonce markers after storage fixture reboot
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_reboot_marker.content | b64decode == storage_volume_test_reboot_nonce ~ '\n'
+    fail_msg: >-
+      A storage fixture mount did not preserve its exact reboot nonce marker.
+  loop: "{{ storage_volume_test_reboot_markers.results }}"
+  loop_control:
+    loop_var: storage_volume_test_reboot_marker
+    label: "{{ storage_volume_test_reboot_marker.storage_volume_test_reboot_mountpoint }}"

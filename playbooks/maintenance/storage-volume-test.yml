@@ -1,0 +1,180 @@
+---
+- name: Validate the isolated storage acceptance inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require exactly one storage acceptance fixture
+      ansible.builtin.assert:
+        that:
+          - groups.get('storage_volume_test_hosts', []) | length == 1
+        fail_msg: >-
+          Storage acceptance requires exactly one storage_volume_test_hosts member.
+
+- name: Exercise the isolated storage acceptance fixture
+  hosts: storage_volume_test_hosts
+  gather_facts: false
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Collect controller-side storage acceptance boundary values
+      ansible.builtin.set_fact:
+        storage_volume_test_effective_ssh_options: >-
+          {{
+            [
+              ansible_ssh_args | default(''),
+              ansible_ssh_common_args | default(''),
+              ansible_ssh_extra_args | default(''),
+              lookup('ansible.builtin.env', 'ANSIBLE_SSH_ARGS'),
+              lookup('ansible.builtin.env', 'ANSIBLE_SSH_COMMON_ARGS'),
+              lookup('ansible.builtin.env', 'ANSIBLE_SSH_EXTRA_ARGS')
+            ] | join(' ') | lower
+          }}
+
+    - name: Require the static storage acceptance boundary before approval
+      ansible.builtin.assert:
+        that:
+          - storage_volume_test_supported_boundary | default('') == 'storage-volume-test-helper-v1'
+          - storage_volume_test_operation | default('') in ['preflight', 'initialize', 'check', 'converge', 'reboot']
+          - groups.get('storage_volume_test_hosts', []) | length == 1
+          - ansible_play_hosts_all | length == 1
+          - ansible_play_hosts_all[0] == groups.get('storage_volume_test_hosts', [])[0]
+          - inventory_hostname == storage_volume_test_target_host | default('')
+          - storage_volume_test_device is match('^/dev/disk/by-(id|path)/.+')
+          - storage_volume_test_device == storage_volume_test_target_device | default('')
+          - ansible_connection | default('ssh') == 'ssh'
+          - storage_volume_test_operation not in ['initialize', 'reboot'] or not ansible_check_mode
+          - storage_volume_test_operation != 'reboot' or storage_volume_test_reboot_nonce | default('') is match('^[0-9a-f]{32}$')
+          - ansible_ssh_host_key_checking | default(true) | bool
+          - lookup('ansible.builtin.env', 'ANSIBLE_SSH_HOST_KEY_CHECKING') | default('true', true) | bool
+          - storage_volume_test_effective_ssh_options is not search('strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0)(?=\s|$)')
+          - storage_volume_test_effective_ssh_options is not search('user\s*known\s*hosts\s*file\s*(?:=|\s)\s*/dev/null(?=\s|$)')
+        fail_msg: >-
+          Storage acceptance requires one exact fixture host, its exact stable
+          by-id/by-path device, a fixed operation, normal destructive mode, the
+          supported boundary, and no explicit SSH trust bypass.
+
+    - name: Prompt for exact destructive storage fixture approval
+      ansible.builtin.pause:
+        prompt: >-
+          Type exactly {{ storage_volume_test_operation }}-storage-test-fixture|{{ inventory_hostname }}|{{ storage_volume_test_device }}
+      register: storage_volume_test_destructive_approval
+      when: storage_volume_test_operation in ['initialize', 'reboot']
+
+    - name: Require exact destructive storage fixture approval
+      ansible.builtin.assert:
+        that:
+          - >-
+            storage_volume_test_destructive_approval.user_input
+            == storage_volume_test_operation ~ '-storage-test-fixture|'
+               ~ inventory_hostname ~ '|' ~ storage_volume_test_device
+        fail_msg: Exact destructive storage fixture approval did not match.
+      when: storage_volume_test_operation in ['initialize', 'reboot']
+
+    - name: Read effective Ansible SSH connection plugin configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ lookup('ansible.builtin.env', 'ANSIBLE_CONFIG_CMD') | default('ansible-config', true) }}"
+          - dump
+          - --format
+          - json
+          - --type
+          - connection
+      delegate_to: localhost
+      become: false
+      register: storage_volume_test_connection_config
+      changed_when: false
+      check_mode: false
+
+    - name: Parse effective Ansible SSH connection plugin configuration
+      ansible.builtin.set_fact:
+        storage_volume_test_connection_sections: >-
+          {{ storage_volume_test_connection_config.stdout | from_json | selectattr('ssh', 'defined') | list }}
+
+    - name: Require exactly one effective Ansible SSH connection section
+      ansible.builtin.assert:
+        that:
+          - storage_volume_test_connection_sections | length == 1
+        fail_msg: Effective Ansible SSH connection configuration must contain exactly one ssh section.
+
+    - name: Parse effective Ansible SSH connection settings
+      ansible.builtin.set_fact:
+        storage_volume_test_connection_settings: "{{ storage_volume_test_connection_sections[0].ssh }}"
+
+    - name: Require unique effective Ansible SSH safety settings
+      ansible.builtin.assert:
+        that:
+          - storage_volume_test_connection_settings | selectattr('name', 'equalto', 'host_key_checking') | list | length == 1
+          - storage_volume_test_connection_settings | selectattr('name', 'equalto', 'ssh_args') | list | length == 1
+          - storage_volume_test_connection_settings | selectattr('name', 'equalto', 'ssh_common_args') | list | length == 1
+          - storage_volume_test_connection_settings | selectattr('name', 'equalto', 'ssh_extra_args') | list | length == 1
+        fail_msg: Effective Ansible SSH safety settings are missing or ambiguous.
+
+    - name: Collect effective Ansible SSH connection safety values
+      ansible.builtin.set_fact:
+        storage_volume_test_plugin_host_key_checking: >-
+          {{ (storage_volume_test_connection_settings | selectattr('name', 'equalto', 'host_key_checking') | first).value }}
+        storage_volume_test_plugin_ssh_options: >-
+          {{
+            [
+              (storage_volume_test_connection_settings | selectattr('name', 'equalto', 'ssh_args') | first).value,
+              (storage_volume_test_connection_settings | selectattr('name', 'equalto', 'ssh_common_args') | first).value,
+              (storage_volume_test_connection_settings | selectattr('name', 'equalto', 'ssh_extra_args') | first).value
+            ] | join(' ') | lower
+          }}
+
+    - name: Require safe effective Ansible SSH connection plugin values
+      ansible.builtin.assert:
+        that:
+          - storage_volume_test_plugin_host_key_checking is sameas true
+          - storage_volume_test_plugin_ssh_options is not search('strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0)(?=\s|$)')
+          - storage_volume_test_plugin_ssh_options is not search('user\s*known\s*hosts\s*file\s*(?:=|\s)\s*/dev/null(?=\s|$)')
+        fail_msg: Effective Ansible SSH connection plugin configuration disables strict host-key trust.
+
+    - name: Read effective OpenSSH storage acceptance policy
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -G
+          - -p
+          - "{{ ansible_port | default(22) | string }}"
+          - -l
+          - "{{ ansible_user | default('rocky') }}"
+          - "{{ ansible_host | default(inventory_hostname) }}"
+      delegate_to: localhost
+      become: false
+      register: storage_volume_test_effective_openssh
+      changed_when: false
+      check_mode: false
+
+    - name: Require effective strict storage acceptance SSH policy
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.config', 'HOST_KEY_CHECKING') | bool
+          - storage_volume_test_effective_openssh.stdout | lower is search('(?m)^stricthostkeychecking (yes|ask)$')
+          - storage_volume_test_effective_openssh.stdout | lower is search('(?m)^userknownhostsfile .+$')
+          - storage_volume_test_effective_openssh.stdout | lower is not search('(?m)^userknownhostsfile .*?(?:none|/dev/null)(?:\s|$)')
+        fail_msg: >-
+          Storage acceptance requires effective global Ansible and OpenSSH
+          host-key checking with a real known-hosts file.
+
+  tasks:
+    - name: Run pristine storage acceptance preflight
+      ansible.builtin.include_tasks: tasks/storage-volume-test-preflight.yml
+      when: storage_volume_test_operation == 'preflight'
+
+    - name: Initialize the pristine storage acceptance fixture
+      ansible.builtin.include_tasks: tasks/storage-volume-test-initialize.yml
+      when: storage_volume_test_operation == 'initialize'
+
+    - name: Prove storage check mode is read only
+      ansible.builtin.include_tasks: tasks/storage-volume-test-check.yml
+      when: storage_volume_test_operation == 'check'
+
+    - name: Converge and verify final storage acceptance state
+      ansible.builtin.include_tasks: tasks/storage-volume-test-converge.yml
+      when: storage_volume_test_operation == 'converge'
+
+    - name: Reboot and verify persistent storage acceptance state
+      ansible.builtin.include_tasks: tasks/storage-volume-test-reboot.yml
+      when: storage_volume_test_operation == 'reboot'

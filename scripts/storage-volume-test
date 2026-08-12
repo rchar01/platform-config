@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+
+usage() {
+  printf '%s\n' \
+    'Usage: storage-volume-test {preflight|initialize|check|converge|reboot} --env-file PATH --inventory PATH --limit HOST' >&2
+}
+
+fail() {
+  printf 'storage-volume-test: %s\n' "$1" >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+operation=$1
+shift
+
+case "$operation" in
+  preflight|initialize|check|converge|reboot) ;;
+  *) fail "unsupported subcommand: $operation" ;;
+esac
+
+env_file=""
+inventory=""
+limit=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file)
+      [[ $# -ge 2 ]] || fail "--env-file requires a value"
+      env_file=$2
+      shift 2
+      ;;
+    --inventory)
+      [[ $# -ge 2 ]] || fail "--inventory requires a value"
+      inventory=$2
+      shift 2
+      ;;
+    --limit)
+      [[ $# -ge 2 ]] || fail "--limit requires a value"
+      limit=$2
+      shift 2
+      ;;
+    *) fail "unexpected argument: $1" ;;
+  esac
+done
+
+[[ -n $env_file ]] || fail "explicit --env-file is required"
+[[ -n $inventory ]] || fail "explicit --inventory is required"
+[[ -n $limit ]] || fail "literal nonempty --limit is required"
+[[ -f $env_file ]] || fail "environment file not found: $env_file"
+[[ -f $inventory ]] || fail "inventory not found: $inventory"
+env_file=$(realpath --canonicalize-existing "$env_file")
+inventory=$(realpath --canonicalize-existing "$inventory")
+
+# The environment is explicit operator input and is sourced before resolving the
+# configured Ansible executables.
+# shellcheck disable=SC1090
+source "$env_file"
+
+if [[ -z ${ANSIBLE_CONFIG:-} ]]; then
+  export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
+fi
+
+ansible_inventory=${ANSIBLE_INVENTORY:-ansible-inventory}
+ansible=${ANSIBLE:-ansible}
+ansible_playbook=${ANSIBLE_PLAYBOOK:-ansible-playbook}
+ansible_config_cmd=${ANSIBLE_CONFIG_CMD:-ansible-config}
+python=${PYTHON:-python}
+playbook="$repo_root/playbooks/maintenance/storage-volume-test.yml"
+
+for executable in "$ansible_inventory" "$ansible" "$ansible_playbook" "$ansible_config_cmd" "$python" ssh; do
+  command -v "$executable" >/dev/null 2>&1 || fail "required executable not found: $executable"
+done
+
+inventory_json=$("$ansible_inventory" -i "$inventory" --list)
+if ! fixture_output=$("$python" -c '
+import json, os, re, sys
+
+def unsafe(value):
+    value = str(value or "").lower()
+    strict = r"strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0)(?=\s|$)"
+    known_hosts = r"user\s*known\s*hosts\s*file\s*(?:=|\s)\s*/dev/null(?=\s|$)"
+    return re.search(strict, value) or re.search(known_hosts, value)
+
+def false_value(value):
+    return str(value or "").strip().lower() in {"0", "false", "no", "off"}
+
+data = json.load(sys.stdin)
+hosts = data.get("storage_volume_test_hosts", {}).get("hosts", [])
+if len(hosts) != 1:
+    sys.exit("storage_volume_test_hosts must contain exactly one member")
+host = hosts[0]
+hostvars = data.get("_meta", {}).get("hostvars", {}).get(host, {})
+device = hostvars.get("storage_volume_test_device", "")
+sources = {
+    "inventory ansible_ssh_args": hostvars.get("ansible_ssh_args", ""),
+    "inventory ansible_ssh_common_args": hostvars.get("ansible_ssh_common_args", ""),
+    "inventory ansible_ssh_extra_args": hostvars.get("ansible_ssh_extra_args", ""),
+    "environment ANSIBLE_SSH_ARGS": os.environ.get("ANSIBLE_SSH_ARGS", ""),
+    "environment ANSIBLE_SSH_COMMON_ARGS": os.environ.get("ANSIBLE_SSH_COMMON_ARGS", ""),
+    "environment ANSIBLE_SSH_EXTRA_ARGS": os.environ.get("ANSIBLE_SSH_EXTRA_ARGS", ""),
+}
+host_key_sources = {
+    "inventory ansible_ssh_host_key_checking": hostvars.get("ansible_ssh_host_key_checking", True),
+    "environment ANSIBLE_SSH_HOST_KEY_CHECKING": os.environ.get("ANSIBLE_SSH_HOST_KEY_CHECKING", "true"),
+}
+for name, value in sources.items():
+    if unsafe(value):
+        sys.exit("unsafe SSH host-key option in " + name)
+for name, value in host_key_sources.items():
+    if false_value(value):
+        sys.exit("unsafe SSH host-key setting in " + name)
+print(host)
+print(device)
+print(hostvars.get("ansible_host", host))
+print(hostvars.get("ansible_port", 22))
+print(hostvars.get("ansible_user", ""))
+' <<<"$inventory_json" 2>&1); then
+  fail "$fixture_output"
+fi
+mapfile -t fixture_values <<<"$fixture_output"
+fixture_host=${fixture_values[0]:-}
+fixture_device=${fixture_values[1]:-}
+fixture_address=${fixture_values[2]:-}
+fixture_port=${fixture_values[3]:-}
+fixture_user=${fixture_values[4]:-}
+[[ -n $fixture_host ]] || fail "fixture host could not be resolved"
+[[ -n $fixture_address ]] || fail "fixture SSH address could not be resolved"
+[[ $fixture_port =~ ^[0-9]+$ ]] || fail "fixture SSH port must be numeric"
+[[ $limit == "$fixture_host" ]] || fail "--limit must be the literal fixture host: $fixture_host"
+[[ $fixture_device =~ ^/dev/disk/by-(id|path)/.+ ]] || fail "storage_volume_test_device must be an exact by-id or by-path device"
+
+if [[ $operation != initialize && $operation != reboot ]]; then
+  config_json=$("$ansible_config_cmd" dump --format json)
+  if ! "$python" -c '
+import json, sys
+entries = json.load(sys.stdin)
+matches = [entry for entry in entries if entry.get("name") == "HOST_KEY_CHECKING"]
+if len(matches) != 1 or matches[0].get("value") is not True:
+    sys.exit("effective Ansible HOST_KEY_CHECKING must be true")
+' <<<"$config_json"; then
+    fail "effective Ansible HOST_KEY_CHECKING must be true"
+  fi
+
+  connection_config_json=$("$ansible_config_cmd" dump --format json --type connection)
+  if ! config_error=$("$python" -c '
+import json, re, sys
+
+def unsafe(value):
+    value = str(value or "").lower()
+    strict = r"strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0)(?=\s|$)"
+    known_hosts = r"user\s*known\s*hosts\s*file\s*(?:=|\s)\s*/dev/null(?=\s|$)"
+    return re.search(strict, value) or re.search(known_hosts, value)
+
+plugins = json.load(sys.stdin)
+ssh_sections = [entry["ssh"] for entry in plugins if "ssh" in entry]
+if len(ssh_sections) != 1:
+    sys.exit("effective Ansible SSH connection configuration is unavailable")
+values = {entry.get("name"): entry.get("value", "") for entry in ssh_sections[0]}
+if values.get("host_key_checking") is not True:
+    sys.exit("effective Ansible SSH host_key_checking must be true")
+for name in ("ssh_args", "ssh_common_args", "ssh_extra_args"):
+    if name not in values:
+        sys.exit("effective Ansible SSH option is unavailable: " + name)
+    if unsafe(values[name]):
+        sys.exit("unsafe effective Ansible SSH option: " + name)
+' <<<"$connection_config_json" 2>&1); then
+    fail "$config_error"
+  fi
+
+  ssh_g_args=(-G -p "$fixture_port")
+  if [[ -n $fixture_user ]]; then
+    ssh_g_args+=(-l "$fixture_user")
+  fi
+  ssh_g_output=$(ssh "${ssh_g_args[@]}" "$fixture_address" 2>/dev/null) || \
+    fail "effective OpenSSH configuration is unavailable for $fixture_host"
+  if ! ssh_g_error=$("$python" -c '
+import re, sys
+
+values = {}
+for line in sys.stdin:
+    key, _, value = line.strip().partition(" ")
+    if key:
+        values[key.lower()] = value.strip()
+strict = values.get("stricthostkeychecking", "").lower()
+known_hosts = values.get("userknownhostsfile", "").lower().split()
+if strict not in {"yes", "ask"}:
+    sys.exit("effective OpenSSH StrictHostKeyChecking must be yes or ask")
+if not known_hosts or any(value in {"none", "/dev/null"} for value in known_hosts):
+    sys.exit("effective OpenSSH UserKnownHostsFile must use real files")
+' <<<"$ssh_g_output" 2>&1); then
+    fail "$ssh_g_error"
+  fi
+fi
+
+mapfile -t resolved_hosts < <(
+  "$ansible" -i "$inventory" storage_volume_test_hosts --list-hosts --limit "$limit" |
+    awk 'NR > 1 && NF == 1 { print $1 }'
+)
+[[ ${#resolved_hosts[@]} -eq 1 ]] || fail "--limit must resolve exactly one fixture host"
+[[ ${resolved_hosts[0]} == "$fixture_host" ]] || fail "--limit resolved an unrelated host"
+
+nonce=""
+if [[ $operation == reboot ]]; then
+  nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]')
+  [[ $nonce =~ ^[0-9a-f]{32}$ ]] || fail "failed to generate reboot marker nonce"
+fi
+
+common_args=(
+  -i "$inventory"
+  "$playbook"
+  --limit "$limit"
+  --extra-vars "storage_volume_test_supported_boundary=storage-volume-test-helper-v1"
+  --extra-vars "storage_volume_test_operation=$operation"
+  --extra-vars "storage_volume_test_target_host=$fixture_host"
+  --extra-vars "storage_volume_test_target_device=$fixture_device"
+  --extra-vars "storage_volume_test_reboot_nonce=$nonce"
+)
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/storage-volume-test.XXXXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT
+
+run_playbook() {
+  local output=$1
+  shift
+  local status
+
+  set +e
+  "$ansible_playbook" "${common_args[@]}" "$@" | tee "$output"
+  status=${PIPESTATUS[0]}
+  set -e
+  return "$status"
+}
+
+require_clean_recap() {
+  local output=$1
+  awk -v host="$fixture_host" '
+    /^PLAY RECAP/ { in_recap = 1; next }
+    in_recap && $1 == host && $2 == ":" {
+      rows++
+      delete counters
+      delete seen
+      valid = 1
+      for (i = 3; i <= NF; i++) {
+        split($i, field, "=")
+        if (length(field) != 2 || field[2] !~ /^[0-9]+$/ || seen[field[1]]++) {
+          valid = 0
+        }
+        counters[field[1]] = field[2]
+      }
+      if (valid && seen["changed"] == 1 && seen["failed"] == 1 &&
+          seen["unreachable"] == 1 && seen["ignored"] == 1 &&
+          seen["rescued"] == 1 &&
+          counters["changed"] == "0" && counters["failed"] == "0" &&
+          counters["unreachable"] == "0" && counters["ignored"] == "0" &&
+          counters["rescued"] == "0") {
+        clean++
+      }
+    }
+    END { exit(rows == 1 && clean == 1 ? 0 : 1) }
+  ' "$output" || fail "convergence recap must contain exactly one clean row for $fixture_host with changed, failed, unreachable, ignored, and rescued all zero"
+}
+
+case "$operation" in
+  preflight|initialize)
+    run_playbook "$tmp_dir/$operation.out"
+    ;;
+  check)
+    run_playbook "$tmp_dir/check.out" --check --diff
+    ;;
+  converge)
+    run_playbook "$tmp_dir/converge-first.out"
+    run_playbook "$tmp_dir/converge-second.out"
+    require_clean_recap "$tmp_dir/converge-second.out"
+    ;;
+  reboot)
+    run_playbook "$tmp_dir/reboot.out"
+    common_args=(
+      -i "$inventory"
+      "$playbook"
+      --limit "$limit"
+      --extra-vars "storage_volume_test_supported_boundary=storage-volume-test-helper-v1"
+      --extra-vars "storage_volume_test_operation=converge"
+      --extra-vars "storage_volume_test_target_host=$fixture_host"
+      --extra-vars "storage_volume_test_target_device=$fixture_device"
+      --extra-vars "storage_volume_test_reboot_nonce="
+    )
+    run_playbook "$tmp_dir/reboot-converge.out"
+    require_clean_recap "$tmp_dir/reboot-converge.out"
+    ;;
+esac

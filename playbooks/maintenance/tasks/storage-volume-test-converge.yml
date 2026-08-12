@@ -1,0 +1,7 @@
+---
+- name: Apply final storage fixture inventory contract
+  ansible.builtin.include_role:
+    name: storage_volume
+
+- name: Independently verify final storage fixture state
+  ansible.builtin.include_tasks: storage-volume-test-verify.yml

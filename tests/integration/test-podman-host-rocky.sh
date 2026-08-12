@@ -8,6 +8,7 @@ PODMAN_NEVRA=podman-7:5.8.2-5.el10_2.x86_64
 CONTAINER="platform-config-podman-host-test-$$"
 CONTAINER_CREATED=false
 OVERLAY_DENY_PATH=/etc/modprobe.d/99-external-overlay-deny.conf
+OVERLAY_LATE_ALLOW_PATH=/etc/modprobe.d/zz-overlay-allow.conf
 OVERLAY_UNIT_PATH=/etc/systemd/system/platform-container-runtime-overlayfs-exception.service
 OVERLAY_DENY_CONTENT=$'blacklist overlay\ninstall overlay /bin/false'
 OVERLAY_UNIT_CONTENT=$'[Unit]\nDescription=Platform container runtime OverlayFS policy exception\nDocumentation=man:modprobe(8)\nDefaultDependencies=no\nConflicts=shutdown.target\nBefore=sysinit.target shutdown.target\n\n[Service]\nType=oneshot\nExecStart=/usr/sbin/modprobe --ignore-install overlay\nRemainAfterExit=yes\n\n[Install]\nWantedBy=sysinit.target'
@@ -96,6 +97,17 @@ podman exec "$CONTAINER" python3 -m pip -q install \
 podman exec "$CONTAINER" install -d -m 0755 /etc/modprobe.d
 podman exec "$CONTAINER" bash -c \
   "umask 077 && printf '%s\n' 'blacklist overlay' 'install overlay /bin/false' > '$OVERLAY_DENY_PATH'"
+podman exec "$CONTAINER" bash -c \
+  "umask 077 && printf '%s\n' 'install overlay /bin/true' > '$OVERLAY_LATE_ALLOW_PATH'"
+
+normal_overlay_resolution="$(podman exec "$CONTAINER" modprobe --show-depends overlay)"
+[[ "$normal_overlay_resolution" =~ ^install[[:space:]]+/bin/false[[:space:]]*$ ]] \
+  || fail 'A later modprobe install rule unexpectedly overrode the external deny rule'
+ignore_install_resolution="$(podman exec "$CONTAINER" modprobe --show-depends --ignore-install overlay)"
+[[ "$ignore_install_resolution" != install* ]] \
+  || fail 'modprobe --ignore-install still resolved an install policy command'
+podman exec "$CONTAINER" modprobe --ignore-install overlay \
+  || fail 'Direct modprobe --ignore-install could not load OverlayFS'
 assert_external_deny_preserved
 overlay_module_before_check="$(podman exec "$CONTAINER" test -d /sys/module/overlay && printf loaded || printf absent)"
 

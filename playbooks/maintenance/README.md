@@ -60,3 +60,12 @@ Available maintenance playbooks:
   drift, pauses after an actual restart for the two-custodian manual unseal, and
   requires strict three-voter recovery before advancing. It never initializes or
   unseals OpenBao and is not imported by `site.yml`.
+- `storage-volume-test.yml`: exercises one isolated disposable storage fixture
+  through the supported `scripts/storage-volume-test` boundary. It requires an
+  exact host, stable by-id/by-path disk, strict SSH, and playbook-owned
+  controller-side TTY approvals for initialization and reboot before connection
+  policy evaluation. The helper passes no approval variable, so direct playbook
+  invocation cannot bypass the prompt.
+  It also requires fail-closed pristine/final verification.
+  It provides no cleanup path; recreate the fixture VM on partial or ambiguous
+  state. See [Storage Volume Acceptance Fixture](../../docs/storage-volume-test.md).

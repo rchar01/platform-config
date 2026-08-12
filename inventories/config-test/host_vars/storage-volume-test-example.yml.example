@@ -1,0 +1,30 @@
+---
+storage_volume_test_device: /dev/disk/by-id/scsi-0QEMU_CONFIG_TEST_FIXTURE
+storage_volume_test_pv_device: "{{ storage_volume_test_device }}-part1"
+storage_volume_test_vg_name: config_test
+storage_volume_test_partition_number: 1
+storage_volume_test_baseline_mountpoint: /srv/config-test/baseline
+storage_volume_test_added_mountpoint: /srv/config-test/added
+
+storage_volume_layouts:
+  - name: config_test
+    device: "{{ storage_volume_test_device }}"
+    pv_device: "{{ storage_volume_test_pv_device }}"
+    vg_name: "{{ storage_volume_test_vg_name }}"
+    capacity_gib: 32
+    required_free_gib: 12
+    partition_number: "{{ storage_volume_test_partition_number }}"
+    initialize: false
+    reuse_existing_vg: true
+
+storage_volumes:
+  - name: config_test_baseline
+    layout: config_test
+    lv_name: baseline
+    size_gib: 8
+    mountpoint: "{{ storage_volume_test_baseline_mountpoint }}"
+  - name: config_test_added
+    layout: config_test
+    lv_name: added
+    size_gib: 4
+    mountpoint: "{{ storage_volume_test_added_mountpoint }}"

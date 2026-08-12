@@ -22,6 +22,8 @@ and other secrets belong outside Git.
 
 - [Inventories](inventories.md): Public inventory examples, private inventory
   layout, host groups, and host or group variables.
+- [Storage Volume Acceptance Fixture](storage-volume-test.md): Isolated Phase 2
+  preflight, initialization, check-mode, convergence, and reboot acceptance.
 - [Roles](roles.md): Summary of the Ansible roles and the configuration each role
   owns.
 - [Private Configuration](private-config.md): Short reference for deciding what

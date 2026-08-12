@@ -1,0 +1,21 @@
+---
+- name: Snapshot storage fixture before check mode
+  ansible.builtin.include_tasks: storage-volume-test-snapshot.yml
+
+- name: Preserve storage fixture snapshot before check mode
+  ansible.builtin.set_fact:
+    storage_volume_test_snapshot_before: "{{ storage_volume_test_snapshot }}"
+
+- name: Run final storage role contract in check mode
+  ansible.builtin.include_role:
+    name: storage_volume
+
+- name: Snapshot storage fixture after check mode
+  ansible.builtin.include_tasks: storage-volume-test-snapshot.yml
+
+- name: Require exact storage snapshot equality after check mode
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_snapshot == storage_volume_test_snapshot_before
+    fail_msg: >-
+      Storage state changed during check mode. Recreate the fixture before continuing.
