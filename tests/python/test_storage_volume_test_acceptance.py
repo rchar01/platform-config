@@ -807,9 +807,9 @@ def test_storage_test_check_snapshot_equality_contract(repo_root: Path) -> None:
 
 
 def test_storage_test_verification_and_reboot_contract(repo_root: Path) -> None:
-    verify = (repo_root / "playbooks/maintenance/tasks/storage-volume-test-verify.yml").read_text(
-        encoding="utf-8"
-    )
+    verify_path = repo_root / "playbooks/maintenance/tasks/storage-volume-test-verify.yml"
+    verify = verify_path.read_text(encoding="utf-8")
+    verify_tasks = _load_yaml(verify_path)
     reboot = (repo_root / "playbooks/maintenance/tasks/storage-volume-test-reboot.yml").read_text(
         encoding="utf-8"
     )
@@ -823,6 +823,14 @@ def test_storage_test_verification_and_reboot_contract(repo_root: Path) -> None:
         "root_ancestry",
     ):
         assert required in verify
+    parsed_state = next(
+        task
+        for task in verify_tasks
+        if task["name"] == "Collect parsed final storage fixture state"
+    )["ansible.builtin.set_fact"]
+    assert "storage_volume_test_verify_lv_rows" in parsed_state
+    assert "storage_volume_test_verify_vg_rows" in parsed_state
+    assert "storage_volume_test_verify_uuid_values" in parsed_state
     for required in (
         "storage_volume_test_reboot_nonce",
         "/proc/sys/kernel/random/boot_id",

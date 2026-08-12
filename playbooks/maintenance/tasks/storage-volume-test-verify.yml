@@ -212,6 +212,16 @@
   check_mode: false
   when: storage_volume_test_verify_sentinel.stat.exists
 
+- name: Collect parsed final storage fixture state
+  ansible.builtin.set_fact:
+    storage_volume_test_verify_disk: "{{ storage_volume_test_verify_realpaths.results[0].stdout | trim }}"
+    storage_volume_test_verify_partition: "{{ storage_volume_test_verify_realpaths.results[1].stdout | trim }}"
+    storage_volume_test_verify_block_rows: "{{ (storage_volume_test_verify_topology.stdout | from_json).blockdevices }}"
+    storage_volume_test_verify_pv_rows: "{{ (storage_volume_test_verify_pvs.stdout | from_json).report[0].pv }}"
+    storage_volume_test_verify_vg_rows: "{{ (storage_volume_test_verify_vgs.stdout | from_json).report[0].vg }}"
+    storage_volume_test_verify_lv_rows: "{{ (storage_volume_test_verify_lvs.stdout | from_json).report[0].lv }}"
+    storage_volume_test_verify_uuid_values: "{{ storage_volume_test_verify_uuids.results | map(attribute='stdout') | map('trim') | list }}"
+
 - name: Require exact final storage fixture topology
   ansible.builtin.assert:
     that:
@@ -244,14 +254,6 @@
     fail_msg: >-
       Final fixture topology, one-PV VG identity, exact two-LV allocation, XFS filesystems,
       unique UUIDs, baseline sentinel, root exclusion, or 12 GiB headroom is invalid.
-  vars:
-    storage_volume_test_verify_disk: "{{ storage_volume_test_verify_realpaths.results[0].stdout | trim }}"
-    storage_volume_test_verify_partition: "{{ storage_volume_test_verify_realpaths.results[1].stdout | trim }}"
-    storage_volume_test_verify_block_rows: "{{ (storage_volume_test_verify_topology.stdout | from_json).blockdevices }}"
-    storage_volume_test_verify_pv_rows: "{{ (storage_volume_test_verify_pvs.stdout | from_json).report[0].pv }}"
-    storage_volume_test_verify_vg_rows: "{{ (storage_volume_test_verify_vgs.stdout | from_json).report[0].vg }}"
-    storage_volume_test_verify_lv_rows: "{{ (storage_volume_test_verify_lvs.stdout | from_json).report[0].lv }}"
-    storage_volume_test_verify_uuid_values: "{{ storage_volume_test_verify_uuids.results | map(attribute='stdout') | map('trim') | list }}"
 
 - name: Require extent-aware exact final LV sizes
   ansible.builtin.assert:
