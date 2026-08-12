@@ -33,8 +33,66 @@ def test_public_default_and_podman_dependency(repo_root: Path) -> None:
     )
     metadata = load_yaml(repo_root / "roles/podman_host/meta/main.yml")
 
-    assert defaults == {"container_runtime_overlayfs_policy_exception_enabled": True}
+    assert defaults == {
+        "container_runtime_kernel_packages": ["kmod"],
+        "container_runtime_overlayfs_policy_exception_enabled": True,
+    }
     assert metadata == {"dependencies": [{"role": "container_runtime_kernel"}]}
+
+
+def test_kernel_packages_are_installed_before_module_probes(repo_root: Path) -> None:
+    tasks = load_yaml(repo_root / "roles/container_runtime_kernel/tasks/main.yml")
+    task_names = [task["name"] for task in tasks]
+    package_task = tasks[0]
+
+    assert package_task["name"] == "Install container runtime kernel packages"
+    assert package_task["ansible.builtin.package"] == {
+        "name": "{{ container_runtime_kernel_packages }}",
+        "state": "present",
+    }
+    assert task_names.index("Install container runtime kernel packages") < task_names.index(
+        "Inspect OverlayFS module availability"
+    )
+
+
+def test_fresh_check_mode_defers_unavailable_kernel_commands(repo_root: Path) -> None:
+    tasks = load_yaml(repo_root / "roles/container_runtime_kernel/tasks/main.yml")
+    task_by_name = {task["name"]: task for task in tasks}
+
+    command_check = task_by_name["Inspect container runtime kernel commands"]
+    command_requirement = task_by_name[
+        "Require container runtime kernel commands after package convergence"
+    ]
+    modinfo_probe = task_by_name["Probe modinfo command"]
+    modprobe_probe = task_by_name["Probe modprobe command"]
+    overlay_requirement = task_by_name[
+        "Require OverlayFS support from the running kernel"
+    ]
+
+    assert command_check["loop"] == ["/usr/sbin/modinfo", "/usr/sbin/modprobe"]
+    assert command_check["ansible.builtin.stat"]["follow"] is True
+    assert modinfo_probe["ansible.builtin.command"]["argv"] == [
+        "/usr/sbin/modinfo",
+        "--version",
+    ]
+    assert modinfo_probe["failed_when"] is False
+    assert modprobe_probe["ansible.builtin.command"]["argv"] == [
+        "/usr/sbin/modprobe",
+        "--version",
+    ]
+    assert modprobe_probe["failed_when"] is False
+    assert command_requirement["when"] == "not ansible_check_mode"
+    assert command_requirement["ansible.builtin.assert"]["that"] == [
+        "container_runtime_kernel_command_stats.results[0].stat.isreg | default(false)",
+        "container_runtime_kernel_command_stats.results[0].stat.executable | default(false)",
+        "container_runtime_kernel_command_stats.results[1].stat.isreg | default(false)",
+        "container_runtime_kernel_command_stats.results[1].stat.executable | default(false)",
+        "container_runtime_kernel_modinfo_version.rc | default(1) == 0",
+        "container_runtime_kernel_modprobe_version.rc | default(1) == 0",
+    ]
+    assert overlay_requirement["when"] == [
+        "not ansible_check_mode or container_runtime_kernel_command_stats.results[0].stat.exists or (container_runtime_kernel_overlayfs_module.stat.isdir | default(false))"
+    ]
 
 
 def test_enabled_unit_is_narrow_and_auditable(repo_root: Path) -> None:
@@ -87,6 +145,19 @@ def test_disabled_check_mode_predicts_unit_removal_without_reloading_systemd(
         "container_runtime_kernel_overlayfs_unit.stat.exists | default(false)"
     )
     assert handlers[0]["when"] == "not ansible_check_mode"
+
+
+def test_disabled_fresh_check_mode_defers_absent_modprobe(repo_root: Path) -> None:
+    tasks = load_yaml(repo_root / "roles/container_runtime_kernel/tasks/disabled.yml")
+    task_by_name = {task["name"]: task for task in tasks}
+    command_present = (
+        "container_runtime_kernel_command_stats.results[1].stat.exists"
+    )
+
+    assert task_by_name["Inspect normal modprobe policy"]["when"] == command_present
+    assert task_by_name["Reject normal policy that restricts OverlayFS"]["when"] == [
+        command_present
+    ]
 
 
 def test_rke2_integrates_after_kernel_transition_and_avoids_duplicate_overlay(

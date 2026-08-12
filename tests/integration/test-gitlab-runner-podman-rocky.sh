@@ -52,7 +52,7 @@ if [[ "$system_state" != running && "$system_state" != degraded ]]; then
   fail "Disposable Rocky systemd did not become ready: ${system_state}"
 fi
 
-podman exec "$CONTAINER" dnf -qy install kmod python3-pip >/dev/null
+podman exec "$CONTAINER" dnf -qy install python3-pip >/dev/null
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
