@@ -27,6 +27,9 @@ def rendered_probe(
         "collector": "collect-vip-ownership",
         "service": "platform-external-probe-ownership.service",
         "timer": "platform-external-probe-ownership.timer",
+        "postgresql_collector": "collect-postgresql-primary",
+        "postgresql_service": "platform-external-probe-postgresql-primary.service",
+        "postgresql_timer": "platform-external-probe-postgresql-primary.timer",
     }
     return {name: (output / path).read_text(encoding="utf-8") for name, path in files.items()}
 
@@ -75,7 +78,7 @@ def test_external_probe_fragment_has_strict_blackbox_contract(
         r'\\n  grafana_health:',
         r'\\n  loki_ready:',
         r'\\n  mimir_ready:',
-        r'^prometheus[.]exporter[.]unix "platform_vip_ownership"',
+        r'^prometheus[.]exporter[.]unix "platform_external_probe_textfile"',
     ):
         assert re.search(pattern, fragment, re.MULTILINE), pattern
     assert not re.search(r"insecure_skip_verify: true|clustering", fragment)
@@ -134,6 +137,51 @@ def test_vip_ownership_render_contract(rendered_probe: dict[str, str]) -> None:
     assert re.search(r"^OnUnitActiveSec=5s$", rendered_probe["timer"], re.MULTILINE)
 
 
+def test_postgresql_primary_render_contract(rendered_probe: dict[str, str]) -> None:
+    collector = rendered_probe["postgresql_collector"]
+    for pattern in (
+        r"^#!/bin/bash$",
+        r"PGCONNECT_TIMEOUT=4",
+        r"PGPASSWORD=",
+        r"PGPASSFILE=/dev/null",
+        r"PGGSSENCMODE=disable",
+        r"PGSSLMODE=verify-full",
+        r"PGSSLCERTMODE=require",
+        r"PGREQUIREAUTH=none",
+        r"default_transaction_read_only=on",
+        r"search_path=",
+        r"--no-password",
+        r"--host=postgres[.]example[.]invalid",
+        r"--port=5432",
+        r"--dbname=observer",
+        r"--username=monitoring_probe",
+        r"SELECT NOT pg_catalog[.]pg_is_in_recovery[(][)];",
+        r"platform_postgresql_primary_query_success",
+        r"address_mode=\"vip\"",
+    ):
+        assert re.search(pattern, collector, re.MULTILINE), pattern
+    assert "INSERT" not in collector
+    assert "UPDATE" not in collector
+    assert "DELETE" not in collector
+
+    service = rendered_probe["postgresql_service"]
+    assert re.search(r"^# Managed by platform_external_probe[.]$", service, re.MULTILINE)
+    assert re.search(
+        r"^ExecStartPre=-/usr/bin/rm -f "
+        r"/var/lib/alloy/platform-external-probe/postgresql-primary[.]prom$",
+        service,
+        re.MULTILINE,
+    )
+    assert re.search(r"^TimeoutStartSec=7s$", service, re.MULTILINE)
+    assert re.search(
+        r"^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$", service, re.MULTILINE
+    )
+    assert re.search(r"^ProtectSystem=strict$", service, re.MULTILINE)
+    assert re.search(
+        r"^OnUnitActiveSec=5s$", rendered_probe["postgresql_timer"], re.MULTILINE
+    )
+
+
 @pytest.mark.parametrize(
     ("case_id", "extra_vars"),
     [
@@ -165,7 +213,34 @@ def test_vip_ownership_render_contract(rendered_probe: dict[str, str]) -> None:
         ("profile-authority-space", {"platform_external_probe_test_grafana_address": "https://grafana.example.invalid /api/health"}),
         ("profile-override", {"platform_external_probe_locked_profiles": {}}),
         ("invalid-metrics", {"platform_external_probe_metrics_path": "/tmp/vip-ownership.txt"}),
+        (
+            "disabled-postgres-unit",
+            {
+                "platform_external_probe_enabled": False,
+                "platform_external_probe_postgresql_service_name": "../unrelated.service",
+            },
+        ),
         ("incoherent-timer", {"platform_external_probe_test_timer_enabled": True, "platform_external_probe_test_timer_state": "stopped"}),
+        ("postgres-host-ip", {"platform_external_probe_test_postgresql_host": "192.0.2.200"}),
+        ("postgres-host-numeric", {"platform_external_probe_test_postgresql_host": "999.999.999.999"}),
+        (
+            "postgres-host-long-label",
+            {"platform_external_probe_test_postgresql_host": f"{'a' * 64}.example.invalid"},
+        ),
+        (
+            "postgres-host-long-name",
+            {
+                "platform_external_probe_test_postgresql_host": (
+                    f"{'a' * 63}.{'b' * 63}.{'c' * 63}.{'d' * 61}.invalid"
+                )
+            },
+        ),
+        ("postgres-port", {"platform_external_probe_test_postgresql_port": 5433}),
+        ("postgres-database", {"platform_external_probe_test_postgresql_database": "observer;DROP"}),
+        ("postgres-user", {"platform_external_probe_test_postgresql_user": "monitoring-probe"}),
+        ("postgres-interval", {"platform_external_probe_test_postgresql_timer_interval": "30s"}),
+        ("postgres-connect-timeout", {"platform_external_probe_test_postgresql_connect_timeout": 5}),
+        ("postgres-statement-timeout", {"platform_external_probe_test_postgresql_statement_timeout_ms": 4000}),
     ],
     ids=lambda value: value if isinstance(value, str) else None,
 )
@@ -209,7 +284,15 @@ def test_external_probe_rejects_unsafe_inputs(
         "invalid-metrics": (
             "External probe lifecycle inputs must use safe systemd and absolute path names"
         ),
-    }.get(case_id, "External probes require")
+        "disabled-postgres-unit": (
+            "External probe lifecycle inputs must use safe systemd and absolute path names"
+        ),
+    }.get(
+        case_id,
+        "The PostgreSQL primary probe requires"
+        if case_id.startswith("postgres-")
+        else "External probes require",
+    )
     assert_failed_with(
         run_playbook(
             command_runner,

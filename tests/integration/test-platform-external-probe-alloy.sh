@@ -87,6 +87,23 @@ assert_probe_result() {
     || fail "Alloy blackbox result for ${description} was not ${expected}"
 }
 
+wait_for_postgresql_probe_start() {
+  local state=""
+
+  for _ in {1..50}; do
+    state="$(podman exec "$CONTAINER" systemctl show \
+      --property=SubState --value \
+      platform-external-probe-postgresql-primary.service)"
+    if [[ "$state" == start ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  podman exec "$CONTAINER" systemctl status --no-pager \
+    platform-external-probe-postgresql-primary.service || true
+  fail "PostgreSQL primary collector did not enter the in-flight state: ${state}"
+}
+
 podman run \
   --detach \
   --name "$CONTAINER" \
@@ -145,6 +162,39 @@ done
 podman exec "$CONTAINER" chmod 0600 /etc/platform-test-pki/ca.key \
   /etc/platform-test-pki/server.key /etc/platform-test-pki/wrong.key \
   /etc/platform-test-pki/client.key
+
+# shellcheck disable=SC2016  # Expansion is deferred to the generated stub.
+printf '%s\n' \
+  '#!/bin/bash' \
+  'set -euo pipefail' \
+  'if [[ "${1:-}" == --version ]]; then printf "%s\n" "psql (PostgreSQL) 18.4"; exit 0; fi' \
+  '[[ "$PGAPPNAME" == platform-external-probe ]]' \
+  '[[ "$PGCONNECT_TIMEOUT" == 4 ]]' \
+  '[[ -z "$PGPASSWORD" && "$PGPASSFILE" == /dev/null ]]' \
+  '[[ "$PGGSSENCMODE" == disable && "$PGSSLMODE" == verify-full ]]' \
+  '[[ "$PGSSLCERTMODE" == require && "$PGREQUIREAUTH" == none ]]' \
+  '[[ "$PGSSLROOTCERT" == /etc/platform-test-pki/ca.crt ]]' \
+  '[[ "$PGSSLCERT" == /etc/platform-test-pki/client.crt ]]' \
+  '[[ "$PGSSLKEY" == /etc/platform-test-pki/client.key ]]' \
+  '[[ "$PGOPTIONS" == "-c statement_timeout=3000 -c default_transaction_read_only=on -c search_path=" ]]' \
+  '[[ "$*" == *"--host=postgres.example.invalid"* ]]' \
+  '[[ "$*" == *"--port=5432"* && "$*" == *"--dbname=observer"* ]]' \
+  '[[ "$*" == *"--username=monitoring_probe"* && "$*" == *"--no-password"* ]]' \
+  '[[ "$*" == *"--command=SELECT NOT pg_catalog.pg_is_in_recovery();"* ]]' \
+  'case "$(</tmp/postgresql-probe.state)" in' \
+  '  primary) printf "%s\n" t ;;' \
+  '  recovery) printf "%s\n" f ;;' \
+  '  malformed) printf "%s\n" true ;;' \
+  '  failure) exit 1 ;;' \
+  '  slow) sleep 10; printf "%s\n" t ;;' \
+  '  term-resistant) trap "" TERM; sleep 10; printf "%s\n" t ;;' \
+  '  *) exit 2 ;;' \
+  'esac' \
+  | podman exec --interactive "$CONTAINER" tee \
+    /usr/local/bin/platform-test-psql >/dev/null
+podman exec "$CONTAINER" chmod 0755 /usr/local/bin/platform-test-psql
+printf '%s\n' primary \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
 
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/platform-external-probe/https_fixture.py \
@@ -234,6 +284,100 @@ fi
 if [[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-external-probe-ownership.timer 2>/dev/null)" != disabled ]]; then
   fail 'VIP ownership timer became enabled before observer acceptance'
 fi
+if [[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-external-probe-postgresql-primary.timer 2>/dev/null)" != disabled ]]; then
+  fail 'PostgreSQL primary timer became enabled before observer acceptance'
+fi
+
+if ! podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-postgresql-primary.service; then
+  podman exec "$CONTAINER" systemctl status --no-pager \
+    platform-external-probe-postgresql-primary.service || true
+  fail 'PostgreSQL primary collector service failed'
+fi
+postgresql_metrics="$(podman exec "$CONTAINER" /usr/bin/cat \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom)"
+grep -q 'platform_postgresql_primary{service="postgresql",node="openbao-test-01",environment="test",endpoint="postgresql_primary",address_mode="vip"} 1' \
+  <<<"$postgresql_metrics" \
+  || fail 'PostgreSQL primary collector rejected the exact primary result'
+grep -q 'platform_postgresql_primary_query_success{.*} 1' \
+  <<<"$postgresql_metrics" \
+  || fail 'PostgreSQL primary collector did not report successful exact parsing'
+
+for state in recovery malformed failure; do
+  printf '%s\n' "$state" \
+    | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+  podman exec "$CONTAINER" systemctl start \
+    platform-external-probe-postgresql-primary.service
+  postgresql_metrics="$(podman exec "$CONTAINER" /usr/bin/cat \
+    /var/lib/alloy/platform-external-probe/postgresql-primary.prom)"
+  grep -q 'platform_postgresql_primary{.*} 0' <<<"$postgresql_metrics" \
+    || fail "PostgreSQL primary collector accepted ${state} output"
+  expected_query_success=0
+  if [[ "$state" == recovery ]]; then
+    expected_query_success=1
+  fi
+  grep -q "platform_postgresql_primary_query_success{.*} ${expected_query_success}" \
+    <<<"$postgresql_metrics" \
+    || fail "PostgreSQL primary collector misclassified ${state} query status"
+done
+
+printf '%s\n' slow \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+probe_started="$(date +%s)"
+podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-postgresql-primary.service
+probe_elapsed=$(($(date +%s) - probe_started))
+((probe_elapsed <= 6)) \
+  || fail "PostgreSQL primary collector exceeded its process timeout: ${probe_elapsed}s"
+postgresql_metrics="$(podman exec "$CONTAINER" /usr/bin/cat \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom)"
+grep -q 'platform_postgresql_primary_query_success{.*} 0' \
+  <<<"$postgresql_metrics" \
+  || fail 'PostgreSQL primary collector treated a timeout as query success'
+printf '%s\n' term-resistant \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+probe_started="$(date +%s)"
+podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-postgresql-primary.service
+probe_elapsed=$(($(date +%s) - probe_started))
+((probe_elapsed <= 7)) \
+  || fail "PostgreSQL primary collector exceeded its hard timeout: ${probe_elapsed}s"
+postgresql_metrics="$(podman exec "$CONTAINER" /usr/bin/cat \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom)"
+grep -q 'platform_postgresql_primary_query_success{.*} 0' \
+  <<<"$postgresql_metrics" \
+  || fail 'PostgreSQL primary collector treated forced termination as query success'
+
+printf '%s\n' primary \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-postgresql-primary.service
+printf '%s\n' slow \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+podman exec "$CONTAINER" systemctl start --no-block \
+  platform-external-probe-postgresql-primary.service
+wait_for_postgresql_probe_start
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
+  fail 'PostgreSQL primary collector preserved stale evidence before execution'
+fi
+podman exec "$CONTAINER" systemctl kill --kill-whom=all --signal=KILL \
+  platform-external-probe-postgresql-primary.service
+for _ in {1..30}; do
+  if ! podman exec "$CONTAINER" systemctl is-active --quiet \
+    platform-external-probe-postgresql-primary.service; then
+    break
+  fi
+  sleep 0.1
+done
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
+  fail 'Hard collector termination preserved stale PostgreSQL primary evidence'
+fi
+podman exec "$CONTAINER" systemctl reset-failed \
+  platform-external-probe-postgresql-primary.service
+printf '%s\n' primary \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
 
 if ! podman exec "$CONTAINER" systemctl start platform-external-probe-ownership.service; then
   podman exec "$CONTAINER" systemctl status --no-pager platform-external-probe-ownership.service || true
@@ -287,6 +431,27 @@ podman exec "$CONTAINER" mv -f /tmp/mktemp.real /usr/bin/mktemp
 podman exec "$CONTAINER" systemctl reset-failed platform-external-probe-ownership.service
 podman exec "$CONTAINER" systemctl start platform-external-probe-ownership.service
 
+podman exec "$CONTAINER" cp -a /usr/bin/mktemp /tmp/mktemp.real
+podman exec "$CONTAINER" ln -sf /bin/false /usr/bin/mktemp
+if podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-postgresql-primary.service >/dev/null 2>&1; then
+  fail 'PostgreSQL primary collector unexpectedly published after staging failed'
+fi
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
+  fail 'PostgreSQL primary staging failure preserved stale evidence'
+fi
+podman exec "$CONTAINER" mv -f /tmp/mktemp.real /usr/bin/mktemp
+podman exec "$CONTAINER" systemctl reset-failed \
+  platform-external-probe-postgresql-primary.service
+podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-postgresql-primary.service
+
+run_playbook >/dev/null
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
+  fail 'Staged convergence preserved manually generated PostgreSQL primary evidence'
+fi
 idempotent_output="$(run_playbook)"
 if ! grep -qE 'changed=0.*failed=0' <<<"$idempotent_output"; then
   printf '%s\n' "$idempotent_output" >&2
@@ -325,11 +490,38 @@ podman exec "$CONTAINER" systemctl is-active --quiet alloy.service \
   || fail 'Role-driven Grafana Alloy activation failed'
 podman exec "$CONTAINER" systemctl is-active --quiet platform-external-probe-ownership.timer \
   || fail 'Role-driven VIP ownership timer activation failed'
+podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-external-probe-postgresql-primary.timer \
+  || fail 'Role-driven PostgreSQL primary timer activation failed'
 active_output="$(run_playbook --extra-vars '{"platform_external_probe_test_active":true}')"
 if ! grep -qE 'changed=0.*failed=0' <<<"$active_output"; then
   printf '%s\n' "$active_output" >&2
   fail 'Second active external probe and Alloy convergence was not idempotent'
 fi
+
+printf '%s\n' slow \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+podman exec "$CONTAINER" systemctl stop \
+  platform-external-probe-postgresql-primary.timer
+podman exec "$CONTAINER" systemctl stop \
+  platform-external-probe-postgresql-primary.service
+podman exec "$CONTAINER" systemctl reset-failed \
+  platform-external-probe-postgresql-primary.service
+podman exec "$CONTAINER" systemctl start --no-block \
+  platform-external-probe-postgresql-primary.service
+wait_for_postgresql_probe_start
+run_playbook >/dev/null
+if podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-external-probe-postgresql-primary.service; then
+  fail 'Timer deactivation left the PostgreSQL primary collector running'
+fi
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
+  fail 'Timer deactivation left stale PostgreSQL primary evidence'
+fi
+printf '%s\n' primary \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+run_playbook --extra-vars '{"platform_external_probe_test_active":true}' >/dev/null
 
 for _ in {1..30}; do
   if podman exec "$CONTAINER" curl --fail --silent --show-error --noproxy '*' \
@@ -377,6 +569,7 @@ assert_probe_result mimir_ready https://127.0.0.1:18443/ready-wrong-body 0 \
 assert_probe_result mimir_ready https://127.0.0.1:18443/status 0 \
   'Mimir HTTP 503 readiness rejection'
 
+# shellcheck disable=SC2016  # Expansion is deferred to the generated stub.
 printf '%s\n' \
   '#!/bin/bash' \
   'if [[ "$1" == show ]]; then exit 42; fi' \
@@ -435,6 +628,7 @@ podman exec "$CONTAINER" test -e /etc/systemd/system/alloy.service.d/platform.co
 podman exec "$CONTAINER" rm -f /etc/systemd/system/alloy.service
 podman exec "$CONTAINER" systemctl daemon-reload
 
+# shellcheck disable=SC2016  # Expansion is deferred to the generated stub.
 printf '%s\n' \
   '#!/bin/bash' \
   'printf "%s\n" "[Unit]" "SourcePath=/tmp/unrecognized-alloy.container" "[Service]" "ExecStart=/usr/bin/sleep infinity" >"${1}/alloy.service"' \
@@ -460,6 +654,17 @@ podman exec "$CONTAINER" rm -f \
   /usr/lib/systemd/system-generators/platform-test-alloy-generator
 podman exec "$CONTAINER" systemctl daemon-reload
 
+printf '%s\n' slow \
+  | podman exec --interactive "$CONTAINER" tee /tmp/postgresql-probe.state >/dev/null
+podman exec "$CONTAINER" systemctl stop \
+  platform-external-probe-postgresql-primary.timer
+podman exec "$CONTAINER" systemctl stop \
+  platform-external-probe-postgresql-primary.service
+podman exec "$CONTAINER" systemctl reset-failed \
+  platform-external-probe-postgresql-primary.service
+podman exec "$CONTAINER" systemctl start --no-block \
+  platform-external-probe-postgresql-primary.service
+wait_for_postgresql_probe_start
 if ! disable_output="$(run_playbook \
   --extra-vars '{"platform_external_probe_enabled":false,"grafana_alloy_enabled":false}')"; then
   printf '%s\n' "$disable_output" >&2
@@ -474,8 +679,16 @@ fi
 if podman exec "$CONTAINER" systemctl is-active --quiet platform-external-probe-ownership.timer; then
   fail 'Disabling external probes left the ownership timer running'
 fi
+if podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-external-probe-postgresql-primary.timer; then
+  fail 'Disabling external probes left the PostgreSQL primary timer running'
+fi
 if podman exec "$CONTAINER" test -e /var/lib/alloy/platform-external-probe/vip-ownership.prom; then
   fail 'Disabling external probes left stale ownership evidence'
+fi
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
+  fail 'Disabling external probes left stale PostgreSQL primary evidence'
 fi
 
 disabled_output="$(run_playbook \

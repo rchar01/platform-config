@@ -55,15 +55,27 @@
       - (platform_external_probe_timer_enabled | bool) == (platform_external_probe_timer_state == 'started')
       - platform_external_probe_timer_interval is match('^[1-9][0-9]*s$')
       - platform_external_probe_vip_ownership | length > 0 or not platform_external_probe_timer_enabled | bool
+      - platform_external_probe_postgresql_timer_enabled is boolean
+      - platform_external_probe_postgresql_timer_state in ['started', 'stopped']
+      - >-
+        (platform_external_probe_postgresql_timer_enabled | bool)
+        == (platform_external_probe_postgresql_timer_state == 'started')
+      - platform_external_probe_postgresql_primary | length > 0 or not platform_external_probe_postgresql_timer_enabled | bool
       - platform_external_probe_keepalived_service is match('^[A-Za-z0-9_.@-]+[.]service$')
       - platform_external_probe_metrics_dir is match('^/[A-Za-z0-9_./-]+$')
       - platform_external_probe_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
       - platform_external_probe_metrics_path | dirname == platform_external_probe_metrics_dir
+      - platform_external_probe_postgresql_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - platform_external_probe_postgresql_metrics_path | dirname == platform_external_probe_metrics_dir
       - platform_external_probe_script_path is match('^/[A-Za-z0-9_./-]+$')
       - platform_external_probe_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
       - platform_external_probe_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
+      - platform_external_probe_postgresql_script_path is match('^/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_postgresql_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
+      - platform_external_probe_postgresql_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
       - "'..' not in platform_external_probe_metrics_dir.split('/')"
       - "'..' not in platform_external_probe_script_path.split('/')"
+      - "'..' not in platform_external_probe_postgresql_script_path.split('/')"
     fail_msg: >-
       External probes require a safe observer identity, unique typed targets, a
       stable Alloy metrics receiver, bounded intervals, and a coherent disabled
@@ -90,3 +102,56 @@
       - platform_external_probe_vip_ownership | map(attribute='vip') | unique | length == platform_external_probe_vip_ownership | length
     fail_msg: "External VIP ownership observations require unique instance names and VIPs."
   when: platform_external_probe_vip_ownership | length > 0
+
+- name: Assert PostgreSQL primary probe contract is exact and read-only
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_postgresql_primary | length == 10
+      - platform_external_probe_postgresql_primary.name | default('') is match('^[a-z][a-z0-9_]*$')
+      - platform_external_probe_postgresql_primary.service | default('') == 'postgresql'
+      - platform_external_probe_postgresql_primary.address_mode | default('') == 'vip'
+      - >-
+        platform_external_probe_postgresql_primary.host | default('') is match(
+          '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?'
+          ~ '(?:[.][A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$'
+        )
+      - >-
+        platform_external_probe_postgresql_primary.host | default('') is not match(
+          '^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})'
+          ~ '(?:[.](?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$'
+        )
+      - platform_external_probe_postgresql_primary.host | default('') is search('[A-Za-z]')
+      - platform_external_probe_postgresql_primary.host | default('') | length <= 253
+      - >-
+        platform_external_probe_postgresql_primary.host
+        | default('')
+        | split('.')
+        | map('length')
+        | select('gt', 63)
+        | list
+        | length == 0
+      - platform_external_probe_postgresql_primary.port | default(0) is integer
+      - platform_external_probe_postgresql_primary.port == 5432
+      - platform_external_probe_postgresql_primary.database | default('') is match('^[a-z_][a-z0-9_]{0,62}$')
+      - platform_external_probe_postgresql_primary.user | default('') is match('^[a-z_][a-z0-9_]{0,62}$')
+      - platform_external_probe_postgresql_primary.ca_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_postgresql_primary.client_cert_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_postgresql_primary.client_key_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+$')
+      - "'..' not in (platform_external_probe_postgresql_primary.ca_file | default('')).split('/')"
+      - "'..' not in (platform_external_probe_postgresql_primary.client_cert_file | default('')).split('/')"
+      - "'..' not in (platform_external_probe_postgresql_primary.client_key_file | default('')).split('/')"
+      - platform_external_probe_postgresql_timer_interval == '5s'
+      - platform_external_probe_postgresql_connect_timeout is integer
+      - platform_external_probe_postgresql_connect_timeout == 4
+      - platform_external_probe_postgresql_statement_timeout_ms is integer
+      - platform_external_probe_postgresql_statement_timeout_ms == 3000
+      - platform_external_probe_postgresql_psql_path is match('^/[A-Za-z0-9_./-]+$')
+      - "'..' not in platform_external_probe_postgresql_psql_path.split('/')"
+      - platform_external_probe_postgresql_metrics_path != platform_external_probe_metrics_path
+      - platform_external_probe_postgresql_script_path != platform_external_probe_script_path
+      - platform_external_probe_postgresql_service_name != platform_external_probe_service_name
+      - platform_external_probe_postgresql_timer_name != platform_external_probe_timer_name
+    fail_msg: >-
+      The PostgreSQL primary probe requires the locked five-second,
+      certificate-only, verify-full, read-only VIP contract.
+  when: platform_external_probe_postgresql_primary | length > 0

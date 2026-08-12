@@ -3,9 +3,13 @@
   ansible.builtin.assert:
     that:
       - platform_external_probe_enabled is boolean
+      - platform_external_probe_postgresql_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
       - platform_external_probe_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
       - platform_external_probe_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - platform_external_probe_postgresql_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
+      - platform_external_probe_postgresql_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
       - "'..' not in platform_external_probe_metrics_path.split('/')"
+      - "'..' not in platform_external_probe_postgresql_metrics_path.split('/')"
     fail_msg: "External probe lifecycle inputs must use safe systemd and absolute path names."
 
 - name: Initialize disabled external probe contribution
@@ -36,6 +40,99 @@
   when:
     - not (platform_external_probe_enabled | bool and platform_external_probe_vip_ownership | length > 0)
 
+- name: Check for a previously managed PostgreSQL primary timer
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ platform_external_probe_postgresql_timer_name }}"
+  register: platform_external_probe_postgresql_managed_timer
+  check_mode: false
+
+- name: Check for a previously managed PostgreSQL primary collector
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ platform_external_probe_postgresql_service_name }}"
+  register: platform_external_probe_postgresql_managed_service
+  check_mode: false
+
+- name: Read previously managed PostgreSQL primary units
+  ansible.builtin.slurp:
+    path: "{{ item.path }}"
+  loop:
+    - path: "/etc/systemd/system/{{ platform_external_probe_postgresql_timer_name }}"
+      exists: "{{ platform_external_probe_postgresql_managed_timer.stat.exists }}"
+    - path: "/etc/systemd/system/{{ platform_external_probe_postgresql_service_name }}"
+      exists: "{{ platform_external_probe_postgresql_managed_service.stat.exists }}"
+  when: item.exists | bool
+  register: platform_external_probe_postgresql_managed_units
+  check_mode: false
+
+- name: Identify role-owned PostgreSQL primary units
+  ansible.builtin.set_fact:
+    platform_external_probe_postgresql_timer_owned: >-
+      {{
+        platform_external_probe_postgresql_managed_units.results
+        | selectattr('item.path', 'equalto', '/etc/systemd/system/' ~ platform_external_probe_postgresql_timer_name)
+        | selectattr('content', 'defined')
+        | map(attribute='content')
+        | map('b64decode')
+        | select('search', '^# Managed by platform_external_probe[.]\n')
+        | list
+        | length == 1
+      }}
+    platform_external_probe_postgresql_service_owned: >-
+      {{
+        platform_external_probe_postgresql_managed_units.results
+        | selectattr('item.path', 'equalto', '/etc/systemd/system/' ~ platform_external_probe_postgresql_service_name)
+        | selectattr('content', 'defined')
+        | map(attribute='content')
+        | map('b64decode')
+        | select('search', '^# Managed by platform_external_probe[.]\n')
+        | list
+        | length == 1
+      }}
+
+- name: Stop previously managed PostgreSQL primary timer when no longer requested
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_postgresql_timer_name }}"
+    enabled: false
+    state: stopped
+  when:
+    - platform_external_probe_postgresql_timer_owned | bool
+    - >-
+      not (
+        platform_external_probe_enabled | bool
+        and platform_external_probe_postgresql_primary | length > 0
+        and platform_external_probe_postgresql_timer_enabled | bool
+        and platform_external_probe_postgresql_timer_state == 'started'
+      )
+    - not ansible_check_mode
+
+- name: Stop previously managed PostgreSQL primary collector when no longer requested
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_postgresql_service_name }}"
+    state: stopped
+  when:
+    - platform_external_probe_postgresql_service_owned | bool
+    - >-
+      not (
+        platform_external_probe_enabled | bool
+        and platform_external_probe_postgresql_primary | length > 0
+        and platform_external_probe_postgresql_timer_enabled | bool
+        and platform_external_probe_postgresql_timer_state == 'started'
+      )
+    - not ansible_check_mode
+
+- name: Remove stale PostgreSQL primary evidence when collection is not requested
+  ansible.builtin.file:
+    path: "{{ platform_external_probe_postgresql_metrics_path }}"
+    state: absent
+  when:
+    - >-
+      not (
+        platform_external_probe_enabled | bool
+        and platform_external_probe_postgresql_primary | length > 0
+        and platform_external_probe_postgresql_timer_enabled | bool
+        and platform_external_probe_postgresql_timer_state == 'started'
+      )
+
 - name: Configure staged external probe contribution
   when: platform_external_probe_enabled | bool
   block:
@@ -47,10 +144,12 @@
         platform_external_probe_alloy_fragment: >-
           {{ lookup('ansible.builtin.template', 'alloy-fragment.alloy.j2') }}
 
-    - name: Install VIP ownership observation support
-      when: platform_external_probe_vip_ownership | length > 0
+    - name: Install external probe textfile support
+      when: >-
+        platform_external_probe_vip_ownership | length > 0
+        or platform_external_probe_postgresql_primary | length > 0
       block:
-        - name: Ensure external probe ownership paths exist
+        - name: Ensure external probe textfile paths exist
           ansible.builtin.file:
             path: "{{ item.path }}"
             state: directory
@@ -62,6 +161,12 @@
               mode: "0755"
             - path: "{{ platform_external_probe_script_path | dirname }}"
               mode: "0755"
+            - path: "{{ platform_external_probe_postgresql_script_path | dirname }}"
+              mode: "0755"
+
+    - name: Install VIP ownership observation support
+      when: platform_external_probe_vip_ownership | length > 0
+      block:
 
         - name: Write external probe ownership collector
           ansible.builtin.template:
@@ -99,4 +204,97 @@
             name: "{{ platform_external_probe_timer_name }}"
             enabled: "{{ platform_external_probe_timer_enabled }}"
             state: "{{ platform_external_probe_timer_state }}"
+          when: not ansible_check_mode
+
+    - name: Install PostgreSQL primary observation support
+      when: platform_external_probe_postgresql_primary | length > 0
+      block:
+        - name: Inspect PostgreSQL probe client
+          ansible.builtin.stat:
+            path: "{{ platform_external_probe_postgresql_psql_path }}"
+          register: platform_external_probe_postgresql_psql
+
+        - name: Assert PostgreSQL probe client is executable
+          ansible.builtin.assert:
+            that:
+              - platform_external_probe_postgresql_psql.stat.exists
+              - platform_external_probe_postgresql_psql.stat.isreg
+              - platform_external_probe_postgresql_psql.stat.executable
+            fail_msg: >-
+              The PostgreSQL primary probe requires an executable psql client
+              supplied by the host package owner.
+
+        - name: Read PostgreSQL probe client version
+          ansible.builtin.command:
+            argv:
+              - "{{ platform_external_probe_postgresql_psql_path }}"
+              - --version
+          register: platform_external_probe_postgresql_psql_version
+          changed_when: false
+          check_mode: false
+
+        - name: Assert PostgreSQL probe client is version 18
+          ansible.builtin.assert:
+            that:
+              - >-
+                platform_external_probe_postgresql_psql_version.stdout
+                is match('^psql [(]PostgreSQL[)] 18[.][0-9]+(?:[.][0-9]+)?$')
+            fail_msg: >-
+              The PostgreSQL primary probe requires a PostgreSQL 18 psql client
+              with the locked libpq security controls.
+
+        - name: Inspect PostgreSQL probe TLS files
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ platform_external_probe_postgresql_primary.ca_file }}"
+            - "{{ platform_external_probe_postgresql_primary.client_cert_file }}"
+            - "{{ platform_external_probe_postgresql_primary.client_key_file }}"
+          register: platform_external_probe_postgresql_tls_files
+
+        - name: Assert PostgreSQL probe TLS files are regular files
+          ansible.builtin.assert:
+            that:
+              - platform_external_probe_postgresql_tls_files.results | map(attribute='stat.exists') | select('equalto', false) | list | length == 0
+              - platform_external_probe_postgresql_tls_files.results | map(attribute='stat.isreg') | select('equalto', false) | list | length == 0
+            fail_msg: >-
+              The PostgreSQL primary probe requires existing regular CA,
+              client-certificate, and client-key files supplied outside Git.
+
+        - name: Write PostgreSQL primary collector
+          ansible.builtin.template:
+            src: collect-postgresql-primary.sh.j2
+            dest: "{{ platform_external_probe_postgresql_script_path }}"
+            owner: root
+            group: root
+            mode: "0755"
+            validate: /bin/bash -n %s
+          notify: Run external probe PostgreSQL primary collector
+
+        - name: Write PostgreSQL primary service
+          ansible.builtin.template:
+            src: platform-external-probe-postgresql-primary.service.j2
+            dest: "/etc/systemd/system/{{ platform_external_probe_postgresql_service_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Reload systemd for external probe
+
+        - name: Write PostgreSQL primary timer
+          ansible.builtin.template:
+            src: platform-external-probe-postgresql-primary.timer.j2
+            dest: "/etc/systemd/system/{{ platform_external_probe_postgresql_timer_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Reload systemd for external probe
+
+        - name: Reload systemd before PostgreSQL primary timer management
+          ansible.builtin.meta: flush_handlers
+
+        - name: Manage PostgreSQL primary timer
+          ansible.builtin.systemd_service:
+            name: "{{ platform_external_probe_postgresql_timer_name }}"
+            enabled: "{{ platform_external_probe_postgresql_timer_enabled }}"
+            state: "{{ platform_external_probe_postgresql_timer_state }}"
           when: not ansible_check_mode

@@ -18,3 +18,15 @@ platform_external_probe_timer_name: platform-external-probe-ownership.timer
 platform_external_probe_timer_enabled: false
 platform_external_probe_timer_state: stopped
 platform_external_probe_timer_interval: 5s
+
+platform_external_probe_postgresql_primary: {}
+platform_external_probe_postgresql_metrics_path: "{{ platform_external_probe_metrics_dir }}/postgresql-primary.prom"
+platform_external_probe_postgresql_script_path: /usr/local/libexec/platform/platform-external-probe-postgresql-primary
+platform_external_probe_postgresql_service_name: platform-external-probe-postgresql-primary.service
+platform_external_probe_postgresql_timer_name: platform-external-probe-postgresql-primary.timer
+platform_external_probe_postgresql_timer_enabled: false
+platform_external_probe_postgresql_timer_state: stopped
+platform_external_probe_postgresql_timer_interval: 5s
+platform_external_probe_postgresql_connect_timeout: 4
+platform_external_probe_postgresql_statement_timeout_ms: 3000
+platform_external_probe_postgresql_psql_path: /usr/bin/psql

@@ -26,6 +26,14 @@
     platform_external_probe_test_grafana_address: https://grafana.example.invalid/api/health
     platform_external_probe_test_timer_enabled: false
     platform_external_probe_test_timer_state: stopped
+    platform_external_probe_test_postgresql_host: postgres.example.invalid
+    platform_external_probe_test_postgresql_port: 5432
+    platform_external_probe_test_postgresql_database: observer
+    platform_external_probe_test_postgresql_user: monitoring_probe
+    platform_external_probe_test_postgresql_timer_interval: 5s
+    platform_external_probe_test_postgresql_connect_timeout: 4
+    platform_external_probe_test_postgresql_statement_timeout_ms: 3000
+    platform_external_probe_test_postgresql_psql_path: /usr/bin/psql
   tasks:
     - name: Exercise disabled-by-default external probe role
       ansible.builtin.include_role:
@@ -108,6 +116,21 @@
             vip: "{{ platform_external_probe_test_vip }}"
         platform_external_probe_timer_enabled: "{{ platform_external_probe_test_timer_enabled }}"
         platform_external_probe_timer_state: "{{ platform_external_probe_test_timer_state }}"
+        platform_external_probe_postgresql_primary:
+          name: postgresql_primary
+          service: postgresql
+          address_mode: vip
+          host: "{{ platform_external_probe_test_postgresql_host }}"
+          port: "{{ platform_external_probe_test_postgresql_port }}"
+          database: "{{ platform_external_probe_test_postgresql_database }}"
+          user: "{{ platform_external_probe_test_postgresql_user }}"
+          ca_file: /etc/platform-pki/postgresql-ca.crt
+          client_cert_file: /run/platform-secrets/postgresql-probe.crt
+          client_key_file: /run/platform-secrets/postgresql-probe.key
+        platform_external_probe_postgresql_timer_interval: "{{ platform_external_probe_test_postgresql_timer_interval }}"
+        platform_external_probe_postgresql_connect_timeout: "{{ platform_external_probe_test_postgresql_connect_timeout }}"
+        platform_external_probe_postgresql_statement_timeout_ms: "{{ platform_external_probe_test_postgresql_statement_timeout_ms }}"
+        platform_external_probe_postgresql_psql_path: "{{ platform_external_probe_test_postgresql_psql_path }}"
 
     - name: Validate external probe fixture inputs
       ansible.builtin.include_tasks: "{{ platform_external_probe_role_dir }}/tasks/validate.yml"
@@ -154,4 +177,22 @@
       ansible.builtin.template:
         src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-ownership.timer.j2"
         dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-ownership.timer"
+        mode: "0644"
+
+    - name: Render PostgreSQL primary collector fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/collect-postgresql-primary.sh.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/collect-postgresql-primary"
+        mode: "0755"
+
+    - name: Render PostgreSQL primary service fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-postgresql-primary.service.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-postgresql-primary.service"
+        mode: "0644"
+
+    - name: Render PostgreSQL primary timer fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-postgresql-primary.timer.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-postgresql-primary.timer"
         mode: "0644"

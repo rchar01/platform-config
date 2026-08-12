@@ -1,0 +1,12 @@
+# Managed by platform_external_probe.
+[Unit]
+Description=Schedule detect-only PostgreSQL primary metrics
+
+[Timer]
+OnBootSec={{ platform_external_probe_postgresql_timer_interval }}
+OnUnitActiveSec={{ platform_external_probe_postgresql_timer_interval }}
+AccuracySec=1s
+Unit={{ platform_external_probe_postgresql_service_name }}
+
+[Install]
+WantedBy=timers.target

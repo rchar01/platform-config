@@ -1,9 +1,10 @@
 # platform_external_probe
 
-Contributes strict, detect-only HTTPS probes and node-local VIP ownership metrics
-to the one Grafana Alloy process on an observer VM. The role is disabled by
-default. It never installs, starts, reloads, or independently configures Alloy,
-and probe results never repair, promote, fence, or change Keepalived eligibility.
+Contributes strict, detect-only HTTPS probes, a read-only PostgreSQL primary
+probe, and node-local VIP ownership metrics to the one Grafana Alloy process on
+an observer VM. The role is disabled by default. It never installs, starts,
+reloads, or independently configures Alloy, and probe results never repair,
+promote, fence, or change Keepalived eligibility.
 
 The owning playbook must include this role before `grafana_alloy`, then pass
 `platform_external_probe_alloy_fragment` as
@@ -28,8 +29,10 @@ Both roles and their service/timer controls remain disabled by default. The
 private inventory must explicitly configure the output, TLS files, targets, and
 activation state.
 
-Disabling this role stops a previously managed ownership timer and removes its
-last metrics file. Disabling the native Alloy owner similarly stops Alloy only
+Disabling this role stops the previously managed ownership timer and PostgreSQL
+timer/collector, then removes their last metrics files. Keeping the PostgreSQL
+probe staged with its timer stopped also removes its evidence. Disabling the
+native Alloy owner similarly stops Alloy only
 when its platform-managed systemd drop-in and the exact native RPM unit prove
 prior ownership, then removes that drop-in and reloads systemd. A Quadlet owner
 that has superseded the native unit is not stopped or overridden. Remove
@@ -70,6 +73,56 @@ signal, but malformed JSON with matching text remains a documented limitation.
 The same limitation applies to Grafana: its profile requires the locked version
 and database `ok` snippets, but does not structurally parse the response as JSON.
 
+The optional PostgreSQL primary probe is not an HTTP profile. A hardened
+five-second oneshot uses a PostgreSQL 18 `psql` client to connect through the
+production VIP DNS name on port `5432` with `verify-full`, GSS encryption
+disabled, a required client certificate, and no PostgreSQL authentication
+challenge. It runs only:
+
+```sql
+SELECT NOT pg_catalog.pg_is_in_recovery();
+```
+
+The session sets `default_transaction_read_only=on`, clears `search_path`, uses
+a four-second process/connect timeout and three-second statement timeout, and
+accepts only exact `t` or `f` output. Exact `t` publishes primary and query
+success as `1`; exact `f` publishes primary `0` and query success `1`; connection,
+TLS, authentication, timeout, and malformed-output failures publish both as `0`
+when the collector can complete publication. Every result includes an
+observation timestamp. The oneshot removes prior evidence before execution, so
+hard collector or publication failure cannot preserve a stale success sample.
+
+Private deployment must supply a dedicated certificate-authenticated PostgreSQL
+`LOGIN` role and database with only `CONNECT`, plus a `hostssl` `cert` HBA rule
+that maps the observer certificate to that exact role. The role must have no
+schema/object privileges and cannot inherit them. `require_auth=none` rejects
+password and other PostgreSQL authentication challenges while permitting TLS
+client-certificate authentication; `sslcertmode=require` requires the client
+certificate. The host package owner supplies exact PostgreSQL 18 `psql`, and
+outside-Git inputs supply the CA, client certificate, and unencrypted restricted
+client key. This Ansible role only validates and references those inputs; it does
+not install packages, create database roles, configure HBA, or install TLS files.
+
+```yaml
+platform_external_probe_postgresql_primary:
+  name: postgresql_primary
+  service: postgresql
+  address_mode: vip
+  host: postgres.monitoring.example.invalid
+  port: 5432
+  database: observer
+  user: monitoring_probe
+  ca_file: /etc/platform-pki/postgresql-ca.crt
+  client_cert_file: /run/platform-secrets/postgresql-probe.crt
+  client_key_file: /run/platform-secrets/postgresql-probe.key
+```
+
+The PostgreSQL timer remains disabled until the production endpoint, dedicated
+identity, Alloy remote write, and deployed observer gates pass. This read-only
+signal proves only that the VIP endpoint reached a non-recovery PostgreSQL
+server. It does not prove write durability, synchronous-replica health, Patroni
+leadership, acknowledged-write preservation, promotion timing, or fencing.
+
 VIP ownership is observed from exact kernel address presence on the configured
 interface. A hardened oneshot/timer writes fresh timestamped Prometheus textfile
 metrics atomically. Keepalived service state is supporting evidence only. Leave
@@ -91,7 +144,8 @@ platform_external_probe_vip_ownership:
 ```
 
 Blackbox samples expose stable `observer`, `environment`, `service`, `endpoint`,
-and `address_mode` labels. Every ownership metric exposes `service`, `node`,
+and `address_mode` labels. PostgreSQL primary metrics use the same bounded
+identity labels. Every ownership metric exposes `service`, `node`,
 `environment`, `endpoint`, `instance`, `interface`, and literal `vip` labels so
 consumers can correlate endpoint results with exact node-local ownership. Keep
 these values bounded and stable; do not put URLs, credentials, or dynamic error

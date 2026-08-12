@@ -122,6 +122,15 @@ download, and a missing or invalid cache entry is downloaded again.
 The controlled HTTPS fixture also proves the locked Grafana `13.1.3`, Loki
 `3.7.6`, and Mimir `3.1.4` semantic profiles accept their exact healthy response
 contracts and reject degraded or non-ready bodies.
+The same lane executes the rendered read-only PostgreSQL primary collector
+against a controlled PostgreSQL 18 `psql` interface. It verifies the exact
+certificate-only `verify-full` environment, DNS VIP identity, bounded timeouts,
+read-only primary query, exact primary/recovery/malformed/failure handling,
+atomic fail-closed textfile publication, and cleanup during timer-only staging
+and full role disable, including an in-flight oneshot. This synthetic interface
+does not replace a real PostgreSQL 18 server-side `hostssl` `cert` acceptance
+test, production VIP routing, dedicated database-role qualification, or deployed
+observer acceptance.
 
 `make test-monitoring-artifact-identities` is a Phase 0 identity check for the
 exact Garage, Loki, Mimir, and Grafana image candidates recorded in

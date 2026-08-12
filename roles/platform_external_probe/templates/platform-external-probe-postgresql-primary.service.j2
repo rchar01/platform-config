@@ -1,0 +1,24 @@
+# Managed by platform_external_probe.
+[Unit]
+Description=Collect detect-only PostgreSQL primary metrics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/rm -f {{ platform_external_probe_postgresql_metrics_path }}
+ExecStart={{ platform_external_probe_postgresql_script_path }}
+TimeoutStartSec=7s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ platform_external_probe_metrics_dir }}
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0077
+UnsetEnvironment=PGPASSWORD PGPASSFILE

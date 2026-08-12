@@ -1,0 +1,70 @@
+#!/bin/bash
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin
+
+metrics_dir={{ platform_external_probe_metrics_dir | quote }}
+metrics_path={{ platform_external_probe_postgresql_metrics_path | quote }}
+tmp_path=""
+published=0
+cleanup() {
+  if [[ -n "$tmp_path" ]]; then
+    rm -f -- "$tmp_path"
+  fi
+  if [[ "$published" -eq 0 ]]; then
+    rm -f -- "$metrics_path"
+  fi
+}
+trap cleanup EXIT
+tmp_path="$(mktemp "${metrics_dir}/.postgresql-primary.XXXXXX")"
+
+primary=0
+query_success=0
+if query_output="$({
+  /usr/bin/timeout --signal=TERM --kill-after=1s \
+    {{ (platform_external_probe_postgresql_connect_timeout ~ 's') | quote }} \
+    /usr/bin/env \
+      PGAPPNAME=platform-external-probe \
+      PGCONNECT_TIMEOUT={{ platform_external_probe_postgresql_connect_timeout | quote }} \
+      PGPASSWORD= \
+      PGPASSFILE=/dev/null \
+      PGGSSENCMODE=disable \
+      PGSSLMODE=verify-full \
+      PGSSLROOTCERT={{ platform_external_probe_postgresql_primary.ca_file | quote }} \
+      PGSSLCERT={{ platform_external_probe_postgresql_primary.client_cert_file | quote }} \
+      PGSSLKEY={{ platform_external_probe_postgresql_primary.client_key_file | quote }} \
+      PGSSLCERTMODE=require \
+      PGREQUIREAUTH=none \
+      PGOPTIONS={{ ('-c statement_timeout=' ~ platform_external_probe_postgresql_statement_timeout_ms ~ ' -c default_transaction_read_only=on -c search_path=') | quote }} \
+      {{ platform_external_probe_postgresql_psql_path | quote }} \
+      -X --no-password --set=ON_ERROR_STOP=1 --tuples-only --no-align --quiet \
+      --host={{ platform_external_probe_postgresql_primary.host | quote }} \
+      --port={{ platform_external_probe_postgresql_primary.port | quote }} \
+      --dbname={{ platform_external_probe_postgresql_primary.database | quote }} \
+      --username={{ platform_external_probe_postgresql_primary.user | quote }} \
+      --command='SELECT NOT pg_catalog.pg_is_in_recovery();'
+} 2>/dev/null)"; then
+  if [[ "$query_output" == t ]]; then
+    primary=1
+    query_success=1
+  elif [[ "$query_output" == f ]]; then
+    query_success=1
+  fi
+fi
+timestamp="$(date +%s)"
+
+{
+  printf '%s\n' '# HELP platform_postgresql_primary Whether the production PostgreSQL endpoint reached a non-recovery primary.'
+  printf '%s\n' '# TYPE platform_postgresql_primary gauge'
+  printf '%s\n' '# HELP platform_postgresql_primary_query_success Whether the read-only primary query returned an exact boolean.'
+  printf '%s\n' '# TYPE platform_postgresql_primary_query_success gauge'
+  printf '%s\n' '# HELP platform_postgresql_primary_observation_timestamp_seconds Unix time of the primary observation.'
+  printf '%s\n' '# TYPE platform_postgresql_primary_observation_timestamp_seconds gauge'
+  printf 'platform_postgresql_primary{service="postgresql",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ platform_external_probe_postgresql_primary.name }}",address_mode="vip"} %s\n' "$primary"
+  printf 'platform_postgresql_primary_query_success{service="postgresql",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ platform_external_probe_postgresql_primary.name }}",address_mode="vip"} %s\n' "$query_success"
+  printf 'platform_postgresql_primary_observation_timestamp_seconds{service="postgresql",node="{{ platform_external_probe_observer_id }}",environment="{{ platform_external_probe_environment }}",endpoint="{{ platform_external_probe_postgresql_primary.name }}",address_mode="vip"} %s\n' "$timestamp"
+} >"$tmp_path"
+
+chmod 0644 "$tmp_path"
+mv -f -- "$tmp_path" "$metrics_path"
+published=1
+trap - EXIT

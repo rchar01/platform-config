@@ -50,9 +50,9 @@ prometheus.scrape "platform_external_probe" {
   scrape_interval = {{ platform_external_probe_scrape_interval | to_json }}
   scrape_timeout  = {{ platform_external_probe_scrape_timeout | to_json }}
 }
-{% if platform_external_probe_vip_ownership | length > 0 %}
+{% if platform_external_probe_vip_ownership | length > 0 or platform_external_probe_postgresql_primary | length > 0 %}
 
-prometheus.exporter.unix "platform_vip_ownership" {
+prometheus.exporter.unix "platform_external_probe_textfile" {
   set_collectors = ["textfile"]
 
   textfile {
@@ -60,8 +60,8 @@ prometheus.exporter.unix "platform_vip_ownership" {
   }
 }
 
-prometheus.scrape "platform_vip_ownership" {
-  targets         = prometheus.exporter.unix.platform_vip_ownership.targets
+prometheus.scrape "platform_external_probe_textfile" {
+  targets         = prometheus.exporter.unix.platform_external_probe_textfile.targets
   forward_to      = [{{ platform_external_probe_metrics_receiver }}]
   scrape_interval = {{ platform_external_probe_scrape_interval | to_json }}
   scrape_timeout  = {{ platform_external_probe_scrape_timeout | to_json }}
