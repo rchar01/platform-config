@@ -130,18 +130,22 @@ podman exec "$CONTAINER" python3 -m pip -q install \
 podman exec "$CONTAINER" ip link add vrrp-test type dummy
 podman exec "$CONTAINER" ip address add 192.0.2.200/24 dev vrrp-test
 podman exec "$CONTAINER" ip link set vrrp-test up
+printf '%s\n' '127.0.0.1 s3.example.invalid' \
+  | podman exec --interactive "$CONTAINER" tee -a /etc/hosts >/dev/null
 
 podman exec "$CONTAINER" mkdir -p /etc/platform-test-pki
 podman exec "$CONTAINER" openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj /CN=platform-external-probe-test-ca \
   -keyout /etc/platform-test-pki/ca.key \
   -out /etc/platform-test-pki/ca.crt >/dev/null 2>&1
-for identity in server wrong client; do
+for identity in server garage-server wrong client garage-openbao-test-01; do
   common_name=monitoring.example.invalid
   extended_usage=serverAuth
   if [[ "$identity" == wrong ]]; then
     common_name=wrong.example.invalid
-  elif [[ "$identity" == client ]]; then
+  elif [[ "$identity" == garage-server ]]; then
+    common_name=s3.example.invalid
+  elif [[ "$identity" == client || "$identity" == garage-openbao-test-01 ]]; then
     common_name=platform-external-probe-client
     extended_usage=clientAuth
   fi
@@ -159,6 +163,15 @@ for identity in server wrong client; do
     -copy_extensions copy \
     -out "/etc/platform-test-pki/${identity}.crt" >/dev/null 2>&1
 done
+printf '%s\n' \
+  '{"access_key_id":"GK0123456789abcdef01234567","secret_access_key":"testtesttesttesttest"}' \
+  | podman exec --interactive "$CONTAINER" tee \
+    /etc/platform-test-pki/garage-openbao-test-01.json >/dev/null
+podman exec "$CONTAINER" chmod 0600 \
+  /etc/platform-test-pki/garage-openbao-test-01.key \
+  /etc/platform-test-pki/garage-openbao-test-01.json
+printf '%s\n' success \
+  | podman exec --interactive "$CONTAINER" tee /tmp/garage-canary.state >/dev/null
 podman exec "$CONTAINER" chmod 0600 /etc/platform-test-pki/ca.key \
   /etc/platform-test-pki/server.key /etc/platform-test-pki/wrong.key \
   /etc/platform-test-pki/client.key
@@ -203,6 +216,17 @@ podman exec --detach "$CONTAINER" python3 \
   --key /etc/platform-test-pki/server.key \
   --expected-host monitoring.example.invalid \
   --expected-sni monitoring.example.invalid >/dev/null
+podman exec --detach "$CONTAINER" python3 \
+  /workspace/tests/fixtures/platform-external-probe/s3_fixture.py \
+  --port 443 \
+  --cert /etc/platform-test-pki/garage-server.crt \
+  --key /etc/platform-test-pki/garage-server.key \
+  --client-ca /etc/platform-test-pki/ca.crt \
+  --expected-host s3.example.invalid \
+  --expected-path /observer-canary-openbao-test-01/canary/openbao-test-01 \
+  --region garage \
+  --credentials /etc/platform-test-pki/garage-openbao-test-01.json \
+  --state-file /tmp/garage-canary.state >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/platform-external-probe/https_fixture.py \
   --port 18444 \
@@ -249,7 +273,10 @@ podman exec "$CONTAINER" curl --fail --silent --show-error --noproxy '*' \
   -H 'Host: monitoring.example.invalid' >/dev/null \
   || fail 'Mutual-TLS HTTPS probe fixture did not become ready'
 
-run_playbook --check >/dev/null
+if ! check_output="$(run_playbook --check 2>&1)"; then
+  printf '%s\n' "$check_output" >&2
+  fail 'Staged external probe check-mode convergence failed'
+fi
 run_playbook >/dev/null
 
 package_identity="$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' alloy)"
@@ -287,6 +314,53 @@ fi
 if [[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-external-probe-postgresql-primary.timer 2>/dev/null)" != disabled ]]; then
   fail 'PostgreSQL primary timer became enabled before observer acceptance'
 fi
+if [[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-external-probe-garage-canary.timer 2>/dev/null)" != disabled ]]; then
+  fail 'Garage canary timer became enabled before observer acceptance'
+fi
+
+podman exec "$CONTAINER" systemctl start \
+  platform-external-probe-garage-canary.service
+garage_metrics="$(podman exec "$CONTAINER" /usr/bin/cat \
+  /var/lib/alloy/platform-external-probe/garage-canary.prom)"
+grep -q 'platform_garage_canary_success{.*} 1' <<<"$garage_metrics" \
+  || {
+    printf '%s\n' "$garage_metrics" >&2
+    podman exec "$CONTAINER" systemctl status --no-pager \
+      platform-external-probe-garage-canary.service || true
+    podman exec "$CONTAINER" journalctl --no-pager -u \
+      platform-external-probe-garage-canary.service || true
+    fail 'Garage canary rejected the exact mTLS SigV4 transaction'
+  }
+grep -q 'platform_garage_canary_cleanup_success{.*} 1' <<<"$garage_metrics" \
+  || fail 'Garage canary did not confirm successful object cleanup'
+grep -q 'platform_garage_canary_ambiguity{.*} 0' <<<"$garage_metrics" \
+  || fail 'Garage canary reported ambiguity after a complete transaction'
+
+for state in mismatch oversized slow-header trickle put-failure delete-failure; do
+  printf '%s\n' "$state" \
+    | podman exec --interactive "$CONTAINER" tee /tmp/garage-canary.state >/dev/null
+  garage_started="$(date +%s)"
+  podman exec "$CONTAINER" systemctl start \
+    platform-external-probe-garage-canary.service
+  garage_elapsed=$(($(date +%s) - garage_started))
+  garage_metrics="$(podman exec "$CONTAINER" /usr/bin/cat \
+    /var/lib/alloy/platform-external-probe/garage-canary.prom)"
+  grep -q 'platform_garage_canary_success{.*} 0' <<<"$garage_metrics" \
+    || fail "Garage canary accepted ${state}"
+  expected_ambiguity=0
+  if [[ "$state" == delete-failure ]]; then
+    expected_ambiguity=1
+  fi
+  grep -q "platform_garage_canary_ambiguity{.*} ${expected_ambiguity}" \
+    <<<"$garage_metrics" \
+    || fail "Garage canary misclassified ${state} ambiguity"
+  if [[ "$state" == slow-header || "$state" == trickle ]]; then
+    ((garage_elapsed >= 2 && garage_elapsed <= 5)) \
+      || fail "Garage ${state} did not honor the request bound: ${garage_elapsed}s"
+  fi
+done
+printf '%s\n' success \
+  | podman exec --interactive "$CONTAINER" tee /tmp/garage-canary.state >/dev/null
 
 if ! podman exec "$CONTAINER" systemctl start \
   platform-external-probe-postgresql-primary.service; then
@@ -493,6 +567,9 @@ podman exec "$CONTAINER" systemctl is-active --quiet platform-external-probe-own
 podman exec "$CONTAINER" systemctl is-active --quiet \
   platform-external-probe-postgresql-primary.timer \
   || fail 'Role-driven PostgreSQL primary timer activation failed'
+podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-external-probe-garage-canary.timer \
+  || fail 'Role-driven Garage canary timer activation failed'
 active_output="$(run_playbook --extra-vars '{"platform_external_probe_test_active":true}')"
 if ! grep -qE 'changed=0.*failed=0' <<<"$active_output"; then
   printf '%s\n' "$active_output" >&2
@@ -683,12 +760,20 @@ if podman exec "$CONTAINER" systemctl is-active --quiet \
   platform-external-probe-postgresql-primary.timer; then
   fail 'Disabling external probes left the PostgreSQL primary timer running'
 fi
+if podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-external-probe-garage-canary.timer; then
+  fail 'Disabling external probes left the Garage canary timer running'
+fi
 if podman exec "$CONTAINER" test -e /var/lib/alloy/platform-external-probe/vip-ownership.prom; then
   fail 'Disabling external probes left stale ownership evidence'
 fi
 if podman exec "$CONTAINER" test -e \
   /var/lib/alloy/platform-external-probe/postgresql-primary.prom; then
   fail 'Disabling external probes left stale PostgreSQL primary evidence'
+fi
+if podman exec "$CONTAINER" test -e \
+  /var/lib/alloy/platform-external-probe/garage-canary.prom; then
+  fail 'Disabling external probes left stale Garage canary evidence'
 fi
 
 disabled_output="$(run_playbook \

@@ -30,3 +30,15 @@ platform_external_probe_postgresql_timer_interval: 5s
 platform_external_probe_postgresql_connect_timeout: 4
 platform_external_probe_postgresql_statement_timeout_ms: 3000
 platform_external_probe_postgresql_psql_path: /usr/bin/psql
+
+platform_external_probe_garage_canary: {}
+platform_external_probe_garage_metrics_path: "{{ platform_external_probe_metrics_dir }}/garage-canary.prom"
+platform_external_probe_garage_script_path: /usr/local/libexec/platform/platform-external-probe-garage-canary
+platform_external_probe_garage_service_name: platform-external-probe-garage-canary.service
+platform_external_probe_garage_timer_name: platform-external-probe-garage-canary.timer
+platform_external_probe_garage_timer_enabled: false
+platform_external_probe_garage_timer_state: stopped
+platform_external_probe_garage_timer_interval: 30s
+platform_external_probe_garage_request_timeout: 3
+platform_external_probe_garage_run_timeout: 10
+platform_external_probe_garage_python_path: /usr/bin/python3

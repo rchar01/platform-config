@@ -4,12 +4,35 @@
     that:
       - platform_external_probe_enabled is boolean
       - platform_external_probe_postgresql_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
+      - platform_external_probe_garage_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
+      - platform_external_probe_garage_script_path is match('^/[A-Za-z0-9_./-]+$')
       - platform_external_probe_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
       - platform_external_probe_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
       - platform_external_probe_postgresql_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
       - platform_external_probe_postgresql_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - platform_external_probe_garage_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
+      - platform_external_probe_garage_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - platform_external_probe_garage_metrics_path | dirname == platform_external_probe_metrics_dir
       - "'..' not in platform_external_probe_metrics_path.split('/')"
       - "'..' not in platform_external_probe_postgresql_metrics_path.split('/')"
+      - "'..' not in platform_external_probe_garage_metrics_path.split('/')"
+      - "'..' not in platform_external_probe_garage_script_path.split('/')"
+      - platform_external_probe_garage_metrics_path not in [platform_external_probe_metrics_path, platform_external_probe_postgresql_metrics_path]
+      - platform_external_probe_garage_script_path not in [platform_external_probe_script_path, platform_external_probe_postgresql_script_path]
+      - >-
+        [
+          platform_external_probe_script_path,
+          platform_external_probe_postgresql_script_path,
+          platform_external_probe_garage_script_path
+        ]
+        | intersect([
+          platform_external_probe_metrics_path,
+          platform_external_probe_postgresql_metrics_path,
+          platform_external_probe_garage_metrics_path
+        ])
+        | length == 0
+      - platform_external_probe_garage_service_name not in [platform_external_probe_service_name, platform_external_probe_postgresql_service_name]
+      - platform_external_probe_garage_timer_name not in [platform_external_probe_timer_name, platform_external_probe_postgresql_timer_name]
     fail_msg: "External probe lifecycle inputs must use safe systemd and absolute path names."
 
 - name: Initialize disabled external probe contribution
@@ -133,6 +156,9 @@
         and platform_external_probe_postgresql_timer_state == 'started'
       )
 
+- name: Manage Garage canary lifecycle
+  ansible.builtin.include_tasks: lifecycle_garage.yml
+
 - name: Configure staged external probe contribution
   when: platform_external_probe_enabled | bool
   block:
@@ -148,6 +174,7 @@
       when: >-
         platform_external_probe_vip_ownership | length > 0
         or platform_external_probe_postgresql_primary | length > 0
+        or platform_external_probe_garage_canary | length > 0
       block:
         - name: Ensure external probe textfile paths exist
           ansible.builtin.file:
@@ -162,6 +189,8 @@
             - path: "{{ platform_external_probe_script_path | dirname }}"
               mode: "0755"
             - path: "{{ platform_external_probe_postgresql_script_path | dirname }}"
+              mode: "0755"
+            - path: "{{ platform_external_probe_garage_script_path | dirname }}"
               mode: "0755"
 
     - name: Install VIP ownership observation support
@@ -297,4 +326,120 @@
             name: "{{ platform_external_probe_postgresql_timer_name }}"
             enabled: "{{ platform_external_probe_postgresql_timer_enabled }}"
             state: "{{ platform_external_probe_postgresql_timer_state }}"
+          when: not ansible_check_mode
+
+    - name: Install Garage semantic canary support
+      when: platform_external_probe_garage_canary | length > 0
+      block:
+        - name: Refuse to replace foreign Garage canary units
+          ansible.builtin.assert:
+            that:
+              - >-
+                not platform_external_probe_garage_unit_stats.results[0].stat.exists
+                or platform_external_probe_garage_timer_owned | bool
+              - >-
+                not platform_external_probe_garage_unit_stats.results[1].stat.exists
+                or platform_external_probe_garage_service_owned | bool
+              - >-
+                not platform_external_probe_garage_unit_stats.results[2].stat.exists
+                or platform_external_probe_garage_script_owned | bool
+            fail_msg: >-
+              Garage canary unit names already belong to an unmanaged systemd
+              service or timer; refusing to overwrite them.
+
+        - name: Inspect Garage canary runtime inputs
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ platform_external_probe_garage_python_path }}"
+            - "{{ platform_external_probe_garage_canary.ca_file }}"
+            - "{{ platform_external_probe_garage_canary.client_cert_file }}"
+            - "{{ platform_external_probe_garage_canary.client_key_file }}"
+            - "{{ platform_external_probe_garage_canary.credentials_file }}"
+          register: platform_external_probe_garage_runtime_inputs
+
+        - name: Assert Garage canary runtime inputs are safe
+          ansible.builtin.assert:
+            that:
+              - platform_external_probe_garage_runtime_inputs.results | map(attribute='stat.exists') | select('equalto', false) | list | length == 0
+              - platform_external_probe_garage_runtime_inputs.results[0].stat.executable
+              - platform_external_probe_garage_runtime_inputs.results[1].stat.isreg
+              - platform_external_probe_garage_runtime_inputs.results[1].stat.pw_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[1].stat.gr_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[1].stat.mode is match('^0?[46][04][04]$')
+              - platform_external_probe_garage_runtime_inputs.results[2].stat.isreg
+              - platform_external_probe_garage_runtime_inputs.results[2].stat.pw_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[2].stat.gr_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[2].stat.mode is match('^0?[46][04][04]$')
+              - platform_external_probe_garage_runtime_inputs.results[3].stat.isreg
+              - platform_external_probe_garage_runtime_inputs.results[4].stat.isreg
+              - platform_external_probe_garage_runtime_inputs.results[3].stat.pw_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[3].stat.gr_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[3].stat.mode == '0600'
+              - platform_external_probe_garage_runtime_inputs.results[4].stat.pw_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[4].stat.gr_name == 'root'
+              - platform_external_probe_garage_runtime_inputs.results[4].stat.mode == '0600'
+            fail_msg: >-
+              The Garage canary requires an executable Python runtime, regular
+              TLS files, and root-restricted client key and credential files.
+
+        - name: Inspect Garage canary security directories
+          ansible.builtin.stat:
+            path: "{{ item | dirname }}"
+          loop:
+            - "{{ platform_external_probe_garage_canary.ca_file }}"
+            - "{{ platform_external_probe_garage_canary.client_cert_file }}"
+            - "{{ platform_external_probe_garage_canary.client_key_file }}"
+            - "{{ platform_external_probe_garage_canary.credentials_file }}"
+          register: platform_external_probe_garage_security_directories
+
+        - name: Assert Garage canary security directories are protected
+          ansible.builtin.assert:
+            that:
+              - platform_external_probe_garage_security_directories.results | map(attribute='stat.exists') | select('equalto', false) | list | length == 0
+              - platform_external_probe_garage_security_directories.results | map(attribute='stat.isdir') | select('equalto', false) | list | length == 0
+              - platform_external_probe_garage_security_directories.results | map(attribute='stat.pw_name') | reject('equalto', 'root') | list | length == 0
+              - platform_external_probe_garage_security_directories.results | map(attribute='stat.gr_name') | reject('equalto', 'root') | list | length == 0
+              - platform_external_probe_garage_security_directories.results | map(attribute='stat.mode') | select('match', '^0?[0-7][2367][0-7]$') | list | length == 0
+              - platform_external_probe_garage_security_directories.results | map(attribute='stat.mode') | select('match', '^0?[0-7][0-7][2367]$') | list | length == 0
+            fail_msg: >-
+              Garage canary TLS and credential directories must be root-owned
+              and not writable by group or other users.
+
+        - name: Write Garage semantic canary collector
+          ansible.builtin.template:
+            src: collect-garage-canary.py.j2
+            dest: "{{ platform_external_probe_garage_script_path }}"
+            owner: root
+            group: root
+            mode: "0755"
+            validate: "{{ platform_external_probe_garage_python_path }} -m py_compile %s"
+          notify: Run external probe Garage canary collector
+
+        - name: Write Garage semantic canary service
+          ansible.builtin.template:
+            src: platform-external-probe-garage-canary.service.j2
+            dest: "/etc/systemd/system/{{ platform_external_probe_garage_service_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Reload systemd for external probe
+
+        - name: Write Garage semantic canary timer
+          ansible.builtin.template:
+            src: platform-external-probe-garage-canary.timer.j2
+            dest: "/etc/systemd/system/{{ platform_external_probe_garage_timer_name }}"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Reload systemd for external probe
+
+        - name: Reload systemd before Garage canary timer management
+          ansible.builtin.meta: flush_handlers
+
+        - name: Manage Garage semantic canary timer
+          ansible.builtin.systemd_service:
+            name: "{{ platform_external_probe_garage_timer_name }}"
+            enabled: "{{ platform_external_probe_garage_timer_enabled }}"
+            state: "{{ platform_external_probe_garage_timer_state }}"
           when: not ansible_check_mode

@@ -313,6 +313,19 @@ grep -q '"node":"mimir"' <<<"$mimir_probe_response" \
 [[ "$(client_status monitoring-probe GET s3.test.invalid \
   s3.test.invalid /health)" == 403 ]] \
   || fail 'Monitoring probe identity reached S3'
+for method in DELETE GET PUT; do
+  [[ "$(client_status monitoring-s3-probe "$method" s3.test.invalid \
+    s3.test.invalid /observer-canary/canary)" == 200 ]] \
+    || fail "Monitoring S3 probe rejected approved method ${method}"
+done
+for method in HEAD POST; do
+  [[ "$(client_status monitoring-s3-probe "$method" s3.test.invalid \
+    s3.test.invalid /observer-canary/canary)" == 403 ]] \
+    || fail "Monitoring S3 probe accepted unapproved method ${method}"
+done
+[[ "$(client_status monitoring-s3-probe GET loki.test.invalid \
+  loki.test.invalid /ready)" == 403 ]] \
+  || fail 'Monitoring S3 probe identity reached Loki'
 [[ "$(client_status monitoring-probe GET loki.test.invalid \
   loki.test.invalid /api/health)" == 403 ]] \
   || fail 'Monitoring probe used the Grafana health path on Loki'

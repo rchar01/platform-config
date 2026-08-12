@@ -37,6 +37,8 @@ REJECTIONS = (
     Rejection("escaped-dn", {"monitoring_haproxy_test_writer_dn": r"CN=alloy\,loki,OU=telemetry,O=platform,C=XX"}, IDENTITY),
     Rejection("unknown-role", {"monitoring_haproxy_test_writer_role": "arbitrary_admin"}, "requires every mandatory identity role"),
     Rejection("missing-probe-role", {"monitoring_haproxy_test_probe_role": "operator"}, "requires every mandatory identity role"),
+    Rejection("missing-s3-probe-role", {"monitoring_haproxy_test_s3_probe_role": "operator"}, "requires every mandatory identity role"),
+    Rejection("s3-probe-extra-method", {"monitoring_haproxy_s3_probe_methods": ["DELETE", "GET", "HEAD", "PUT"]}, "requires exact DELETE, GET, and PUT"),
     Rejection("grafana-probe-method", {"monitoring_haproxy_grafana_probe_routes": [{"method": "POST", "path": "/api/health"}]}, "probes require exact host-scoped GET routes"),
     Rejection("grafana-probe-path", {"monitoring_haproxy_grafana_probe_routes": [{"method": "GET", "path": "/"}]}, "probes require exact host-scoped GET routes"),
     Rejection("loki-probe-path", {"monitoring_haproxy_loki_probe_routes": [{"method": "GET", "path": "/loki/api/v1/query_range"}]}, "probes require exact host-scoped GET routes"),

@@ -21,3 +21,12 @@
     - platform_external_probe_postgresql_timer_enabled | bool
     - platform_external_probe_postgresql_timer_state == 'started'
     - not ansible_check_mode
+
+- name: Run external probe Garage canary collector
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_garage_service_name }}"
+    state: started
+  when:
+    - platform_external_probe_garage_timer_enabled | bool
+    - platform_external_probe_garage_timer_state == 'started'
+    - not ansible_check_mode

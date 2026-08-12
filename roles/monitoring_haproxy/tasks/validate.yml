@@ -87,7 +87,7 @@
 - name: Assert monitoring HAProxy identity map is complete
   ansible.builtin.assert:
     that:
-      - monitoring_haproxy_identity_roles | length >= 9
+      - monitoring_haproxy_identity_roles | length >= 10
       - >-
         [
           'alloy_loki_writer',
@@ -98,6 +98,7 @@
           'grafana_loki_query',
           'grafana_mimir_query',
           'monitoring_probe',
+          'monitoring_s3_probe',
           'operator'
         ]
         | difference(monitoring_haproxy_identity_roles | map(attribute='role') | list)
@@ -131,6 +132,14 @@
     fail_msg: >-
       Monitoring HAProxy probes require exact host-scoped GET routes matching
       the locked Grafana, Loki, and Mimir observer profiles.
+
+- name: Assert monitoring HAProxy S3 probe methods are least privilege
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_s3_probe_methods == ['DELETE', 'GET', 'PUT']
+    fail_msg: >-
+      The monitoring S3 probe identity requires exact DELETE, GET, and PUT
+      access on the S3 host; Garage credentials enforce bucket and object scope.
 
 - name: Validate monitoring HAProxy route groups
   ansible.builtin.include_tasks: validate_route_group.yml

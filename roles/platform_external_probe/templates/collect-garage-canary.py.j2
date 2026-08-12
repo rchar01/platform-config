@@ -1,0 +1,216 @@
+#!/usr/bin/python3
+# Managed by platform_external_probe Garage canary.
+import hashlib
+import hmac
+import http.client
+import json
+import os
+import re
+import signal
+import ssl
+import tempfile
+import time
+import urllib.parse
+
+METRICS_PATH = {{ platform_external_probe_garage_metrics_path | to_json }}
+METRICS_DIR = {{ platform_external_probe_metrics_dir | to_json }}
+HOST = {{ platform_external_probe_garage_canary.host | to_json }}
+PORT = {{ platform_external_probe_garage_canary.port }}
+REGION = {{ platform_external_probe_garage_canary.region | to_json }}
+BUCKET = {{ platform_external_probe_garage_canary.bucket | to_json }}
+OBJECT_KEY = {{ platform_external_probe_garage_canary.object_key | to_json }}
+CA_FILE = {{ platform_external_probe_garage_canary.ca_file | to_json }}
+CLIENT_CERT_FILE = {{ platform_external_probe_garage_canary.client_cert_file | to_json }}
+CLIENT_KEY_FILE = {{ platform_external_probe_garage_canary.client_key_file | to_json }}
+CREDENTIALS_FILE = {{ platform_external_probe_garage_canary.credentials_file | to_json }}
+REQUEST_TIMEOUT = {{ platform_external_probe_garage_request_timeout }}
+RUN_TIMEOUT = {{ platform_external_probe_garage_run_timeout }}
+
+
+class RunTimeout(Exception):
+    pass
+
+
+def sign(key, message):
+    return hmac.new(key, message.encode(), hashlib.sha256).digest()
+
+
+def request(method, body, expected_status, credentials, context, deadline, max_body=0):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RunTimeout()
+    timeout = min(REQUEST_TIMEOUT, remaining)
+    payload_hash = hashlib.sha256(body).hexdigest()
+    now = time.gmtime()
+    amz_date = time.strftime("%Y%m%dT%H%M%SZ", now)
+    date_stamp = time.strftime("%Y%m%d", now)
+    path = "/" + urllib.parse.quote(BUCKET, safe="") + "/" + urllib.parse.quote(
+        OBJECT_KEY, safe="/"
+    )
+    canonical_headers = (
+        f"host:{HOST}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = "\n".join(
+        [method, path, "", canonical_headers, signed_headers, payload_hash]
+    )
+    scope = f"{date_stamp}/{REGION}/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            amz_date,
+            scope,
+            hashlib.sha256(canonical_request.encode()).hexdigest(),
+        ]
+    )
+    date_key = sign(("AWS4" + credentials["secret_access_key"]).encode(), date_stamp)
+    region_key = sign(date_key, REGION)
+    service_key = sign(region_key, "s3")
+    signing_key = sign(service_key, "aws4_request")
+    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    authorization = (
+        "AWS4-HMAC-SHA256 "
+        f"Credential={credentials['access_key_id']}/{scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    connection = http.client.HTTPSConnection(HOST, PORT, context=context, timeout=timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        connection.request(
+            method,
+            path,
+            body=body,
+            headers={
+                "Authorization": authorization,
+                "Host": HOST,
+                "X-Amz-Content-Sha256": payload_hash,
+                "X-Amz-Date": amz_date,
+            },
+        )
+        response = connection.getresponse()
+        if response.status != expected_status:
+            raise RuntimeError(f"unexpected {method} status")
+        response_body = response.read(max_body + 1)
+        if len(response_body) > max_body:
+            raise RuntimeError(f"oversized {method} response")
+        return response_body
+    finally:
+        connection.close()
+        remaining = deadline - time.monotonic()
+        signal.setitimer(signal.ITIMER_REAL, max(0, remaining))
+
+
+def publish(success, cleanup_success, ambiguity):
+    timestamp = int(time.time())
+    labels = (
+        'service="garage",node="{{ platform_external_probe_observer_id }}",'
+        'environment="{{ platform_external_probe_environment }}",'
+        'endpoint="{{ platform_external_probe_garage_canary.name }}",'
+        'address_mode="vip"'
+    )
+    lines = [
+        "# HELP platform_garage_canary_success Whether the complete S3 PUT, GET, verify, and DELETE transaction succeeded.",
+        "# TYPE platform_garage_canary_success gauge",
+        "platform_garage_canary_success{" + labels + f"}} {success}",
+        "# HELP platform_garage_canary_cleanup_success Whether the fixed canary key was confirmed deleted.",
+        "# TYPE platform_garage_canary_cleanup_success gauge",
+        "platform_garage_canary_cleanup_success{" + labels + f"}} {cleanup_success}",
+        "# HELP platform_garage_canary_ambiguity Whether object state remains unresolved after this run.",
+        "# TYPE platform_garage_canary_ambiguity gauge",
+        "platform_garage_canary_ambiguity{" + labels + f"}} {ambiguity}",
+        "# HELP platform_garage_canary_observation_timestamp_seconds Unix time of the canary observation.",
+        "# TYPE platform_garage_canary_observation_timestamp_seconds gauge",
+        "platform_garage_canary_observation_timestamp_seconds{"
+        + labels
+        + f"}} {timestamp}",
+        "",
+    ]
+    fd, temporary = tempfile.mkstemp(prefix=".garage-canary.", dir=METRICS_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as output:
+            output.write("\n".join(lines))
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, METRICS_PATH)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def main():
+    def handle_timeout(_signum, _frame):
+        raise RunTimeout()
+
+    signal.signal(signal.SIGALRM, handle_timeout)
+    signal.alarm(RUN_TIMEOUT)
+    success = 0
+    cleanup_success = 0
+    ambiguity = 1
+    deadline = time.monotonic() + RUN_TIMEOUT
+    with open(CREDENTIALS_FILE, encoding="ascii") as source:
+        credentials = json.load(source)
+    if set(credentials) != {"access_key_id", "secret_access_key"}:
+        raise ValueError("Garage canary credential file has an invalid schema")
+    if not isinstance(credentials["access_key_id"], str) or not isinstance(
+        credentials["secret_access_key"], str
+    ):
+        raise ValueError("Garage canary credentials must be strings")
+    if not re.fullmatch(r"GK[0-9a-f]{24}", credentials["access_key_id"]):
+        raise ValueError("Garage canary access key ID is invalid")
+    if not re.fullmatch(r"[A-Za-z0-9+/=_-]{16,128}", credentials["secret_access_key"]):
+        raise ValueError("Garage canary secret key is invalid")
+    context = ssl.create_default_context(cafile=CA_FILE)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(CLIENT_CERT_FILE, CLIENT_KEY_FILE)
+    run_id = str(time.time_ns())
+    payload = (
+        "platform-garage-canary-v1\n"
+        "observer={{ platform_external_probe_observer_id }}\n"
+        f"run={run_id}\n"
+    ).encode("ascii")
+    expected_hash = hashlib.sha256(payload).digest()
+
+    put_attempted = False
+    cleanup_attempted = False
+    try:
+        request("DELETE", b"", 204, credentials, context, deadline)
+        cleanup_success = 1
+        ambiguity = 0
+        put_attempted = True
+        cleanup_success = 0
+        ambiguity = 1
+        request("PUT", payload, 200, credentials, context, deadline)
+        downloaded = request(
+            "GET", b"", 200, credentials, context, deadline, max_body=len(payload)
+        )
+        if not hmac.compare_digest(hashlib.sha256(downloaded).digest(), expected_hash):
+            raise RuntimeError("Garage canary payload digest mismatch")
+        cleanup_attempted = True
+        request("DELETE", b"", 204, credentials, context, deadline)
+        cleanup_success = 1
+        ambiguity = 0
+        success = 1
+    except Exception:
+        if put_attempted and not cleanup_attempted:
+            cleanup_attempted = True
+            try:
+                request("DELETE", b"", 204, credentials, context, deadline)
+                cleanup_success = 1
+                ambiguity = 0
+            except Exception:
+                pass
+    finally:
+        signal.alarm(0)
+    publish(success, cleanup_success, ambiguity)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        try:
+            publish(0, 0, 1)
+        except Exception:
+            if os.path.exists(METRICS_PATH):
+                os.unlink(METRICS_PATH)

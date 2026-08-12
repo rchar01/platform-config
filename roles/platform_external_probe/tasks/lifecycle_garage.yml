@@ -1,0 +1,98 @@
+---
+- name: Check for previously managed Garage canary units
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/etc/systemd/system/{{ platform_external_probe_garage_timer_name }}"
+    - "/etc/systemd/system/{{ platform_external_probe_garage_service_name }}"
+    - "{{ platform_external_probe_garage_script_path }}"
+  register: platform_external_probe_garage_unit_stats
+  check_mode: false
+
+- name: Read previously managed Garage canary units
+  ansible.builtin.slurp:
+    path: "{{ item.item }}"
+  loop: "{{ platform_external_probe_garage_unit_stats.results }}"
+  when: item.stat.exists
+  register: platform_external_probe_garage_units
+  check_mode: false
+
+- name: Identify role-owned Garage canary units
+  ansible.builtin.set_fact:
+    platform_external_probe_garage_timer_owned: >-
+      {{
+        platform_external_probe_garage_units.results
+        | selectattr('item.item', 'equalto', '/etc/systemd/system/' ~ platform_external_probe_garage_timer_name)
+        | selectattr('content', 'defined')
+        | map(attribute='content')
+        | map('b64decode')
+        | select('search', '^# Managed by platform_external_probe Garage canary[.]\n')
+        | list
+        | length == 1
+      }}
+    platform_external_probe_garage_service_owned: >-
+      {{
+        platform_external_probe_garage_units.results
+        | selectattr('item.item', 'equalto', '/etc/systemd/system/' ~ platform_external_probe_garage_service_name)
+        | selectattr('content', 'defined')
+        | map(attribute='content')
+        | map('b64decode')
+        | select('search', '^# Managed by platform_external_probe Garage canary[.]\n')
+        | list
+        | length == 1
+      }}
+    platform_external_probe_garage_script_owned: >-
+      {{
+        platform_external_probe_garage_units.results
+        | selectattr('item.item', 'equalto', platform_external_probe_garage_script_path)
+        | selectattr('content', 'defined')
+        | map(attribute='content')
+        | map('b64decode')
+        | select('search', '^#!/usr/bin/python3\n# Managed by platform_external_probe Garage canary[.]\n')
+        | list
+        | length == 1
+      }}
+
+- name: Stop previously managed Garage canary timer when inactive
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_garage_timer_name }}"
+    enabled: false
+    state: stopped
+  when:
+    - platform_external_probe_garage_timer_owned | bool
+    - >-
+      not (
+        platform_external_probe_enabled | bool
+        and platform_external_probe_garage_canary | length > 0
+        and platform_external_probe_garage_timer_enabled | bool
+        and platform_external_probe_garage_timer_state == 'started'
+      )
+    - not ansible_check_mode
+
+- name: Stop previously managed Garage canary collector when inactive
+  ansible.builtin.systemd_service:
+    name: "{{ platform_external_probe_garage_service_name }}"
+    state: stopped
+  when:
+    - platform_external_probe_garage_service_owned | bool
+    - >-
+      not (
+        platform_external_probe_enabled | bool
+        and platform_external_probe_garage_canary | length > 0
+        and platform_external_probe_garage_timer_enabled | bool
+        and platform_external_probe_garage_timer_state == 'started'
+      )
+    - not ansible_check_mode
+
+- name: Remove stale Garage canary evidence when inactive
+  ansible.builtin.file:
+    path: "{{ platform_external_probe_garage_metrics_path }}"
+    state: absent
+  when:
+    - >-
+      not (
+        platform_external_probe_enabled | bool
+        and platform_external_probe_garage_canary | length > 0
+        and platform_external_probe_garage_timer_enabled | bool
+        and platform_external_probe_garage_timer_state == 'started'
+      )

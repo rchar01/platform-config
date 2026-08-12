@@ -3,3 +3,4 @@ CN=grafana-loki-query,OU=telemetry,O=platform-test,C=XX loki_query
 CN=grafana-browser,OU=users,O=platform-test,C=XX browser
 CN=garage-s3,OU=storage,O=platform-test,C=XX s3
 CN=monitoring-probe,OU=observers,O=platform-test,C=XX probe
+CN=monitoring-s3-probe,OU=observers,O=platform-test,C=XX s3_probe

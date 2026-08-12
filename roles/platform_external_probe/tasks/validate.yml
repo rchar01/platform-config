@@ -61,6 +61,12 @@
         (platform_external_probe_postgresql_timer_enabled | bool)
         == (platform_external_probe_postgresql_timer_state == 'started')
       - platform_external_probe_postgresql_primary | length > 0 or not platform_external_probe_postgresql_timer_enabled | bool
+      - platform_external_probe_garage_timer_enabled is boolean
+      - platform_external_probe_garage_timer_state in ['started', 'stopped']
+      - >-
+        (platform_external_probe_garage_timer_enabled | bool)
+        == (platform_external_probe_garage_timer_state == 'started')
+      - platform_external_probe_garage_canary | length > 0 or not platform_external_probe_garage_timer_enabled | bool
       - platform_external_probe_keepalived_service is match('^[A-Za-z0-9_.@-]+[.]service$')
       - platform_external_probe_metrics_dir is match('^/[A-Za-z0-9_./-]+$')
       - platform_external_probe_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
@@ -73,9 +79,15 @@
       - platform_external_probe_postgresql_script_path is match('^/[A-Za-z0-9_./-]+$')
       - platform_external_probe_postgresql_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
       - platform_external_probe_postgresql_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
+      - platform_external_probe_garage_metrics_path is match('^/[A-Za-z0-9_./-]+[.]prom$')
+      - platform_external_probe_garage_metrics_path | dirname == platform_external_probe_metrics_dir
+      - platform_external_probe_garage_script_path is match('^/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_garage_service_name is match('^[A-Za-z0-9_.@-]+[.]service$')
+      - platform_external_probe_garage_timer_name is match('^[A-Za-z0-9_.@-]+[.]timer$')
       - "'..' not in platform_external_probe_metrics_dir.split('/')"
       - "'..' not in platform_external_probe_script_path.split('/')"
       - "'..' not in platform_external_probe_postgresql_script_path.split('/')"
+      - "'..' not in platform_external_probe_garage_script_path.split('/')"
     fail_msg: >-
       External probes require a safe observer identity, unique typed targets, a
       stable Alloy metrics receiver, bounded intervals, and a coherent disabled
@@ -155,3 +167,50 @@
       The PostgreSQL primary probe requires the locked five-second,
       certificate-only, verify-full, read-only VIP contract.
   when: platform_external_probe_postgresql_primary | length > 0
+
+- name: Assert Garage semantic canary contract is exact and least privilege
+  ansible.builtin.assert:
+    that:
+      - platform_external_probe_garage_canary | length == 12
+      - platform_external_probe_garage_canary.name | default('') is match('^[a-z][a-z0-9_]*$')
+      - platform_external_probe_garage_canary.service | default('') == 'garage'
+      - platform_external_probe_garage_canary.address_mode | default('') == 'vip'
+      - >-
+        platform_external_probe_garage_canary.host | default('') is match(
+          '^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+          ~ '(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$'
+        )
+      - platform_external_probe_garage_canary.host | default('') is search('[a-z]')
+      - platform_external_probe_garage_canary.port | default(0) is integer
+      - platform_external_probe_garage_canary.port == 443
+      - platform_external_probe_garage_canary.region | default('') is match('^[a-z][a-z0-9-]{0,31}$')
+      - platform_external_probe_garage_canary.bucket | default('') is match('^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$')
+      - platform_external_probe_garage_canary.object_key | default('') is match('^canary/[a-z0-9][a-z0-9_.-]{0,62}$')
+      - platform_external_probe_garage_canary.bucket == 'observer-canary-' ~ platform_external_probe_observer_id
+      - platform_external_probe_garage_canary.object_key == 'canary/' ~ platform_external_probe_observer_id
+      - platform_external_probe_observer_id is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - platform_external_probe_garage_canary.client_cert_file | basename == 'garage-' ~ platform_external_probe_observer_id ~ '.crt'
+      - platform_external_probe_garage_canary.client_key_file | basename == 'garage-' ~ platform_external_probe_observer_id ~ '.key'
+      - platform_external_probe_garage_canary.credentials_file | basename == 'garage-' ~ platform_external_probe_observer_id ~ '.json'
+      - platform_external_probe_garage_canary.ca_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_garage_canary.client_cert_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_garage_canary.client_key_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+$')
+      - platform_external_probe_garage_canary.credentials_file | default('') is match('^/(?:etc|run)/[A-Za-z0-9_./-]+[.]json$')
+      - "'..' not in platform_external_probe_garage_canary.ca_file.split('/')"
+      - "'..' not in platform_external_probe_garage_canary.client_cert_file.split('/')"
+      - "'..' not in platform_external_probe_garage_canary.client_key_file.split('/')"
+      - "'..' not in platform_external_probe_garage_canary.credentials_file.split('/')"
+      - platform_external_probe_garage_timer_interval == '30s'
+      - platform_external_probe_garage_request_timeout is integer
+      - platform_external_probe_garage_request_timeout == 3
+      - platform_external_probe_garage_run_timeout is integer
+      - platform_external_probe_garage_run_timeout == 10
+      - platform_external_probe_garage_python_path == '/usr/bin/python3'
+      - platform_external_probe_garage_metrics_path not in [platform_external_probe_metrics_path, platform_external_probe_postgresql_metrics_path]
+      - platform_external_probe_garage_script_path not in [platform_external_probe_script_path, platform_external_probe_postgresql_script_path]
+      - platform_external_probe_garage_service_name not in [platform_external_probe_service_name, platform_external_probe_postgresql_service_name]
+      - platform_external_probe_garage_timer_name not in [platform_external_probe_timer_name, platform_external_probe_postgresql_timer_name]
+    fail_msg: >-
+      The Garage semantic canary requires the locked thirty-second, fixed-key,
+      mTLS and SigV4 PUT, GET, verify, and DELETE contract.
+  when: platform_external_probe_garage_canary | length > 0

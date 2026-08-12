@@ -13,6 +13,7 @@
           'grafana_loki_query',
           'grafana_mimir_query',
           'monitoring_probe',
+          'monitoring_s3_probe',
           'operator'
         ]
       - >-

@@ -1,10 +1,10 @@
 # platform_external_probe
 
-Contributes strict, detect-only HTTPS probes, a read-only PostgreSQL primary
-probe, and node-local VIP ownership metrics to the one Grafana Alloy process on
-an observer VM. The role is disabled by default. It never installs, starts,
-reloads, or independently configures Alloy, and probe results never repair,
-promote, fence, or change Keepalived eligibility.
+Contributes strict, detect-only HTTPS probes, read-only PostgreSQL primary
+checks, Garage semantic S3 canaries, and node-local VIP ownership metrics to the
+one Grafana Alloy process on an observer host. The role is disabled by default.
+It never installs, starts, reloads, or independently configures Alloy, and probe
+results never repair, promote, fence, or change Keepalived eligibility.
 
 The owning playbook must include this role before `grafana_alloy`, then pass
 `platform_external_probe_alloy_fragment` as
@@ -122,6 +122,64 @@ identity, Alloy remote write, and deployed observer gates pass. This read-only
 signal proves only that the VIP endpoint reached a non-recovery PostgreSQL
 server. It does not prove write durability, synchronous-replica health, Patroni
 leadership, acknowledged-write preservation, promotion timing, or fencing.
+
+The optional Garage canary runs on the existing OpenBao observer hosts; no
+dedicated observer VM is required. Each host must have a unique observer ID,
+client certificate/key, Garage access key, dedicated bucket, and fixed object
+key. Every 30 seconds the collector:
+
+1. Deletes the fixed key to reconcile a prior ambiguous run.
+2. Creates a payload containing the observer ID and a unique run timestamp.
+3. sends an exact SigV4 path-style `PUT` and requires HTTP `200`.
+4. sends `GET`, requires HTTP `200`, and compares the exact SHA-256 digest.
+5. sends `DELETE` and requires HTTP `204`.
+
+Requests use the production VIP DNS name with verified server TLS and a
+dedicated `monitoring_s3_probe` mTLS identity. Each request is bounded to three
+seconds and the internal run to ten seconds; there are no same-operation
+retries. After a post-PUT failure, the collector attempts one cleanup delete. A
+failed or timed-out cleanup publishes `platform_garage_canary_ambiguity 1`; the
+next scheduled run starts with another reconciliation delete. Prior textfile
+evidence is removed before execution, and the role stops its role-owned timer
+and in-flight collector before removing evidence when staged or disabled.
+
+The credential file is outside Git, root-owned mode `0600`, and has exactly:
+
+```json
+{"access_key_id":"GK...","secret_access_key":"..."}
+```
+
+Private Garage provisioning must create one bucket/access key per OpenBao host
+and grant that key only the read/write/owner access needed for its dedicated
+bucket. The bucket must end with the exact observer ID, and the fixed key is
+`canary/<observer-id>`. The private PKI must issue a unique client identity per
+host and map it to `monitoring_s3_probe`; HAProxy permits only `DELETE`, `GET`,
+and `PUT` on the S3 hostname. Garage remains the authoritative bucket/object
+authorization boundary because rewriting signed S3 paths in HAProxy would
+invalidate SigV4.
+
+```yaml
+platform_external_probe_garage_canary:
+  name: garage_canary
+  service: garage
+  address_mode: vip
+  host: s3.monitoring.example.invalid
+  port: 443
+  region: garage
+  bucket: observer-canary-openbao-01
+  object_key: canary/openbao-01
+  ca_file: /etc/platform-pki/monitoring-ca.crt
+  client_cert_file: /run/platform-secrets/garage-openbao-01.crt
+  client_key_file: /run/platform-secrets/garage-openbao-01.key
+  credentials_file: /run/platform-secrets/garage-openbao-01.json
+```
+
+This scheduled detector exercises production DNS/VIP routing, HAProxy mTLS,
+SigV4, Garage object writes, reads, and deletion. Its 30-second cadence cannot
+establish the separate ten-second interruption acceptance ceiling; that remains
+a high-frequency qualification-harness requirement. It also does not prove
+multipart behavior, pagination, range reads, partition safety, backup/restore,
+or production retention.
 
 VIP ownership is observed from exact kernel address presence on the configured
 interface. A hardened oneshot/timer writes fresh timestamped Prometheus textfile

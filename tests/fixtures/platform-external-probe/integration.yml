@@ -97,6 +97,21 @@
     platform_external_probe_postgresql_psql_path: /usr/local/bin/platform-test-psql
     platform_external_probe_postgresql_timer_enabled: "{{ platform_external_probe_test_active }}"
     platform_external_probe_postgresql_timer_state: "{{ 'started' if platform_external_probe_test_active else 'stopped' }}"
+    platform_external_probe_garage_canary:
+      name: garage_canary
+      service: garage
+      address_mode: vip
+      host: s3.example.invalid
+      port: 443
+      region: garage
+      bucket: observer-canary-openbao-test-01
+      object_key: canary/openbao-test-01
+      ca_file: /etc/platform-test-pki/ca.crt
+      client_cert_file: /etc/platform-test-pki/garage-openbao-test-01.crt
+      client_key_file: /etc/platform-test-pki/garage-openbao-test-01.key
+      credentials_file: /etc/platform-test-pki/garage-openbao-test-01.json
+    platform_external_probe_garage_timer_enabled: "{{ platform_external_probe_test_active }}"
+    platform_external_probe_garage_timer_state: "{{ 'started' if platform_external_probe_test_active else 'stopped' }}"
 
     grafana_alloy_enabled: true
     grafana_alloy_download_url: "{{ grafana_alloy_test_download_url }}"

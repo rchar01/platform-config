@@ -30,6 +30,9 @@ def rendered_probe(
         "postgresql_collector": "collect-postgresql-primary",
         "postgresql_service": "platform-external-probe-postgresql-primary.service",
         "postgresql_timer": "platform-external-probe-postgresql-primary.timer",
+        "garage_collector": "collect-garage-canary",
+        "garage_service": "platform-external-probe-garage-canary.service",
+        "garage_timer": "platform-external-probe-garage-canary.timer",
     }
     return {name: (output / path).read_text(encoding="utf-8") for name, path in files.items()}
 
@@ -182,6 +185,39 @@ def test_postgresql_primary_render_contract(rendered_probe: dict[str, str]) -> N
     )
 
 
+def test_garage_canary_render_contract(rendered_probe: dict[str, str]) -> None:
+    collector = rendered_probe["garage_collector"]
+    for required in (
+        'HOST = "s3.example.invalid"',
+        'PORT = 443',
+        'REGION = "garage"',
+        'BUCKET = "observer-canary-monitoring-example-01"',
+        'OBJECT_KEY = "canary/monitoring-example-01"',
+        'REQUEST_TIMEOUT = 3',
+        'RUN_TIMEOUT = 10',
+        'ssl.create_default_context',
+        'context.load_cert_chain',
+        'AWS4-HMAC-SHA256',
+        'request("DELETE", b"", 204',
+        'request("PUT", payload, 200',
+        '"GET", b"", 200, credentials',
+        'hmac.compare_digest',
+        'platform_garage_canary_ambiguity',
+    ):
+        assert required in collector
+    assert 'HEAD' not in collector
+    assert 'POST' not in collector
+    service = rendered_probe["garage_service"]
+    assert re.search(
+        r"^# Managed by platform_external_probe Garage canary[.]$",
+        service,
+        re.MULTILINE,
+    )
+    assert re.search(r"^TimeoutStartSec=12s$", service, re.MULTILINE)
+    assert re.search(r"^ExecStartPre=-/usr/bin/rm -f .*garage-canary[.]prom$", service, re.MULTILINE)
+    assert re.search(r"^OnUnitActiveSec=30s$", rendered_probe["garage_timer"], re.MULTILINE)
+
+
 @pytest.mark.parametrize(
     ("case_id", "extra_vars"),
     [
@@ -241,6 +277,33 @@ def test_postgresql_primary_render_contract(rendered_probe: dict[str, str]) -> N
         ("postgres-interval", {"platform_external_probe_test_postgresql_timer_interval": "30s"}),
         ("postgres-connect-timeout", {"platform_external_probe_test_postgresql_connect_timeout": 5}),
         ("postgres-statement-timeout", {"platform_external_probe_test_postgresql_statement_timeout_ms": 4000}),
+        ("garage-host", {"platform_external_probe_test_garage_host": "192.0.2.10"}),
+        ("garage-port", {"platform_external_probe_test_garage_port": 8443}),
+        ("garage-region", {"platform_external_probe_test_garage_region": "GARAGE"}),
+        ("garage-bucket", {"platform_external_probe_test_garage_bucket": "Monitoring"}),
+        ("garage-bucket-suffix", {"platform_external_probe_test_garage_bucket": "other-monitoring-example-01"}),
+        ("garage-object", {"platform_external_probe_test_garage_object_key": "other/key"}),
+        ("garage-interval", {"platform_external_probe_test_garage_timer_interval": "5s"}),
+        ("garage-request-timeout", {"platform_external_probe_test_garage_request_timeout": 4}),
+        ("garage-run-timeout", {"platform_external_probe_test_garage_run_timeout": 11}),
+        (
+            "garage-metrics-collision",
+            {
+                "platform_external_probe_enabled": False,
+                "platform_external_probe_garage_metrics_path": (
+                    "/var/lib/alloy/platform-external-probe/vip-ownership.prom"
+                ),
+            },
+        ),
+        (
+            "garage-cross-path-collision",
+            {
+                "platform_external_probe_enabled": False,
+                "platform_external_probe_garage_script_path": (
+                    "/var/lib/alloy/platform-external-probe/vip-ownership.prom"
+                ),
+            },
+        ),
     ],
     ids=lambda value: value if isinstance(value, str) else None,
 )
@@ -287,10 +350,18 @@ def test_external_probe_rejects_unsafe_inputs(
         "disabled-postgres-unit": (
             "External probe lifecycle inputs must use safe systemd and absolute path names"
         ),
+        "garage-metrics-collision": (
+            "External probe lifecycle inputs must use safe systemd and absolute path names"
+        ),
+        "garage-cross-path-collision": (
+            "External probe lifecycle inputs must use safe systemd and absolute path names"
+        ),
     }.get(
         case_id,
         "The PostgreSQL primary probe requires"
         if case_id.startswith("postgres-")
+        else "The Garage semantic canary requires"
+        if case_id.startswith("garage-")
         else "External probes require",
     )
     assert_failed_with(

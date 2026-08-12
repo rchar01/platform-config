@@ -55,6 +55,9 @@
       - subject_dn: CN=monitoring-probe,OU=observers,O=platform,C=XX
         role: >-
           {{ monitoring_haproxy_test_probe_role | default('monitoring_probe') }}
+      - subject_dn: CN=monitoring-s3-probe,OU=observers,O=platform,C=XX
+        role: >-
+          {{ monitoring_haproxy_test_s3_probe_role | default('monitoring_s3_probe') }}
     monitoring_haproxy_loki_writer_routes:
       - method: POST
         path: /loki/api/v1/push

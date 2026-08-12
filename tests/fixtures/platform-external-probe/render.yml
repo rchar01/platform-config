@@ -34,6 +34,14 @@
     platform_external_probe_test_postgresql_connect_timeout: 4
     platform_external_probe_test_postgresql_statement_timeout_ms: 3000
     platform_external_probe_test_postgresql_psql_path: /usr/bin/psql
+    platform_external_probe_test_garage_host: s3.example.invalid
+    platform_external_probe_test_garage_port: 443
+    platform_external_probe_test_garage_region: garage
+    platform_external_probe_test_garage_bucket: observer-canary-monitoring-example-01
+    platform_external_probe_test_garage_object_key: canary/monitoring-example-01
+    platform_external_probe_test_garage_timer_interval: 30s
+    platform_external_probe_test_garage_request_timeout: 3
+    platform_external_probe_test_garage_run_timeout: 10
   tasks:
     - name: Exercise disabled-by-default external probe role
       ansible.builtin.include_role:
@@ -131,6 +139,22 @@
         platform_external_probe_postgresql_connect_timeout: "{{ platform_external_probe_test_postgresql_connect_timeout }}"
         platform_external_probe_postgresql_statement_timeout_ms: "{{ platform_external_probe_test_postgresql_statement_timeout_ms }}"
         platform_external_probe_postgresql_psql_path: "{{ platform_external_probe_test_postgresql_psql_path }}"
+        platform_external_probe_garage_canary:
+          name: garage_canary
+          service: garage
+          address_mode: vip
+          host: "{{ platform_external_probe_test_garage_host }}"
+          port: "{{ platform_external_probe_test_garage_port }}"
+          region: "{{ platform_external_probe_test_garage_region }}"
+          bucket: "{{ platform_external_probe_test_garage_bucket }}"
+          object_key: "{{ platform_external_probe_test_garage_object_key }}"
+          ca_file: /etc/platform-pki/monitoring-ca.crt
+          client_cert_file: /run/platform-secrets/garage-monitoring-example-01.crt
+          client_key_file: /run/platform-secrets/garage-monitoring-example-01.key
+          credentials_file: /run/platform-secrets/garage-monitoring-example-01.json
+        platform_external_probe_garage_timer_interval: "{{ platform_external_probe_test_garage_timer_interval }}"
+        platform_external_probe_garage_request_timeout: "{{ platform_external_probe_test_garage_request_timeout }}"
+        platform_external_probe_garage_run_timeout: "{{ platform_external_probe_test_garage_run_timeout }}"
 
     - name: Validate external probe fixture inputs
       ansible.builtin.include_tasks: "{{ platform_external_probe_role_dir }}/tasks/validate.yml"
@@ -195,4 +219,22 @@
       ansible.builtin.template:
         src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-postgresql-primary.timer.j2"
         dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-postgresql-primary.timer"
+        mode: "0644"
+
+    - name: Render Garage semantic canary collector fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/collect-garage-canary.py.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/collect-garage-canary"
+        mode: "0755"
+
+    - name: Render Garage semantic canary service fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-garage-canary.service.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-garage-canary.service"
+        mode: "0644"
+
+    - name: Render Garage semantic canary timer fixture
+      ansible.builtin.template:
+        src: "{{ platform_external_probe_role_dir }}/templates/platform-external-probe-garage-canary.timer.j2"
+        dest: "{{ platform_external_probe_test_output_dir }}/platform-external-probe-garage-canary.timer"
         mode: "0644"

@@ -131,6 +131,14 @@ and full role disable, including an in-flight oneshot. This synthetic interface
 does not replace a real PostgreSQL 18 server-side `hostssl` `cert` acceptance
 test, production VIP routing, dedicated database-role qualification, or deployed
 observer acceptance.
+It also runs the rendered Garage semantic canary through a controlled mTLS S3
+fixture that independently recomputes SigV4. The lane verifies exact pre-delete,
+PUT `200`, GET `200`, per-run payload digest, and DELETE `204` behavior plus
+digest mismatch, rejected PUT, ambiguous cleanup, staged activation, timer
+lifecycle, and fail-closed textfile cleanup. This fixture does not replace the
+exact Garage `2.3.0` through HAProxy `3.0.5` end-to-end gate, private per-host
+bucket/access-key grants, production DNS/VIP routing, or the high-frequency
+ten-second interruption acceptance harness.
 
 `make test-monitoring-artifact-identities` is a Phase 0 identity check for the
 exact Garage, Loki, Mimir, and Grafana image candidates recorded in

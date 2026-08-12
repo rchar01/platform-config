@@ -1,0 +1,12 @@
+# Managed by platform_external_probe Garage canary.
+[Unit]
+Description=Schedule detect-only Garage semantic canary metrics
+
+[Timer]
+OnBootSec={{ platform_external_probe_garage_timer_interval }}
+OnUnitActiveSec={{ platform_external_probe_garage_timer_interval }}
+AccuracySec=1s
+Unit={{ platform_external_probe_garage_service_name }}
+
+[Install]
+WantedBy=timers.target

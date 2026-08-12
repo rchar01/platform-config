@@ -43,6 +43,10 @@ monitoring_haproxy_loki_probe_routes:
 monitoring_haproxy_mimir_probe_routes:
   - method: GET
     path: /ready
+monitoring_haproxy_s3_probe_methods:
+  - DELETE
+  - GET
+  - PUT
 
 monitoring_haproxy_https_allowed_sources: []
 monitoring_haproxy_postgresql_allowed_sources: []

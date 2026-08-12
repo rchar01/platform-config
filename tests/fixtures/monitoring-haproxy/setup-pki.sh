@@ -39,6 +39,7 @@ issue_client grafana-loki-query
 issue_client grafana-browser grafana-browser users
 issue_client garage-s3 garage-s3 storage
 issue_client monitoring-probe monitoring-probe observers
+issue_client monitoring-s3-probe monitoring-s3-probe observers
 issue_client unmapped-client
 issue_client revoked-client
 issue_client haproxy-backend haproxy-backend backends

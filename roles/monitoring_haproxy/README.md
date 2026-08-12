@@ -17,6 +17,9 @@ Validated inputs include:
 - observed literal Loki, Mimir, Alertmanager, and operator method/path routes;
 - a mandatory least-privilege `monitoring_probe` identity with host-scoped
   `GET /api/health` for Grafana and `GET /ready` for Loki and Mimir;
+- a separate `monitoring_s3_probe` identity limited to `DELETE`, `GET`, and
+  `PUT` on the S3 hostname, with Garage credentials retaining bucket/object
+  authorization;
 - a dedicated management-source allowlist for operator routes;
 - unique, network-normalized `/24`-or-narrower source CIDRs, with operator
   sources contained by the outer HTTPS policy; and
