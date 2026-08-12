@@ -8,6 +8,10 @@ Image={{ gitlab_runner_image }}
 ContainerName={{ gitlab_runner_container_name }}
 Volume={{ gitlab_runner_config_dir }}:/etc/gitlab-runner:{{ gitlab_runner_quadlet_volume_label }}
 Volume={{ gitlab_runner_data_dir }}:/home/gitlab-runner:{{ gitlab_runner_quadlet_volume_label }}
+{% if gitlab_runner_podman_socket_enabled | bool %}
+Volume={{ gitlab_runner_podman_socket_host_path }}:{{ gitlab_runner_podman_socket_container_path }}
+SecurityLabelDisable=true
+{% endif %}
 
 [Service]
 Restart={{ gitlab_runner_quadlet_restart_policy }}

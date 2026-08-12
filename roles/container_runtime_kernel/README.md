@@ -1,7 +1,9 @@
 # container_runtime_kernel
 
 Provides the generic OverlayFS kernel prerequisite for container-runtime hosts.
-The managed host must provide systemd and `/usr/sbin/modprobe`.
+The role installs `container_runtime_kernel_packages` (default: `kmod`) before
+using `/usr/sbin/modinfo` and `/usr/sbin/modprobe`. The managed host must provide
+systemd and a supported package manager.
 
 By default, `container_runtime_overlayfs_policy_exception_enabled: true` installs,
 enables, and starts the auditable systemd oneshot unit

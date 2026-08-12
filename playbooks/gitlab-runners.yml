@@ -2,6 +2,42 @@
 - name: Configure GitLab runner hosts
   hosts: gitlab_runners
   become: true
-  roles:
-    - podman_host
-    - gitlab_runner
+  pre_tasks:
+    - name: Preflight GitLab Runner before Podman socket changes
+      ansible.builtin.include_role:
+        name: gitlab_runner
+        tasks_from: preflight
+  tasks:
+    - name: Converge Podman host and GitLab Runner transactionally
+      block:
+        - name: Configure Podman host
+          ansible.builtin.include_role:
+            name: podman_host
+
+        - name: Configure GitLab Runner
+          ansible.builtin.include_role:
+            name: gitlab_runner
+          vars:
+            gitlab_runner_defer_backup_cleanup: true
+
+        - name: Run GitLab Runner handlers inside transaction
+          ansible.builtin.meta: flush_handlers
+
+        - name: Remove successful migration backup
+          ansible.builtin.file:
+            path: "{{ gitlab_runner_config_backup.path }}"
+            state: absent
+          when: gitlab_runner_config_backup_ready | default(false) | bool
+          no_log: true
+      rescue:
+        - name: Roll back failed GitLab Runner convergence
+          ansible.builtin.include_role:
+            name: gitlab_runner
+            tasks_from: rollback
+          when: not gitlab_runner_rollback_complete | default(false) | bool
+
+        - name: Report failed GitLab Runner convergence
+          ansible.builtin.fail:
+            msg: >-
+              GitLab Runner convergence failed. Transactional rollback was
+              attempted; recovery artifacts were retained if any step failed.

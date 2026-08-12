@@ -88,7 +88,7 @@ elif [[ "$system_state" != running ]]; then
   fail "Disposable Rocky systemd did not become ready: ${system_state}"
 fi
 
-podman exec "$CONTAINER" dnf -qy install kmod python3-pip >/dev/null
+podman exec "$CONTAINER" dnf -qy install python3-pip >/dev/null
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
@@ -100,6 +100,9 @@ assert_external_deny_preserved
 overlay_module_before_check="$(podman exec "$CONTAINER" test -d /sys/module/overlay && printf loaded || printf absent)"
 
 run_playbook --check >/dev/null
+if podman exec "$CONTAINER" rpm -q kmod >/dev/null 2>&1; then
+  fail 'Container runtime kernel check mode installed kmod'
+fi
 if podman exec "$CONTAINER" rpm -q podman >/dev/null 2>&1; then
   fail 'Podman host check mode installed Podman'
 fi
@@ -117,6 +120,8 @@ if ! convergence_output="$(run_playbook 2>&1)"; then
   printf '%s\n' "$convergence_output" >&2
   fail 'Initial Podman host role convergence failed'
 fi
+podman exec "$CONTAINER" rpm -q kmod >/dev/null \
+  || fail 'Container runtime kernel role did not install kmod'
 package_identity="$(podman exec "$CONTAINER" \
   rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman)"
 [[ "$package_identity" == "$PODMAN_NEVRA" ]] \

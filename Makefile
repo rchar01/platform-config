@@ -22,7 +22,7 @@ TEST_WORKERS ?= 2
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -135,6 +135,10 @@ test-keepalived-vip-behavior:
 ## Run the opt-in Podman host and Quadlet integration check
 test-podman-host-rocky:
 	@bash tests/integration/test-podman-host-rocky.sh
+
+## Run the opt-in GitLab Runner manager-only Podman socket check
+test-gitlab-runner-podman-rocky:
+	@bash tests/integration/test-gitlab-runner-podman-rocky.sh
 
 ## Run the opt-in external probe and exact Alloy integration check
 test-platform-external-probe-alloy:

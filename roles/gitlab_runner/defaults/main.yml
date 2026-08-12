@@ -16,6 +16,18 @@ gitlab_runner_executor: shell
 gitlab_runner_tags: []
 gitlab_runner_registration_extra_args: []
 gitlab_runner_force_register: false
+gitlab_runner_defer_backup_cleanup: false
+
+gitlab_runner_podman_socket_enabled: false
+gitlab_runner_podman_socket_host_path: /run/podman/podman.sock
+gitlab_runner_podman_socket_container_path: /run/podman/podman.sock
+
+gitlab_runner_docker_host: "unix://{{ gitlab_runner_podman_socket_container_path }}"
+gitlab_runner_docker_image: ""
+gitlab_runner_docker_pull_policy: always
+gitlab_runner_docker_network_per_build: true
+gitlab_runner_docker_volumes:
+  - /cache
 
 gitlab_runner_tls_ca_cert_src: ""
 gitlab_runner_tls_ca_cert_path: "{{ gitlab_runner_certs_dir }}/gitlab-ca.crt"
