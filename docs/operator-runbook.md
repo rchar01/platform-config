@@ -19,10 +19,12 @@ Public examples in this document use RFC 5737 documentation IPs such as `192.0.2
 
 This runbook is complete for the currently implemented homelab and unaffected dev
 services. The rebuilt OpenBao service role foundation is staged and its strict
-read-only direct-node status gate is available, but service convergence, HAProxy,
-initialization, and smoke paths remain blocked. Monitoring also remains blocked
-while its three-node replacement is implemented. Do not use `site.yml` to bypass
-the phased handoff.
+read-only direct-node status gate is available. OpenBao-hosted monitoring
+observers now have a separate guarded stage/activate/smoke workflow, but their
+real endpoints remain unavailable until monitoring is deployed. OpenBao service
+activation, initialization, and HA smoke remain blocked. Monitoring also remains
+blocked while its three-node replacement is implemented. Do not use `site.yml`
+to bypass the phased handoff.
 
 | Area | Environment | Status | Runbook Coverage |
 |---|---|---|---|
@@ -33,7 +35,7 @@ the phased handoff.
 | Podman host foundation | homelab, dev | implemented | full bring-up and smoke commands |
 | GitLab CE | homelab | implemented | full bring-up, smoke, and root password handling |
 | Zot registry | dev | implemented | full bring-up and smoke commands |
-| OpenBao HA | dev | service foundation and read-only status staged | immutable image, direct-node role and status, inventory, and bounded-storage contracts; no active service apply or smoke command |
+| OpenBao HA | dev | service foundation, read-only status, and observer orchestration staged | immutable image, direct-node role and status, inventory, bounded storage, and guarded monitoring observers; no active OpenBao service apply or HA smoke command |
 | GitLab runners | dev | implemented | full bring-up and smoke commands |
 | Monitoring HA | dev | replacement blocked | inventory and bounded-storage contract only; collectors remain inactive |
 | RKE2 and bundled Traefik | dev | implemented | full bring-up and smoke commands for the base cluster and default ingress controller |
@@ -651,6 +653,47 @@ temporarily masks OpenBao and starts role convergence. A failed staging run
 leaves OpenBao masked; successful convergence unblocks the newly disabled unit.
 Do not use `site.yml` while monitoring remains blocked.
 
+The external monitoring probes and the one native Alloy process on each OpenBao
+host have a separate fresh-start workflow. It is not an OpenBao service
+activation path and never initializes, unseals, joins, restores, promotes, or
+changes either VIP. Recreate pre-start development VMs rather than adding legacy
+state migration logic.
+
+Keep `openbao_observers_activate: false` for the first convergence. Set
+`openbao_observers_orchestration_ready: true`, `platform_external_probe_enabled:
+true`, and `grafana_alloy_enabled: true` only after all three hosts have their
+outside-Git CA, client identities, Garage credentials, exact PostgreSQL 18
+client, authenticated monitoring VIP endpoints, and Mimir remote-write path.
+The playbook requires all three canonical OpenBao hosts and derives every Alloy
+service and configured probe timer state from the one activation selector.
+
+```bash
+make syntax-openbao-observers ENV=dev
+make check ENV=dev PLAYBOOK=playbooks/openbao-observers.yml
+make deploy-openbao-observers ENV=dev
+# Run a second staged apply to confirm idempotency.
+make deploy-openbao-observers ENV=dev
+```
+
+After staged configuration review, set `openbao_observers_activate: true` in
+private inventory and run:
+
+```bash
+make deploy-openbao-observers ENV=dev
+make smoke-openbao-observers ENV=dev
+# Confirm active desired-state idempotency.
+make deploy-openbao-observers ENV=dev
+```
+
+Observer smoke requires Alloy readiness, the exact RPM identity, native complete
+configuration validation, successful blackbox results, active configured timers,
+fresh evidence for any genuinely node-local VIP ownership collector, one
+read-only PostgreSQL primary result, and one successful unambiguous Garage
+PUT/GET/digest/DELETE canary on every observer. The public OpenBao-host example
+does not claim node-local ownership of the monitoring VIP because that VIP is
+owned by monitoring nodes. Observer smoke does not replace strict OpenBao status
+or OpenBao HA smoke. The existing `smoke-openbao` target remains blocked.
+
 Before configuring dev GitLab runners, confirm homelab GitLab is reachable from the runner hosts:
 
 ```bash
@@ -947,5 +990,6 @@ git diff --check
 ```
 
 For implemented service changes, also run the matching smoke playbook against
-the environment that owns the service. OpenBao and monitoring smoke targets
-remain intentionally blocked.
+the environment that owns the service. OpenBao-hosted observer smoke is
+available separately; OpenBao HA and monitoring HA smoke targets remain
+intentionally blocked.

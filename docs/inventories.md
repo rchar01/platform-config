@@ -67,6 +67,19 @@ after stable-device review and explicit initialization approval. Set
 `openbao_orchestration_ready` only after the resulting mounts and every remaining
 role input are complete.
 
+The same three OpenBao hosts also model the independent external monitoring
+observer role. `openbao_observers_orchestration_ready` gates convergence, while
+the required boolean `openbao_observers_activate` is the single source for the
+Alloy service and every configured probe timer state. Stage with activation
+false, review the complete validated Alloy configuration, then activate only
+after the monitoring VIP endpoints, PostgreSQL primary identity, per-host Garage
+bucket/key, and Mimir remote-write receiver are ready. Real endpoint policy stays
+in private inventory; CA files, client keys, credentials, and tokens remain
+outside Git. Configure `platform_external_probe_vip_ownership` only on hosts that
+can own that VIP in their local kernel; OpenBao observer hosts must not claim
+node-local ownership of the monitoring VIP. This observer workflow does not
+initialize or activate OpenBao.
+
 The legacy OpenBao inventory group was `vault`. The replacement API is
 `openbao`; do not add a compatibility alias without a demonstrated consumer.
 

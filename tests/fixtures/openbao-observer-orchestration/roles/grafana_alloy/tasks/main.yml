@@ -1,0 +1,25 @@
+---
+- name: Require mocked observer role order and lifecycle
+  ansible.builtin.assert:
+    that:
+      - openbao_observers_test_role_order == ['platform_external_probe']
+      - grafana_alloy_feature_config == 'mocked_external_probe_fragment'
+      - >-
+        openbao_observers_test_probe_states
+        == (
+          [true, 'started', true, 'started', true, 'started']
+          if openbao_observers_activate
+          else [false, 'stopped', false, 'stopped', false, 'stopped']
+        )
+      - grafana_alloy_service_enabled == openbao_observers_activate
+      - >-
+        grafana_alloy_service_state
+        == ('started' if openbao_observers_activate else 'stopped')
+
+- name: Record completed mocked observer convergence
+  ansible.builtin.copy:
+    content: "{{ 'active' if openbao_observers_activate else 'staged' }}"
+    dest: "{{ openbao_observers_test_marker_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]

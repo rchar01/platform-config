@@ -1,0 +1,10 @@
+---
+all:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+  children:
+    openbao:
+      hosts:
+        observer-1:
+        observer-2:

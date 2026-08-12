@@ -1,20 +1,6 @@
 ---
-- name: Validate Grafana Alloy lifecycle selector
-  ansible.builtin.assert:
-    that:
-      - grafana_alloy_enabled is boolean
-      - grafana_alloy_service_name == 'alloy.service'
-      - grafana_alloy_cache_dir is match('^/[A-Za-z0-9_./-]+$')
-      - grafana_alloy_config_dir is match('^/[A-Za-z0-9_./-]+$')
-      - grafana_alloy_config_path is match('^/[A-Za-z0-9_./-]+$')
-      - grafana_alloy_config_path | dirname == grafana_alloy_config_dir
-      - grafana_alloy_storage_dir is match('^/[A-Za-z0-9_./-]+$')
-      - grafana_alloy_config_validate_command == '/usr/bin/alloy validate %s'
-      - grafana_alloy_http_listen_address is match('^[A-Za-z0-9_.:-]+$')
-      - "'..' not in grafana_alloy_cache_dir.split('/')"
-      - "'..' not in grafana_alloy_config_dir.split('/')"
-      - "'..' not in grafana_alloy_storage_dir.split('/')"
-    fail_msg: "Grafana Alloy lifecycle inputs must identify one safe systemd service."
+- name: Preflight Grafana Alloy inputs
+  ansible.builtin.include_tasks: preflight.yml
 
 - name: Check for previously managed native Grafana Alloy lifecycle
   ansible.builtin.stat:
@@ -161,44 +147,6 @@
 - name: Configure staged Grafana Alloy process owner
   when: grafana_alloy_enabled | bool
   block:
-    - name: Assert Grafana Alloy inputs are configured safely
-      ansible.builtin.assert:
-        that:
-          - grafana_alloy_version == '1.18.1'
-          - grafana_alloy_arch == 'amd64'
-          - grafana_alloy_rpm_name == 'alloy-1.18.1-1.amd64.rpm'
-          - grafana_alloy_download_checksum == 'sha256:7dbdc068feae7feaafbc48fefb9b41b6c91af24984c13277bf0a9d1a298a4126'
-          - grafana_alloy_package_nevra == 'alloy-0:1.18.1-1.x86_64'
-          - grafana_alloy_enabled is boolean
-          - grafana_alloy_service_enabled is boolean
-          - grafana_alloy_service_state in ['started', 'stopped']
-          - (grafana_alloy_service_enabled | bool) == (grafana_alloy_service_state == 'started')
-          - grafana_alloy_vm_name | length > 0
-          - grafana_alloy_ip | length > 0
-          - grafana_alloy_http_listen_port | int >= 1
-          - grafana_alloy_http_listen_port | int <= 65535
-          - grafana_alloy_loki_url | length > 0 or grafana_alloy_prometheus_remote_write_url | length > 0
-          - grafana_alloy_loki_url | length == 0 or grafana_alloy_loki_url is match('^https://[^/@]+(?:/|$)')
-          - grafana_alloy_prometheus_remote_write_url | length == 0 or grafana_alloy_prometheus_remote_write_url is match('^https://[^/@]+(?:/|$)')
-          - grafana_alloy_prometheus_remote_write_ca_file | length == 0 or grafana_alloy_prometheus_remote_write_ca_file is match('^/')
-          - grafana_alloy_prometheus_remote_write_server_name | length == 0 or grafana_alloy_prometheus_remote_write_server_name is match('^[A-Za-z0-9.-]+$')
-          - (grafana_alloy_prometheus_remote_write_ca_file | length > 0) == (grafana_alloy_prometheus_remote_write_server_name | length > 0)
-          - (grafana_alloy_prometheus_remote_write_client_cert_file | length > 0) == (grafana_alloy_prometheus_remote_write_client_key_file | length > 0)
-          - grafana_alloy_prometheus_remote_write_client_cert_file | length == 0 or grafana_alloy_prometheus_remote_write_ca_file | length > 0
-          - grafana_alloy_prometheus_remote_write_client_cert_file | length == 0 or grafana_alloy_prometheus_remote_write_client_cert_file is match('^/')
-          - grafana_alloy_prometheus_remote_write_client_key_file | length == 0 or grafana_alloy_prometheus_remote_write_client_key_file is match('^/')
-          - grafana_alloy_prometheus_remote_write_bearer_token_file | length == 0 or grafana_alloy_prometheus_remote_write_bearer_token_file is match('^/')
-          - "'/etc/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
-          - "'/etc/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
-          - "'/run/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
-          - "'/run/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
-          - "'/usr/share/containers/systemd/alloy.container' in grafana_alloy_conflicting_unit_paths"
-          - "'/usr/share/containers/systemd/monitoring-alloy.container' in grafana_alloy_conflicting_unit_paths"
-        fail_msg: >-
-          Grafana Alloy requires the locked 1.18.1 RPM candidate, a coherent
-          disabled or active service state, at least one output, and strict
-          outside-Git file references for authenticated remote write.
-
     - name: Check for conflicting Grafana Alloy process owners
       ansible.builtin.stat:
         path: "{{ item }}"

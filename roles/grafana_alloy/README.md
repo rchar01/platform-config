@@ -11,6 +11,10 @@ They contribute validated configuration through `grafana_alloy_feature_config`;
 this role remains the sole owner of `/etc/alloy/config.alloy` and
 `alloy.service`.
 
+Multi-host orchestration can include `tasks_from: preflight.yml` on every host
+before process-owner convergence. The normal role entry point runs the same
+non-host-mutating validation before inspecting or changing the service owner.
+
 At least one output is required when the role is enabled. Loki journal forwarding
 uses `grafana_alloy_loki_url`. Prometheus features use the stable
 `prometheus.remote_write.platform_metrics.receiver` component configured by

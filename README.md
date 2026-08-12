@@ -82,6 +82,9 @@ make test
 make test-parallel
 make verify
 make verify-parallel
+make syntax-openbao-observers ENV=dev
+make deploy-openbao-observers ENV=dev
+make smoke-openbao-observers ENV=dev
 make deploy-bootstrap-token-issuer-staging ENV=dev LIMIT=k8s-bastion-01 STAGING_MODE=preflight
 make smoke-firewalld ENV=dev
 make smoke-k8s-bastion ENV=dev

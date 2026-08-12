@@ -150,13 +150,16 @@ def test_alloy_candidate_matches_role_and_integration(repo_root: Path) -> None:
     tasks = (repo_root / "roles/grafana_alloy/tasks/main.yml").read_text(
         encoding="utf-8"
     )
+    preflight = (repo_root / "roles/grafana_alloy/tasks/preflight.yml").read_text(
+        encoding="utf-8"
+    )
     integration = (
         repo_root / "tests/integration/test-platform-external-probe-alloy.sh"
     ).read_text(encoding="utf-8")
     for value in (alloy["version"], alloy["rpm_sha256"], alloy["package_nevra"]):
         assert value in defaults
-        assert value in tasks
+        assert value in preflight
         assert value in integration
-    assert alloy["rpm_name"] in tasks
+    assert alloy["rpm_name"] in preflight
     assert alloy["rpm_name"] in integration
     assert "1[.]18[.]0" not in integration

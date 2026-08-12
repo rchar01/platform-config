@@ -1,0 +1,13 @@
+---
+- name: Record mocked external probe lifecycle
+  ansible.builtin.set_fact:
+    openbao_observers_test_role_order:
+      - platform_external_probe
+    openbao_observers_test_probe_states:
+      - "{{ platform_external_probe_timer_enabled }}"
+      - "{{ platform_external_probe_timer_state }}"
+      - "{{ platform_external_probe_postgresql_timer_enabled }}"
+      - "{{ platform_external_probe_postgresql_timer_state }}"
+      - "{{ platform_external_probe_garage_timer_enabled }}"
+      - "{{ platform_external_probe_garage_timer_state }}"
+    platform_external_probe_alloy_fragment: mocked_external_probe_fragment

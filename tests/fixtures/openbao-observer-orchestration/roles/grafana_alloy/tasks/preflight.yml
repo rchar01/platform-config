@@ -1,0 +1,8 @@
+---
+- name: Validate mocked Grafana Alloy inputs before lifecycle mutation
+  ansible.builtin.assert:
+    that:
+      - >-
+        inventory_hostname
+        != (openbao_observers_test_invalid_alloy_host | default(''))
+    fail_msg: "Mocked Grafana Alloy inputs are invalid."

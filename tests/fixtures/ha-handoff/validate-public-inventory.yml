@@ -86,6 +86,19 @@
           - openbao_group_example.keepalived_vip_cluster_members | map(attribute='router_id') | unique | length == 3
           - openbao_group_example.keepalived_vip_cluster_members | map(attribute='instances.OPENBAO.priority') | unique | length == 3
           - openbao_group_example.keepalived_vip_cluster_members | map(attribute='instances.OPENBAO.source_address') | unique | length == 3
+          - not openbao_group_example.openbao_observers_orchestration_ready | bool
+          - not openbao_group_example.openbao_observers_activate | bool
+          - not openbao_group_example.platform_external_probe_enabled | bool
+          - openbao_group_example.platform_external_probe_targets | length == 3
+          - >-
+            openbao_group_example.platform_external_probe_targets
+            | map(attribute='profile') | sort
+            == ['grafana_health', 'loki_ready', 'mimir_ready']
+          - openbao_group_example.platform_external_probe_vip_ownership | length == 0
+          - openbao_group_example.platform_external_probe_postgresql_primary | length == 10
+          - openbao_group_example.platform_external_probe_garage_canary | length == 12
+          - not openbao_group_example.grafana_alloy_enabled | bool
+          - openbao_group_example.grafana_alloy_prometheus_remote_write_url is match('^https://.*[.]invalid/')
 
     - name: Require bounded OpenBao storage examples
       ansible.builtin.assert:

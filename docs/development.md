@@ -298,6 +298,15 @@ one matching leader, and stable repeated observations while rejecting sealed,
 split-cluster, non-voter, leader-mismatch, and changing-index states. These
 fixtures do not replace live initialized-cluster qualification.
 
+The authoritative pytest suite also exercises the OpenBao-hosted observer
+playbooks with mocked roles. It verifies exact three-host selection, rejection
+of partial and unrelated limits, disabled staging, explicit activation, derived
+timer/service state, role composition order, smoke activation gates, and public
+inventory defaults. These tests do not contact managed hosts. The opt-in
+`make test-platform-external-probe-alloy` lane remains the runtime-backed role
+test; neither lane proves production monitoring VIP, PKI, remote-write ingestion,
+PostgreSQL, or Garage behavior.
+
 The default suite also checks the maintenance-only OpenBao rolling contract:
 explicit confirmation, full-cluster selection, standby-first inventory order,
 `serial: 1`, leadership-drift aborts, conditional manual-unseal pauses, and

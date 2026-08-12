@@ -1,0 +1,366 @@
+---
+- name: Require the canonical active OpenBao observer inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require exactly three OpenBao observer hosts
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+        fail_msg: >-
+          OpenBao observer smoke requires exactly three inventory members.
+
+- name: Smoke test active OpenBao-hosted external observers
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    openbao_observers_smoke_max_evidence_age: 90
+  tasks:
+    - name: Require explicit full-cluster active observer smoke
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('openbao', []) | list | sort
+          - (openbao_observers_orchestration_ready | default(false)) is boolean
+          - openbao_observers_orchestration_ready | default(false)
+          - openbao_observers_activate is defined
+          - (openbao_observers_activate | default(false)) is boolean
+          - openbao_observers_activate | default(false)
+          - (platform_external_probe_enabled | default(false)) is boolean
+          - platform_external_probe_enabled | default(false)
+          - (grafana_alloy_enabled | default(false)) is boolean
+          - grafana_alloy_enabled | default(false)
+          - openbao_observers_smoke_max_evidence_age is integer
+          - openbao_observers_smoke_max_evidence_age == 90
+        fail_msg: >-
+          OpenBao observer smoke requires the complete three-host group and an
+          explicitly active, ready observer contract.
+
+    - name: Check exact Grafana Alloy package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - alloy
+      register: openbao_observers_smoke_alloy_package
+      changed_when: false
+
+    - name: Require exact Grafana Alloy package identity
+      ansible.builtin.assert:
+        that:
+          - openbao_observers_smoke_alloy_package.stdout == 'alloy-0:1.18.1-1.x86_64'
+        fail_msg: "Grafana Alloy does not match the approved exact RPM identity."
+
+    - name: Validate installed Grafana Alloy configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/alloy
+          - validate
+          - "{{ grafana_alloy_config_path | default('/etc/alloy/config.alloy') }}"
+      changed_when: false
+
+    - name: Check active Grafana Alloy service state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "{{ item }}"
+          - "{{ grafana_alloy_service_name | default('alloy.service') }}"
+      loop:
+        - is-enabled
+        - is-active
+      changed_when: false
+
+    - name: Wait for local Grafana Alloy readiness
+      ansible.builtin.uri:
+        url: >-
+          http://{{ grafana_alloy_http_listen_address | default('127.0.0.1')
+          }}:{{ grafana_alloy_http_listen_port | default(12345) }}/-/ready
+        method: GET
+        use_proxy: false
+        status_code: 200
+      register: openbao_observers_smoke_alloy_ready
+      retries: 10
+      delay: 1
+      until: openbao_observers_smoke_alloy_ready.status | default(0) == 200
+
+    - name: Query each configured blackbox probe result
+      ansible.builtin.uri:
+        url: >-
+          {{
+            'http://' ~ (grafana_alloy_http_listen_address | default('127.0.0.1')) ~ ':'
+            ~ (grafana_alloy_http_listen_port | default(12345) | string)
+            ~ '/api/v0/component/prometheus.exporter.blackbox.'
+            ~ 'platform_external_probe/metrics?target='
+            ~ (item.address | urlencode)
+            ~ '&module=' ~ (item.name | urlencode)
+          }}
+        method: GET
+        use_proxy: false
+        return_content: true
+        status_code: 200
+      loop: "{{ platform_external_probe_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: openbao_observers_smoke_blackbox
+      retries: 10
+      delay: 1
+      until: >-
+        openbao_observers_smoke_blackbox.status | default(0) == 200
+        and openbao_observers_smoke_blackbox.content | default('')
+          is search('(?m)^probe_success 1(?:[.]0)?$')
+
+    - name: Build configured observer timer list
+      ansible.builtin.set_fact:
+        openbao_observers_smoke_timers: >-
+          {{
+            ([platform_external_probe_timer_name | default('platform-external-probe-ownership.timer')]
+              if platform_external_probe_vip_ownership | length > 0 else [])
+            + ([platform_external_probe_postgresql_timer_name | default('platform-external-probe-postgresql-primary.timer')]
+              if platform_external_probe_postgresql_primary | length > 0 else [])
+            + ([platform_external_probe_garage_timer_name | default('platform-external-probe-garage-canary.timer')]
+              if platform_external_probe_garage_canary | length > 0 else [])
+          }}
+
+    - name: Check configured observer timers
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - "{{ item.0 }}"
+          - "{{ item.1 }}"
+      loop: >-
+        {{ ['is-enabled', 'is-active'] | product(openbao_observers_smoke_timers) | list }}
+      changed_when: false
+
+    - name: Check VIP ownership evidence freshness
+      ansible.builtin.stat:
+        path: >-
+          {{
+            platform_external_probe_metrics_path
+            | default('/var/lib/alloy/platform-external-probe/vip-ownership.prom')
+          }}
+      register: openbao_observers_smoke_ownership_stat
+      when: platform_external_probe_vip_ownership | length > 0
+
+    - name: Require VIP ownership evidence file
+      ansible.builtin.assert:
+        that:
+          - openbao_observers_smoke_ownership_stat.stat.isreg | default(false)
+        fail_msg: "VIP ownership evidence is missing."
+      when: platform_external_probe_vip_ownership | length > 0
+
+    - name: Read VIP ownership evidence
+      ansible.builtin.slurp:
+        path: >-
+          {{
+            platform_external_probe_metrics_path
+            | default('/var/lib/alloy/platform-external-probe/vip-ownership.prom')
+          }}
+      register: openbao_observers_smoke_ownership
+      when: platform_external_probe_vip_ownership | length > 0
+
+    - name: Extract VIP ownership observation timestamps
+      ansible.builtin.set_fact:
+        openbao_observers_smoke_ownership_timestamps: >-
+          {{
+            openbao_observers_smoke_ownership.content | b64decode
+            | regex_findall(
+                '(?m)^platform_vip_ownership_observation_timestamp_seconds'
+                ~ '[{][^}]*[}] ([0-9]+)$'
+              )
+            | map('int')
+            | list
+          }}
+      when: platform_external_probe_vip_ownership | length > 0
+
+    - name: Read remote time for VIP ownership freshness
+      ansible.builtin.command:
+        argv:
+          - date
+          - +%s
+      register: openbao_observers_smoke_ownership_now
+      changed_when: false
+      when: platform_external_probe_vip_ownership | length > 0
+
+    - name: Require fresh VIP ownership observations
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_observers_smoke_ownership_timestamps | length
+            == platform_external_probe_vip_ownership | length
+          - >-
+            openbao_observers_smoke_ownership_timestamps | max
+            <= openbao_observers_smoke_ownership_now.stdout | int
+          - >-
+            openbao_observers_smoke_ownership_timestamps | min
+            >= openbao_observers_smoke_ownership_now.stdout | int
+              - openbao_observers_smoke_max_evidence_age
+        fail_msg: "VIP ownership observations are missing, stale, or future-dated."
+      when: platform_external_probe_vip_ownership | length > 0
+
+    - name: Check PostgreSQL primary evidence freshness
+      ansible.builtin.stat:
+        path: >-
+          {{
+            platform_external_probe_postgresql_metrics_path
+            | default('/var/lib/alloy/platform-external-probe/postgresql-primary.prom')
+          }}
+      register: openbao_observers_smoke_postgresql_stat
+      when: platform_external_probe_postgresql_primary | length > 0
+
+    - name: Require PostgreSQL primary evidence file
+      ansible.builtin.assert:
+        that:
+          - openbao_observers_smoke_postgresql_stat.stat.isreg | default(false)
+        fail_msg: "PostgreSQL primary observer evidence is missing."
+      when: platform_external_probe_postgresql_primary | length > 0
+
+    - name: Read PostgreSQL primary evidence
+      ansible.builtin.slurp:
+        path: >-
+          {{
+            platform_external_probe_postgresql_metrics_path
+            | default('/var/lib/alloy/platform-external-probe/postgresql-primary.prom')
+          }}
+      register: openbao_observers_smoke_postgresql
+      when: platform_external_probe_postgresql_primary | length > 0
+
+    - name: Extract PostgreSQL primary observation timestamp
+      ansible.builtin.set_fact:
+        openbao_observers_smoke_postgresql_timestamps: >-
+          {{
+            openbao_observers_smoke_postgresql.content | b64decode
+            | regex_findall(
+                '(?m)^platform_postgresql_primary_observation_timestamp_seconds'
+                ~ '[{][^}]*[}] ([0-9]+)$'
+              )
+            | map('int')
+            | list
+          }}
+      when: platform_external_probe_postgresql_primary | length > 0
+
+    - name: Read remote time for PostgreSQL primary freshness
+      ansible.builtin.command:
+        argv:
+          - date
+          - +%s
+      register: openbao_observers_smoke_postgresql_now
+      changed_when: false
+      when: platform_external_probe_postgresql_primary | length > 0
+
+    - name: Require fresh successful PostgreSQL primary evidence
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_observers_smoke_postgresql.content | default('') | b64decode
+            is search('(?m)^platform_postgresql_primary[{][^}]*[}] 1$')
+          - >-
+            openbao_observers_smoke_postgresql.content | default('') | b64decode
+            is search('(?m)^platform_postgresql_primary_query_success[{][^}]*[}] 1$')
+          - openbao_observers_smoke_postgresql_timestamps | length == 1
+          - >-
+            openbao_observers_smoke_postgresql_timestamps | max
+            <= openbao_observers_smoke_postgresql_now.stdout | int
+          - >-
+            openbao_observers_smoke_postgresql_timestamps | min
+            >= openbao_observers_smoke_postgresql_now.stdout | int
+              - openbao_observers_smoke_max_evidence_age
+        fail_msg: >-
+          PostgreSQL primary observer evidence is stale, future-dated, or
+          unsuccessful.
+      when: platform_external_probe_postgresql_primary | length > 0
+
+    - name: Check Garage semantic canary evidence freshness
+      ansible.builtin.stat:
+        path: >-
+          {{
+            platform_external_probe_garage_metrics_path
+            | default('/var/lib/alloy/platform-external-probe/garage-canary.prom')
+          }}
+      register: openbao_observers_smoke_garage_stat
+      when: platform_external_probe_garage_canary | length > 0
+
+    - name: Require Garage semantic canary evidence file
+      ansible.builtin.assert:
+        that:
+          - openbao_observers_smoke_garage_stat.stat.isreg | default(false)
+        fail_msg: "Garage semantic canary evidence is missing."
+      when: platform_external_probe_garage_canary | length > 0
+
+    - name: Read Garage semantic canary evidence
+      ansible.builtin.slurp:
+        path: >-
+          {{
+            platform_external_probe_garage_metrics_path
+            | default('/var/lib/alloy/platform-external-probe/garage-canary.prom')
+          }}
+      register: openbao_observers_smoke_garage
+      when: platform_external_probe_garage_canary | length > 0
+
+    - name: Extract Garage semantic canary observation timestamp
+      ansible.builtin.set_fact:
+        openbao_observers_smoke_garage_timestamps: >-
+          {{
+            openbao_observers_smoke_garage.content | b64decode
+            | regex_findall(
+                '(?m)^platform_garage_canary_observation_timestamp_seconds'
+                ~ '[{][^}]*[}] ([0-9]+)$'
+              )
+            | map('int')
+            | list
+          }}
+      when: platform_external_probe_garage_canary | length > 0
+
+    - name: Read remote time for Garage semantic canary freshness
+      ansible.builtin.command:
+        argv:
+          - date
+          - +%s
+      register: openbao_observers_smoke_garage_now
+      changed_when: false
+      when: platform_external_probe_garage_canary | length > 0
+
+    - name: Require fresh successful Garage semantic canary evidence
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_observers_smoke_garage.content | default('') | b64decode
+            is search('(?m)^platform_garage_canary_success[{][^}]*[}] 1$')
+          - >-
+            openbao_observers_smoke_garage.content | default('') | b64decode
+            is search('(?m)^platform_garage_canary_cleanup_success[{][^}]*[}] 1$')
+          - >-
+            openbao_observers_smoke_garage.content | default('') | b64decode
+            is search('(?m)^platform_garage_canary_ambiguity[{][^}]*[}] 0$')
+          - openbao_observers_smoke_garage_timestamps | length == 1
+          - >-
+            openbao_observers_smoke_garage_timestamps | max
+            <= openbao_observers_smoke_garage_now.stdout | int
+          - >-
+            openbao_observers_smoke_garage_timestamps | min
+            >= openbao_observers_smoke_garage_now.stdout | int
+              - openbao_observers_smoke_max_evidence_age
+        fail_msg: >-
+          Garage semantic canary evidence is stale, future-dated, failed, or
+          ambiguous.
+      when: platform_external_probe_garage_canary | length > 0
+
+- name: Reject smoke limits that exclude OpenBao observers
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require a selected OpenBao observer host before reporting smoke success
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('openbao', []))
+            | length > 0
+        fail_msg: >-
+          OpenBao observer smoke did not select the observer group. A limit that
+          excludes OpenBao is not a valid smoke result.
+      run_once: true # noqa run-once[task]

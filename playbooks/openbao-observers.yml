@@ -1,0 +1,114 @@
+---
+- name: Require the canonical OpenBao observer inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require exactly three OpenBao observer hosts
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+        fail_msg: >-
+          OpenBao observer convergence requires exactly three inventory members.
+
+- name: Converge OpenBao-hosted external observers
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit full-cluster observer convergence
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao observer convergence requires all three OpenBao inventory
+          hosts without a partial limit.
+      run_once: true # noqa run-once[task]
+
+    - name: Require the explicit observer lifecycle contract
+      ansible.builtin.assert:
+        that:
+          - (openbao_observers_orchestration_ready | default(false)) is boolean
+          - openbao_observers_orchestration_ready | default(false)
+          - openbao_observers_activate is defined
+          - (openbao_observers_activate | default(false)) is boolean
+          - (platform_external_probe_enabled | default(false)) is boolean
+          - platform_external_probe_enabled | default(false)
+          - (grafana_alloy_enabled | default(false)) is boolean
+          - grafana_alloy_enabled | default(false)
+        fail_msg: >-
+          OpenBao observer convergence requires an explicit ready contract,
+          enabled external-probe and Alloy ownership, and a boolean activation
+          selector on every node.
+
+    - name: Preflight external observer inputs on every host
+      ansible.builtin.include_role:
+        name: platform_external_probe
+        tasks_from: preflight.yml
+      vars:
+        platform_external_probe_timer_enabled: >-
+          {{ openbao_observers_activate and platform_external_probe_vip_ownership | length > 0 }}
+        platform_external_probe_timer_state: >-
+          {{ 'started' if openbao_observers_activate and platform_external_probe_vip_ownership | length > 0 else 'stopped' }}
+        platform_external_probe_postgresql_timer_enabled: >-
+          {{ openbao_observers_activate and platform_external_probe_postgresql_primary | length > 0 }}
+        platform_external_probe_postgresql_timer_state: >-
+          {{ 'started' if openbao_observers_activate and platform_external_probe_postgresql_primary | length > 0 else 'stopped' }}
+        platform_external_probe_garage_timer_enabled: >-
+          {{ openbao_observers_activate and platform_external_probe_garage_canary | length > 0 }}
+        platform_external_probe_garage_timer_state: >-
+          {{ 'started' if openbao_observers_activate and platform_external_probe_garage_canary | length > 0 else 'stopped' }}
+
+    - name: Preflight OpenBao observer Alloy inputs on every host
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: preflight.yml
+      vars:
+        grafana_alloy_feature_config: "{{ platform_external_probe_alloy_fragment | default('') }}"
+        grafana_alloy_service_enabled: "{{ openbao_observers_activate }}"
+        grafana_alloy_service_state: >-
+          {{ 'started' if openbao_observers_activate else 'stopped' }}
+
+    - name: Build strict external observer contribution
+      ansible.builtin.include_role:
+        name: platform_external_probe
+      vars:
+        platform_external_probe_timer_enabled: >-
+          {{ openbao_observers_activate and platform_external_probe_vip_ownership | length > 0 }}
+        platform_external_probe_timer_state: >-
+          {{ 'started' if openbao_observers_activate and platform_external_probe_vip_ownership | length > 0 else 'stopped' }}
+        platform_external_probe_postgresql_timer_enabled: >-
+          {{ openbao_observers_activate and platform_external_probe_postgresql_primary | length > 0 }}
+        platform_external_probe_postgresql_timer_state: >-
+          {{ 'started' if openbao_observers_activate and platform_external_probe_postgresql_primary | length > 0 else 'stopped' }}
+        platform_external_probe_garage_timer_enabled: >-
+          {{ openbao_observers_activate and platform_external_probe_garage_canary | length > 0 }}
+        platform_external_probe_garage_timer_state: >-
+          {{ 'started' if openbao_observers_activate and platform_external_probe_garage_canary | length > 0 else 'stopped' }}
+
+    - name: Own the single OpenBao observer Alloy process
+      ansible.builtin.include_role:
+        name: grafana_alloy
+      vars:
+        grafana_alloy_feature_config: "{{ platform_external_probe_alloy_fragment }}"
+        grafana_alloy_service_enabled: "{{ openbao_observers_activate }}"
+        grafana_alloy_service_state: >-
+          {{ 'started' if openbao_observers_activate else 'stopped' }}
+
+- name: Reject limits that exclude OpenBao observers
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require a selected OpenBao observer host before reporting convergence
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('openbao', []))
+            | length > 0
+        fail_msg: >-
+          OpenBao observer convergence did not select the observer group. A
+          limit that excludes OpenBao is not successful convergence.
+      run_once: true # noqa run-once[task]

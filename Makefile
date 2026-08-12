@@ -22,7 +22,7 @@ TEST_WORKERS ?= 2
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
 
 ## Show available commands
 help:
@@ -198,6 +198,15 @@ verify-parallel: check-dev-toolchain check-test-container-profile check-containe
 deploy-bootstrap-token-issuer-staging: _guard-staging-mode
 	@$(MAKE) apply PLAYBOOK=playbooks/bootstrap-token-issuer-staging.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS) -e bootstrap_token_issuer_staging_mode=$(STAGING_MODE) $(if $(filter rollback_rehearsal,$(STAGING_MODE)),-e bootstrap_token_issuer_staging_controlled_failure=true,)"
 
+## Syntax-check OpenBao-hosted observer orchestration
+syntax-openbao-observers:
+	@$(MAKE) syntax PLAYBOOK=playbooks/openbao-observers.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	@$(MAKE) syntax PLAYBOOK=playbooks/openbao-observers-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Converge staged or explicitly active OpenBao-hosted observers
+deploy-openbao-observers:
+	@$(MAKE) apply PLAYBOOK=playbooks/openbao-observers.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
 ## Check strict read-only OpenBao direct-node and Raft status
 status-openbao:
 	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-status.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
@@ -222,6 +231,10 @@ smoke-registry:
 smoke-openbao:
 	@printf '%s\n' 'OpenBao HA smoke checks are not implemented; the legacy check is blocked.' >&2
 	@exit 1
+
+## Smoke test active OpenBao-hosted observers
+smoke-openbao-observers:
+	@$(MAKE) apply PLAYBOOK=playbooks/openbao-observers-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ## Smoke test GitLab CE
 smoke-gitlab:

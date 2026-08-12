@@ -11,6 +11,11 @@ The owning playbook must include this role before `grafana_alloy`, then pass
 `grafana_alloy_feature_config`. The Alloy process role validates the complete
 candidate before replacing `/etc/alloy/config.alloy`.
 
+Multi-host orchestration can include `tasks_from: preflight.yml` for this role on
+every host before beginning lifecycle convergence. The normal role entry point
+runs the same non-host-mutating validation before any timer, service, or evidence
+cleanup.
+
 Example staged composition:
 
 ```yaml
