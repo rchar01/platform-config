@@ -82,6 +82,8 @@
           - connection
       delegate_to: localhost
       become: false
+      vars:
+        ansible_become: false
       register: storage_volume_test_connection_config
       changed_when: false
       check_mode: false
@@ -143,6 +145,8 @@
           - "{{ ansible_host | default(inventory_hostname) }}"
       delegate_to: localhost
       become: false
+      vars:
+        ansible_become: false
       register: storage_volume_test_effective_openssh
       changed_when: false
       check_mode: false

@@ -654,6 +654,22 @@ def test_storage_test_playbook_rejects_all_ssh_option_surfaces(repo_root: Path) 
     assert "/dev/null" in playbook
 
 
+def test_storage_test_controller_commands_never_inherit_become(repo_root: Path) -> None:
+    playbook = _load_yaml(
+        repo_root / "playbooks/maintenance/storage-volume-test.yml"
+    )
+    controller_tasks = [
+        task
+        for task in playbook[1]["pre_tasks"]
+        if task.get("delegate_to") == "localhost"
+    ]
+
+    assert len(controller_tasks) == 2
+    for task in controller_tasks:
+        assert task["become"] is False
+        assert task["vars"]["ansible_become"] is False
+
+
 def test_storage_test_helper_rejects_disabled_host_key_checking(
     repo_root: Path,
     command_runner: CommandRunner,
