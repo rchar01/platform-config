@@ -52,10 +52,13 @@ if [[ "$system_state" != running && "$system_state" != degraded ]]; then
   fail "Disposable Rocky systemd did not become ready: ${system_state}"
 fi
 
-podman exec "$CONTAINER" dnf -qy install python3-pip >/dev/null
+podman exec "$CONTAINER" dnf -qy install kmod python3-pip >/dev/null
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
+podman exec "$CONTAINER" install -d -m 0755 /etc/modprobe.d
+podman exec "$CONTAINER" bash -c \
+  "umask 077 && printf '%s\n' 'blacklist overlay' 'install overlay /bin/false' > /etc/modprobe.d/99-external-overlay-deny.conf"
 podman exec "$CONTAINER" install -d -m 0755 /etc/containers
 podman exec "$CONTAINER" bash -c \
   "printf '%s\n' '[storage]' 'driver = \"vfs\"' 'runroot = \"/run/containers/storage\"' 'graphroot = \"/var/lib/containers/storage\"' > /etc/containers/storage.conf"
@@ -73,7 +76,10 @@ if podman exec "$CONTAINER" test -e /etc/containers/systemd/gitlab-runner.contai
   fail 'GitLab Runner check mode wrote its Quadlet'
 fi
 
-run_playbook >/dev/null
+if ! convergence_output="$(run_playbook 2>&1)"; then
+  printf '%s\n' "$convergence_output" >&2
+  fail 'Initial GitLab Runner role convergence failed'
+fi
 podman exec "$CONTAINER" systemctl is-active --quiet podman.socket \
   || fail 'Role-managed rootful Podman socket is not active'
 [[ "$(podman exec "$CONTAINER" systemctl is-enabled podman.socket 2>/dev/null)" == enabled ]] \
