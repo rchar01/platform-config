@@ -44,8 +44,7 @@
         gitlab_runner_rollback_socket_failed: true
       changed_when: false
 
-- name: Restore GitLab Runner configuration
-  when: gitlab_runner_config_backup_ready | default(false) | bool
+- name: Restore GitLab Runner configuration state
   block:
     - name: Restore previous GitLab Runner configuration
       ansible.builtin.copy:
@@ -56,6 +55,13 @@
         group: root
         mode: "0600"
       no_log: true
+      when: gitlab_runner_config_backup_ready | default(false) | bool
+
+    - name: Remove newly introduced GitLab Runner configuration
+      ansible.builtin.file:
+        path: "{{ gitlab_runner_config_path | default('/etc/gitlab-runner/config.toml') }}"
+        state: absent
+      when: not gitlab_runner_config_stat.stat.exists
 
     - name: Verify restored GitLab Runner configuration
       ansible.builtin.stat:
@@ -69,6 +75,7 @@
           - gitlab_runner_rollback_config_stat.stat.exists
           - gitlab_runner_rollback_config_stat.stat.checksum == gitlab_runner_config_stat.stat.checksum
         fail_msg: "Restored GitLab Runner configuration does not match the original."
+      when: gitlab_runner_config_backup_ready | default(false) | bool
   rescue:
     - name: Record failed GitLab Runner configuration restoration
       ansible.builtin.set_fact:

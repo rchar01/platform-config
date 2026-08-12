@@ -252,6 +252,29 @@ podman exec "$CONTAINER" rm -f \
   /etc/gitlab-runner/config.toml \
   /etc/containers/systemd/gitlab-runner.container
 podman exec "$CONTAINER" systemctl daemon-reload
+if fresh_late_output="$(run_playbook \
+  --extra-vars '{"gitlab_runner_test_emulate_registration":true,"gitlab_runner_service_state":"invalid"}' 2>&1)"; then
+  fail 'Fresh registration late failure unexpectedly converged'
+fi
+grep -q 'Transactional rollback was attempted' <<< "$fresh_late_output" \
+  || fail 'Fresh registration late failure did not run outer restoration'
+if podman exec "$CONTAINER" test -e /etc/gitlab-runner/config.toml; then
+  fail 'Fresh registration late failure retained the new configuration'
+fi
+if podman exec "$CONTAINER" test -e /etc/containers/systemd/gitlab-runner.container; then
+  fail 'Fresh registration late failure retained the new Quadlet'
+fi
+if podman exec "$CONTAINER" systemctl is-active --quiet gitlab-runner.service; then
+  fail 'Fresh registration late failure left the new manager active'
+fi
+[[ "$(podman exec "$CONTAINER" systemctl is-enabled gitlab-runner.service 2>/dev/null || true)" == not-found ]] \
+  || fail 'Fresh registration late failure left the new manager unit installed'
+if podman exec "$CONTAINER" systemctl is-active --quiet podman.socket; then
+  fail 'Fresh registration late failure left the Podman socket active'
+fi
+[[ "$(podman exec "$CONTAINER" systemctl is-enabled podman.socket 2>/dev/null)" == disabled ]] \
+  || fail 'Fresh registration late failure left the Podman socket enabled'
+
 if initial_output="$(run_playbook 2>&1)"; then
   fail 'Initial Docker registration unexpectedly reached the invalid endpoint'
 fi
