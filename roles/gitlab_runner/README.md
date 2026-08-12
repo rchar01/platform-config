@@ -64,6 +64,11 @@ before failing. An incomplete automatic restore retains the root-only
 one-time migration with a separate operator rollback backup, then immediately
 return it to false.
 
+Rollback covers Runner-owned configuration, CA, Quadlet, service state, and the
+Podman socket state captured before convergence. Successfully converged shared
+Podman packages and `container_runtime_kernel` prerequisites intentionally
+remain in place; they are host runtime prerequisites rather than Runner state.
+
 The role reads only the non-secret managed contract from an existing
 `config.toml`. It fails before changing the manager Quadlet when the file does
 not contain exactly the one declared executor identity or when Docker host,

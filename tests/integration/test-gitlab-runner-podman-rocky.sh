@@ -265,5 +265,10 @@ fi
 if podman exec "$CONTAINER" test -e /etc/gitlab-runner/config.toml; then
   fail 'Failed initial Docker registration retained partial configuration'
 fi
+[[ "$(podman exec "$CONTAINER" systemctl is-enabled platform-container-runtime-overlayfs-exception.service)" == enabled ]] \
+  || fail 'Failed Runner registration reverted the shared OverlayFS prerequisite'
+podman exec "$CONTAINER" systemctl is-active --quiet \
+  platform-container-runtime-overlayfs-exception.service \
+  || fail 'Failed Runner registration stopped the shared OverlayFS prerequisite'
 
 printf '%s\n' 'GitLab Runner Podman socket Rocky qualification passed'
