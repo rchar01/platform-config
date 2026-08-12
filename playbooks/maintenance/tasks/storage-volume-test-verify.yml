@@ -67,23 +67,10 @@
       - --nosuffix
       - --options
       - pv_name,pv_uuid,vg_name,vg_uuid
-      - --select
-      - "vg_name={{ storage_volume_test_vg_name }}"
+      - "{{ storage_volume_test_verify_realpaths.results[1].stdout | trim }}"
   register: storage_volume_test_verify_pvs
   changed_when: false
   check_mode: false
-
-- name: Resolve live final storage fixture PV
-  ansible.builtin.command:
-    argv:
-      - realpath
-      - --canonicalize-existing
-      - "{{ storage_volume_test_verify_pv_rows[0].pv_name | trim }}"
-  register: storage_volume_test_verify_live_pv
-  changed_when: false
-  check_mode: false
-  vars:
-    storage_volume_test_verify_pv_rows: "{{ (storage_volume_test_verify_pvs.stdout | from_json).report[0].pv }}"
 
 - name: Inspect final storage fixture VG
   ansible.builtin.command:
@@ -242,7 +229,6 @@
       - storage_volume_test_verify_pv_rows[0].vg_name | trim == storage_volume_test_vg_name
       - storage_volume_test_verify_pv_rows[0].pv_uuid | trim | length > 0
       - storage_volume_test_verify_pv_rows[0].vg_uuid | trim == storage_volume_test_verify_vg_rows[0].vg_uuid | trim
-      - storage_volume_test_verify_live_pv.stdout | trim == storage_volume_test_verify_partition
       - storage_volume_test_verify_vg_rows[0].vg_free | int >= 12 * 1073741824
       - storage_volume_test_verify_lv_rows | length == storage_volumes | length
       - storage_volume_test_verify_lv_rows | map(attribute='lv_name') | list | sort == storage_volumes | map(attribute='lv_name') | list | sort

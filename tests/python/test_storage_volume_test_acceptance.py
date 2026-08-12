@@ -831,6 +831,15 @@ def test_storage_test_verification_and_reboot_contract(repo_root: Path) -> None:
     assert "storage_volume_test_verify_lv_rows" in parsed_state
     assert "storage_volume_test_verify_vg_rows" in parsed_state
     assert "storage_volume_test_verify_uuid_values" in parsed_state
+    inspect_pv = next(
+        task for task in verify_tasks if task["name"] == "Inspect final storage fixture PV"
+    )
+    assert inspect_pv["ansible.builtin.command"]["argv"][-1] == (
+        "{{ storage_volume_test_verify_realpaths.results[1].stdout | trim }}"
+    )
+    assert "Resolve live final storage fixture PV" not in {
+        task["name"] for task in verify_tasks
+    }
     for required in (
         "storage_volume_test_reboot_nonce",
         "/proc/sys/kernel/random/boot_id",
