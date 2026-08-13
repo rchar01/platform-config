@@ -88,6 +88,7 @@ make smoke-openbao-observers ENV=dev
 make deploy-bootstrap-token-issuer-staging ENV=dev LIMIT=k8s-bastion-01 STAGING_MODE=preflight
 make smoke-firewalld ENV=dev
 make smoke-k8s-bastion ENV=dev
+make storage-test-preflight ENV=config-test LIMIT=storage-volume-test-01
 ```
 
 Most Make targets accept `ENV`, `PLAYBOOK`, `LIMIT`, and `EXTRA_ARGS`. Real
@@ -122,6 +123,7 @@ platform-docs documents the design and operations across all repositories.
 - [Operator runbook](docs/operator-runbook.md)
 - [Private workflow](docs/private-workflow.md)
 - [Kubernetes bastion and issuer staging validation](docs/k8s-bastion.md)
+- [Storage volume acceptance fixture](docs/storage-volume-test.md)
 - [Development](docs/development.md)
 
 ## License

@@ -22,7 +22,7 @@ TEST_WORKERS ?= 2
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test
 
 ## Show available commands
 help:
@@ -198,6 +198,26 @@ verify: check-dev-toolchain check-test-container-profile check-container-wrapper
 ## Run local static checks with supplemental parallel pytest
 verify-parallel: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test-parallel
 
+## Run read-only pristine storage fixture checks
+storage-test-preflight: _guard-storage-test
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" ./scripts/storage-volume-test preflight --env-file "$(ENV_FILE)" --inventory "$(INVENTORY)" --limit "$(LIMIT)"
+
+## Initialize the approved pristine storage fixture
+storage-test-initialize: _guard-storage-test
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" ./scripts/storage-volume-test initialize --env-file "$(ENV_FILE)" --inventory "$(INVENTORY)" --limit "$(LIMIT)"
+
+## Prove final storage convergence is read-only in check mode
+storage-test-check: _guard-storage-test
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" ./scripts/storage-volume-test check --env-file "$(ENV_FILE)" --inventory "$(INVENTORY)" --limit "$(LIMIT)"
+
+## Converge the final storage fixture twice and require idempotency
+storage-test-converge: _guard-storage-test
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" ./scripts/storage-volume-test converge --env-file "$(ENV_FILE)" --inventory "$(INVENTORY)" --limit "$(LIMIT)"
+
+## Reboot the storage fixture and prove persistent idempotency
+storage-test-reboot: _guard-storage-test
+	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" ./scripts/storage-volume-test reboot --env-file "$(ENV_FILE)" --inventory "$(INVENTORY)" --limit "$(LIMIT)"
+
 ## Deploy and validate the bootstrap token issuer staging candidate
 deploy-bootstrap-token-issuer-staging: _guard-staging-mode
 	@$(MAKE) apply PLAYBOOK=playbooks/bootstrap-token-issuer-staging.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS) -e bootstrap_token_issuer_staging_mode=$(STAGING_MODE) $(if $(filter rollback_rehearsal,$(STAGING_MODE)),-e bootstrap_token_issuer_staging_controlled_failure=true,)"
@@ -285,3 +305,7 @@ _guard-inventory:
 
 _guard-staging-mode:
 	@case "$(STAGING_MODE)" in preflight|rollback_rehearsal|validate) ;; *) printf 'Invalid STAGING_MODE: %s\n' "$(STAGING_MODE)" >&2; exit 1 ;; esac
+
+_guard-storage-test:
+	@test "$(ENV)" = config-test || { printf '%s\n' 'Storage fixture targets require ENV=config-test.' >&2; exit 1; }
+	@test -n "$(strip $(LIMIT))" || { printf '%s\n' 'Storage fixture targets require nonempty LIMIT with the literal fixture host.' >&2; exit 1; }

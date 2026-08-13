@@ -1,0 +1,162 @@
+---
+- name: Snapshot storage fixture block state
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --bytes
+      - --output
+      - NAME,KNAME,PKNAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINTS
+      - "{{ storage_volume_test_device }}"
+  register: storage_volume_test_snapshot_lsblk
+  changed_when: false
+  check_mode: false
+
+- name: Snapshot storage fixture PV state
+  ansible.builtin.command:
+    argv:
+      - pvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - --options
+      - pv_name,pv_uuid,vg_name,vg_uuid,pv_size,pv_free
+      - --select
+      - "vg_name={{ storage_volume_test_vg_name }}"
+      - "{{ storage_volume_test_pv_device }}"
+  register: storage_volume_test_snapshot_pvs
+  changed_when: false
+  check_mode: false
+
+- name: Snapshot storage fixture VG state
+  ansible.builtin.command:
+    argv:
+      - vgs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - --options
+      - vg_name,vg_uuid,vg_size,vg_free,vg_extent_size,pv_count,lv_count
+      - "{{ storage_volume_test_vg_name }}"
+  register: storage_volume_test_snapshot_vgs
+  changed_when: false
+  check_mode: false
+
+- name: Snapshot storage fixture LV state
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - --options
+      - vg_name,lv_name,lv_uuid,lv_size
+      - "{{ storage_volume_test_vg_name }}"
+  register: storage_volume_test_snapshot_lvs
+  changed_when: false
+  check_mode: false
+
+- name: Snapshot active storage fixture mounts
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --json
+      - --output
+      - TARGET,SOURCE,FSTYPE,OPTIONS,UUID
+      - --mountpoint
+      - "{{ storage_volume_test_snapshot_mountpoint }}"
+  loop:
+    - "{{ storage_volume_test_baseline_mountpoint }}"
+    - "{{ storage_volume_test_added_mountpoint }}"
+  loop_control:
+    loop_var: storage_volume_test_snapshot_mountpoint
+  register: storage_volume_test_snapshot_mounts
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_snapshot_mounts.rc not in [0, 1]
+
+- name: Snapshot persistent storage fixture mounts
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --fstab
+      - --json
+      - --output
+      - TARGET,SOURCE,FSTYPE,OPTIONS
+      - --target
+      - "{{ storage_volume_test_snapshot_mountpoint }}"
+  loop:
+    - "{{ storage_volume_test_baseline_mountpoint }}"
+    - "{{ storage_volume_test_added_mountpoint }}"
+  loop_control:
+    loop_var: storage_volume_test_snapshot_mountpoint
+  register: storage_volume_test_snapshot_fstab
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_snapshot_fstab.rc not in [0, 1]
+
+- name: Snapshot exact relevant storage fixture fstab lines
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "target={{ storage_volume_test_snapshot_mountpoint }}"
+      - $2 == target { print }
+      - /etc/fstab
+  loop:
+    - "{{ storage_volume_test_baseline_mountpoint }}"
+    - "{{ storage_volume_test_added_mountpoint }}"
+  loop_control:
+    loop_var: storage_volume_test_snapshot_mountpoint
+  register: storage_volume_test_snapshot_fstab_lines
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_test_snapshot_fstab_lines.rc not in [0, 1]
+
+- name: Snapshot baseline sentinel metadata
+  ansible.builtin.stat:
+    path: "{{ storage_volume_test_baseline_mountpoint }}/.platform-config-storage-volume-test-baseline"
+    checksum_algorithm: sha256
+    get_checksum: true
+  register: storage_volume_test_snapshot_sentinel_stat
+  check_mode: false
+
+- name: Snapshot baseline sentinel content
+  ansible.builtin.slurp:
+    src: "{{ storage_volume_test_baseline_mountpoint }}/.platform-config-storage-volume-test-baseline"
+  register: storage_volume_test_snapshot_sentinel_content
+  check_mode: false
+  when: storage_volume_test_snapshot_sentinel_stat.stat.exists
+
+- name: Record normalized storage fixture snapshot
+  ansible.builtin.set_fact:
+    storage_volume_test_snapshot: >-
+      {{
+        {
+          'lsblk': storage_volume_test_snapshot_lsblk.stdout | from_json,
+          'pvs': storage_volume_test_snapshot_pvs.stdout | from_json,
+          'vgs': storage_volume_test_snapshot_vgs.stdout | from_json,
+          'lvs': storage_volume_test_snapshot_lvs.stdout | from_json,
+          'mounts': storage_volume_test_snapshot_mounts.results | map(attribute='stdout') | list,
+          'fstab': storage_volume_test_snapshot_fstab.results | map(attribute='stdout') | list,
+          'fstab_lines': storage_volume_test_snapshot_fstab_lines.results | map(attribute='stdout') | list,
+          'fstab_lines_sha256': (
+            storage_volume_test_snapshot_fstab_lines.results
+            | map(attribute='stdout')
+            | join('\n')
+            | hash('sha256')
+          ),
+          'baseline_sentinel': {
+            'exists': storage_volume_test_snapshot_sentinel_stat.stat.exists,
+            'isreg': storage_volume_test_snapshot_sentinel_stat.stat.isreg | default(false),
+            'checksum': storage_volume_test_snapshot_sentinel_stat.stat.checksum | default(''),
+            'content': storage_volume_test_snapshot_sentinel_content.content | default('')
+          }
+        }
+      }}

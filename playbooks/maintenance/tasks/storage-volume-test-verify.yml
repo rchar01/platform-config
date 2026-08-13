@@ -1,0 +1,286 @@
+---
+- name: Resolve final storage fixture paths
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ storage_volume_test_verify_path }}"
+  loop:
+    - "{{ storage_volume_test_device }}"
+    - "{{ storage_volume_test_pv_device }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_path
+  register: storage_volume_test_verify_realpaths
+  changed_when: false
+  check_mode: false
+
+- name: Read root filesystem source for final verification
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --raw
+      - --output
+      - SOURCE
+      - /
+  register: storage_volume_test_verify_root_source
+  changed_when: false
+  check_mode: false
+
+- name: Read complete root ancestry for final verification
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --paths
+      - --raw
+      - --noheadings
+      - --inverse
+      - --output
+      - NAME
+      - "{{ storage_volume_test_verify_root_source.stdout | trim }}"
+  register: storage_volume_test_verify_root_ancestry
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final storage fixture topology
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - --json
+      - --paths
+      - --bytes
+      - --output
+      - NAME,PKNAME,TYPE,PARTN,SIZE
+      - "{{ storage_volume_test_device }}"
+  register: storage_volume_test_verify_topology
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final storage fixture PV
+  ansible.builtin.command:
+    argv:
+      - pvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - --options
+      - pv_name,pv_uuid,vg_name,vg_uuid
+      - "{{ storage_volume_test_verify_realpaths.results[1].stdout | trim }}"
+  register: storage_volume_test_verify_pvs
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final storage fixture VG
+  ansible.builtin.command:
+    argv:
+      - vgs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - --options
+      - vg_name,vg_uuid,vg_size,vg_free,vg_extent_size,pv_count,lv_count
+      - "{{ storage_volume_test_vg_name }}"
+  register: storage_volume_test_verify_vgs
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final storage fixture LVs
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - --options
+      - vg_name,lv_name,lv_uuid,lv_size
+      - "{{ storage_volume_test_vg_name }}"
+  register: storage_volume_test_verify_lvs
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final storage fixture filesystem types
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - --output
+      - value
+      - --match-tag
+      - TYPE
+      - "/dev/{{ storage_volume_test_vg_name }}/{{ storage_volume_test_verify_volume.lv_name }}"
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    label: "{{ storage_volume_test_verify_volume.lv_name }}"
+  register: storage_volume_test_verify_fstypes
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final storage fixture filesystem UUIDs
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - --output
+      - value
+      - --match-tag
+      - UUID
+      - "/dev/{{ storage_volume_test_vg_name }}/{{ storage_volume_test_verify_volume.lv_name }}"
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    label: "{{ storage_volume_test_verify_volume.lv_name }}"
+  register: storage_volume_test_verify_uuids
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final active storage fixture mounts
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --json
+      - --output
+      - TARGET,SOURCE,FSTYPE,OPTIONS,UUID
+      - --mountpoint
+      - "{{ storage_volume_test_verify_volume.mountpoint }}"
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    label: "{{ storage_volume_test_verify_volume.mountpoint }}"
+  register: storage_volume_test_verify_mounts
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final persistent storage fixture mounts
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --fstab
+      - --json
+      - --output
+      - TARGET,SOURCE,FSTYPE,OPTIONS
+      - --target
+      - "{{ storage_volume_test_verify_volume.mountpoint }}"
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    label: "{{ storage_volume_test_verify_volume.mountpoint }}"
+  register: storage_volume_test_verify_fstab
+  changed_when: false
+  check_mode: false
+
+- name: Inspect final XFS filesystem features
+  ansible.builtin.command:
+    argv:
+      - xfs_info
+      - "{{ storage_volume_test_verify_volume.mountpoint }}"
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    label: "{{ storage_volume_test_verify_volume.mountpoint }}"
+  register: storage_volume_test_verify_xfs
+  changed_when: false
+  check_mode: false
+
+- name: Check fixed baseline storage fixture sentinel
+  ansible.builtin.stat:
+    path: "{{ storage_volume_test_baseline_mountpoint }}/.platform-config-storage-volume-test-baseline"
+  register: storage_volume_test_verify_sentinel
+  check_mode: false
+
+- name: Read fixed baseline storage fixture sentinel
+  ansible.builtin.slurp:
+    src: "{{ storage_volume_test_baseline_mountpoint }}/.platform-config-storage-volume-test-baseline"
+  register: storage_volume_test_verify_sentinel_content
+  check_mode: false
+  when: storage_volume_test_verify_sentinel.stat.exists
+
+- name: Collect parsed final storage fixture state
+  ansible.builtin.set_fact:
+    storage_volume_test_verify_disk: "{{ storage_volume_test_verify_realpaths.results[0].stdout | trim }}"
+    storage_volume_test_verify_partition: "{{ storage_volume_test_verify_realpaths.results[1].stdout | trim }}"
+    storage_volume_test_verify_block_rows: "{{ (storage_volume_test_verify_topology.stdout | from_json).blockdevices }}"
+    storage_volume_test_verify_pv_rows: "{{ (storage_volume_test_verify_pvs.stdout | from_json).report[0].pv }}"
+    storage_volume_test_verify_vg_rows: "{{ (storage_volume_test_verify_vgs.stdout | from_json).report[0].vg }}"
+    storage_volume_test_verify_lv_rows: "{{ (storage_volume_test_verify_lvs.stdout | from_json).report[0].lv }}"
+    storage_volume_test_verify_uuid_values: "{{ storage_volume_test_verify_uuids.results | map(attribute='stdout') | map('trim') | list }}"
+
+- name: Require exact final storage fixture topology
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_verify_disk != storage_volume_test_verify_partition
+      - storage_volume_test_verify_disk not in storage_volume_test_verify_root_ancestry.stdout_lines
+      - storage_volume_test_verify_partition not in storage_volume_test_verify_root_ancestry.stdout_lines
+      - storage_volume_test_verify_block_rows | length == 1
+      - storage_volume_test_verify_block_rows[0].type == 'disk'
+      - storage_volume_test_verify_block_rows[0].children | default([]) | length == 1
+      - storage_volume_test_verify_block_rows[0].children[0].type == 'part'
+      - storage_volume_test_verify_block_rows[0].children[0].name == storage_volume_test_verify_partition
+      - storage_volume_test_verify_block_rows[0].children[0].pkname == storage_volume_test_verify_disk
+      - storage_volume_test_verify_block_rows[0].children[0].partn | int == storage_volume_test_partition_number | int
+      - storage_volume_test_verify_pv_rows | length == 1
+      - storage_volume_test_verify_vg_rows | length == 1
+      - storage_volume_test_verify_vg_rows[0].pv_count | int == 1
+      - storage_volume_test_verify_vg_rows[0].lv_count | int == storage_volumes | length
+      - storage_volume_test_verify_pv_rows[0].vg_name | trim == storage_volume_test_vg_name
+      - storage_volume_test_verify_pv_rows[0].pv_uuid | trim | length > 0
+      - storage_volume_test_verify_pv_rows[0].vg_uuid | trim == storage_volume_test_verify_vg_rows[0].vg_uuid | trim
+      - storage_volume_test_verify_vg_rows[0].vg_free | int >= 12 * 1073741824
+      - storage_volume_test_verify_lv_rows | length == storage_volumes | length
+      - storage_volume_test_verify_lv_rows | map(attribute='lv_name') | list | sort == storage_volumes | map(attribute='lv_name') | list | sort
+      - storage_volume_test_verify_fstypes.results | map(attribute='stdout') | map('trim') | list | unique == ['xfs']
+      - storage_volume_test_verify_uuid_values | length == storage_volumes | length
+      - storage_volume_test_verify_uuid_values | unique | length == storage_volumes | length
+      - storage_volume_test_verify_sentinel.stat.isreg | default(false)
+      - storage_volume_test_verify_sentinel_content.content | b64decode == 'platform-config storage-volume-test baseline\n'
+    fail_msg: >-
+      Final fixture topology, one-PV VG identity, exact two-LV allocation, XFS filesystems,
+      unique UUIDs, baseline sentinel, root exclusion, or 12 GiB headroom is invalid.
+
+- name: Require extent-aware exact final LV sizes
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_matching_lvs | length == 1
+      - storage_volume_test_matching_lvs[0].lv_size | int == storage_volume_test_expected_lv_bytes | int
+    fail_msg: >-
+      Logical volume {{ storage_volume_test_verify_volume.lv_name }} does not have its
+      exact extent-rounded requested size.
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    label: "{{ storage_volume_test_verify_volume.lv_name }}"
+  vars:
+    storage_volume_test_matching_lvs: >-
+      {{ storage_volume_test_verify_lv_rows | selectattr('lv_name', 'equalto', storage_volume_test_verify_volume.lv_name) | list }}
+    storage_volume_test_extent_bytes: "{{ storage_volume_test_verify_vg_rows[0].vg_extent_size | int }}"
+    storage_volume_test_expected_lv_bytes: >-
+      {{ ((storage_volume_test_verify_volume.size_gib | int * 1073741824 + storage_volume_test_extent_bytes | int - 1) // storage_volume_test_extent_bytes | int) * storage_volume_test_extent_bytes | int }}
+
+- name: Require exact UUID-backed active and persistent mounts
+  ansible.builtin.assert:
+    that:
+      - storage_volume_test_mount_rows | length == 1
+      - storage_volume_test_mount_rows[0].target == storage_volume_test_verify_volume.mountpoint
+      - storage_volume_test_mount_rows[0].fstype == 'xfs'
+      - storage_volume_test_mount_rows[0].uuid == storage_volume_test_uuid
+      - storage_volume_test_fstab_rows | length == 1
+      - storage_volume_test_fstab_rows[0].target == storage_volume_test_verify_volume.mountpoint
+      - storage_volume_test_fstab_rows[0].source == 'UUID=' ~ storage_volume_test_uuid
+      - storage_volume_test_fstab_rows[0].fstype == 'xfs'
+      - storage_volume_test_verify_xfs.results[storage_volume_test_mount_index].stdout is search('ftype=1')
+    fail_msg: >-
+      Mount {{ storage_volume_test_verify_volume.mountpoint }} is not an active and
+      persistent UUID-backed XFS ftype=1 mount.
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    loop_var: storage_volume_test_verify_volume
+    index_var: storage_volume_test_mount_index
+    label: "{{ storage_volume_test_verify_volume.mountpoint }}"
+  vars:
+    storage_volume_test_uuid: "{{ storage_volume_test_verify_uuid_values[storage_volume_test_mount_index] }}"
+    storage_volume_test_mount_rows: "{{ (storage_volume_test_verify_mounts.results[storage_volume_test_mount_index].stdout | from_json).filesystems }}"
+    storage_volume_test_fstab_rows: "{{ (storage_volume_test_verify_fstab.results[storage_volume_test_mount_index].stdout | from_json).filesystems }}"

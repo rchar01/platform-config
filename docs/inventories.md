@@ -7,6 +7,7 @@ Public examples:
 ```text
 inventories/homelab/
 inventories/dev/
+inventories/config-test/
 ```
 
 Committed files use the `.example` suffix. They document shape only. Fictional
@@ -35,6 +36,13 @@ platform-private/
 ```
 
 The production-grade private workflow is described in [Private Workflow](private-workflow.md).
+
+The `config-test` public example is a deliberately isolated storage acceptance
+fixture. It contains exactly one fictional host in only `rocky` and
+`storage_volume_test_hosts`, never `storage_volume_hosts`, and contains no
+approval variable. Its 32 GiB final contract retains an existing 8 GiB baseline
+LV, adds a missing 4 GiB LV through guarded VG reuse, and requires 12 GiB of free
+VG headroom. See [Storage Volume Acceptance Fixture](storage-volume-test.md).
 
 To add a host:
 
