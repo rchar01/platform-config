@@ -18,7 +18,7 @@ platform_base_packages:
 ```
 
 Keep role-specific runtime requirements in role variables instead of the global
-baseline. Examples include `podman_host_packages`, `storage_volume_packages`,
+baseline. Examples include `podman_host_package_nevra`, `storage_volume_packages`,
 `root_lvm_packages`, `firewalld_package`, `firewalld_python_package`, and
 `chrony_package`.
 

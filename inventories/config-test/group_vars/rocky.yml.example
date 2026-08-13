@@ -2,3 +2,7 @@
 platform_os_family: rocky
 ssh_server_package: openssh-server
 ssh_service_name: sshd
+
+# Replace with the exact environment-qualified Podman NEVRA before assigning a
+# host to container_hosts.
+podman_host_package_nevra: podman-EPOCH:VERSION-RELEASE.x86_64

@@ -5,6 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/podman-host/integration.yml
 ROCKY_IMAGE="${PODMAN_HOST_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 PODMAN_NEVRA=podman-7:5.8.2-5.el10_2.x86_64
+PODMAN_DOWNGRADE_NEVRA=podman-7:5.8.2-4.el10_2.x86_64
 CONTAINER="platform-config-podman-host-test-$$"
 CONTAINER_CREATED=false
 OVERLAY_DENY_PATH=/etc/modprobe.d/99-external-overlay-deny.conf
@@ -89,7 +90,7 @@ elif [[ "$system_state" != running ]]; then
   fail "Disposable Rocky systemd did not become ready: ${system_state}"
 fi
 
-podman exec "$CONTAINER" dnf -qy install python3-pip >/dev/null
+podman exec "$CONTAINER" dnf -qy install kmod python3-pip >/dev/null
 podman exec "$CONTAINER" python3 -m pip -q install \
   --root-user-action=ignore \
   'ansible-core>=2.20,<2.21'
@@ -112,11 +113,11 @@ assert_external_deny_preserved
 overlay_module_before_check="$(podman exec "$CONTAINER" test -d /sys/module/overlay && printf loaded || printf absent)"
 
 run_playbook --check >/dev/null
-if podman exec "$CONTAINER" rpm -q kmod >/dev/null 2>&1; then
-  fail 'Container runtime kernel check mode installed kmod'
-fi
 if podman exec "$CONTAINER" rpm -q podman >/dev/null 2>&1; then
   fail 'Podman host check mode installed Podman'
+fi
+if podman exec "$CONTAINER" rpm -q python3-dnf-plugin-versionlock >/dev/null 2>&1; then
+  fail 'Podman host check mode installed the versionlock provider'
 fi
 if podman exec "$CONTAINER" test -e /etc/containers/systemd; then
   fail 'Podman host check mode created the Quadlet directory'
@@ -128,6 +129,46 @@ fi
   || fail 'Podman host check mode changed the OverlayFS module state'
 assert_external_deny_preserved
 
+if bare_output="$(run_playbook -e podman_host_package_nevra=podman 2>&1)"; then
+  fail 'Podman host role accepted a bare package name'
+fi
+grep -q 'requires one exact x86_64 Podman NEVRA' <<< "$bare_output" \
+  || fail 'Podman host role did not explain exact-NEVRA rejection'
+if podman exec "$CONTAINER" rpm -q python3-dnf-plugin-versionlock >/dev/null 2>&1; then
+  fail 'Rejected Podman input installed the versionlock provider'
+fi
+
+podman exec "$CONTAINER" dnf -qy install python3-dnf-plugin-versionlock >/dev/null
+podman exec "$CONTAINER" rm -f /etc/dnf/plugins/versionlock.list
+podman exec "$CONTAINER" touch /tmp/unsafe-versionlock.list
+podman exec "$CONTAINER" ln -s /tmp/unsafe-versionlock.list /etc/dnf/plugins/versionlock.list
+if unsafe_symlink_output="$(run_playbook 2>&1)"; then
+  fail 'Podman host role accepted a symlink versionlock path'
+fi
+if ! grep -q 'versionlock list is not a safe regular file' <<< "$unsafe_symlink_output"; then
+  printf '%s\n' "$unsafe_symlink_output" >&2
+  fail 'Podman host role did not explain symlink versionlock rejection'
+fi
+podman exec "$CONTAINER" rm /etc/dnf/plugins/versionlock.list
+podman exec "$CONTAINER" mkdir /etc/dnf/plugins/versionlock.list
+if unsafe_directory_output="$(run_playbook 2>&1)"; then
+  fail 'Podman host role accepted a directory versionlock path'
+fi
+if ! grep -qE 'versionlock list is not a safe regular file|Unable to read version lock configuration' <<< "$unsafe_directory_output"; then
+  printf '%s\n' "$unsafe_directory_output" >&2
+  fail 'Podman host role did not explain directory versionlock rejection'
+fi
+if podman exec "$CONTAINER" rpm -q podman >/dev/null 2>&1; then
+  fail 'Unsafe versionlock path allowed Podman installation'
+fi
+podman exec "$CONTAINER" rmdir /etc/dnf/plugins/versionlock.list
+podman exec "$CONTAINER" bash -c \
+  "printf '%s\n' '# retained lock' 'haproxy-0:3.0.6-1.el10.x86_64' '!podman-7:5.8.2-3.el10_2.x86_64' 'podman-7:5.8.2-4.el10_2.x86_64' > /etc/dnf/plugins/versionlock.list"
+versionlock_checksum_before_check="$(podman exec "$CONTAINER" sha256sum /etc/dnf/plugins/versionlock.list)"
+run_playbook --check >/dev/null
+[[ "$(podman exec "$CONTAINER" sha256sum /etc/dnf/plugins/versionlock.list)" == "$versionlock_checksum_before_check" ]] \
+  || fail 'Podman host check mode changed the versionlock list'
+
 if ! convergence_output="$(run_playbook 2>&1)"; then
   printf '%s\n' "$convergence_output" >&2
   fail 'Initial Podman host role convergence failed'
@@ -138,6 +179,15 @@ package_identity="$(podman exec "$CONTAINER" \
   rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman)"
 [[ "$package_identity" == "$PODMAN_NEVRA" ]] \
   || fail "Unexpected Podman package identity: ${package_identity}"
+mapfile -t podman_locks < <(
+  podman exec "$CONTAINER" dnf -q versionlock list | grep -E '^!?podman(-|$)'
+)
+[[ "${#podman_locks[@]}" -eq 1 && "${podman_locks[0]}" == "$PODMAN_NEVRA" ]] \
+  || fail 'Podman versionlock is not the exact approved NEVRA'
+grep -qx '# retained lock' < <(podman exec "$CONTAINER" cat /etc/dnf/plugins/versionlock.list) \
+  || fail 'Podman convergence removed an unrelated versionlock comment'
+grep -qx 'haproxy-0:3.0.6-1.el10.x86_64' < <(podman exec "$CONTAINER" cat /etc/dnf/plugins/versionlock.list) \
+  || fail 'Podman convergence removed an unrelated versionlock'
 [[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a' /etc/containers/systemd)" == root:root:755 ]] \
   || fail 'Podman host role did not create the expected Quadlet directory'
 [[ "$(podman exec "$CONTAINER" systemctl is-enabled podman.socket 2>/dev/null)" == disabled ]] \
@@ -147,6 +197,22 @@ if podman exec "$CONTAINER" systemctl is-active --quiet podman.socket; then
 fi
 assert_enabled_overlay_exception
 assert_external_deny_preserved
+
+run_playbook -e "podman_host_package_nevra=$PODMAN_DOWNGRADE_NEVRA" >/dev/null
+downgraded_identity="$(podman exec "$CONTAINER" \
+  rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman)"
+[[ "$downgraded_identity" == "$PODMAN_DOWNGRADE_NEVRA" ]] \
+  || fail "Podman role did not converge an intentional downgrade: ${downgraded_identity}"
+upgrade_preview="$(podman exec "$CONTAINER" dnf -q upgrade --assumeno podman 2>&1 || true)"
+if grep -qE '^Upgrading:[[:space:]]*$|[[:space:]]podman[[:space:]]+x86_64[[:space:]]+7:5[.]8[.]2-5' <<< "$upgrade_preview"; then
+  printf '%s\n' "$upgrade_preview" >&2
+  fail 'Normal DNF upgrade preview bypassed the Podman versionlock'
+fi
+run_playbook >/dev/null
+package_identity="$(podman exec "$CONTAINER" \
+  rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman)"
+[[ "$package_identity" == "$PODMAN_NEVRA" ]] \
+  || fail "Podman role did not restore the approved identity: ${package_identity}"
 
 podman exec "$CONTAINER" bash -c "printf '%s\n' '# drift' >> '$OVERLAY_UNIT_PATH'"
 podman exec "$CONTAINER" systemctl disable --now \

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/gitlab-runner/integration.yml
 ROCKY_IMAGE="${GITLAB_RUNNER_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
-RUNNER_IMAGE=docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
+PODMAN_NEVRA=podman-7:5.8.2-5.el10_2.x86_64
 CONTAINER="platform-config-gitlab-runner-test-$$"
 CONTAINER_CREATED=false
 
@@ -72,6 +72,9 @@ run_playbook --check >/dev/null
 if podman exec "$CONTAINER" rpm -q podman >/dev/null 2>&1; then
   fail 'GitLab Runner check mode installed Podman'
 fi
+if podman exec "$CONTAINER" rpm -q python3-dnf-plugin-versionlock >/dev/null 2>&1; then
+  fail 'GitLab Runner check mode installed the versionlock provider'
+fi
 if podman exec "$CONTAINER" test -e /etc/containers/systemd/gitlab-runner.container; then
   fail 'GitLab Runner check mode wrote its Quadlet'
 fi
@@ -84,6 +87,12 @@ podman exec "$CONTAINER" systemctl is-active --quiet podman.socket \
   || fail 'Role-managed rootful Podman socket is not active'
 [[ "$(podman exec "$CONTAINER" systemctl is-enabled podman.socket 2>/dev/null)" == enabled ]] \
   || fail 'Role-managed rootful Podman socket is not enabled'
+[[ "$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman)" == "$PODMAN_NEVRA" ]] \
+  || fail 'GitLab Runner Podman package identity is not pinned'
+[[ "$(podman exec "$CONTAINER" dnf -q versionlock list | grep -Ec '^!?podman(-|$)')" -eq 1 ]] \
+  || fail 'GitLab Runner Podman versionlock count is invalid'
+podman exec "$CONTAINER" dnf -q versionlock list | grep -qx "$PODMAN_NEVRA" \
+  || fail 'GitLab Runner Podman versionlock identity is invalid'
 podman exec "$CONTAINER" test -S /run/podman/podman.sock \
   || fail 'Role-managed rootful Podman socket is missing'
 podman exec "$CONTAINER" systemctl is-active --quiet gitlab-runner.service \

@@ -7,6 +7,10 @@ ssh_service_name: sshd
 chrony_service_name: chronyd
 nfs_client_package: nfs-utils
 
+# Replace with the exact environment-qualified Podman NEVRA before assigning a
+# host to container_hosts.
+podman_host_package_nevra: podman-EPOCH:VERSION-RELEASE.x86_64
+
 # Firewalld tooling remains installed for permanent offline rule management.
 # The daemon is disabled at boot and stopped at runtime.
 firewalld_service_enabled: false

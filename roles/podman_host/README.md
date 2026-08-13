@@ -2,12 +2,25 @@
 
 Prepares hosts to run Podman-managed service containers.
 
-The role depends on `container_runtime_kernel`, installs Podman, creates the
-system Quadlet directory at `/etc/containers/systemd`, and manages
+The role depends on `container_runtime_kernel`, installs one exact Podman RPM,
+creates the system Quadlet directory at `/etc/containers/systemd`, and manages
 `podman.socket`. The dependency ensures OverlayFS is loaded for every
 `podman_host` invocation. Its policy exception is enabled by default; see the
 [`container_runtime_kernel` role](../container_runtime_kernel/README.md) for the
 fail-closed opt-out behavior.
+
+Inventory must set `podman_host_package_nevra` to an exact x86_64 Podman NEVRA,
+including epoch. The role supports deliberate downgrades, verifies the installed
+RPM identity, installs `python3-dnf-plugin-versionlock`, and atomically replaces
+only Podman entries in `/etc/dnf/plugins/versionlock.list`. Unrelated locks and
+comments remain intact. The role rejects bare package names before package or
+socket changes.
+
+The exact RPM must remain available from an enabled approved repository for a
+fresh install, reinstall, or downgrade. Versionlock constrains normal DNF
+transactions; it does not retain RPM payloads and can be bypassed by deliberately
+disabling DNF plugins. Promote Podman by qualifying a new NEVRA, updating
+inventory, converging the role, and running container-runtime smoke checks.
 
 The socket is disabled and stopped by default because service roles should run
 containers through systemd units unless inventory explicitly enables the API

@@ -1,6 +1,8 @@
 ---
-podman_host_packages:
-  - podman
+podman_host_package_name: podman
+podman_host_package_nevra: ""
+podman_host_versionlock_package: python3-dnf-plugin-versionlock
+podman_host_versionlock_path: /etc/dnf/plugins/versionlock.list
 
 podman_host_quadlet_dir: /etc/containers/systemd
 podman_host_quadlet_dir_owner: root

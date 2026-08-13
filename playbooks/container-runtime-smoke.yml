@@ -121,6 +121,44 @@
       register: podman_host_smoke_version
       changed_when: false
 
+    - name: Query installed Podman package identity
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -q
+          - --qf
+          - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+          - "{{ podman_host_package_name | default('podman') }}"
+      register: podman_host_smoke_installed_nevra
+      changed_when: false
+
+    - name: Require exact installed Podman package identity
+      ansible.builtin.assert:
+        that:
+          - podman_host_package_nevra | default('') | length > 0
+          - podman_host_smoke_installed_nevra.stdout == podman_host_package_nevra
+        fail_msg: Installed Podman does not match the exact inventory NEVRA.
+
+    - name: Query effective Podman versionlocks
+      ansible.builtin.command:
+        argv:
+          - dnf
+          - -q
+          - versionlock
+          - list
+      register: podman_host_smoke_versionlocks
+      changed_when: false
+
+    - name: Require one exact effective Podman versionlock
+      ansible.builtin.assert:
+        that:
+          - >-
+            podman_host_smoke_versionlocks.stdout_lines
+            | select('match', '^!?podman(?:-|$)')
+            | list | length == 1
+          - podman_host_package_nevra in podman_host_smoke_versionlocks.stdout_lines
+        fail_msg: Podman does not have the exact inventory versionlock.
+
     - name: Check system Quadlet directory
       ansible.builtin.stat:
         path: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"

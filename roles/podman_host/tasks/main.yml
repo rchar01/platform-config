@@ -1,10 +1,222 @@
 ---
-- name: Install Podman host packages
-  ansible.builtin.package:
-    name: "{{ podman_host_packages }}"
+- name: Require exact Podman package and versionlock inputs
+  ansible.builtin.assert:
+    that:
+      - podman_host_package_name == 'podman'
+      - >-
+        podman_host_package_nevra is match(
+          '^podman-[0-9]+:[0-9][A-Za-z0-9_.+~-]*-[A-Za-z0-9_.+~-]+[.]x86_64$'
+        )
+      - podman_host_versionlock_package == 'python3-dnf-plugin-versionlock'
+      - podman_host_versionlock_path == '/etc/dnf/plugins/versionlock.list'
+    fail_msg: >-
+      podman_host requires one exact x86_64 Podman NEVRA and the qualified DNF
+      versionlock provider and path.
+
+- name: Install Podman versionlock provider
+  ansible.builtin.dnf:
+    name: "{{ podman_host_versionlock_package }}"
     state: present
-  register: podman_host_packages_result
-  when: podman_host_packages | length > 0
+  register: podman_host_versionlock_package_result
+
+- name: Track Podman versionlock readiness
+  ansible.builtin.set_fact:
+    podman_host_versionlock_ready: >-
+      {{ not (ansible_check_mode and podman_host_versionlock_package_result is changed) }}
+
+- name: Inspect Podman versionlock list
+  ansible.builtin.stat:
+    path: "{{ podman_host_versionlock_path }}"
+    follow: false
+  register: podman_host_versionlock_stat
+  check_mode: false
+  when: podman_host_versionlock_ready | bool
+
+- name: Reject an unsafe existing Podman versionlock path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not podman_host_versionlock_stat.stat.exists
+        or (
+          podman_host_versionlock_stat.stat.isreg
+          and not podman_host_versionlock_stat.stat.islnk
+        )
+    fail_msg: The shared DNF versionlock list is not a safe regular file.
+  when: podman_host_versionlock_ready | bool
+
+- name: Create an absent Podman versionlock list
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ podman_host_versionlock_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+  when:
+    - podman_host_versionlock_ready | bool
+    - not podman_host_versionlock_stat.stat.exists
+
+- name: Refresh Podman versionlock list metadata
+  ansible.builtin.stat:
+    path: "{{ podman_host_versionlock_path }}"
+    follow: false
+  register: podman_host_versionlock_stat
+  check_mode: false
+  when: podman_host_versionlock_ready | bool
+
+- name: Track Podman versionlock list readiness
+  ansible.builtin.set_fact:
+    podman_host_versionlock_list_ready: >-
+      {{
+        podman_host_versionlock_stat.stat.exists
+        and podman_host_versionlock_stat.stat.isreg
+        and not podman_host_versionlock_stat.stat.islnk
+      }}
+  when: podman_host_versionlock_ready | bool
+
+- name: Require a safe Podman versionlock list
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          ansible_check_mode
+          and not podman_host_versionlock_stat.stat.exists
+        )
+        or (
+          podman_host_versionlock_list_ready | bool
+          and podman_host_versionlock_stat.stat.pw_name == 'root'
+          and podman_host_versionlock_stat.stat.gr_name == 'root'
+          and podman_host_versionlock_stat.stat.mode[-2:] is not search('[2367]')
+        )
+    fail_msg: The shared DNF versionlock list is not a safe root-owned file.
+  when: podman_host_versionlock_ready | bool
+
+- name: Read the shared Podman versionlock list
+  ansible.builtin.slurp:
+    src: "{{ podman_host_versionlock_path }}"
+  register: podman_host_versionlock_data
+  check_mode: false
+  when: podman_host_versionlock_list_ready | default(false) | bool
+
+- name: Build the exact Podman versionlock list
+  ansible.builtin.set_fact:
+    podman_host_versionlock_content: >-
+      {{
+        (
+          (podman_host_versionlock_data.content | b64decode).splitlines()
+          | reject('match', '^[ \t]*!?podman(?:-|$)')
+          | list
+          + [podman_host_package_nevra]
+        ) | join(podman_host_versionlock_newline)
+          ~ podman_host_versionlock_newline
+      }}
+  vars:
+    podman_host_versionlock_newline: "\n"
+  when: podman_host_versionlock_list_ready | default(false) | bool
+
+- name: Converge the exact Podman versionlock atomically
+  ansible.builtin.copy:
+    content: "{{ podman_host_versionlock_content }}"
+    dest: "{{ podman_host_versionlock_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: podman_host_versionlock_result
+  when: podman_host_versionlock_list_ready | default(false) | bool
+
+- name: Track exact Podman versionlock readiness
+  ansible.builtin.set_fact:
+    podman_host_versionlock_converged: >-
+      {{
+        podman_host_versionlock_list_ready | default(false) | bool
+        and not (
+          ansible_check_mode
+          and podman_host_versionlock_result is changed
+        )
+      }}
+
+- name: Read the converged Podman versionlock list
+  ansible.builtin.slurp:
+    src: "{{ podman_host_versionlock_path }}"
+  register: podman_host_versionlock_converged_data
+  check_mode: false
+  when: podman_host_versionlock_converged | bool
+
+- name: Require one exact persisted Podman versionlock
+  ansible.builtin.assert:
+    that:
+      - >-
+        (podman_host_versionlock_converged_data.content | b64decode).splitlines()
+        | select('match', '^!?podman(?:-|$)')
+        | list | length == 1
+      - >-
+        podman_host_package_nevra in
+        (podman_host_versionlock_converged_data.content | b64decode).splitlines()
+    fail_msg: The persisted Podman versionlock is not the exact approved NEVRA.
+  when: podman_host_versionlock_converged | bool
+
+- name: Install exact Podman package
+  ansible.builtin.dnf:
+    name: "{{ podman_host_package_nevra }}"
+    state: present
+    allow_downgrade: true
+  register: podman_host_package_result
+  when: podman_host_versionlock_converged | bool
+
+- name: Track exact Podman package readiness
+  ansible.builtin.set_fact:
+    podman_host_package_ready: >-
+      {{
+        podman_host_versionlock_converged | bool
+        and not (ansible_check_mode and podman_host_package_result is changed)
+      }}
+
+- name: Query installed Podman package identity
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - --qf
+      - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+      - "{{ podman_host_package_name }}"
+  register: podman_host_installed_nevra
+  changed_when: false
+  check_mode: false
+  when: podman_host_package_ready | bool
+
+- name: Require exact installed Podman package identity
+  ansible.builtin.assert:
+    that:
+      - podman_host_installed_nevra.stdout == podman_host_package_nevra
+    fail_msg: >-
+      Installed Podman package {{ podman_host_installed_nevra.stdout }} does not
+      match required {{ podman_host_package_nevra }}.
+  when: podman_host_package_ready | bool
+
+- name: Query effective Podman versionlocks
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - -q
+      - versionlock
+      - list
+  register: podman_host_versionlock_list
+  changed_when: false
+  check_mode: false
+  when: podman_host_versionlock_converged | bool
+
+- name: Require one exact effective Podman versionlock
+  ansible.builtin.assert:
+    that:
+      - >-
+        podman_host_versionlock_list.stdout_lines
+        | select('match', '^!?podman(?:-|$)')
+        | list | length == 1
+      - podman_host_package_nevra in podman_host_versionlock_list.stdout_lines
+    fail_msg: >-
+      Podman does not have exactly one effective exact-NEVRA versionlock:
+      {{ podman_host_versionlock_list.stdout_lines | to_json }}
+  when: podman_host_versionlock_converged | bool
 
 - name: Ensure system Quadlet directory exists
   ansible.builtin.file:
@@ -21,4 +233,5 @@
     state: "{{ 'started' if podman_host_socket_enabled else 'stopped' }}"
   when:
     - podman_host_socket_manage | bool
-    - not (ansible_check_mode and podman_host_packages_result is defined and podman_host_packages_result is changed)
+    - podman_host_package_ready | bool
+    - podman_host_versionlock_converged | bool

@@ -6,8 +6,7 @@
   vars:
     gitlab_runner_test_docker_enabled: true
     gitlab_runner_test_emulate_registration: false
-    podman_host_packages:
-      - podman-7:5.8.2-5.el10_2.x86_64
+    podman_host_package_nevra: podman-7:5.8.2-5.el10_2.x86_64
     podman_host_socket_enabled: "{{ gitlab_runner_test_docker_enabled }}"
     gitlab_runner_image: >-
       docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e

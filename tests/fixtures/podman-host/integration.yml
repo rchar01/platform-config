@@ -4,7 +4,6 @@
   connection: local
   gather_facts: true
   vars:
-    podman_host_packages:
-      - podman-7:5.8.2-5.el10_2.x86_64
+    podman_host_package_nevra: podman-7:5.8.2-5.el10_2.x86_64
   roles:
     - podman_host
