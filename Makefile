@@ -97,7 +97,7 @@ apply: _guard-env-file _guard-inventory
 
 ## Run ansible-lint
 lint:
-	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" "$(ANSIBLE_LINT)" playbooks/ roles/
+	@PLATFORM_CONFIG_CONTAINER_PROFILE=test PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(TEST_IN_CONTAINER)" "$(ANSIBLE_LINT)" playbooks/ roles/ migrations/
 
 ## Run yamllint for public files
 yamllint:

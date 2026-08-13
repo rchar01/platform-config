@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+
+usage() {
+  printf '%s\n' \
+    'Usage: rocky-minor-alignment {preflight|apply} --env ENV --limit HOST' >&2
+}
+
+fail() {
+  printf 'rocky-minor-alignment: %s\n' "$1" >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+operation=$1
+shift
+case "$operation" in
+  preflight|apply) ;;
+  *) fail "unsupported operation: $operation" ;;
+esac
+
+environment=""
+limit=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      [[ $# -ge 2 ]] || fail "--env requires a value"
+      environment=$2
+      shift 2
+      ;;
+    --limit)
+      [[ $# -ge 2 ]] || fail "--limit requires a value"
+      limit=$2
+      shift 2
+      ;;
+    *) fail "unexpected argument: $1" ;;
+  esac
+done
+
+[[ $environment =~ ^[a-z][a-z0-9-]*$ ]] || fail "--env must be a literal environment name"
+[[ $limit =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "--limit must be one literal inventory hostname"
+
+private_root=${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_root/../platform-private}
+env_file="$private_root/config/$environment.ansible.env"
+inventory="$private_root/config/inventories/$environment-rocky-alignment/hosts.yml"
+[[ -f $env_file ]] || fail "environment file not found: $env_file"
+[[ -f $inventory ]] || fail "isolated migration inventory not found: $inventory"
+env_file=$(realpath --canonicalize-existing "$env_file")
+inventory=$(realpath --canonicalize-existing "$inventory")
+
+# shellcheck disable=SC1090
+source "$env_file"
+export ANSIBLE_CONFIG=${ANSIBLE_CONFIG:-$repo_root/ansible.cfg}
+ansible_inventory=${ANSIBLE_INVENTORY:-ansible-inventory}
+ansible=${ANSIBLE:-ansible}
+ansible_playbook=${ANSIBLE_PLAYBOOK:-ansible-playbook}
+ansible_config_cmd=${ANSIBLE_CONFIG_CMD:-ansible-config}
+python=${PYTHON:-python}
+playbook="$repo_root/migrations/2026-08-rocky-10.1-to-10.2.yml"
+
+for executable in "$ansible_inventory" "$ansible" "$ansible_playbook" "$ansible_config_cmd" "$python"; do
+  command -v "$executable" >/dev/null 2>&1 || fail "required executable not found: $executable"
+done
+system_ssh=/usr/bin/ssh
+[[ -x $system_ssh ]] || fail "trusted OpenSSH client not found: $system_ssh"
+
+inventory_json=$("$ansible_inventory" -i "$inventory" --list)
+if ! inventory_host=$("$python" -c '
+import json, os, re, sys
+
+def unsafe(value):
+    value = str(value or "").lower()
+    patterns = (
+        r"strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0|accept-new)(?=\s|$)",
+        r"user\s*known\s*hosts\s*file\s*(?:=|\s)\s*(?:/dev/null|none)(?=\s|$)",
+    )
+    return any(re.search(pattern, value) for pattern in patterns)
+
+data = json.load(sys.stdin)
+hosts = data.get("rocky_alignment_hosts", {}).get("hosts", [])
+if len(hosts) != 1:
+    sys.exit("rocky_alignment_hosts must contain exactly one member")
+host = hosts[0]
+hostvars = data.get("_meta", {}).get("hostvars", {}).get(host, {})
+if hostvars.get("rocky_10_1_to_10_2_enabled") is not True:
+    sys.exit("private Rocky alignment eligibility must be true")
+repos = hostvars.get("rocky_10_1_to_10_2_repositories", {})
+if not isinstance(repos, dict) or not repos:
+    sys.exit("private Rocky repository policy must be a nonempty object")
+address = hostvars.get("ansible_host", host)
+if not isinstance(address, str) or not address or address.startswith("-") or any(
+    ord(character) < 32 or ord(character) == 127 for character in address
+):
+    sys.exit("isolated inventory SSH address is invalid")
+for value in (
+    hostvars.get("ansible_ssh_args", ""),
+    hostvars.get("ansible_ssh_common_args", ""),
+    hostvars.get("ansible_ssh_extra_args", ""),
+    os.environ.get("ANSIBLE_SSH_ARGS", ""),
+    os.environ.get("ANSIBLE_SSH_COMMON_ARGS", ""),
+    os.environ.get("ANSIBLE_SSH_EXTRA_ARGS", ""),
+):
+    if unsafe(value):
+        sys.exit("unsafe SSH host-key option")
+if hostvars.get("ansible_connection") != "ansible.builtin.ssh":
+    sys.exit("isolated inventory ansible_connection must be ansible.builtin.ssh")
+if str(hostvars.get("ansible_ssh_host_key_checking", True)).lower() in {"false", "no", "off", "0"}:
+    sys.exit("unsafe inventory SSH host-key setting")
+print(json.dumps({
+    "address": address,
+    "connection": hostvars.get("ansible_connection"),
+    "host": host,
+    "port": hostvars.get("ansible_port", 22),
+    "ssh_args": hostvars.get("ansible_ssh_args", ""),
+    "ssh_common_args": hostvars.get("ansible_ssh_common_args", ""),
+    "ssh_extra_args": hostvars.get("ansible_ssh_extra_args", ""),
+    "ssh_executable": hostvars.get("ansible_ssh_executable", ""),
+    "user": hostvars.get("ansible_user", ""),
+}, sort_keys=True, separators=(",", ":")))
+' <<<"$inventory_json" 2>&1); then
+  fail "$inventory_host"
+fi
+inventory_connection=$inventory_host
+inventory_host=$("$python" -c 'import json,sys; print(json.load(sys.stdin)["host"])' <<<"$inventory_connection")
+inventory_address=$("$python" -c 'import json,sys; print(json.load(sys.stdin)["address"])' <<<"$inventory_connection")
+inventory_port=$("$python" -c 'import json,sys; print(json.load(sys.stdin)["port"])' <<<"$inventory_connection")
+inventory_user=$("$python" -c 'import json,sys; print(json.load(sys.stdin)["user"])' <<<"$inventory_connection")
+[[ -n $inventory_host && -n $inventory_address ]] || fail "isolated inventory host resolution failed"
+[[ $inventory_port =~ ^[0-9]+$ ]] || fail "isolated inventory SSH port must be numeric"
+[[ $limit == "$inventory_host" ]] || fail "--limit must equal the isolated inventory host: $inventory_host"
+
+config_json=$("$ansible_config_cmd" dump --format json)
+if ! config_error=$("$python" -c '
+import json, sys
+entries = json.load(sys.stdin)
+matches = [entry for entry in entries if entry.get("name") == "HOST_KEY_CHECKING"]
+if len(matches) != 1 or matches[0].get("value") is not True:
+    sys.exit("effective Ansible HOST_KEY_CHECKING must be true")
+' <<<"$config_json" 2>&1); then
+  fail "$config_error"
+fi
+
+connection_config_json=$("$ansible_config_cmd" dump --format json --type connection)
+if ! ssh_arguments=$("$python" -c '
+import json, os, shlex, sys
+
+inventory = json.loads(sys.argv[1])
+plugins = json.load(sys.stdin)
+sections = [entry["ssh"] for entry in plugins if "ssh" in entry]
+if len(sections) != 1:
+    sys.exit("effective Ansible SSH connection configuration is unavailable")
+configured = {entry.get("name"): entry.get("value", "") for entry in sections[0]}
+required = ("ssh_args", "ssh_common_args", "ssh_executable", "ssh_extra_args")
+if any(name not in configured for name in required):
+    sys.exit("effective Ansible SSH arguments are unavailable")
+values = [configured["ssh_args"]]
+for name in ("ssh_common_args", "ssh_extra_args"):
+    inventory_value = inventory.get(name, "")
+    values.append(inventory_value if inventory_value else configured[name])
+inventory_ssh_args = inventory.get("ssh_args", "")
+if inventory_ssh_args:
+    values[0] = inventory_ssh_args
+arguments = []
+for value in values:
+    arguments.extend(shlex.split(str(value or "")))
+executable = str(inventory.get("ssh_executable") or configured["ssh_executable"])
+if not executable or "\n" in executable or "\0" in executable:
+    sys.exit("effective Ansible SSH executable is invalid")
+print(executable)
+for argument in arguments:
+    print(argument)
+' "$inventory_connection" <<<"$connection_config_json" 2>&1); then
+  fail "$ssh_arguments"
+fi
+mapfile -t effective_ssh_settings <<<"$ssh_arguments"
+[[ ${#effective_ssh_settings[@]} -ge 1 ]] || fail "effective Ansible SSH executable is unavailable"
+effective_ssh_executable=${effective_ssh_settings[0]}
+effective_ssh_args=("${effective_ssh_settings[@]:1}")
+effective_ssh_path=$(command -v -- "$effective_ssh_executable") || \
+  fail "effective Ansible SSH executable not found: $effective_ssh_executable"
+effective_ssh_path=$(realpath --canonicalize-existing "$effective_ssh_path")
+system_ssh=$(realpath --canonicalize-existing "$system_ssh")
+[[ $effective_ssh_path == "$system_ssh" ]] || \
+  fail "effective Ansible SSH executable must resolve to $system_ssh"
+
+ssh_g_args=(-G "${effective_ssh_args[@]}" -p "$inventory_port")
+if [[ -n $inventory_user ]]; then
+  ssh_g_args+=(-l "$inventory_user")
+fi
+# The validated inventory address is intentionally resolved by the local client.
+# shellcheck disable=SC2029
+ssh_g_output=$("$effective_ssh_path" "${ssh_g_args[@]}" "$inventory_address" 2>/dev/null) || \
+  fail "effective OpenSSH configuration is unavailable for $inventory_host"
+if ! ssh_g_error=$("$python" -c '
+import sys
+values = {}
+for line in sys.stdin:
+    key, _, value = line.strip().partition(" ")
+    if key:
+        values[key.lower()] = value.strip()
+strict = values.get("stricthostkeychecking", "").lower()
+known_hosts = values.get("userknownhostsfile", "").lower().split()
+if strict not in {"yes", "true", "ask"}:
+    sys.exit("effective OpenSSH StrictHostKeyChecking must be yes, true, or ask")
+if not known_hosts or any(value in {"none", "/dev/null"} for value in known_hosts):
+    sys.exit("effective OpenSSH UserKnownHostsFile must use real files")
+' <<<"$ssh_g_output" 2>&1); then
+  fail "$ssh_g_error"
+fi
+
+mapfile -t resolved_hosts < <(
+  "$ansible" -i "$inventory" rocky_alignment_hosts --list-hosts --limit "$limit" |
+    awk 'NR > 1 && NF == 1 { print $1 }'
+)
+[[ ${#resolved_hosts[@]} -eq 1 && ${resolved_hosts[0]} == "$inventory_host" ]] || \
+  fail "--limit must resolve only the exact isolated inventory host"
+
+exec "$ansible_playbook" \
+  -i "$inventory" \
+  "$playbook" \
+  --limit "$limit" \
+  --extra-vars "rocky_alignment_supported_boundary=rocky-minor-alignment-v1" \
+  --extra-vars "rocky_alignment_operation=$operation" \
+  --extra-vars "rocky_alignment_target_host=$inventory_host"

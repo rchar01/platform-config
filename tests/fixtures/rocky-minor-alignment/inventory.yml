@@ -1,0 +1,19 @@
+---
+all:
+  children:
+    rocky_alignment_hosts:
+      hosts:
+        rocky-alignment-example:
+          ansible_connection: ansible.builtin.ssh
+          ansible_host: 192.0.2.90
+          ansible_user: rocky
+          rocky_10_1_to_10_2_enabled: true
+          rocky_10_1_to_10_2_repositories:
+            baseos:
+              baseurl: []
+              gpgcheck: true
+              gpgkey:
+                - file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-10
+              metalink: null
+              mirrorlist: https://mirrors.rockylinux.org/mirrorlist?arch=x86_64&repo=BaseOS-10
+              repo_gpgcheck: false

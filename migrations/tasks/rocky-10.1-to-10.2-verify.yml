@@ -1,0 +1,137 @@
+---
+- name: Require the Rocky 10.2 target release
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'Rocky'
+      - ansible_distribution_version == rocky_alignment_target_version
+    fail_msg: Rocky alignment did not reach the fixed 10.2 target.
+
+- name: Require the release override to remain absent
+  ansible.builtin.stat:
+    path: /etc/dnf/vars/releasever
+    follow: false
+  register: rocky_alignment_releasever_after
+
+- name: Stop if a target release override exists
+  ansible.builtin.assert:
+    that:
+      - not rocky_alignment_releasever_after.stat.exists
+    fail_msg: Rocky 10.2 must use the supported stream without a release override.
+
+- name: Query Rocky release package identities
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - --qf
+      - "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n"
+      - rocky-release
+      - rocky-repos
+      - rocky-gpg-keys
+  register: rocky_alignment_release_packages
+  changed_when: false
+
+- name: Require Rocky 10.2 release package identities
+  ansible.builtin.assert:
+    that:
+      - rocky_alignment_release_packages.stdout_lines | length == 3
+      - rocky_alignment_release_packages.stdout_lines | select('search', '-10\.2-') | list | length == 3
+    fail_msg: Rocky release, repository, and GPG packages must all identify 10.2.
+
+- name: Recheck installed RPM dependency state  # noqa command-instead-of-module
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - -q
+      - check
+  changed_when: false
+
+- name: Verify the running kernel package
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - --whatprovides
+      - "/usr/lib/modules/{{ ansible_kernel }}"
+  register: rocky_alignment_kernel_package
+  changed_when: false
+
+- name: Revalidate target repositories and package transaction
+  ansible.builtin.script:
+    cmd: >-
+      files/platform-rocky-minor-alignment inspect
+      --policy-b64 {{ rocky_alignment_repository_policy_b64 }}
+    executable: /usr/bin/python3
+  register: rocky_alignment_inspection_after
+  changed_when: false
+  failed_when: >-
+    rocky_alignment_inspection_after.rc != 0
+    or (rocky_alignment_inspection_after.stdout | from_json).transaction | length > 0
+
+- name: Require no failed units after Rocky alignment
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - --failed
+      - --no-legend
+      - --plain
+  register: rocky_alignment_failed_units_after
+  changed_when: false
+
+- name: Stop if any unit failed after Rocky alignment
+  ansible.builtin.assert:
+    that:
+      - rocky_alignment_failed_units_after.stdout | trim | length == 0
+    fail_msg: Rocky alignment requires an empty failed-unit set after reboot.
+
+- name: Refresh completion marker state
+  ansible.builtin.stat:
+    path: "{{ rocky_alignment_marker_path }}"
+    follow: false
+  register: rocky_alignment_marker_stat_after
+
+- name: Validate an existing completion marker
+  when: rocky_alignment_marker_stat_after.stat.exists
+  block:
+    - name: Require safe completion marker metadata
+      ansible.builtin.assert:
+        that:
+          - rocky_alignment_marker_stat_after.stat.isreg
+          - not rocky_alignment_marker_stat_after.stat.islnk
+          - rocky_alignment_marker_stat_after.stat.pw_name == 'root'
+          - rocky_alignment_marker_stat_after.stat.gr_name == 'root'
+          - rocky_alignment_marker_stat_after.stat.mode == '0600'
+        fail_msg: Existing Rocky alignment marker metadata is invalid.
+
+    - name: Validate the existing completion marker
+      ansible.builtin.script:
+        cmd: >-
+          files/platform-rocky-minor-alignment validate-marker
+          --marker {{ rocky_alignment_marker_path }}
+        executable: /usr/bin/python3
+      changed_when: false
+
+- name: Publish completion marker after a successful migration
+  when: rocky_alignment_migration_applied | bool
+  block:
+    - name: Publish and validate the migration completion marker exclusively
+      ansible.builtin.script:
+        cmd: >-
+          files/platform-rocky-minor-alignment mark
+          --marker {{ rocky_alignment_marker_path }}
+          --manifest-sha256 {{ rocky_alignment_manifest_digest }}
+        executable: /usr/bin/python3
+      register: rocky_alignment_marker_publish
+      changed_when: true
+
+    - name: Remove approved transaction RPMs after completion
+      ansible.builtin.file:
+        path: "{{ rocky_alignment_staging_dir }}"
+        state: absent
+
+- name: Report Rocky alignment verification
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is verified on Rocky Linux 10.2 with standard
+      reviewed repositories, a packaged running kernel, healthy DNF state, and
+      no failed units.

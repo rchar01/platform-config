@@ -1,0 +1,151 @@
+---
+- name: Inspect the platform migration state root
+  ansible.builtin.stat:
+    path: /var/lib/platform-config
+    follow: false
+  register: rocky_alignment_state_root_stat
+
+- name: Require a safe existing migration state root
+  ansible.builtin.assert:
+    that:
+      - >-
+        not rocky_alignment_state_root_stat.stat.exists
+        or (
+          rocky_alignment_state_root_stat.stat.isdir
+          and not rocky_alignment_state_root_stat.stat.islnk
+          and rocky_alignment_state_root_stat.stat.pw_name == 'root'
+          and rocky_alignment_state_root_stat.stat.mode[-2:] is not search('[2367]')
+        )
+    fail_msg: The platform migration state root is not a safe root-owned directory.
+
+- name: Inspect the migration marker directory
+  ansible.builtin.stat:
+    path: "{{ rocky_alignment_marker_dir }}"
+    follow: false
+  register: rocky_alignment_marker_dir_stat
+
+- name: Require a safe existing migration marker directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not rocky_alignment_marker_dir_stat.stat.exists
+        or (
+          rocky_alignment_marker_dir_stat.stat.isdir
+          and not rocky_alignment_marker_dir_stat.stat.islnk
+          and rocky_alignment_marker_dir_stat.stat.pw_name == 'root'
+          and rocky_alignment_marker_dir_stat.stat.gr_name == 'root'
+          and rocky_alignment_marker_dir_stat.stat.mode[-2:] is not search('[2367]')
+        )
+    fail_msg: The migration marker directory is not a safe root-owned directory.
+
+- name: Create protected migration state directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/lib/platform-config
+      mode: "0755"
+    - path: "{{ rocky_alignment_marker_dir }}"
+      mode: "0755"
+
+- name: Prepare the exact Rocky transaction
+  ansible.builtin.script:
+    cmd: >-
+      files/platform-rocky-minor-alignment prepare
+      --policy-b64 {{ rocky_alignment_repository_policy_b64 }}
+      --staging {{ rocky_alignment_staging_dir }}
+    executable: /usr/bin/python3
+  register: rocky_alignment_prepare_command
+  changed_when: true
+
+- name: Parse the exact Rocky transaction approval record
+  ansible.builtin.set_fact:
+    rocky_alignment_prepared: "{{ rocky_alignment_prepare_command.stdout | from_json }}"
+    rocky_alignment_manifest_digest: >-
+      {{ (rocky_alignment_prepare_command.stdout | from_json).manifest_sha256 }}
+    rocky_alignment_installed_state_digest: >-
+      {{ (rocky_alignment_prepare_command.stdout | from_json).installed_state_sha256 }}
+
+- name: Display exact Rocky transaction approval identities
+  ansible.builtin.debug:
+    msg:
+      - "transaction_manifest_sha256={{ rocky_alignment_manifest_digest }}"
+      - "installed_state_sha256={{ rocky_alignment_installed_state_digest }}"
+      - "payload_count={{ rocky_alignment_prepared.payload_count }}"
+      - "transaction={{ rocky_alignment_prepared.transaction | to_json }}"
+
+- name: Prompt for exact Rocky alignment approval
+  ansible.builtin.pause:
+    prompt: >-
+      Type exactly
+      align-rocky|{{ inventory_hostname }}|{{ rocky_alignment_source_version }}|{{ rocky_alignment_target_version }}|{{ rocky_alignment_manifest_digest }}|{{ rocky_alignment_installed_state_digest }}
+  register: rocky_alignment_approval
+
+- name: Require exact Rocky alignment approval
+  ansible.builtin.assert:
+    that:
+      - >-
+        rocky_alignment_approval.user_input
+        == 'align-rocky|' ~ inventory_hostname ~ '|'
+           ~ rocky_alignment_source_version ~ '|'
+           ~ rocky_alignment_target_version ~ '|'
+           ~ rocky_alignment_manifest_digest ~ '|'
+           ~ rocky_alignment_installed_state_digest
+    fail_msg: Exact Rocky alignment approval did not match.
+
+- name: Record the source boot identifier
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/sys/kernel/random/boot_id
+  register: rocky_alignment_boot_id_before
+  changed_when: false
+
+- name: Apply only the approved Rocky transaction
+  ansible.builtin.script:
+    cmd: >-
+      files/platform-rocky-minor-alignment apply
+      --staging {{ rocky_alignment_staging_dir }}
+      --manifest-sha256 {{ rocky_alignment_manifest_digest }}
+      --installed-state-sha256 {{ rocky_alignment_installed_state_digest }}
+    executable: /usr/bin/python3
+  register: rocky_alignment_apply_command
+  changed_when: true
+
+- name: Require the helper apply result
+  ansible.builtin.assert:
+    that:
+      - (rocky_alignment_apply_command.stdout | from_json).applied | bool
+      - (rocky_alignment_apply_command.stdout | from_json).manifest_sha256 == rocky_alignment_manifest_digest
+    fail_msg: The Rocky transaction helper did not report the approved apply.
+
+- name: Reboot after Rocky package alignment
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+    connect_timeout: 10
+    post_reboot_delay: 10
+
+- name: Gather post-reboot Rocky facts
+  ansible.builtin.setup:
+
+- name: Read the target boot identifier
+  ansible.builtin.command:
+    argv:
+      - cat
+      - /proc/sys/kernel/random/boot_id
+  register: rocky_alignment_boot_id_after
+  changed_when: false
+
+- name: Require a completed reboot
+  ansible.builtin.assert:
+    that:
+      - rocky_alignment_boot_id_after.stdout | trim != rocky_alignment_boot_id_before.stdout | trim
+    fail_msg: Rocky alignment did not produce a changed boot identifier.
+
+- name: Record migration application for final verification
+  ansible.builtin.set_fact:
+    rocky_alignment_current_version: "{{ ansible_distribution_version }}"
+    rocky_alignment_migration_applied: true

@@ -1,0 +1,72 @@
+---
+- name: Align one eligible Rocky Linux 10.1 host to 10.2
+  hosts: rocky_alignment_hosts
+  gather_facts: true
+  become: true
+  serial: 1
+  any_errors_fatal: true
+  environment:
+    LC_ALL: C
+  vars:
+    rocky_alignment_migration_id: 2026-08-rocky-10.1-to-10.2
+    rocky_alignment_source_version: "10.1"
+    rocky_alignment_target_version: "10.2"
+    rocky_alignment_marker_dir: /var/lib/platform-config/migrations
+    rocky_alignment_marker_path: >-
+      {{ rocky_alignment_marker_dir }}/{{ rocky_alignment_migration_id }}.done
+    rocky_alignment_staging_dir: >-
+      {{ rocky_alignment_marker_dir }}/{{ rocky_alignment_migration_id }}.transaction
+  pre_tasks:
+    - name: Collect effective Rocky alignment SSH options
+      ansible.builtin.set_fact:
+        rocky_alignment_effective_ssh_options: >-
+          {{
+            [
+              ansible_ssh_args | default(''),
+              ansible_ssh_common_args | default(''),
+              ansible_ssh_extra_args | default(''),
+              lookup('ansible.builtin.env', 'ANSIBLE_SSH_ARGS'),
+              lookup('ansible.builtin.env', 'ANSIBLE_SSH_COMMON_ARGS'),
+              lookup('ansible.builtin.env', 'ANSIBLE_SSH_EXTRA_ARGS')
+            ] | join(' ') | lower
+          }}
+
+    - name: Require the isolated Rocky alignment boundary
+      ansible.builtin.assert:
+        that:
+          - rocky_alignment_supported_boundary | default('') == 'rocky-minor-alignment-v1'
+          - rocky_alignment_operation | default('') in ['preflight', 'apply']
+          - rocky_alignment_target_host | default('') == inventory_hostname
+          - groups.get('rocky_alignment_hosts', []) == [inventory_hostname]
+          - ansible_play_hosts_all == [inventory_hostname]
+          - ansible_limit | default('') == inventory_hostname
+          - rocky_10_1_to_10_2_enabled | default(false) | bool
+          - rocky_10_1_to_10_2_repositories | default({}) | length > 0
+          - ansible_connection | default('') == 'ansible.builtin.ssh'
+          - ansible_ssh_host_key_checking | default(true) | bool
+          - lookup('ansible.builtin.env', 'ANSIBLE_SSH_HOST_KEY_CHECKING') | default('true', true) | bool
+          - rocky_alignment_effective_ssh_options is not search('strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0)(?=\s|$)')
+          - rocky_alignment_effective_ssh_options is not search('user\s*known\s*hosts\s*file\s*(?:=|\s)\s*(?:/dev/null|none)(?=\s|$)')
+          - rocky_alignment_effective_ssh_options is not search('strict\s*host\s*key\s*checking\s*(?:=|\s)\s*accept-new(?=\s|$)')
+          - rocky_alignment_operation != 'apply' or not ansible_check_mode
+        fail_msg: >-
+          Rocky alignment requires the supported launcher, one exact isolated
+          host, private eligibility and repository policy, strict SSH, and a
+          supported operation.
+
+  tasks:
+    - name: Run Rocky 10.1 to 10.2 preflight
+      ansible.builtin.include_tasks: tasks/rocky-10.1-to-10.2-preflight.yml
+
+    - name: Apply Rocky 10.1 to 10.2 alignment
+      ansible.builtin.include_tasks: tasks/rocky-10.1-to-10.2-upgrade.yml
+      when:
+        - rocky_alignment_operation == 'apply'
+        - rocky_alignment_current_version == rocky_alignment_source_version
+
+    - name: Verify Rocky 10.2 alignment
+      ansible.builtin.include_tasks: tasks/rocky-10.1-to-10.2-verify.yml
+      when:
+        - >-
+          rocky_alignment_current_version == rocky_alignment_target_version
+          or rocky_alignment_migration_applied | default(false) | bool
