@@ -13,6 +13,64 @@
     mode: "{{ item.mode | default('0755') }}"
   loop: "{{ platform_common_directories }}"
 
+- name: Inspect cloud-init hosts template directory
+  ansible.builtin.stat:
+    path: "{{ platform_host_aliases_cloud_init_template | dirname }}"
+    follow: false
+  register: platform_host_aliases_cloud_init_template_dir_stat
+  when: platform_host_aliases_cloud_init_template | length > 0
+
+- name: Require a trusted cloud-init hosts template directory
+  ansible.builtin.assert:
+    that:
+      - platform_host_aliases_cloud_init_template_dir_stat.stat.isdir
+      - not platform_host_aliases_cloud_init_template_dir_stat.stat.islnk
+      - platform_host_aliases_cloud_init_template_dir_stat.stat.pw_name == 'root'
+      - platform_host_aliases_cloud_init_template_dir_stat.stat.gr_name == 'root'
+      - >-
+        platform_host_aliases_cloud_init_template_dir_stat.stat.mode[-2:]
+        is not search('[2367]')
+    fail_msg: >-
+      The configured cloud-init hosts template directory is not trusted.
+  when: platform_host_aliases_cloud_init_template | length > 0
+
+- name: Inspect cloud-init hosts template
+  ansible.builtin.stat:
+    path: "{{ platform_host_aliases_cloud_init_template }}"
+    follow: false
+  register: platform_host_aliases_cloud_init_template_stat
+  when: platform_host_aliases_cloud_init_template | length > 0
+
+- name: Require a safe cloud-init hosts template
+  ansible.builtin.assert:
+    that:
+      - platform_host_aliases_cloud_init_template_stat.stat.isreg
+      - not platform_host_aliases_cloud_init_template_stat.stat.islnk
+      - platform_host_aliases_cloud_init_template_stat.stat.pw_name == 'root'
+      - platform_host_aliases_cloud_init_template_stat.stat.gr_name == 'root'
+      - >-
+        platform_host_aliases_cloud_init_template_stat.stat.mode[-2:]
+        is not search('[2367]')
+    fail_msg: >-
+      The configured cloud-init hosts template is not a safe root-owned file.
+  when:
+    - platform_host_aliases_cloud_init_template | length > 0
+    - platform_host_aliases_cloud_init_template_stat.stat.exists
+
+- name: Manage platform host aliases in cloud-init template
+  ansible.builtin.blockinfile:
+    path: "{{ platform_host_aliases_cloud_init_template }}"
+    create: false
+    marker: "# {mark} ANSIBLE MANAGED PLATFORM HOST ALIASES"
+    block: |
+      {% for alias in platform_host_aliases %}
+      {{ alias.address }} {{ alias.names | join(' ') }}
+      {% endfor %}
+    state: "{{ 'present' if platform_host_aliases | length > 0 else 'absent' }}"
+  when:
+    - platform_host_aliases_cloud_init_template | length > 0
+    - platform_host_aliases_cloud_init_template_stat.stat.exists
+
 - name: Manage platform host aliases
   ansible.builtin.blockinfile:
     path: /etc/hosts

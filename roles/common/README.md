@@ -4,7 +4,11 @@ Applies basic OS defaults shared by platform hosts: timezone, simple directories
 
 ## Host Aliases
 
-Use `platform_host_aliases` for temporary name resolution before internal DNS exists. The role manages only its own marked block in `/etc/hosts` and leaves other entries untouched.
+Use `platform_host_aliases` for temporary name resolution before internal DNS
+exists. The role manages only its own marked block in `/etc/hosts` and leaves
+other entries untouched. On Rocky cloud images, it also maintains the same block
+in `/etc/cloud/templates/hosts.redhat.tmpl` so cloud-init regeneration preserves
+the aliases across reboot.
 
 ```yaml
 platform_host_aliases:
@@ -13,6 +17,13 @@ platform_host_aliases:
       - registry.example.test
       - registry-01.example.test
 ```
+
+Set `platform_host_aliases_cloud_init_template: ""` on systems where cloud-init
+must not be integrated. A configured path is modified only when it exists as a
+safe root-owned regular file beneath a root-owned, non-writable directory. To
+stop managing a template that already contains the marked block, first converge
+with `platform_host_aliases: []`; clear the template path only after that cleanup
+run.
 
 ## Logrotate
 

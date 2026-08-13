@@ -2,6 +2,7 @@
 platform_timezone: UTC
 platform_common_directories: []
 platform_host_aliases: []
+platform_host_aliases_cloud_init_template: /etc/cloud/templates/hosts.redhat.tmpl
 platform_logrotate_manage: true
 platform_logrotate_compress: true
 platform_motd_manage: true
