@@ -128,7 +128,7 @@
       /usr: 1073741824
       /var: 1073741824
       /boot: 536870912
-      /boot/efi: 268435456
+      /boot/efi: 134217728
 
 - name: Require the canonical transaction contract
   ansible.builtin.assert:

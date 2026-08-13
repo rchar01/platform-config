@@ -87,6 +87,16 @@ def test_rocky_alignment_has_fixed_transition_and_private_gate(repo_root: Path) 
     assert "distro-sync" not in preflight
 
 
+def test_rocky_alignment_capacity_matches_qualified_template(repo_root: Path) -> None:
+    preflight = (
+        repo_root / "migrations/tasks/rocky-10.1-to-10.2-preflight.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "/boot: 536870912" in preflight
+    assert "/boot/efi: 134217728" in preflight
+    assert "/boot/efi: 268435456" not in preflight
+
+
 def test_rocky_alignment_binds_transaction_and_installed_state(repo_root: Path) -> None:
     upgrade = (
         repo_root / "migrations/tasks/rocky-10.1-to-10.2-upgrade.yml"
