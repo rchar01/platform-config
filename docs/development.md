@@ -2,6 +2,8 @@
 
 Use the Podman development container for Ansible and lint tooling. This keeps
 Python packages, Ansible collections, and linters out of the host environment.
+See the [Testing Guide](testing.md) for the reusable Python and Bash test model,
+container isolation design, execution lanes, and dependency-pinning details.
 
 ```bash
 make deps

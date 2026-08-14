@@ -62,5 +62,7 @@ and other secrets belong outside Git.
 
 - [Development](development.md): Podman development container, repository checks,
   Ansible tooling, and managed-host requirements.
+- [Testing Guide](testing.md): Reusable Python and Bash test design, execution,
+  development-container isolation, and version-pinning strategy.
 - [Project README](../README.md): Project scope, requirements, quick start, common
   commands, related repositories, and license.
