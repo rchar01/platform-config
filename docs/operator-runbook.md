@@ -451,6 +451,75 @@ platform-pki-backup --allow-plain-backup
 
 If service IPs or hostnames change, update `~/.config/platform-infrastructure/pki/inventory/services.yml`, renew the affected certificate, export again, apply the matching service role, and run the matching smoke check. Root or intermediate CA rotation is a separate trust-rollover operation and should not be treated as a normal service certificate renewal.
 
+### Host-Local Zot Certificate Workflow
+
+This operator-only workflow keeps the leaf private key on one registry target.
+Configure the real one-host inventory, reviewed five-file trust, reviewed CA,
+validation boundary, protected controller exchange root, and a distinct
+read-only runner in private or outside-Git configuration. See
+[Registry](registry.md#host-local-pki-development) for the trust and lifecycle
+contract.
+
+Bootstrap target trust once, then create or resume and collect the request:
+
+```bash
+make apply ENV=dev PLAYBOOK=playbooks/registry-pki-trust.yml \
+  LIMIT=registry-example
+make registry-pki-request ENV=dev LIMIT=registry-example
+make registry-pki-status ENV=dev LIMIT=registry-example
+```
+
+Move the public request through the separately approved controlled-media and
+offline-signing process. Place the returned exact six-file response in a
+protected controller directory, authenticate it without target mutation, and
+activate it with one separate runner:
+
+```bash
+make registry-pki-response-check ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  RESPONSE_DIR=/outside-git/protected-response
+make registry-pki-activate ENV=dev LIMIT=registry-example \
+  RUNNER_LIMIT=registry-validator-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
+```
+
+Activation prompts for exactly:
+
+```text
+activate SERVICE REQUEST_ID ARTIFACT_SHA256
+```
+
+If authenticated status reports recovery is required, run only the explicit
+journal-bound recovery action:
+
+```bash
+make registry-pki-recover ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
+```
+
+After successful activation, export and authenticate the exact evidence, then
+perform a fresh separate-runner decision preflight:
+
+```bash
+make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256>
+make registry-pki-status ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256>
+make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
+  RUNNER_LIMIT=registry-validator-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256>
+```
+
+Only after an active version authenticates successfully, change the target's
+private Zot inventory to `zot_registry_tls_custody: host-local`, set
+`zot_registry_tls_host_local_target` to the exact inventory hostname, and run
+normal registry convergence. Signing, response retrieval from external media,
+signer-outcome import, completion, renewal, and live enablement remain separate
+operations and are not automated here.
+
 ## Make Targets
 
 Common commands:
@@ -473,6 +542,11 @@ ENV        Environment name: homelab or dev
 PLAYBOOK   Playbook to run, default playbooks/site.yml
 LIMIT      Optional Ansible --limit value
 EXTRA_ARGS Extra flags passed to Ansible
+REQUEST_ID Exact 32-character host-local PKI request ID
+ARTIFACT_SHA256 Exact host-local PKI artifact digest
+DEPLOYMENT_SHA256 Exact host-local PKI deployment digest
+RESPONSE_DIR Exact protected six-file response directory
+RUNNER_LIMIT Exact separate read-only validation runner host
 ```
 
 Examples:

@@ -1,0 +1,118 @@
+---
+- name: Load host-local certificate common validation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Validate host-local certificate decision preflight contract
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all == [inventory_hostname]
+      - groups.get('registry', []) | select('equalto', inventory_hostname) | list | length == 1
+      - groups.get('all', []) | select('equalto', pki_host_local_certificate_remote_validator) | list | length == 1
+      - pki_host_local_certificate_remote_validator != inventory_hostname
+      - pki_host_local_certificate_request_id is match('^[0-9a-f]{32}$')
+      - pki_host_local_certificate_artifact_manifest_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_deployment_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_validation_boundary_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_served_intermediate_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_validation_boundary_runner_path | length > 0
+      - pki_host_local_certificate_reviewed_ca_runner_path | length > 0
+      - pki_host_local_certificate_reviewed_ca_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_reviewed_ca_mode in ['0600', '0644']
+      - pki_host_local_certificate_remote_validator is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - pki_host_local_certificate_endpoint is match('^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?/v2/$')
+      - pki_host_local_certificate_minimum_remaining_lifetime_seconds > 0
+      - pki_host_local_certificate_zot_config_path == '/etc/zot/config.json'
+      - pki_host_local_certificate_request_ttl_seconds is integer
+      - pki_host_local_certificate_request_ttl_seconds == 0
+    fail_msg: Decision preflight requires exact active evidence and one distinct reviewed runner.
+
+- name: Load authenticated controller-exported lifecycle status
+  ansible.builtin.import_tasks: status.yml
+
+- name: Require exact active and exported evidence identity
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_decision_status.status == 'evidence-exported'
+      - pki_host_local_certificate_decision_status.required_action == 'await-signer-outcome'
+      - pki_host_local_certificate_decision_status.evidence_state == 'controller-exported'
+      - pki_host_local_certificate_decision_status.active_request_id == pki_host_local_certificate_request_id
+      - pki_host_local_certificate_decision_status.active_artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256
+      - pki_host_local_certificate_decision_status.active_certificate_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_decision_status.remaining_lifetime_seconds is integer
+      - pki_host_local_certificate_decision_status.remaining_lifetime_seconds >= pki_host_local_certificate_minimum_remaining_lifetime_seconds
+    fail_msg: Target status does not authenticate the exact exported active deployment.
+  vars:
+    pki_host_local_certificate_decision_status: "{{ pki_host_local_certificate_status_result.stdout | from_json }}"
+
+- name: Load reviewed runner validator helper preflight
+  ansible.builtin.import_tasks: validator_helper.yml
+  vars:
+    pki_host_local_certificate_helper_read_only: true
+
+- name: Revalidate exact exported active Zot endpoint from reviewed runner
+  ansible.builtin.command:
+    argv:
+      - "{{ pki_host_local_certificate_validator_helper_path }}"
+      - --service
+      - "{{ pki_host_local_certificate_service }}"
+      - --target
+      - "{{ pki_host_local_certificate_target }}"
+      - --request-id
+      - "{{ pki_host_local_certificate_request_id }}"
+      - --artifact-sha256
+      - "{{ pki_host_local_certificate_artifact_manifest_sha256 }}"
+      - --validation-boundary
+      - "{{ pki_host_local_certificate_validation_boundary_runner_path }}"
+      - --validation-boundary-sha256
+      - "{{ pki_host_local_certificate_validation_boundary_sha256 }}"
+      - --remote-validator
+      - "{{ pki_host_local_certificate_remote_validator }}"
+      - --endpoint
+      - "{{ pki_host_local_certificate_endpoint }}"
+      - --reviewed-ca
+      - "{{ pki_host_local_certificate_reviewed_ca_runner_path }}"
+      - --reviewed-ca-sha256
+      - "{{ pki_host_local_certificate_reviewed_ca_sha256 }}"
+      - --expected-served-leaf-sha256
+      - "{{ (pki_host_local_certificate_status_result.stdout | from_json).active_certificate_sha256 }}"
+      - --expected-served-intermediate-sha256
+      - "{{ pki_host_local_certificate_served_intermediate_sha256 }}"
+  delegate_to: "{{ pki_host_local_certificate_remote_validator }}"
+  register: pki_host_local_certificate_validator_result
+  changed_when: false
+  check_mode: false
+
+- name: Load exact fresh decision observation validation
+  ansible.builtin.import_tasks: validate_validator_result.yml
+  vars:
+    pki_host_local_certificate_validator_expected_leaf_sha256: >-
+      {{ (pki_host_local_certificate_status_result.stdout | from_json).active_certificate_sha256 }}
+    pki_host_local_certificate_validator_expected_intermediate_sha256: >-
+      {{ pki_host_local_certificate_served_intermediate_sha256 }}
+
+- name: Publish safe successful decision preflight summary
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_decision_utc_epoch > 0
+      - pki_host_local_certificate_decision_observed_epoch <= pki_host_local_certificate_decision_utc_epoch + 300
+      - pki_host_local_certificate_decision_utc_epoch < pki_host_local_certificate_decision_expires_epoch
+    success_msg: >-
+      service={{ pki_host_local_certificate_service }}
+      target={{ pki_host_local_certificate_target }}
+      request={{ pki_host_local_certificate_request_id }}
+      artifact={{ pki_host_local_certificate_artifact_manifest_sha256 }}
+      deployment={{ pki_host_local_certificate_deployment_sha256 }}
+      observed_epoch={{ pki_host_local_certificate_decision_observed_epoch }}
+      expires_epoch={{ pki_host_local_certificate_decision_expires_epoch }}
+      result=passed
+    fail_msg: Decision preflight observation expired before successful publication.
+  vars:
+    pki_host_local_certificate_decision_observed_epoch: >-
+      {{ pki_host_local_certificate_validator_result.stdout_lines[16].removeprefix('validation_epoch=') | int }}
+    pki_host_local_certificate_decision_expires_epoch: >-
+      {{ (pki_host_local_certificate_decision_observed_epoch | int) + 300 }}
+    pki_host_local_certificate_decision_utc_epoch: >-
+      {{ (
+        (now(utc=true, fmt='%Y-%m-%d %H:%M:%S') | to_datetime)
+        - ('1970-01-01 00:00:00' | to_datetime)
+      ).total_seconds() | int }}

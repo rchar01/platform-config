@@ -103,6 +103,7 @@ podman_args=(
   --workdir /workspace
   --env HOME=/tmp/platform-home
   --env ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.ansible/collections
+  --env PYTHONPATH=/workspace
   --env "ANSIBLE_SSH_COMMON_ARGS=$ansible_ssh_common_args"
   --volume "$tmp_home:/tmp/platform-home:rw"
 )

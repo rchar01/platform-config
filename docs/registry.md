@@ -4,10 +4,11 @@ The dev registry is a Zot OCI registry deployed by `zot_registry` on hosts in th
 
 ## Host-Local PKI Development
 
-`playbooks/registry-pki-trust.yml`, `playbooks/registry-pki-request.yml`, and
-`playbooks/registry-pki-activate.yml` are operator-only host-local certificate
-entry points. They are not imported by `site.yml` or normal registry
-convergence.
+The `playbooks/registry-pki-*.yml` playbooks are operator-only host-local
+certificate entry points. They are not imported by `site.yml` or normal
+registry convergence. The implemented workflow ends after authenticated
+deployment evidence is exported; it does not automate signing, controlled-media
+transport, signer-outcome import, completion, or renewal.
 
 The trust playbook is a separate initial-install-only bootstrap. It requires an
 explicit exact five-key `pki_host_local_certificate_trust_sources` mapping to
@@ -31,14 +32,56 @@ implement trust rotation.
 
 The request entry point validates preinstalled frozen target trust, installs the
 reviewed request helper, and generates or revalidates one root-owned local P-384
-key, CSR, canonical request, and SSH signature. It never installs trust and does
-not collect the three public request files yet. The separate
+key, CSR, canonical request, and SSH signature. Outside check mode, its fixed
+action collects only `tls.csr`, `request`, and `request.sig` into the protected
+controller exchange and publishes a frozen copy of the reviewed trust beside
+the request. The separate
 `scripts/platform-pki-gitlab-package` helper can validate and publish an already
 collected canonical request package to one exact GitLab Generic Package
 coordinate; it does not collect from the target or create the receipt or stage
-manifest. See [GitLab PKI Package Exchange](pki-gitlab-package.md). The
-activation entry point still fails before mutation and cannot install a
-certificate or restart Zot.
+manifest. See [GitLab PKI Package Exchange](pki-gitlab-package.md).
+
+Place an externally produced response in one protected controller directory
+containing exactly `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`,
+`response`, and `response.sig`. Response check authenticates and immutably
+publishes that response entirely on the controller; it does not contact Zot or
+mutate the target. Activation then performs exact response ingress, requires the
+operator to type
+`activate SERVICE REQUEST_ID ARTIFACT_SHA256`, updates Zot transactionally, and
+validates strict HTTPS `GET /v2/` behavior from exactly one distinct reviewed
+runner. Explicit recovery acts only on a journal-bound interrupted transaction.
+
+Use these Make entry points with one exact registry `LIMIT` and carry the exact
+request, artifact, and deployment coordinates returned by each phase:
+
+```bash
+make registry-pki-request ENV=dev LIMIT=registry-example
+make registry-pki-status ENV=dev LIMIT=registry-example
+make registry-pki-response-check ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  RESPONSE_DIR=/outside-git/protected-response
+make registry-pki-activate ENV=dev LIMIT=registry-example \
+  RUNNER_LIMIT=registry-validator-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
+make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256>
+make registry-pki-status ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256>
+make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
+  RUNNER_LIMIT=registry-validator-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256>
+```
+
+Trust bootstrap remains a separate one-time action without a dedicated Make
+wrapper:
+
+```bash
+make apply ENV=dev PLAYBOOK=playbooks/registry-pki-trust.yml \
+  LIMIT=registry-example
+```
 
 Trust check mode is non-mutating. Exact installed trust can be revalidated; an
 absent install requires the helper, protected state root and lock, and complete
@@ -46,13 +89,26 @@ protected ingress to exist already before it can report `would-install`.
 Interrupted journaled state fails rather than being recovered in check mode.
 Request check mode similarly runs the request helper's complete non-mutating
 preflight and requires the reviewed helper and state lock to be installed
-already; it fails rather than reporting incomplete readiness.
+already; it fails rather than reporting incomplete readiness. Activation check
+mode validates the installed response and candidate without transfer, prompts,
+service restart, runner invocation, or cleanup. Status, response check, evidence
+export, and decision preflight remain read-only with respect to Zot.
 
-Do not use these playbooks or publish a real package until request collection,
-exact GitLab `18.11.3-ce.0` runtime qualification, project controls, and the
-remaining public verification gate are complete. Certificate activation,
-rollback, service validation, and deployment evidence remain blocked. Existing
-`zot_registry` managed TLS behavior remains unchanged.
+Managed Zot TLS custody remains the default. After activation has authenticated
+an active version, private inventory may set:
+
+```yaml
+zot_registry_tls_custody: host-local
+zot_registry_tls_host_local_target: registry-example
+```
+
+Normal registry convergence then resolves the immutable `fullchain.crt` and
+`tls.key` paths through the lifecycle helper; inventory cannot select those
+paths. The role refuses any host-local rendered configuration drift rather than
+invalidating the authenticated active record. Do not run a live request,
+activation, or package publication until private inventory, reviewed trust and
+CA files, the validation boundary, runner identity, controlled-media process,
+and any GitLab project controls have been separately approved.
 
 ## Registry Client Tools
 

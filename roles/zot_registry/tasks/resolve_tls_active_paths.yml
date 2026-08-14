@@ -1,0 +1,47 @@
+---
+- name: Inspect the installed Zot TLS lifecycle helper
+  ansible.builtin.stat:
+    path: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: zot_registry_tls_lifecycle_helper_stat
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'
+
+- name: Validate the installed Zot TLS lifecycle helper
+  ansible.builtin.import_tasks: validate_tls_lifecycle_helper.yml
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'
+
+- name: Resolve authenticated Zot TLS active paths
+  ansible.builtin.command:
+    argv:
+      - "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+      - active-paths
+      - --state-root
+      - "{{ zot_registry_tls_host_local_state_root }}"
+      - --pending-root
+      - "{{ zot_registry_tls_host_local_pending_root }}"
+      - --versions-root
+      - "{{ zot_registry_tls_host_local_versions_root }}"
+      - --service
+      - "{{ zot_registry_tls_host_local_service }}"
+      - --target
+      - "{{ zot_registry_tls_host_local_target }}"
+      - --zot-config
+      - "{{ zot_registry_tls_host_local_zot_config_path }}"
+  register: zot_registry_tls_active_paths_result
+  check_mode: false
+  changed_when: false
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'
+
+- name: Validate authenticated Zot TLS active paths
+  ansible.builtin.import_tasks: validate_tls_active_paths.yml
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'

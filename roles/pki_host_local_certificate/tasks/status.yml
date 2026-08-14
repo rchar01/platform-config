@@ -1,0 +1,189 @@
+---
+- name: Load host-local certificate common validation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Validate host-local certificate status contract
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_request_ttl_seconds is integer
+      - pki_host_local_certificate_request_ttl_seconds == 0
+      - pki_host_local_certificate_minimum_remaining_lifetime_seconds > 0
+      - pki_host_local_certificate_zot_config_path == '/etc/zot/config.json'
+      - >-
+        pki_host_local_certificate_deployment_sha256 | length == 0
+        or pki_host_local_certificate_deployment_sha256 is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_deployment_sha256 | length == 0
+        or pki_host_local_certificate_request_id is match('^[0-9a-f]{32}$')
+      - >-
+        pki_host_local_certificate_deployment_sha256 | length == 0
+        or pki_host_local_certificate_artifact_manifest_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: Status requires exact read-only lifecycle and optional controller evidence bindings.
+
+- name: Load host-local certificate lifecycle helper preflight
+  ansible.builtin.import_tasks: lifecycle_helper.yml
+  vars:
+    pki_host_local_certificate_helper_read_only: true
+
+- name: Authenticate exact controller evidence publication
+  platform_pki_evidence_status:
+    exchange_root: "{{ pki_host_local_certificate_controller_exchange_root }}"
+    service: "{{ pki_host_local_certificate_service }}"
+    target: "{{ pki_host_local_certificate_target }}"
+    request_id: "{{ pki_host_local_certificate_request_id }}"
+    artifact_sha256: "{{ pki_host_local_certificate_artifact_manifest_sha256 }}"
+    deployment_sha256: "{{ pki_host_local_certificate_deployment_sha256 }}"
+  delegate_to: localhost
+  become: false
+  register: pki_host_local_certificate_controller_evidence_status
+  when: pki_host_local_certificate_deployment_sha256 | length > 0
+
+- name: Validate exact controller evidence status metadata
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_controller_evidence_status.changed is sameas false
+      - pki_host_local_certificate_controller_evidence_status.status == 'verified'
+      - pki_host_local_certificate_controller_evidence_status.service == pki_host_local_certificate_service
+      - pki_host_local_certificate_controller_evidence_status.target == pki_host_local_certificate_target
+      - pki_host_local_certificate_controller_evidence_status.request_id == pki_host_local_certificate_request_id
+      - pki_host_local_certificate_controller_evidence_status.artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256
+      - pki_host_local_certificate_controller_evidence_status.deployment_sha256 == pki_host_local_certificate_deployment_sha256
+      - pki_host_local_certificate_controller_evidence_status.action == 'finalize'
+      - pki_host_local_certificate_controller_evidence_status.result == 'activated'
+    fail_msg: Controller evidence status did not verify the exact activated deployment.
+  when: pki_host_local_certificate_deployment_sha256 | length > 0
+
+- name: Read authenticated host-local certificate lifecycle status
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          pki_host_local_certificate_lifecycle_helper_path,
+          'status',
+          '--state-root', pki_host_local_certificate_state_root,
+          '--pending-root', pki_host_local_certificate_pending_root,
+          '--versions-root', pki_host_local_certificate_versions_root,
+          '--service', pki_host_local_certificate_service,
+          '--target', pki_host_local_certificate_target,
+          '--zot-config', pki_host_local_certificate_zot_config_path,
+          '--trust-id', pki_host_local_certificate_trust_id,
+          '--common-name', pki_host_local_certificate_common_name,
+          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
+        ]
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\1') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\1') | list)
+        + (
+          [
+            '--controller-evidence-exported',
+            '--deployment-sha256', pki_host_local_certificate_deployment_sha256
+          ]
+          if pki_host_local_certificate_deployment_sha256 | length > 0
+          else []
+        )
+      }}
+  register: pki_host_local_certificate_status_result
+  changed_when: false
+  check_mode: false
+
+- name: Validate exact authenticated lifecycle status metadata
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_status_result.stderr | length == 0
+      - pki_host_local_certificate_status.keys() | list | sort == pki_host_local_certificate_status_fields
+      - pki_host_local_certificate_status.schema == '1'
+      - pki_host_local_certificate_status.kind == 'platform-config-host-local-certificate-status'
+      - pki_host_local_certificate_status.service == pki_host_local_certificate_service
+      - pki_host_local_certificate_status.target == pki_host_local_certificate_target
+      - >-
+        [pki_host_local_certificate_status.status, pki_host_local_certificate_status.required_action]
+        in pki_host_local_certificate_status_combinations
+      - pki_host_local_certificate_status.active_request_id == 'none' or pki_host_local_certificate_status.active_request_id is match('^[0-9a-f]{32}$')
+      - pki_host_local_certificate_status.pending_request_id == 'none' or pki_host_local_certificate_status.pending_request_id is match('^[0-9a-f]{32}$')
+      - pki_host_local_certificate_status.active_artifact_sha256 == 'none' or pki_host_local_certificate_status.active_artifact_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_status.active_certificate_sha256 == 'none' or pki_host_local_certificate_status.active_certificate_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_status.active_spki_sha256 == 'none' or pki_host_local_certificate_status.active_spki_sha256 is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_status.active_not_before_epoch == 'none'
+        or (
+          pki_host_local_certificate_status.active_not_before_epoch is integer
+          and pki_host_local_certificate_status.active_not_before_epoch is not boolean
+          and pki_host_local_certificate_status.active_not_before_epoch > 0
+        )
+      - >-
+        pki_host_local_certificate_status.active_not_after_epoch == 'none'
+        or (
+          pki_host_local_certificate_status.active_not_after_epoch is integer
+          and pki_host_local_certificate_status.active_not_after_epoch is not boolean
+          and pki_host_local_certificate_status.active_not_after_epoch > 0
+        )
+      - >-
+        pki_host_local_certificate_status.remaining_lifetime_seconds == 'none'
+        or (
+          pki_host_local_certificate_status.remaining_lifetime_seconds is integer
+          and pki_host_local_certificate_status.remaining_lifetime_seconds is not boolean
+          and pki_host_local_certificate_status.remaining_lifetime_seconds >= 0
+        )
+      - >-
+        pki_host_local_certificate_status.pending_expires_epoch == 'none'
+        or (
+          pki_host_local_certificate_status.pending_expires_epoch is integer
+          and pki_host_local_certificate_status.pending_expires_epoch is not boolean
+          and pki_host_local_certificate_status.pending_expires_epoch > 0
+        )
+      - pki_host_local_certificate_status.recovery_required is boolean
+      - pki_host_local_certificate_status.evidence_state in ['none', 'target-published', 'controller-exported']
+      - pki_host_local_certificate_status.signer_outcome_state == 'unavailable'
+      - pki_host_local_certificate_status.renewal_eligible is sameas false
+      - >-
+        (pki_host_local_certificate_status.active_request_id == 'none')
+        == (pki_host_local_certificate_status.active_artifact_sha256 == 'none')
+      - >-
+        (pki_host_local_certificate_status.active_request_id == 'none')
+        == (pki_host_local_certificate_status.active_certificate_sha256 == 'none')
+      - >-
+        (pki_host_local_certificate_status.active_request_id == 'none')
+        == (pki_host_local_certificate_status.active_spki_sha256 == 'none')
+      - >-
+        (pki_host_local_certificate_status.status == 'activation-recovery-required')
+        == pki_host_local_certificate_status.recovery_required
+      - >-
+        (pki_host_local_certificate_deployment_sha256 | length > 0)
+        == (pki_host_local_certificate_status.status == 'evidence-exported')
+      - >-
+        (pki_host_local_certificate_status.status == 'evidence-exported')
+        == (pki_host_local_certificate_status.evidence_state == 'controller-exported')
+    success_msg: "{{ pki_host_local_certificate_status_result.stdout }}"
+    fail_msg: Lifecycle helper returned noncanonical or inconsistent status metadata.
+  vars:
+    pki_host_local_certificate_status: "{{ pki_host_local_certificate_status_result.stdout | from_json }}"
+    pki_host_local_certificate_status_fields:
+      - active_artifact_sha256
+      - active_certificate_sha256
+      - active_not_after_epoch
+      - active_not_before_epoch
+      - active_request_id
+      - active_spki_sha256
+      - evidence_state
+      - kind
+      - pending_expires_epoch
+      - pending_request_id
+      - recovery_required
+      - remaining_lifetime_seconds
+      - renewal_eligible
+      - required_action
+      - schema
+      - service
+      - signer_outcome_state
+      - status
+      - target
+    pki_host_local_certificate_status_combinations:
+      - [activation-recovery-required, recover-activation]
+      - [abandonment-evidence-required, publish-not-activated-evidence]
+      - [abandonment-evidence-required, publish-rolled-back-evidence]
+      - [conflict, resolve-conflict]
+      - [evidence-exported, await-signer-outcome]
+      - [activated-and-validated, export-evidence]
+      - [response-ready, activate-response]
+      - [request-expired, abandon-expired-request]
+      - [request-pending, collect-or-await-response]
+      - [managed-migration-needed, create-migration-request]

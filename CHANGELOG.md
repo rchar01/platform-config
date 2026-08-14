@@ -12,6 +12,18 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added a fail-closed GitLab Generic Package request publisher for host-local
   PKI public artifacts, with canonical request, receipt, manifest, CSR,
   signature, trust, status, pagination, partial-resume, and digest validation.
+- Added operator-only host-local Zot PKI playbooks and Make targets for trust,
+  request collection, status, response authentication, interactive activation,
+  explicit recovery, evidence export, and decision preflight.
+- Added fixed target lifecycle and separate-runner validation helpers plus
+  protected controller actions for exact request, response, and evidence
+  exchange.
+
+### Changed
+
+- Added explicit `managed` and `host-local` Zot TLS custody. Host-local custody
+  resolves authenticated immutable `fullchain.crt` and `tls.key` paths on the
+  target and refuses configuration drift outside the lifecycle transaction.
 
 ### Security
 
@@ -21,6 +33,12 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Rejected trailing or additional data in CSR and SSH-signature armor and
   metadata drift in pinned package, trust, configuration, and credential sources
   during publication.
+- Kept host-local leaf keys on the target while binding request, artifact,
+  deployment, trust, validation-boundary, runner, and evidence coordinates to
+  exact authenticated records.
+- Added interactive activation, journaled fail-closed recovery, strict TLS and
+  read-only OCI validation from one distinct runner, and fixed public-file
+  allowlists for request and evidence transfer.
 
 ## [1.1.0] - 2026-07-25
 

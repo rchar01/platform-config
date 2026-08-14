@@ -1,0 +1,13 @@
+---
+- name: Require the installed Zot TLS lifecycle helper
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_lifecycle_helper_stat.stat.exists | default(false)
+      - zot_registry_tls_lifecycle_helper_stat.stat.isreg | default(false)
+      - not (zot_registry_tls_lifecycle_helper_stat.stat.islnk | default(false))
+      - zot_registry_tls_lifecycle_helper_stat.stat.uid | default(-1) == 0
+      - zot_registry_tls_lifecycle_helper_stat.stat.gid | default(-1) == 0
+      - zot_registry_tls_lifecycle_helper_stat.stat.mode | default('') == '0755'
+    fail_msg: >-
+      The fixed Zot TLS lifecycle helper must exist as a root:root 0755 regular
+      file and must not be a symbolic link.

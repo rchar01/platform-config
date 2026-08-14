@@ -1080,14 +1080,16 @@ class RoleScenario:
     state: Path
     pending: Path
     helper: Path
+    lifecycle_helper: Path
     playbook: Path
+    pythonpath: Path
     helper_digest: str
 
     def run(self, *, check: bool = False) -> CommandResult:
-        argv: list[str | Path] = ["ansible-playbook"]
+        playbook_argv: list[str | Path] = ["ansible-playbook"]
         if check:
-            argv.append("--check")
-        argv.extend(
+            playbook_argv.append("--check")
+        playbook_argv.extend(
             (
                 "-i",
                 "localhost,",
@@ -1096,7 +1098,21 @@ class RoleScenario:
                 self.playbook,
             )
         )
-        return self.request.runner.run(argv, timeout=60)
+        return self.request.runner.run(
+            [
+                "unshare",
+                "-m",
+                "--",
+                "sh",
+                "-c",
+                'mount --bind "$1" /usr/local/libexec && shift && exec "$@"',
+                "sh",
+                self.lifecycle_helper.parent,
+                *playbook_argv,
+            ],
+            environment={"PYTHONPATH": str(self.pythonpath)},
+            timeout=60,
+        )
 
 
 @pytest.fixture
@@ -1112,13 +1128,16 @@ def role_scenario(
         _write_private(request.trust / name, f"localhost {public[0]} {public[1]}\n")
 
     state = request.work / "role-state"
-    pending = request.work / "role-pending"
-    versions = request.work / "role-versions"
+    pending = request.work / "tls-pending"
+    versions = request.work / "tls-versions"
+    exchange = request.work / "exchange"
     helper = request.work / "bin/platform-pki-host-local-request"
+    lifecycle_helper = request.work / "bin/platform-pki-host-local-lifecycle"
     role_trust = state / "trust/reviewed-v1"
     _mkdir_private(state)
     _mkdir_private(state / "trust")
     _mkdir_private(role_trust)
+    _mkdir_private(exchange)
     for name in TRUST_NAMES:
         shutil.copyfile(request.trust / name, role_trust / name)
         (role_trust / name).chmod(0o600)
@@ -1128,6 +1147,12 @@ def role_scenario(
     helper.parent.chmod(0o755)
     shutil.copyfile(request.helper, helper)
     helper.chmod(0o755)
+    shutil.copyfile(
+        repo_root
+        / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle",
+        lifecycle_helper,
+    )
+    lifecycle_helper.chmod(0o755)
 
     variables = request.work / "role-vars.json"
     trust_digests = {name: _sha256(request.trust / name) for name in TRUST_NAMES}
@@ -1157,11 +1182,19 @@ def role_scenario(
         "pki_host_local_certificate_pending_root": str(pending),
         "pki_host_local_certificate_versions_root": str(versions),
         "pki_host_local_certificate_request_helper_path": str(helper),
-        "pki_host_local_certificate_controller_exchange_root": "/tmp/platform-pki-exchange",
+        "pki_host_local_certificate_lifecycle_helper_path": (
+            "/usr/local/libexec/platform-pki-host-local-lifecycle"
+        ),
+        "pki_host_local_certificate_controller_exchange_root": str(
+            exchange
+        ),
         "pki_host_local_certificate_transport": "sftp",
         "pki_host_local_certificate_transport_host_key_sha256": "b" * 64,
         "pki_host_local_certificate_trust_paths": {
             name: str(role_trust / name) for name in TRUST_NAMES
+        },
+        "pki_host_local_certificate_trust_sources": {
+            name: str(request.trust / name) for name in TRUST_NAMES
         },
         "pki_host_local_certificate_trust_sha256": trust_digests,
     }
@@ -1175,9 +1208,11 @@ def role_scenario(
         state=state,
         pending=pending,
         helper=helper,
+        lifecycle_helper=lifecycle_helper,
         playbook=(
             repo_root / "tests/fixtures/pki-host-local-request-role/integration.yml"
         ),
+        pythonpath=repo_root,
         helper_digest=_sha256(helper),
     )
 

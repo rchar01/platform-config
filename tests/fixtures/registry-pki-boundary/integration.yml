@@ -39,6 +39,12 @@
       approvers.allowed_signers: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
       responses.allowed_signers: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       deployers.allowed_signers: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    pki_host_local_certificate_trust_sources:
+      policy: /tmp/reviewed-pki-trust/policy
+      requesters.allowed_signers: /tmp/reviewed-pki-trust/requesters.allowed_signers
+      approvers.allowed_signers: /tmp/reviewed-pki-trust/approvers.allowed_signers
+      responses.allowed_signers: /tmp/reviewed-pki-trust/responses.allowed_signers
+      deployers.allowed_signers: /tmp/reviewed-pki-trust/deployers.allowed_signers
   tasks:
     - name: Require a foreign target identity to fail before the terminal stop
       block:
@@ -58,28 +64,6 @@
           ansible.builtin.assert:
             that:
               - ansible_failed_result.msg is search('frozen schema-2 contract')
-
-    - name: Require valid activation inputs to reach only the terminal mutation stop
-      block:
-        - name: Run valid non-mutating activation boundary
-          ansible.builtin.include_role:
-            name: pki_host_local_certificate
-            tasks_from: activate
-          vars:
-            pki_host_local_certificate_request_ttl_seconds: 0
-            pki_host_local_certificate_request_id: '0123456789abcdef0123456789abcdef'
-            pki_host_local_certificate_artifact_manifest_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-            pki_host_local_certificate_validation_boundary_sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-            pki_host_local_certificate_rollback_seconds: 1209600
-
-        - name: Reject an unexpected successful activation boundary run
-          ansible.builtin.fail:
-            msg: Valid activation contract bypassed the required terminal mutation stop.
-      rescue:
-        - name: Assert valid activation inputs reached the terminal mutation stop
-          ansible.builtin.assert:
-            that:
-              - ansible_failed_result.msg is search('target request and activation mutations are not implemented')
 
     - name: Require an unsafe target-state root to fail before the terminal stop
       block:
@@ -191,3 +175,107 @@
           ansible.builtin.assert:
             that:
               - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Require a coercive helper mode to fail common validation
+      block:
+        - name: Run string helper-mode boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_helper_read_only: 'false'
+
+        - name: Reject an accepted coercive helper mode
+          ansible.builtin.fail:
+            msg: String helper mode was accepted.
+      rescue:
+        - name: Assert string helper mode failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Require a moving response path to fail exact path validation
+      block:
+        - name: Run moving response-path boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_response_source_dir: /tmp/current/response
+
+        - name: Reject an accepted moving response path
+          ansible.builtin.fail:
+            msg: Moving response path was accepted.
+      rescue:
+        - name: Assert moving response path failed exact path validation
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.results[0].msg is search('absolute, canonical, and immutable')
+
+    - name: Require a boolean validation wait to fail common validation
+      block:
+        - name: Run boolean validation-wait boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_validation_wait_seconds: true
+
+        - name: Reject an accepted boolean validation wait
+          ansible.builtin.fail:
+            msg: Boolean validation wait was accepted.
+      rescue:
+        - name: Assert boolean validation wait failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Require an unsafe reviewed CA mode to fail common validation
+      block:
+        - name: Run unsafe reviewed-CA-mode boundary
+          ansible.builtin.include_role:
+            name: pki_host_local_certificate
+            tasks_from: request
+          vars:
+            pki_host_local_certificate_reviewed_ca_mode: '0777'
+
+        - name: Reject an accepted unsafe reviewed CA mode
+          ansible.builtin.fail:
+            msg: Unsafe reviewed CA mode was accepted.
+      rescue:
+        - name: Assert unsafe reviewed CA mode failed the common contract
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('frozen schema-2 contract')
+
+    - name: Snapshot an existing root-owned helper prerequisite before preflight
+      ansible.builtin.stat:
+        path: /usr/bin/true
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: pki_boundary_helper_before
+
+    - name: Run lifecycle existing-helper preflight
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: lifecycle_helper
+      vars:
+        pki_host_local_certificate_lifecycle_helper_path: /usr/bin/true
+        pki_host_local_certificate_helper_read_only: true
+
+    - name: Snapshot the existing root-owned helper prerequisite after preflight
+      ansible.builtin.stat:
+        path: /usr/bin/true
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: pki_boundary_helper_after
+
+    - name: Assert existing-helper preflight did not mutate its prerequisite
+      ansible.builtin.assert:
+        that:
+          - pki_boundary_helper_before.stat.checksum == pki_boundary_helper_after.stat.checksum
+          - pki_boundary_helper_before.stat.inode == pki_boundary_helper_after.stat.inode
+          - pki_boundary_helper_before.stat.mode == pki_boundary_helper_after.stat.mode
+          - pki_boundary_helper_before.stat.mtime == pki_boundary_helper_after.stat.mtime

@@ -3,4 +3,6 @@
   ansible.builtin.fail:
     msg: >-
       Select the structural trust, request, or activate task entry point.
-      Normal role execution is intentionally unavailable.
+      Status, response-check, recovery, evidence-export, and decision-preflight
+      are also operator-only structural entry points. Normal role execution is
+      intentionally unavailable.

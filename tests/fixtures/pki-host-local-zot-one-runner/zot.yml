@@ -1,0 +1,7 @@
+---
+- name: Converge the disposable Zot target
+  hosts: registry
+  become: true
+  gather_facts: false
+  roles:
+    - role: zot_registry

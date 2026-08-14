@@ -7,6 +7,7 @@
       - pki_host_local_certificate_requester_principal == pki_host_local_certificate_target
       - pki_host_local_certificate_response_principal is match('^[a-z0-9][a-z0-9.-]{0,252}$')
       - pki_host_local_certificate_trust_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+      - pki_host_local_certificate_trust_id not in ['latest', 'current']
       - pki_host_local_certificate_trust_paths.keys() | list | sort == pki_host_local_certificate_required_trust_names
       - pki_host_local_certificate_trust_sha256.keys() | list | sort == pki_host_local_certificate_required_trust_names
       - pki_host_local_certificate_trust_sources.keys() | list | sort == pki_host_local_certificate_required_trust_names

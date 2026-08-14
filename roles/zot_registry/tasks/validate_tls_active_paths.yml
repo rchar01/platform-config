@@ -1,0 +1,43 @@
+---
+- name: Require exact authenticated Zot TLS active paths
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_active_paths_result.rc | type_debug == 'int'
+      - zot_registry_tls_active_paths_result.rc == 0
+      - zot_registry_tls_active_paths_result.stderr | type_debug == 'str'
+      - zot_registry_tls_active_paths_result.stderr == ''
+      - zot_registry_tls_active_paths_result.stdout | type_debug == 'str'
+      - zot_registry_tls_active_paths_result.stdout | from_json | type_debug == 'dict'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).keys() | list | sort == zot_registry_tls_active_paths_required_fields
+      - (zot_registry_tls_active_paths_result.stdout | from_json).request_id | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).cert_path | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).key_path | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).artifact_sha256 | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).certificate_sha256 | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).spki_sha256 | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).chain_sha256 | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).fullchain_sha256 | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).zot_config_sha256 | type_debug == 'str'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).request_id is match('^[0-9a-f]{32}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).artifact_sha256 is match('^[0-9a-f]{64}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).certificate_sha256 is match('^[0-9a-f]{64}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).spki_sha256 is match('^[0-9a-f]{64}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).chain_sha256 is match('^[0-9a-f]{64}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).fullchain_sha256 is match('^[0-9a-f]{64}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).zot_config_sha256 is match('^[0-9a-f]{64}$')
+      - (zot_registry_tls_active_paths_result.stdout | from_json).cert_path == zot_registry_tls_host_local_versions_root ~ '/' ~ (zot_registry_tls_active_paths_result.stdout | from_json).request_id ~ '/fullchain.crt'
+      - (zot_registry_tls_active_paths_result.stdout | from_json).key_path == zot_registry_tls_host_local_versions_root ~ '/' ~ (zot_registry_tls_active_paths_result.stdout | from_json).request_id ~ '/tls.key'
+    fail_msg: >-
+      The Zot TLS lifecycle helper did not return one exact authenticated active
+      fullchain/key result.
+  vars:
+    zot_registry_tls_active_paths_required_fields:
+      - artifact_sha256
+      - cert_path
+      - certificate_sha256
+      - chain_sha256
+      - fullchain_sha256
+      - key_path
+      - request_id
+      - spki_sha256
+      - zot_config_sha256

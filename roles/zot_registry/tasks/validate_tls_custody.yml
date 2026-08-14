@@ -1,0 +1,68 @@
+---
+- name: Assert Zot TLS custody is supported
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_custody | type_debug == 'str'
+      - zot_registry_tls_custody in ['managed', 'host-local']
+    fail_msg: "zot_registry_tls_custody must be managed or host-local."
+
+- name: Assert Zot host-local custody has TLS enabled
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_custody != 'host-local' or zot_registry_tls_enabled | bool
+    fail_msg: "zot_registry_tls_custody host-local requires Zot TLS to be enabled."
+
+- name: Assert Zot TLS source files are configured
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_cert_src | length > 0
+      - zot_registry_tls_key_src | length > 0
+    fail_msg: "zot_registry_tls_cert_src and zot_registry_tls_key_src are required when TLS is enabled."
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'managed'
+
+- name: Assert Zot host-local TLS lookup inputs are canonical
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_host_local_lifecycle_helper_path | type_debug == 'str'
+      - zot_registry_tls_host_local_lifecycle_helper_path == '/usr/local/libexec/platform-pki-host-local-lifecycle'
+      - zot_registry_tls_host_local_state_root | type_debug == 'str'
+      - zot_registry_tls_host_local_pending_root | type_debug == 'str'
+      - zot_registry_tls_host_local_versions_root | type_debug == 'str'
+      - zot_registry_tls_host_local_state_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+      - zot_registry_tls_host_local_pending_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+      - zot_registry_tls_host_local_versions_root is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+      - zot_registry_tls_host_local_state_root is not search('(^|/)\.\.?(/|$)')
+      - zot_registry_tls_host_local_pending_root is not search('(^|/)\.\.?(/|$)')
+      - zot_registry_tls_host_local_versions_root is not search('(^|/)\.\.?(/|$)')
+      - zot_registry_tls_host_local_state_root is not search('(^|/)(latest|current)(/|$)')
+      - zot_registry_tls_host_local_pending_root is not search('(^|/)(latest|current)(/|$)')
+      - zot_registry_tls_host_local_versions_root is not search('(^|/)(latest|current)(/|$)')
+      - zot_registry_tls_host_local_state_root != zot_registry_tls_host_local_pending_root
+      - zot_registry_tls_host_local_state_root != zot_registry_tls_host_local_versions_root
+      - zot_registry_tls_host_local_pending_root != zot_registry_tls_host_local_versions_root
+      - not zot_registry_tls_host_local_pending_root.startswith(zot_registry_tls_host_local_state_root ~ '/')
+      - not zot_registry_tls_host_local_state_root.startswith(zot_registry_tls_host_local_pending_root ~ '/')
+      - not zot_registry_tls_host_local_versions_root.startswith(zot_registry_tls_host_local_state_root ~ '/')
+      - not zot_registry_tls_host_local_state_root.startswith(zot_registry_tls_host_local_versions_root ~ '/')
+      - not zot_registry_tls_host_local_versions_root.startswith(zot_registry_tls_host_local_pending_root ~ '/')
+      - not zot_registry_tls_host_local_pending_root.startswith(zot_registry_tls_host_local_versions_root ~ '/')
+      - zot_registry_tls_host_local_service | type_debug == 'str'
+      - zot_registry_tls_host_local_service is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - zot_registry_tls_host_local_target | type_debug == 'str'
+      - zot_registry_tls_host_local_target is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - zot_registry_tls_host_local_target == inventory_hostname
+      - zot_registry_tls_host_local_zot_config_path | type_debug == 'str'
+      - zot_registry_tls_host_local_zot_config_path == '/etc/zot/config.json'
+      - zot_registry_config_path == zot_registry_tls_host_local_zot_config_path
+      - zot_registry_config_dir == '/etc/zot'
+      - zot_registry_tls_host_local_service != 'registry-dev' or zot_registry_tls_host_local_state_root == '/var/lib/platform-config/pki/host-local/registry-dev'
+      - zot_registry_tls_host_local_service != 'registry-dev' or zot_registry_tls_host_local_pending_root == '/etc/zot/tls-pending'
+      - zot_registry_tls_host_local_service != 'registry-dev' or zot_registry_tls_host_local_versions_root == '/etc/zot/tls-versions'
+    fail_msg: >-
+      Host-local Zot TLS lookup inputs do not satisfy the canonical lifecycle
+      contract.
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'

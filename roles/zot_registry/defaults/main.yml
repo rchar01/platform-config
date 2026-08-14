@@ -20,10 +20,18 @@ zot_registry_compat:
   - docker2s2
 
 zot_registry_tls_enabled: true
+zot_registry_tls_custody: managed
 zot_registry_tls_cert_src: ""
 zot_registry_tls_key_src: ""
 zot_registry_tls_cert_path: "{{ zot_registry_tls_dir }}/tls.crt"
 zot_registry_tls_key_path: "{{ zot_registry_tls_dir }}/tls.key"
+zot_registry_tls_host_local_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
+zot_registry_tls_host_local_state_root: /var/lib/platform-config/pki/host-local/registry-dev
+zot_registry_tls_host_local_pending_root: /etc/zot/tls-pending
+zot_registry_tls_host_local_versions_root: /etc/zot/tls-versions
+zot_registry_tls_host_local_service: registry-dev
+zot_registry_tls_host_local_target: ""
+zot_registry_tls_host_local_zot_config_path: /etc/zot/config.json
 
 zot_registry_auth_enabled: false
 zot_registry_auth_htpasswd_src: ""

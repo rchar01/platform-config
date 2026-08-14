@@ -1,11 +1,35 @@
 ---
-- name: Assert Zot TLS source files are configured
+- name: Validate Zot TLS custody
+  ansible.builtin.import_tasks: validate_tls_custody.yml
+
+- name: Resolve Zot TLS active paths
+  ansible.builtin.import_tasks: resolve_tls_active_paths.yml
+
+- name: Preview the authenticated host-local Zot configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ zot_registry_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  check_mode: true
+  diff: false
+  register: zot_registry_host_local_config_preview
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'
+
+- name: Refuse host-local Zot configuration drift
   ansible.builtin.assert:
     that:
-      - zot_registry_tls_cert_src | length > 0
-      - zot_registry_tls_key_src | length > 0
-    fail_msg: "zot_registry_tls_cert_src and zot_registry_tls_key_src are required when TLS is enabled."
-  when: zot_registry_tls_enabled | bool
+      - not (zot_registry_host_local_config_preview is changed)
+    fail_msg: >-
+      Host-local Zot configuration differs from the authenticated active state.
+      Reconcile configuration through a new certificate activation; the Zot role
+      will not invalidate the active record.
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'host-local'
 
 - name: Assert Zot htpasswd source file is configured
   ansible.builtin.assert:
@@ -78,7 +102,9 @@
     mode: "0644"
   register: zot_registry_tls_cert_result
   notify: Restart Zot registry
-  when: zot_registry_tls_enabled | bool
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'managed'
 
 - name: Copy Zot TLS private key
   ansible.builtin.copy:
@@ -90,7 +116,9 @@
   register: zot_registry_tls_key_result
   no_log: true
   notify: Restart Zot registry
-  when: zot_registry_tls_enabled | bool
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody == 'managed'
 
 - name: Copy Zot htpasswd file
   ansible.builtin.copy:
@@ -112,6 +140,7 @@
     mode: "0644"
   register: zot_registry_config_result
   notify: Restart Zot registry
+  when: zot_registry_tls_custody == 'managed'
 
 - name: Write Zot Quadlet unit
   ansible.builtin.template:

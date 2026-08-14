@@ -169,14 +169,19 @@ never selects newest, latest, first, last, or a neighboring coordinate.
 This request publisher is not an end-to-end exchange. The following remain
 blocked:
 
-- descriptor-pinned SSH collection of `tls.csr`, `request`, and `request.sig`;
-- canonical collection-receipt and stage-manifest production;
 - protected CI `resource_group` serialization;
 - disposable runtime qualification against exact GitLab `18.11.3-ce.0`;
 - request download and controlled-media custody records;
 - approval, response, and evidence package operations;
-- certificate intake, activation, rollback, validation, and evidence;
 - private inventory, credentials, project configuration, and live publication.
 
-Do not run a live request or package publication until the collection boundary
-and remaining public verification gate are complete and separately authorized.
+The separate Ansible host-local workflow now performs descriptor-pinned target
+collection and creates the canonical collection receipt. Outside this package
+helper, it also authenticates a protected local response, performs interactive
+target activation and journal-bound recovery, validates Zot from one distinct
+runner, and exports authenticated evidence. This helper still does not retrieve
+requests or responses from GitLab, import signer outcomes, or publish response
+or evidence packages.
+
+Do not run a live request or package publication until the remaining GitLab,
+controlled-media, private-configuration, and authorization gates are complete.

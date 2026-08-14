@@ -17,14 +17,90 @@
       - pki_host_local_certificate_validation_boundary_sha256 | length == 0
       - pki_host_local_certificate_rollback_seconds is integer
       - pki_host_local_certificate_rollback_seconds == 0
+      - pki_host_local_certificate_trust_sources.keys() | list | sort == pki_host_local_certificate_required_trust_names
       - >-
         (pki_host_local_certificate_operation == 'issue' and pki_host_local_certificate_current_cert_path | length == 0)
         or (
           pki_host_local_certificate_operation in ['migrate', 'renew']
           and pki_host_local_certificate_current_cert_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
           and pki_host_local_certificate_current_cert_path is not search('(^|/)\.\.?(/|$)')
+          and pki_host_local_certificate_current_cert_path is not search('(^|/)(latest|current)(/|$)')
         )
     fail_msg: Request inputs conflict with the authenticated host-local issuance contract.
+  vars:
+    pki_host_local_certificate_required_trust_names:
+      - approvers.allowed_signers
+      - deployers.allowed_signers
+      - policy
+      - requesters.allowed_signers
+      - responses.allowed_signers
+
+- name: Validate reviewed controller trust sources for request collection
+  ansible.builtin.assert:
+    that:
+      - item.value | type_debug == 'str'
+      - item.value is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - item.value is not search('(^|/)\.\.?(/|$)')
+      - item.value is not search('(^|/)(latest|current)(/|$)')
+      - item.value.endswith('/' ~ item.key)
+    fail_msg: Request collection requires the exact reviewed controller trust source paths.
+  loop: "{{ pki_host_local_certificate_trust_sources | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
 
 - name: Run host-local certificate request preflight or mutation
   ansible.builtin.import_tasks: request_apply.yml
+
+- name: Load host-local certificate lifecycle helper preflight
+  ansible.builtin.import_tasks: lifecycle_helper.yml
+
+- name: Collect exact public host-local certificate request
+  platform_pki_request_collection:
+    lifecycle_helper_path: "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+    state_root: "{{ pki_host_local_certificate_state_root }}"
+    pending_root: "{{ pki_host_local_certificate_pending_root }}"
+    versions_root: "{{ pki_host_local_certificate_versions_root }}"
+    trust_id: "{{ pki_host_local_certificate_trust_id }}"
+    request_id: "{{ (pki_host_local_certificate_request_result.stdout | from_json).request_id }}"
+    exchange_root: "{{ pki_host_local_certificate_controller_exchange_root }}"
+    service: "{{ pki_host_local_certificate_service }}"
+    target: "{{ pki_host_local_certificate_target }}"
+    transport: "{{ pki_host_local_certificate_transport }}"
+    transport_host_key_sha256: "{{ pki_host_local_certificate_transport_host_key_sha256 }}"
+    inventory_sha256: "{{ pki_host_local_certificate_inventory_sha256 }}"
+    profile: "{{ pki_host_local_certificate_profile }}"
+    requester_principal: "{{ pki_host_local_certificate_requester_principal }}"
+    response_principal: "{{ pki_host_local_certificate_response_principal }}"
+    common_name: "{{ pki_host_local_certificate_common_name }}"
+    dns_sans: "{{ pki_host_local_certificate_dns_sans }}"
+    ip_sans: "{{ pki_host_local_certificate_ip_sans }}"
+    trust_paths: "{{ pki_host_local_certificate_trust_sources }}"
+    trust_sha256: "{{ pki_host_local_certificate_trust_sha256 }}"
+    expected_request_sha256: "{{ (pki_host_local_certificate_request_result.stdout | from_json).request_sha256 }}"
+    expected_csr_sha256: "{{ (pki_host_local_certificate_request_result.stdout | from_json).csr_sha256 }}"
+    expected_csr_spki_sha256: "{{ (pki_host_local_certificate_request_result.stdout | from_json).csr_spki_sha256 }}"
+  register: pki_host_local_certificate_request_collection_result
+  when: not ansible_check_mode
+
+- name: Validate public request collection metadata
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_request_collection_result.status in ['collected', 'existing']
+      - pki_host_local_certificate_request_collection_result.request_id == (pki_host_local_certificate_request_result.stdout | from_json).request_id
+      - pki_host_local_certificate_request_collection_result.request_sha256 == (pki_host_local_certificate_request_result.stdout | from_json).request_sha256
+      - pki_host_local_certificate_request_collection_result.csr_sha256 == (pki_host_local_certificate_request_result.stdout | from_json).csr_sha256
+      - pki_host_local_certificate_request_collection_result.csr_spki_sha256 == (pki_host_local_certificate_request_result.stdout | from_json).csr_spki_sha256
+      - >-
+        pki_host_local_certificate_request_collection_result.request_dir
+        == pki_host_local_certificate_controller_exchange_root ~ '/'
+           ~ pki_host_local_certificate_service ~ '/'
+           ~ (pki_host_local_certificate_request_result.stdout | from_json).request_id
+           ~ '/request'
+      - >-
+        pki_host_local_certificate_request_collection_result.trust_dir
+        == pki_host_local_certificate_controller_exchange_root ~ '/'
+           ~ pki_host_local_certificate_service ~ '/'
+           ~ (pki_host_local_certificate_request_result.stdout | from_json).request_id
+           ~ '/trust'
+    fail_msg: Request collection returned metadata outside the exact public exchange coordinates.
+  when: not ansible_check_mode

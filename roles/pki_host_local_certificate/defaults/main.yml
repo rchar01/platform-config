@@ -39,3 +39,24 @@ pki_host_local_certificate_validation_boundary_sha256: ""
 pki_host_local_certificate_rollback_seconds: 0
 pki_host_local_certificate_request_helper_path: /usr/local/libexec/platform-pki-host-local-request
 pki_host_local_certificate_trust_helper_path: /usr/local/libexec/platform-pki-host-local-trust
+pki_host_local_certificate_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
+pki_host_local_certificate_validator_helper_path: /usr/local/libexec/platform-pki-zot-read-only-validate
+pki_host_local_certificate_helper_read_only: false
+
+pki_host_local_certificate_response_source_dir: ""
+pki_host_local_certificate_validation_boundary_target_path: ""
+pki_host_local_certificate_validation_boundary_runner_path: ""
+pki_host_local_certificate_reviewed_ca_target_path: ""
+pki_host_local_certificate_reviewed_ca_runner_path: ""
+pki_host_local_certificate_reviewed_ca_sha256: ""
+pki_host_local_certificate_reviewed_ca_mode: ""
+pki_host_local_certificate_remote_validator: ""
+pki_host_local_certificate_endpoint: ""
+pki_host_local_certificate_minimum_remaining_lifetime_seconds: 0
+pki_host_local_certificate_validation_wait_seconds: 0
+pki_host_local_certificate_zot_config_path: ""
+pki_host_local_certificate_deployment_sha256: ""
+pki_host_local_certificate_served_intermediate_sha256: ""
+pki_host_local_certificate_activation_action: ""
+pki_host_local_certificate_activation_result: ""
+pki_host_local_certificate_interactive_confirmation: false

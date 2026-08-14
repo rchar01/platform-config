@@ -4,7 +4,8 @@ ENV ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections:/tmp/platform-home/.
     DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_ROOT_USER_ACTION=ignore
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONPATH=/workspace
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

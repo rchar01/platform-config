@@ -1,0 +1,705 @@
+#!/usr/bin/env python3
+"""Validate one remote Zot endpoint without modifying remote or local state."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import ipaddress
+import os
+import re
+import socket
+import ssl
+import stat
+import sys
+import time
+import urllib.parse
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+
+BOUNDARY_FIELDS = (
+    "schema", "kind", "service", "target", "local_validator",
+    "remote_validator", "endpoint", "local_check", "remote_check",
+)
+OBSERVATION_FIELDS = (
+    "schema", "kind", "service", "target", "request_id",
+    "artifact_manifest_sha256", "validation_boundary_sha256",
+    "remote_validator", "endpoint", "remote_tls_result",
+    "remote_application_result", "remote_http_status", "remote_api_version",
+    "remote_auth_challenge", "served_certificate_sha256",
+    "served_intermediate_sha256", "validation_epoch",
+)
+LOCAL_CHECK = "platform-zot-local-active-tls-v1"
+REMOTE_CHECK = "platform-oci-v2-read-only-strict-tls-v1"
+MAX_BOUNDARY_SIZE = 16 * 1024
+MAX_CA_SIZE = 1024 * 1024
+MAX_HEADER_SIZE = 32 * 1024
+MAX_HEADER_LINE_SIZE = 8 * 1024
+MAX_HEADER_COUNT = 100
+MAX_BODY_SIZE = 64 * 1024
+MAX_BODY_WIRE_SIZE = 96 * 1024
+NETWORK_TIMEOUT_SECONDS = 10
+HEX_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
+SERVICE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z", re.ASCII)
+DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z", re.ASCII)
+HEADER_NAME_RE = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+AUTH_CHALLENGE_RE = re.compile(
+    r"[!#$%&'*+.^_`|~0-9A-Za-z-]+ [!-~](?:[ -~]*[!-~])?\Z",
+    re.ASCII,
+)
+PEM_CERT_RE = re.compile(
+    rb"-----BEGIN CERTIFICATE-----\n.+?-----END CERTIFICATE-----\n", re.DOTALL
+)
+
+
+class ValidationError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> None:
+    raise ValidationError(message)
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_gid,
+        stat.S_IFMT(metadata.st_mode), stat.S_IMODE(metadata.st_mode),
+        metadata.st_nlink, metadata.st_size, metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_gid,
+        stat.S_IFMT(metadata.st_mode), stat.S_IMODE(metadata.st_mode),
+    )
+
+
+@dataclass
+class PinnedFile:
+    path: str
+    label: str
+    descriptor: int
+    identity: tuple[int, ...]
+    data: bytes
+    directory_descriptors: list[int]
+    directory_components: tuple[str, ...]
+    directory_identities: tuple[tuple[int, ...], ...]
+    owners: frozenset[int]
+
+    @classmethod
+    def open(cls, path: str, label: str, maximum: int) -> PinnedFile:
+        if (
+            not path.startswith("/") or path == "/"
+            or os.path.normpath(path) != path or "//" in path
+        ):
+            fail(f"{label} path must be absolute and canonical")
+        components = tuple(path.split("/")[1:])
+        if any(not component or component in {".", ".."} for component in components):
+            fail(f"{label} path must be absolute and canonical")
+        owners = frozenset((0, os.geteuid()))
+        directories: list[int] = []
+        identities: list[tuple[int, ...]] = []
+        descriptor = -1
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            current = os.open("/", flags | os.O_DIRECTORY)
+            directories.append(current)
+            identities.append(directory_identity(os.fstat(current)))
+            for component in components[:-1]:
+                current = os.open(
+                    component, flags | os.O_DIRECTORY, dir_fd=current
+                )
+                metadata = os.fstat(current)
+                mode = stat.S_IMODE(metadata.st_mode)
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or metadata.st_uid not in owners
+                    or (mode & 0o022 and not mode & stat.S_ISVTX)
+                    or mode & 0o6000
+                ):
+                    fail(f"{label} has an unsafe ancestor")
+                directories.append(current)
+                identities.append(directory_identity(metadata))
+            descriptor = os.open(components[-1], flags, dir_fd=directories[-1])
+            metadata = os.fstat(descriptor)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid not in owners
+                or metadata.st_nlink != 1
+                or not mode & stat.S_IRUSR
+                or mode & 0o022
+                or mode & 0o7000
+                or metadata.st_size <= 0
+                or metadata.st_size > maximum
+            ):
+                fail(f"{label} has unsafe metadata")
+            chunks: list[bytes] = []
+            remaining = maximum + 1
+            while remaining:
+                chunk = os.read(descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            identity = file_identity(metadata)
+            if len(data) != metadata.st_size or file_identity(os.fstat(descriptor)) != identity:
+                fail(f"{label} changed while being read")
+            result = cls(
+                path=path,
+                label=label,
+                descriptor=descriptor,
+                identity=identity,
+                data=data,
+                directory_descriptors=directories,
+                directory_components=components[:-1],
+                directory_identities=tuple(identities),
+                owners=owners,
+            )
+            result.recheck()
+            return result
+        except OSError as error:
+            if descriptor >= 0:
+                os.close(descriptor)
+            for opened in reversed(directories):
+                os.close(opened)
+            fail(f"cannot open {label}: {error.strerror}")
+        except Exception:
+            if descriptor >= 0:
+                os.close(descriptor)
+            for opened in reversed(directories):
+                os.close(opened)
+            raise
+
+    def recheck(self) -> None:
+        try:
+            for index, expected in enumerate(self.directory_identities):
+                if directory_identity(os.fstat(self.directory_descriptors[index])) != expected:
+                    fail(f"{self.label} ancestor descriptor changed")
+                if index:
+                    actual = os.stat(
+                        self.directory_components[index - 1],
+                        dir_fd=self.directory_descriptors[index - 1],
+                        follow_symlinks=False,
+                    )
+                    if directory_identity(actual) != expected:
+                        fail(f"{self.label} ancestor path changed")
+            metadata = os.fstat(self.descriptor)
+            actual = os.stat(
+                os.path.basename(self.path),
+                dir_fd=self.directory_descriptors[-1],
+                follow_symlinks=False,
+            )
+            if (
+                file_identity(metadata) != self.identity
+                or file_identity(actual) != self.identity
+            ):
+                fail(f"{self.label} path or metadata changed")
+            os.lseek(self.descriptor, 0, os.SEEK_SET)
+            chunks: list[bytes] = []
+            remaining = len(self.data) + 1
+            while remaining:
+                chunk = os.read(self.descriptor, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if b"".join(chunks) != self.data:
+                fail(f"{self.label} bytes changed")
+        except OSError as error:
+            fail(f"cannot recheck {self.label}: {error.strerror}")
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+        for descriptor in reversed(self.directory_descriptors):
+            os.close(descriptor)
+
+
+def parse_record(data: bytes, fields: Sequence[str], label: str) -> dict[str, str]:
+    if not data.endswith(b"\n") or data.endswith(b"\n\n") or b"\r" in data or b"\x00" in data:
+        fail(f"{label} is not canonical LF-terminated text")
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail(f"{label} is not ASCII")
+    if len(lines) != len(fields):
+        fail(f"{label} has an unexpected field count")
+    result: dict[str, str] = {}
+    for expected, line in zip(fields, lines, strict=True):
+        if "=" not in line:
+            fail(f"{label} contains a malformed field")
+        name, value = line.split("=", 1)
+        if (
+            name != expected or not value
+            or any(ord(character) < 0x21 or ord(character) > 0x7e for character in value)
+        ):
+            fail(f"{label} contains an unexpected, empty, or unsafe field")
+        result[name] = value
+    return result
+
+
+def serialize_record(fields: Sequence[str], values: Mapping[str, str]) -> bytes:
+    if set(fields) != set(values):
+        fail("observation fields are incomplete")
+    lines: list[str] = []
+    for name in fields:
+        value = values[name]
+        if not value or any(ord(character) < 0x21 or ord(character) > 0x7e for character in value):
+            fail("observation contains an unsafe field")
+        lines.append(f"{name}={value}")
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def require_digest(value: str, label: str) -> str:
+    if HEX_RE.fullmatch(value) is None:
+        fail(f"{label} is not a lowercase SHA-256 digest")
+    return value
+
+
+def require_identity(value: str, label: str) -> str:
+    if IDENTITY_RE.fullmatch(value) is None:
+        fail(f"{label} is not canonical")
+    return value
+
+
+def parse_endpoint(value: str) -> tuple[str, int, str]:
+    if not value.isascii():
+        fail("endpoint is not canonical ASCII")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        parsed_port = parsed.port
+    except ValueError:
+        fail("endpoint has an invalid port")
+    if (
+        parsed.scheme != "https" or not parsed.hostname
+        or parsed.username is not None or parsed.password is not None
+        or parsed.path != "/v2/" or parsed.query or parsed.fragment
+    ):
+        fail("endpoint must be exact HTTPS /v2/ without credentials, query, or fragment")
+    hostname = parsed.hostname
+    if (
+        hostname != hostname.lower() or len(hostname) > 253
+        or hostname.endswith(".") or ":" in hostname
+        or any(DNS_LABEL_RE.fullmatch(label) is None for label in hostname.split("."))
+    ):
+        fail("endpoint hostname is not canonical DNS")
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        fail("endpoint hostname must not be an IP address")
+    if ":" in parsed.netloc:
+        authority_host, port_text = parsed.netloc.rsplit(":", 1)
+        if authority_host != hostname or re.fullmatch(r"[1-9][0-9]{0,4}", port_text) is None:
+            fail("endpoint authority is not canonical")
+        port = int(port_text)
+        if port > 65535 or parsed_port != port:
+            fail("endpoint port is invalid")
+        authority = f"{hostname}:{port}"
+    else:
+        if parsed.netloc != hostname or parsed_port is not None:
+            fail("endpoint authority is not canonical")
+        port = 443
+        authority = hostname
+    if value != f"https://{authority}/v2/":
+        fail("endpoint is not canonical")
+    return hostname, port, authority
+
+
+def validate_ca(data: bytes) -> str:
+    matches = tuple(PEM_CERT_RE.finditer(data))
+    if not matches or len(matches) > 16 or b"".join(match.group(0) for match in matches) != data:
+        fail("reviewed CA is not an exact canonical PEM certificate bundle")
+    try:
+        for match in matches:
+            pem = match.group(0)
+            der = ssl.PEM_cert_to_DER_cert(pem.decode("ascii"))
+            canonical = ssl.DER_cert_to_PEM_cert(der).encode("ascii")
+            if canonical != pem:
+                fail("reviewed CA contains noncanonical PEM")
+        return data.decode("ascii")
+    except (UnicodeDecodeError, ValueError, ssl.SSLError):
+        fail("reviewed CA contains an invalid PEM certificate")
+
+
+def validate_boundary(data: bytes, args: argparse.Namespace) -> None:
+    boundary = parse_record(data, BOUNDARY_FIELDS, "validation boundary")
+    expected = {
+        "schema": "1",
+        "kind": "pki-validation-boundary",
+        "service": args.service,
+        "target": args.target,
+        "local_validator": args.target,
+        "remote_validator": args.remote_validator,
+        "endpoint": args.endpoint,
+        "local_check": LOCAL_CHECK,
+        "remote_check": REMOTE_CHECK,
+    }
+    if boundary != expected:
+        fail("validation boundary differs from the exact reviewed contract")
+
+
+def set_deadline_timeout(connection: socket.socket, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        fail("strict TLS/HTTP validation timed out")
+    connection.settimeout(remaining)
+
+
+def receive(connection: ssl.SSLSocket, size: int, deadline: float) -> bytes:
+    set_deadline_timeout(connection, deadline)
+    return connection.recv(size)
+
+
+def read_headers(
+    connection: ssl.SSLSocket, deadline: float
+) -> tuple[int, dict[str, list[str]], bytes]:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        if len(data) >= MAX_HEADER_SIZE:
+            fail("Zot response headers exceed the size limit")
+        chunk = receive(connection, min(4096, MAX_HEADER_SIZE + 1 - len(data)), deadline)
+        if not chunk:
+            fail("Zot response ended before complete headers")
+        data += chunk
+    header_data, body = data.split(b"\r\n\r\n", 1)
+    if len(header_data) + 4 > MAX_HEADER_SIZE or b"\x00" in header_data:
+        fail("Zot response headers exceed the size limit")
+    lines = header_data.split(b"\r\n")
+    if not lines or len(lines) - 1 > MAX_HEADER_COUNT:
+        fail("Zot response has an invalid header count")
+    if any(len(line) > MAX_HEADER_LINE_SIZE for line in lines):
+        fail("Zot response has an overlong header line")
+    status_match = re.fullmatch(rb"HTTP/1\.[01] ([0-9]{3}) [\x20-\x7e]+", lines[0])
+    if status_match is None:
+        fail("Zot response has a malformed status line")
+    headers: dict[str, list[str]] = {}
+    for line in lines[1:]:
+        if b":" not in line or line[:1] in b" \t":
+            fail("Zot response contains a malformed header")
+        raw_name, raw_value = line.split(b":", 1)
+        if HEADER_NAME_RE.fullmatch(raw_name) is None:
+            fail("Zot response contains an invalid header name")
+        value = raw_value.strip(b" \t")
+        if not value or any(byte < 0x20 and byte != 0x09 or byte == 0x7f for byte in value):
+            fail("Zot response contains an invalid header value")
+        try:
+            decoded = value.decode("ascii")
+            name = raw_name.decode("ascii").lower()
+        except UnicodeDecodeError:
+            fail("Zot response headers are not ASCII")
+        headers.setdefault(name, []).append(decoded)
+    return int(status_match.group(1)), headers, body
+
+
+class BodyReader:
+    def __init__(self, connection: ssl.SSLSocket, initial: bytes, deadline: float):
+        self.connection = connection
+        self.buffer = initial
+        self.deadline = deadline
+        self.wire_size = len(initial)
+        if self.wire_size > MAX_BODY_WIRE_SIZE:
+            fail("Zot response body exceeds the wire-size limit")
+
+    def more(self) -> None:
+        chunk = receive(self.connection, 4096, self.deadline)
+        self.buffer += chunk
+        self.wire_size += len(chunk)
+        if self.wire_size > MAX_BODY_WIRE_SIZE:
+            fail("Zot response body exceeds the wire-size limit")
+
+    def exact(self, size: int) -> bytes:
+        while len(self.buffer) < size:
+            before = len(self.buffer)
+            self.more()
+            if len(self.buffer) == before:
+                fail("Zot response body ended early")
+        result, self.buffer = self.buffer[:size], self.buffer[size:]
+        return result
+
+    def line(self) -> bytes:
+        while b"\r\n" not in self.buffer:
+            if len(self.buffer) > MAX_HEADER_LINE_SIZE:
+                fail("Zot chunk framing line is too long")
+            before = len(self.buffer)
+            self.more()
+            if len(self.buffer) == before:
+                fail("Zot chunk framing ended early")
+        result, self.buffer = self.buffer.split(b"\r\n", 1)
+        if len(result) > MAX_HEADER_LINE_SIZE:
+            fail("Zot chunk framing line is too long")
+        return result
+
+
+def consume_body(
+    connection: ssl.SSLSocket,
+    headers: Mapping[str, list[str]],
+    initial: bytes,
+    deadline: float,
+) -> None:
+    lengths = headers.get("content-length", [])
+    encodings = headers.get("transfer-encoding", [])
+    if lengths and encodings:
+        fail("Zot response has ambiguous body framing")
+    reader = BodyReader(connection, initial, deadline)
+    if lengths:
+        if len(lengths) != 1 or re.fullmatch(r"0|[1-9][0-9]*", lengths[0]) is None:
+            fail("Zot response Content-Length is not canonical")
+        length = int(lengths[0])
+        if length > MAX_BODY_SIZE or len(initial) > length:
+            fail("Zot response body exceeds its declared or configured size")
+        reader.exact(length)
+        if reader.buffer:
+            fail("Zot response contains bytes beyond Content-Length")
+        return
+    if encodings:
+        if encodings != ["chunked"]:
+            fail("Zot response transfer encoding is not canonical chunked")
+        decoded_size = 0
+        while True:
+            chunk_line = reader.line()
+            if re.fullmatch(rb"0|[1-9a-f][0-9a-f]*", chunk_line) is None:
+                fail("Zot response chunk size is not canonical")
+            chunk_size = int(chunk_line, 16)
+            if chunk_size == 0:
+                if reader.line() != b"" or reader.buffer:
+                    fail("Zot response contains unsupported trailers or trailing bytes")
+                return
+            decoded_size += chunk_size
+            if decoded_size > MAX_BODY_SIZE:
+                fail("Zot response body exceeds the size limit")
+            if reader.exact(chunk_size + 2)[-2:] != b"\r\n":
+                fail("Zot response chunk framing is malformed")
+    while True:
+        if len(reader.buffer) > MAX_BODY_SIZE:
+            fail("Zot response body exceeds the size limit")
+        before = len(reader.buffer)
+        reader.more()
+        if len(reader.buffer) == before:
+            return
+
+
+def validate_response(status: int, headers: Mapping[str, list[str]]) -> str:
+    if headers.get("docker-distribution-api-version") != ["registry/2.0"]:
+        fail("Zot response lacks the exact OCI distribution API header")
+    challenges = headers.get("www-authenticate", [])
+    if status == 200:
+        if challenges:
+            fail("successful Zot response unexpectedly contains an auth challenge")
+        return "not-required"
+    if status == 401:
+        if len(challenges) != 1 or AUTH_CHALLENGE_RE.fullmatch(challenges[0]) is None:
+            fail("unauthorized Zot response lacks one canonical auth challenge")
+        return "present"
+    fail(f"Zot response returned disallowed HTTP status {status}")
+
+
+def unverified_chain_der(tls: ssl.SSLSocket) -> list[bytes]:
+    public_getter = getattr(tls, "get_unverified_chain", None)
+    if public_getter is not None:
+        chain = public_getter()
+    else:
+        # CPython 3.12 exposes the same OpenSSL chain only through _sslobj.
+        ssl_object = getattr(tls, "_sslobj", None)
+        private_getter = getattr(ssl_object, "get_unverified_chain", None)
+        if private_getter is None:
+            fail("Python runtime cannot inspect the served certificate chain")
+        private_chain = private_getter()
+        if private_chain is None:
+            chain = []
+        else:
+            try:
+                import _ssl
+
+                chain = [
+                    certificate.public_bytes(_ssl.ENCODING_DER)
+                    for certificate in private_chain
+                ]
+            except (AttributeError, ImportError, TypeError, ValueError):
+                fail("Python runtime returned an invalid served certificate chain")
+    if chain is None:
+        chain = []
+    if not isinstance(chain, list) or any(
+        type(certificate) is not bytes for certificate in chain
+    ):
+        fail("Python runtime returned an invalid served certificate chain")
+    return chain
+
+
+def validate_remote(
+    hostname: str,
+    port: int,
+    authority: str,
+    ca_text: str,
+    sources: Sequence[PinnedFile],
+    expected_leaf: str,
+    expected_intermediate: str,
+) -> tuple[str, str, str, int]:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    try:
+        context.load_verify_locations(cadata=ca_text)
+    except ssl.SSLError:
+        fail("reviewed CA cannot initialize the strict TLS context")
+    deadline = time.monotonic() + NETWORK_TIMEOUT_SECONDS
+    raw: socket.socket | None = None
+    tls: ssl.SSLSocket | None = None
+    try:
+        for source in sources:
+            source.recheck()
+        raw = socket.create_connection((hostname, port), timeout=NETWORK_TIMEOUT_SECONDS)
+        set_deadline_timeout(raw, deadline)
+        tls = context.wrap_socket(raw, server_hostname=hostname)
+        raw = None
+        chain = unverified_chain_der(tls)
+        if len(chain) < 2:
+            fail("Zot did not send both a leaf and an intermediate certificate")
+        leaf_pem = ssl.DER_cert_to_PEM_cert(chain[0]).encode("ascii")
+        intermediate_pem = ssl.DER_cert_to_PEM_cert(chain[1]).encode("ascii")
+        leaf_sha = sha256(leaf_pem)
+        intermediate_sha = sha256(intermediate_pem)
+        if leaf_sha != expected_leaf:
+            fail("served leaf certificate differs from the expected canonical PEM digest")
+        if intermediate_sha != expected_intermediate:
+            fail("served intermediate certificate differs from the expected canonical PEM digest")
+        for source in sources:
+            source.recheck()
+        request = (
+            "GET /v2/ HTTP/1.1\r\n"
+            f"Host: {authority}\r\n"
+            "Accept: */*\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode("ascii")
+        set_deadline_timeout(tls, deadline)
+        tls.sendall(request)
+        status, headers, initial = read_headers(tls, deadline)
+        auth_result = validate_response(status, headers)
+        consume_body(tls, headers, initial, deadline)
+        for source in sources:
+            source.recheck()
+        return leaf_sha, intermediate_sha, auth_result, status
+    except ValidationError:
+        raise
+    except (OSError, TimeoutError, ssl.SSLError, ValueError):
+        fail("strict Zot TLS/HTTP validation failed")
+    finally:
+        if tls is not None:
+            tls.close()
+        if raw is not None:
+            raw.close()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--service", required=True)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--request-id", required=True)
+    parser.add_argument("--artifact-sha256", required=True)
+    parser.add_argument("--validation-boundary", required=True)
+    parser.add_argument("--validation-boundary-sha256", required=True)
+    parser.add_argument("--remote-validator", required=True)
+    parser.add_argument("--endpoint", required=True)
+    parser.add_argument("--reviewed-ca", required=True)
+    parser.add_argument("--reviewed-ca-sha256", required=True)
+    parser.add_argument("--expected-served-leaf-sha256", required=True)
+    parser.add_argument("--expected-served-intermediate-sha256", required=True)
+    return parser
+
+
+def run(args: argparse.Namespace) -> bytes:
+    if SERVICE_RE.fullmatch(args.service) is None:
+        fail("service is not canonical")
+    require_identity(args.target, "target")
+    require_identity(args.remote_validator, "remote validator")
+    if REQUEST_ID_RE.fullmatch(args.request_id) is None:
+        fail("request ID is not canonical")
+    require_digest(args.artifact_sha256, "artifact digest")
+    require_digest(args.validation_boundary_sha256, "validation boundary digest")
+    require_digest(args.reviewed_ca_sha256, "reviewed CA digest")
+    require_digest(args.expected_served_leaf_sha256, "expected served leaf digest")
+    require_digest(
+        args.expected_served_intermediate_sha256,
+        "expected served intermediate digest",
+    )
+    hostname, port, authority = parse_endpoint(args.endpoint)
+    boundary = PinnedFile.open(
+        args.validation_boundary, "reviewed validation boundary", MAX_BOUNDARY_SIZE
+    )
+    ca: PinnedFile | None = None
+    try:
+        ca = PinnedFile.open(args.reviewed_ca, "reviewed validation CA", MAX_CA_SIZE)
+        if sha256(boundary.data) != args.validation_boundary_sha256:
+            fail("validation boundary differs from its reviewed digest")
+        if sha256(ca.data) != args.reviewed_ca_sha256:
+            fail("reviewed CA differs from its reviewed digest")
+        validate_boundary(boundary.data, args)
+        ca_text = validate_ca(ca.data)
+        leaf_sha, intermediate_sha, auth_result, status = validate_remote(
+            hostname,
+            port,
+            authority,
+            ca_text,
+            (boundary, ca),
+            args.expected_served_leaf_sha256,
+            args.expected_served_intermediate_sha256,
+        )
+        boundary.recheck()
+        ca.recheck()
+        return serialize_record(
+            OBSERVATION_FIELDS,
+            {
+                "schema": "1",
+                "kind": "pki-external-validation-observation",
+                "service": args.service,
+                "target": args.target,
+                "request_id": args.request_id,
+                "artifact_manifest_sha256": args.artifact_sha256,
+                "validation_boundary_sha256": args.validation_boundary_sha256,
+                "remote_validator": args.remote_validator,
+                "endpoint": args.endpoint,
+                "remote_tls_result": "passed",
+                "remote_application_result": "passed",
+                "remote_http_status": str(status),
+                "remote_api_version": "registry/2.0",
+                "remote_auth_challenge": auth_result,
+                "served_certificate_sha256": leaf_sha,
+                "served_intermediate_sha256": intermediate_sha,
+                "validation_epoch": str(int(time.time())),
+            },
+        )
+    finally:
+        if ca is not None:
+            ca.close()
+        boundary.close()
+
+
+def main() -> None:
+    os.umask(0o077)
+    args = build_parser().parse_args()
+    output = run(args)
+    try:
+        sys.stdout.buffer.write(output)
+        sys.stdout.buffer.flush()
+    except OSError:
+        fail("cannot emit validation observation on stdout")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except ValidationError as error:
+        print(f"platform-pki-zot-read-only-validate: {error}", file=sys.stderr)
+        raise SystemExit(1)

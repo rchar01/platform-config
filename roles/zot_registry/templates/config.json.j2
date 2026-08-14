@@ -5,7 +5,7 @@
   'compat': zot_registry_compat
 } %}
 {% if zot_registry_tls_enabled | bool %}
-{% set _ = http_config.update({'tls': {'cert': zot_registry_tls_cert_path, 'key': zot_registry_tls_key_path}}) %}
+{% set _ = http_config.update({'tls': {'cert': ((zot_registry_tls_active_paths_result.stdout | from_json).cert_path if zot_registry_tls_custody == 'host-local' else zot_registry_tls_cert_path), 'key': ((zot_registry_tls_active_paths_result.stdout | from_json).key_path if zot_registry_tls_custody == 'host-local' else zot_registry_tls_key_path)}}) %}
 {% endif %}
 {% if zot_registry_auth_enabled | bool %}
 {% set _ = http_config.update({'auth': {'htpasswd': {'path': zot_registry_auth_htpasswd_path}, 'failDelay': zot_registry_auth_fail_delay}}) %}
@@ -29,4 +29,4 @@
 {% if zot_effective_extensions | length > 0 %}
 {% set _ = zot_config.update({'extensions': zot_effective_extensions}) %}
 {% endif %}
-{{ zot_config | combine(zot_registry_extra_config, recursive=True) | to_nice_json }}
+{{ (((zot_config | combine(zot_registry_extra_config, recursive=True)) | combine({'http': {'tls': {'cert': (zot_registry_tls_active_paths_result.stdout | from_json).cert_path, 'key': (zot_registry_tls_active_paths_result.stdout | from_json).key_path}}}, recursive=True)) if zot_registry_tls_enabled | bool and zot_registry_tls_custody == 'host-local' else (zot_config | combine(zot_registry_extra_config, recursive=True))) | to_json(sort_keys=true, separators=[',', ':']) }}
