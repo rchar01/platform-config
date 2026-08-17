@@ -44,14 +44,28 @@
         == ['alertmanager', 'grafana', 'loki', 'mimir', 'postgresql', 's3']
     fail_msg: >-
       Monitoring HAProxy requires exactly Grafana, Loki, Mimir, integrated
-      Alertmanager, S3, and PostgreSQL backend port entries.
+      Alertmanager, S3, and PostgreSQL backend entries.
 
-- name: Validate monitoring HAProxy backend ports
-  ansible.builtin.include_tasks: validate_backend_port.yml
+- name: Validate monitoring HAProxy backend services
+  ansible.builtin.include_tasks: validate_backend.yml
   loop: "{{ monitoring_haproxy_backends | dict2items }}"
   loop_control:
-    loop_var: monitoring_haproxy_backend_port
-    label: "{{ monitoring_haproxy_backend_port.key }}"
+    loop_var: monitoring_haproxy_backend_service
+    label: "{{ monitoring_haproxy_backend_service.key }}"
+
+- name: Require unrelated monitoring backend ports to be unique
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backends
+        | dict2items
+        | rejectattr('key', 'equalto', 'alertmanager')
+        | map(attribute='value.port')
+        | unique
+        | length == 5
+    fail_msg: >-
+      Monitoring HAProxy backend ports must be unique except for integrated
+      Alertmanager sharing Mimir's backend port.
 
 - name: Require integrated Alertmanager to share the Mimir backend port
   ansible.builtin.assert:
@@ -59,9 +73,13 @@
       - >-
         monitoring_haproxy_backends.alertmanager.port
         == monitoring_haproxy_backends.mimir.port
+      - >-
+        monitoring_haproxy_backends.alertmanager.targets
+        == monitoring_haproxy_backends.mimir.targets
     fail_msg: >-
-      The integrated Alertmanager must use the Mimir backend port; standalone
-      Alertmanager is outside the locked monitoring topology.
+      The integrated Alertmanager must use the exact Mimir backend port and
+      target topology; standalone Alertmanager is outside the locked monitoring
+      topology.
 
 - name: Assert monitoring HAProxy metrics bind address
   ansible.builtin.assert:

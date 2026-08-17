@@ -1,0 +1,51 @@
+---
+- name: Assert monitoring HAProxy backend service contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_backend_service.value is mapping
+      - >-
+        monitoring_haproxy_backend_service.value.keys() | list | sort
+        == ['port', 'targets']
+      - monitoring_haproxy_backend_service.value.port is integer
+      - monitoring_haproxy_backend_service.value.port >= 1
+      - monitoring_haproxy_backend_service.value.port <= 65535
+      - monitoring_haproxy_backend_service.value.targets is sequence
+      - monitoring_haproxy_backend_service.value.targets is not string
+      - monitoring_haproxy_backend_service.value.targets | length == 3
+    fail_msg: >-
+      Each monitoring HAProxy backend requires exactly one private integer port
+      between 1 and 65535 and exactly three targets.
+
+- name: Reject monitoring backend and HAProxy listener port collisions
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backend_service.value.port
+        not in monitoring_haproxy_listener_ports
+    fail_msg: >-
+      Monitoring HAProxy backend ports must not collide with HAProxy-owned HTTPS,
+      PostgreSQL frontend, or metrics listeners.
+
+- name: Validate monitoring HAProxy backend targets
+  ansible.builtin.include_tasks: validate_backend_target.yml
+  loop: "{{ monitoring_haproxy_backend_service.value.targets }}"
+  loop_control:
+    loop_var: monitoring_haproxy_backend_target
+    label: >-
+      {{ monitoring_haproxy_backend_target.name | default('invalid') }}
+
+- name: Assert monitoring HAProxy backend target uniqueness
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backend_service.value.targets
+        | map(attribute='name') | unique | length == 3
+      - >-
+        monitoring_haproxy_backend_service.value.targets
+        | map(attribute='address') | unique | length == 3
+      - >-
+        monitoring_haproxy_backend_service.value.targets
+        | map(attribute='tls_server_name') | unique | length == 3
+    fail_msg: >-
+      Monitoring HAProxy backends require unique target names, addresses, and TLS
+      server identities.

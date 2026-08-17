@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from ansible_test_helpers import assert_failed_with, run_playbook
 from conftest import CommandRunner
@@ -25,15 +27,51 @@ SOURCE = "network-normalized IPv4 CIDR no broader than /24"
 BACKENDS = "requires exactly Grafana, Loki, Mimir"
 BACKEND_PORT = "requires exactly one private integer port"
 BACKEND_COLLISION = "must not collide with HAProxy-owned"
-INTEGRATED = "integrated Alertmanager must use the Mimir backend port"
+BACKEND_PORT_UNIQUE = "backend ports must be unique"
+BACKEND_TARGET = "backend targets require exactly"
+BACKEND_TARGET_UNIQUE = "unique target names, addresses, and TLS"
+INTEGRATED = "integrated Alertmanager must use the exact Mimir backend port"
+VALID_TARGETS = [
+    {
+        "name": "monitoring-1",
+        "address": "192.0.2.64",
+        "tls_server_name": "monitoring-1.backend.example.invalid",
+    },
+    {
+        "name": "monitoring-2",
+        "address": "192.0.2.75",
+        "tls_server_name": "monitoring-2.backend.example.invalid",
+    },
+    {
+        "name": "monitoring-3",
+        "address": "192.0.2.76",
+        "tls_server_name": "monitoring-3.backend.example.invalid",
+    },
+]
 VALID_BACKENDS = {
-    "grafana": {"port": 13001},
-    "loki": {"port": 13002},
-    "mimir": {"port": 13003},
-    "alertmanager": {"port": 13003},
-    "s3": {"port": 13004},
-    "postgresql": {"port": 13005},
+    "grafana": {"port": 13001, "targets": copy.deepcopy(VALID_TARGETS)},
+    "loki": {"port": 13002, "targets": copy.deepcopy(VALID_TARGETS)},
+    "mimir": {"port": 13003, "targets": copy.deepcopy(VALID_TARGETS)},
+    "alertmanager": {"port": 13003, "targets": copy.deepcopy(VALID_TARGETS)},
+    "s3": {"port": 13004, "targets": copy.deepcopy(VALID_TARGETS)},
+    "postgresql": {"port": 13005, "targets": copy.deepcopy(VALID_TARGETS)},
 }
+
+
+def replace_backend(service: str, value: Any) -> dict[str, Any]:
+    backends = copy.deepcopy(VALID_BACKENDS)
+    backends[service] = value
+    return backends
+
+
+def replace_target(
+    service: str, index: int, value: Any
+) -> dict[str, Any]:
+    backends = copy.deepcopy(VALID_BACKENDS)
+    backends[service]["targets"][index] = value
+    return backends
+
+
 REJECTIONS = (
     Rejection("unready", {"monitoring_haproxy_test_contract_ready": False}, SCALAR),
     Rejection("string-ready", {"monitoring_haproxy_test_contract_ready": "true"}, SCALAR),
@@ -57,37 +95,279 @@ REJECTIONS = (
     ),
     Rejection(
         "backend-entry-not-mapping",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": 13001}},
+        {"monitoring_haproxy_test_backends": replace_backend("grafana", 13001)},
         BACKEND_PORT,
     ),
     Rejection(
         "backend-extra-key",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 13001, "host": "fixture.invalid"}}},
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana",
+                {
+                    "port": 13001,
+                    "targets": copy.deepcopy(VALID_TARGETS),
+                    "host": "fixture.invalid",
+                },
+            )
+        },
         BACKEND_PORT,
     ),
     Rejection(
         "backend-string-port",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": "13001"}}},
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana",
+                {"port": "13001", "targets": copy.deepcopy(VALID_TARGETS)},
+            )
+        },
         BACKEND_PORT,
     ),
     Rejection(
         "backend-zero-port",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 0}}},
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana", {"port": 0, "targets": copy.deepcopy(VALID_TARGETS)}
+            )
+        },
         BACKEND_PORT,
     ),
     Rejection(
         "backend-high-port",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 65536}}},
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana",
+                {"port": 65536, "targets": copy.deepcopy(VALID_TARGETS)},
+            )
+        },
         BACKEND_PORT,
     ),
     Rejection(
         "backend-listener-collision",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "grafana": {"port": 443}}},
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana", {"port": 443, "targets": copy.deepcopy(VALID_TARGETS)}
+            )
+        },
         BACKEND_COLLISION,
     ),
     Rejection(
+        "backend-unrelated-port-collision",
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana",
+                {"port": 13002, "targets": copy.deepcopy(VALID_TARGETS)},
+            )
+        },
+        BACKEND_PORT_UNIQUE,
+    ),
+    Rejection(
         "integrated-port-mismatch",
-        {"monitoring_haproxy_test_backends": {**VALID_BACKENDS, "alertmanager": {"port": 13006}}},
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "alertmanager",
+                {"port": 13006, "targets": copy.deepcopy(VALID_TARGETS)},
+            )
+        },
+        INTEGRATED,
+    ),
+    Rejection(
+        "backend-targets-not-list",
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana", {"port": 13001, "targets": "invalid"}
+            )
+        },
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-target-count",
+        {
+            "monitoring_haproxy_test_backends": replace_backend(
+                "grafana", {"port": 13001, "targets": VALID_TARGETS[:2]}
+            )
+        },
+        BACKEND_PORT,
+    ),
+    Rejection(
+        "backend-target-not-mapping",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, "invalid"
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-extra-key",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "port": 13001}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-leading-zero-address",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana",
+                0,
+                {**VALID_TARGETS[0], "address": "192.0.2.064"},
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-high-address",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana",
+                0,
+                {**VALID_TARGETS[0], "address": "192.0.2.256"},
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-invalid-tls-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana",
+                0,
+                {**VALID_TARGETS[0], "tls_server_name": "Monitoring-1"},
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-integer-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "name": 1}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-boolean-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "name": True}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-null-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "name": None}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-integer-address",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "address": 1}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-boolean-address",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "address": False}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-null-address",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "address": None}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-integer-tls-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "tls_server_name": 1}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-boolean-tls-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "tls_server_name": True}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-null-tls-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana", 0, {**VALID_TARGETS[0], "tls_server_name": None}
+            )
+        },
+        BACKEND_TARGET,
+    ),
+    Rejection(
+        "backend-target-duplicate-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana",
+                1,
+                {**VALID_TARGETS[1], "name": "monitoring-1"},
+            )
+        },
+        BACKEND_TARGET_UNIQUE,
+    ),
+    Rejection(
+        "backend-target-duplicate-address",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana",
+                1,
+                {**VALID_TARGETS[1], "address": "192.0.2.64"},
+            )
+        },
+        BACKEND_TARGET_UNIQUE,
+    ),
+    Rejection(
+        "backend-target-duplicate-tls-name",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "grafana",
+                1,
+                {
+                    **VALID_TARGETS[1],
+                    "tls_server_name": "monitoring-1.backend.example.invalid",
+                },
+            )
+        },
+        BACKEND_TARGET_UNIQUE,
+    ),
+    Rejection(
+        "integrated-target-mismatch",
+        {
+            "monitoring_haproxy_test_backends": replace_target(
+                "alertmanager",
+                0,
+                {
+                    **VALID_TARGETS[0],
+                    "tls_server_name": "alertmanager-1.backend.example.invalid",
+                },
+            )
+        },
         INTEGRATED,
     ),
     Rejection("leading-zero-address", {"monitoring_haproxy_test_metrics_address": "192.168.001.83"}, "restricted valid IPv4 bind address"),
@@ -123,6 +403,41 @@ def test_monitoring_haproxy_defaults_remain_inactive(repo_root: Path) -> None:
         "monitoring_haproxy_service_state: stopped",
     ):
         assert re.search(rf"^{re.escape(line)}$", defaults, re.MULTILINE)
+
+
+def test_monitoring_haproxy_remains_validation_only(repo_root: Path) -> None:
+    role = repo_root / "roles/monitoring_haproxy"
+    allowed_actions = {
+        "ansible.builtin.assert",
+        "ansible.builtin.include_tasks",
+        "ansible.builtin.set_fact",
+    }
+    task_keywords = {
+        "changed_when",
+        "check_mode",
+        "failed_when",
+        "loop",
+        "loop_control",
+        "name",
+        "register",
+        "tags",
+        "vars",
+        "when",
+    }
+    observed_actions: set[str] = set()
+    for path in sorted((role / "tasks").rglob("*.yml")):
+        tasks = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(tasks, list)
+        for task in tasks:
+            assert isinstance(task, dict)
+            action_keys = set(task) - task_keywords
+            assert len(action_keys) == 1, (path, task.get("name"), action_keys)
+            action = action_keys.pop()
+            assert action in allowed_actions, (path, task.get("name"), action)
+            observed_actions.add(action)
+    assert observed_actions == allowed_actions
+    assert not (role / "templates").exists()
+    assert not (role / "handlers").exists()
 
 
 def test_monitoring_haproxy_default_fixture_is_valid(

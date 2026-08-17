@@ -1,0 +1,29 @@
+---
+- name: Assert monitoring HAProxy backend target contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_backend_target is mapping
+      - >-
+        monitoring_haproxy_backend_target.keys() | list | sort
+        == ['address', 'name', 'tls_server_name']
+      - monitoring_haproxy_backend_target.name is string
+      - monitoring_haproxy_backend_target.address is string
+      - monitoring_haproxy_backend_target.tls_server_name is string
+      - >-
+        monitoring_haproxy_backend_target.name
+        is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - >-
+        monitoring_haproxy_backend_target.address is match(
+          '^(0|[1-9][0-9]{0,2})([.](0|[1-9][0-9]{0,2})){3}$'
+        )
+      - >-
+        monitoring_haproxy_backend_target.address.split('.') | map('int')
+        | select('gt', 255) | list | length == 0
+      - >-
+        monitoring_haproxy_backend_target.tls_server_name is match(
+          '^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+          ~ '(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$'
+        )
+    fail_msg: >-
+      Monitoring HAProxy backend targets require exactly a safe name, canonical
+      IPv4 address, and lowercase FQDN TLS server identity.

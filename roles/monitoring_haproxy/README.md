@@ -11,10 +11,13 @@ service. `monitoring_haproxy_service_enabled` must remain `false` and
 Validated inputs include:
 
 - exact HAProxy NEVRA and fixed HTTPS/PostgreSQL client ports;
-- three unique HAProxy-owned listener ports and exact private integer backend
-  ports for Grafana, Loki, Mimir, integrated Alertmanager, S3, and PostgreSQL;
+- three unique HAProxy-owned listener ports and exact private backend definitions
+  for Grafana, Loki, Mimir, integrated Alertmanager, S3, and PostgreSQL;
+- exactly three uniquely named IPv4 targets and lowercase FQDN TLS server
+  identities per backend;
 - no backend collision with an HAProxy-owned listener, with integrated
-  Alertmanager required to share Mimir's backend port;
+  Alertmanager required to share Mimir's exact port and target topology and no
+  unrelated services sharing backend ports;
 - unique service DNS names and restricted metrics binding;
 - outside-Git frontend/client/backend TLS source paths;
 - exact escape-free RFC2253 subject-DN role mappings;
@@ -29,10 +32,10 @@ Validated inputs include:
   sources contained by the outer HTTPS policy; and
 - an explicit contract-readiness gate.
 
-Backend addresses and TLS identities, service health wiring, package repository
-immutability, configuration rendering, lifecycle management, and target
-activation remain blocked. Backend port values have no public defaults and must
-come from private inventory. Real PKI stays outside Git and is produced through
+Service health wiring, package repository immutability, configuration rendering,
+lifecycle management, and target activation remain blocked. Backend ports,
+addresses, names, and TLS identities have no public defaults and must come from
+private inventory. Real PKI stays outside Git and is produced through
 `platform-tools`; the role never generates production certificates.
 
 Subject DNs must be unique. Multiple explicitly listed identities may map to the

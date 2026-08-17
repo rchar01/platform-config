@@ -90,14 +90,24 @@
       - 192.0.2.128/25
     monitoring_haproxy_operator_allowed_sources: >-
       {{ monitoring_haproxy_test_operator_sources | default(['203.0.113.0/28']) }}
+    monitoring_haproxy_fixture_targets:
+      - name: monitoring-1
+        address: 192.0.2.64
+        tls_server_name: monitoring-1.backend.example.invalid
+      - name: monitoring-2
+        address: 192.0.2.75
+        tls_server_name: monitoring-2.backend.example.invalid
+      - name: monitoring-3
+        address: 192.0.2.76
+        tls_server_name: monitoring-3.backend.example.invalid
     monitoring_haproxy_backends: >-
       {{ monitoring_haproxy_test_backends | default({
-        'grafana': {'port': 13001},
-        'loki': {'port': 13002},
-        'mimir': {'port': 13003},
-        'alertmanager': {'port': 13003},
-        's3': {'port': 13004},
-        'postgresql': {'port': 13005}
+        'grafana': {'port': 13001, 'targets': monitoring_haproxy_fixture_targets},
+        'loki': {'port': 13002, 'targets': monitoring_haproxy_fixture_targets},
+        'mimir': {'port': 13003, 'targets': monitoring_haproxy_fixture_targets},
+        'alertmanager': {'port': 13003, 'targets': monitoring_haproxy_fixture_targets},
+        's3': {'port': 13004, 'targets': monitoring_haproxy_fixture_targets},
+        'postgresql': {'port': 13005, 'targets': monitoring_haproxy_fixture_targets}
       }) }}
   roles:
     - role: monitoring_haproxy

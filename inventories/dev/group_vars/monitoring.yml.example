@@ -41,6 +41,8 @@ monitoring_haproxy_contract_ready: false
 monitoring_haproxy_enabled: false
 monitoring_haproxy_service_enabled: false
 monitoring_haproxy_service_state: stopped
-# Private inventory must provide exact per-service ports before enabling the
-# validation contract. Integrated Alertmanager uses the Mimir HTTP port.
+# Private inventory must provide each exact per-service port plus three named
+# targets containing canonical IPv4 addresses and lowercase FQDN TLS server
+# identities before enabling the validation contract. Integrated Alertmanager
+# uses the exact Mimir port and target topology.
 monitoring_haproxy_backends: {}

@@ -54,6 +54,6 @@ monitoring_haproxy_postgresql_allowed_sources: []
 monitoring_haproxy_metrics_allowed_sources: []
 monitoring_haproxy_operator_allowed_sources: []
 
-# Backend addresses, identities, and health wiring remain Phase 1 blockers. Port
-# values are interpreted only by the validation contract and have no defaults.
+# Backend topology values remain private. Health wiring and operational
+# lifecycle remain Phase 2 blockers; this validation contract has no defaults.
 monitoring_haproxy_backends: {}
