@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import os
 import re
 import sys
 import time
@@ -1084,6 +1086,167 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
 
 def test_registry_pki_source_boundary(repo_root: Path) -> None:
     assert_registry_pki_boundary(repo_root)
+
+
+def _fake_podman(fake_bin: Path, log: Path) -> None:
+    executable = fake_bin / "podman"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "if sys.argv[1:3] == ['image', 'exists']:\n"
+        "    raise SystemExit(0)\n"
+        "if sys.argv[1:2] != ['run']:\n"
+        "    raise SystemExit(2)\n"
+        "Path(os.environ['FAKE_PODMAN_LOG']).write_text(\n"
+        "    json.dumps(sys.argv[1:]), encoding='utf-8'\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+
+def _container_wrapper_environment(tmp_path: Path, log: Path) -> dict[str, str]:
+    private_root = tmp_path / "platform-private"
+    secret_root = tmp_path / "platform-infrastructure"
+    runtime_root = tmp_path / "runtime"
+    fake_bin = tmp_path / "bin"
+    for directory in (private_root, secret_root, runtime_root, fake_bin):
+        directory.mkdir(mode=0o700)
+    _fake_podman(fake_bin, log)
+    return {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_PODMAN_LOG": str(log),
+        "TMPDIR": str(runtime_root),
+        "PLATFORM_CONFIG_CONTAINER_PROFILE": "development",
+        "PLATFORM_CONFIG_DEV_IMAGE": "exchange-root-test",
+        "PLATFORM_CONFIG_PRIVATE_ROOT": str(private_root),
+        "PLATFORM_CONFIG_SECRET_ROOT": str(secret_root),
+    }
+
+
+def test_container_wrapper_mounts_only_validated_exchange_root_read_write(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    log = isolated_test_dir / "podman.json"
+    environment = _container_wrapper_environment(isolated_test_dir, log)
+    exchange_root = isolated_test_dir / "platform-infrastructure/pki-exchange"
+    exchange_root.mkdir(mode=0o700)
+    environment["PLATFORM_CONFIG_PKI_EXCHANGE_ROOT"] = str(exchange_root)
+
+    command_runner.run(
+        (repo_root / "scripts/in-container", "true"), environment=environment
+    ).assert_success()
+    arguments = json.loads(log.read_text(encoding="utf-8"))
+    assert "PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/platform-pki-exchange" in arguments
+    assert f"{exchange_root}:/platform-pki-exchange:rw,Z" in arguments
+    assert (
+        f"{isolated_test_dir}/platform-infrastructure:"
+        "/tmp/platform-home/.config/platform-infrastructure:ro"
+    ) in arguments
+
+
+@pytest.mark.parametrize("unsafe_kind", ("mode", "symlink"))
+def test_container_wrapper_rejects_unsafe_exchange_root(
+    unsafe_kind: str,
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    log = isolated_test_dir / "podman.json"
+    environment = _container_wrapper_environment(isolated_test_dir, log)
+    actual = isolated_test_dir / "exchange-actual"
+    actual.mkdir(mode=0o700)
+    if unsafe_kind == "mode":
+        actual.chmod(0o755)
+        exchange_root = actual
+        expected = "current-user-owned with mode 0700"
+    else:
+        exchange_root = isolated_test_dir / "exchange-link"
+        exchange_root.symlink_to(actual, target_is_directory=True)
+        expected = "canonical non-symlink directory"
+    environment["PLATFORM_CONFIG_PKI_EXCHANGE_ROOT"] = str(exchange_root)
+
+    result = command_runner.run(
+        (repo_root / "scripts/in-container", "true"), environment=environment
+    ).assert_failure()
+    assert expected in result.stderr
+    assert not log.exists()
+
+
+@pytest.mark.parametrize(
+    ("unsafe_kind", "expected"),
+    (
+        ("relative", "canonical absolute path"),
+        ("colon", "canonical absolute path"),
+        ("control", "canonical absolute path"),
+        ("noncanonical", "canonical non-symlink directory"),
+        ("file", "canonical non-symlink directory"),
+        ("protected-ancestor", "outside public and private repositories"),
+    ),
+)
+def test_container_wrapper_rejects_unsafe_exchange_coordinates(
+    unsafe_kind: str,
+    expected: str,
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    case_root = isolated_test_dir / unsafe_kind
+    case_root.mkdir(mode=0o700)
+    log = case_root / "podman.json"
+    environment = _container_wrapper_environment(case_root, log)
+    actual = case_root / "exchange"
+    if unsafe_kind == "file":
+        actual.write_text("not a directory\n", encoding="ascii")
+        actual.chmod(0o600)
+        exchange_root = str(actual)
+    else:
+        actual.mkdir(mode=0o700)
+        if unsafe_kind == "relative":
+            exchange_root = "exchange"
+        elif unsafe_kind == "colon":
+            exchange_root = f"{actual}:option"
+        elif unsafe_kind == "control":
+            exchange_root = f"{actual}\n"
+        elif unsafe_kind == "noncanonical":
+            exchange_root = f"{actual.parent}/../{actual.parent.name}/{actual.name}"
+        else:
+            exchange_root = str(case_root)
+    environment["PLATFORM_CONFIG_PKI_EXCHANGE_ROOT"] = exchange_root
+
+    result = command_runner.run(
+        (repo_root / "scripts/in-container", "true"), environment=environment
+    ).assert_failure()
+    assert expected in result.stderr
+    assert not log.exists()
+
+
+def test_test_container_profile_never_exposes_exchange_root(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    log = isolated_test_dir / "podman.json"
+    environment = _container_wrapper_environment(isolated_test_dir, log)
+    exchange_root = isolated_test_dir / "platform-infrastructure/pki-exchange"
+    exchange_root.mkdir(mode=0o700)
+    environment.update(
+        {
+            "PLATFORM_CONFIG_CONTAINER_PROFILE": "test",
+            "PLATFORM_CONFIG_PKI_EXCHANGE_ROOT": str(exchange_root),
+            "PLATFORM_CONFIG_TEST_SCRATCH_ROOT": str(isolated_test_dir / "runtime"),
+        }
+    )
+
+    command_runner.run(
+        (repo_root / "scripts/in-container", "true"), environment=environment
+    ).assert_success()
+    arguments = json.loads(log.read_text(encoding="utf-8"))
+    assert not any("PLATFORM_CONFIG_PKI_EXCHANGE_ROOT" in value for value in arguments)
+    assert not any("/platform-pki-exchange" in value for value in arguments)
 
 
 def test_registry_pki_epoch_conversion_is_timezone_independent(
