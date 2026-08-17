@@ -1,0 +1,3 @@
+{% for identity in monitoring_haproxy_identity_roles | sort(attribute='subject_dn') %}
+{{ identity.subject_dn }} {{ identity.role }}
+{% endfor %}

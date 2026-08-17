@@ -291,17 +291,18 @@ package downgrade, atomic candidate preservation, staged/active/disabled
 lifecycle, reconciled firewall policy, strict active-only TLS backend selection
 and switch, hostname rejection, and restricted built-in metrics.
 
-`make test-monitoring-haproxy-capabilities` is a Phase 0 mechanism check, not a
-production role test. It installs exact HAProxy `3.0.5` in a disposable Rocky
-container and uses synthetic, invocation-local certificates and services to
+`make test-monitoring-haproxy-capabilities` is an offline policy and Phase 0
+mechanism check, not a production role test. It renders the role-owned candidate,
+validates it natively, installs exact HAProxy `3.0.5` in a disposable Rocky
+container, and uses synthetic, invocation-local certificates and services to
 exercise global frontend mTLS, CRL rejection, exact RFC2253 subject-DN maps,
 method/path separation, Grafana host/method policy, representative SigV4 input
 preservation, tenant-header replacement, backend mTLS plus CA/SNI/name
 verification, raw PostgreSQL TCP selected by a separate Patroni HTTPS `/primary`
-check, restricted metrics, and native candidate rejection. The initial contract
-forces HTTP/1.1;
-private ports and observed Loki/Mimir/Alertmanager route allowlists remain
-unresolved production inputs. Fixture PKI does not replace `platform-tools`:
+check, restricted metrics, and native candidate rejection. The contract forces
+HTTP/1.1. Private service/health ports, backend identities, and observed
+Loki/Mimir/Alertmanager/operator route allowlists remain private production
+inputs. Fixture PKI does not replace `platform-tools`:
 real CA state and issued service material stay outside Git and use the maintained
 `platform-tools` workflows.
 

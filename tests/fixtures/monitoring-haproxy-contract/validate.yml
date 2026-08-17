@@ -77,9 +77,10 @@
       {{ monitoring_haproxy_test_alertmanager_routes | default([
         {'method': 'GET', 'path': '/alertmanager/api/v2/alerts'}
       ]) }}
-    monitoring_haproxy_operator_routes:
-      - method: GET
-        path: /-/ready
+    monitoring_haproxy_operator_routes: >-
+      {{ monitoring_haproxy_test_operator_routes | default([
+        {'service': 'mimir', 'method': 'GET', 'path': '/-/ready'}
+      ]) }}
     monitoring_haproxy_https_allowed_sources: >-
       {{ monitoring_haproxy_test_https_sources | default([
         '198.51.100.0/24', '203.0.113.0/24'
@@ -100,14 +101,17 @@
       - name: monitoring-3
         address: 192.0.2.76
         tls_server_name: monitoring-3.backend.example.invalid
+    monitoring_haproxy_fixture_s3_targets:
+      - name: local-garage
+        address: 127.0.0.1
     monitoring_haproxy_backends: >-
       {{ monitoring_haproxy_test_backends | default({
-        'grafana': {'port': 13001, 'targets': monitoring_haproxy_fixture_targets},
-        'loki': {'port': 13002, 'targets': monitoring_haproxy_fixture_targets},
-        'mimir': {'port': 13003, 'targets': monitoring_haproxy_fixture_targets},
-        'alertmanager': {'port': 13003, 'targets': monitoring_haproxy_fixture_targets},
-        's3': {'port': 13004, 'targets': monitoring_haproxy_fixture_targets},
-        'postgresql': {'port': 13005, 'targets': monitoring_haproxy_fixture_targets}
+        'grafana': {'port': 13001, 'health_port': 13001, 'targets': monitoring_haproxy_fixture_targets},
+        'loki': {'port': 13002, 'health_port': 13002, 'targets': monitoring_haproxy_fixture_targets},
+        'mimir': {'port': 13003, 'health_port': 13003, 'targets': monitoring_haproxy_fixture_targets},
+        'alertmanager': {'port': 13003, 'health_port': 13003, 'targets': monitoring_haproxy_fixture_targets},
+        's3': {'port': 13004, 'health_port': 13006, 'targets': monitoring_haproxy_fixture_s3_targets},
+        'postgresql': {'port': 13005, 'health_port': 13007, 'targets': monitoring_haproxy_fixture_targets}
       }) }}
   roles:
     - role: monitoring_haproxy

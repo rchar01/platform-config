@@ -8,6 +8,12 @@
       - monitoring_haproxy_service_enabled is boolean
       - monitoring_haproxy_package_nevra is match('^haproxy-[0-9]+:[0-9][A-Za-z0-9_.+-]*-[A-Za-z0-9_.+~-]+[.]x86_64$')
       - monitoring_haproxy_package_nevra == 'haproxy-0:3.0.5-6.el10_2.1.x86_64'
+      - monitoring_haproxy_user == 'haproxy'
+      - monitoring_haproxy_group == 'haproxy'
+      - monitoring_haproxy_maxconn is integer
+      - monitoring_haproxy_maxconn >= 1
+      - monitoring_haproxy_maxconn <= 1000000
+      - monitoring_haproxy_frontend_bind_address == '*'
       - monitoring_haproxy_https_port is integer
       - monitoring_haproxy_postgresql_frontend_port is integer
       - monitoring_haproxy_metrics_port is integer
@@ -15,7 +21,17 @@
       - monitoring_haproxy_postgresql_frontend_port | int == 5432
       - monitoring_haproxy_metrics_port | int >= 1
       - monitoring_haproxy_metrics_port | int <= 65535
+      - monitoring_haproxy_metrics_path == '/metrics'
       - monitoring_haproxy_tenant is match('^[A-Za-z0-9_.-]+$')
+      - monitoring_haproxy_timeout_connect is match('^[1-9][0-9]*[smh]$')
+      - monitoring_haproxy_timeout_client is match('^[1-9][0-9]*[smh]$')
+      - monitoring_haproxy_timeout_server is match('^[1-9][0-9]*[smh]$')
+      - monitoring_haproxy_timeout_check is match('^[1-9][0-9]*[smh]$')
+      - monitoring_haproxy_check_interval is match('^[1-9][0-9]*[smh]$')
+      - monitoring_haproxy_check_rise is integer
+      - monitoring_haproxy_check_rise >= 1
+      - monitoring_haproxy_check_fall is integer
+      - monitoring_haproxy_check_fall >= 1
     fail_msg: >-
       Monitoring HAProxy requires an explicitly ready contract, exact HAProxy
       NEVRA, fixed client ports, a valid metrics port, and a safe tenant.
@@ -45,6 +61,40 @@
     fail_msg: >-
       Monitoring HAProxy requires exactly Grafana, Loki, Mimir, integrated
       Alertmanager, S3, and PostgreSQL backend entries.
+
+- name: Assert role-owned monitoring health policy contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_health_policies == {
+          'grafana': {
+            'method': 'GET', 'path': '/api/health', 'protocol': 'https',
+            'port_relation': 'service'
+          },
+          'loki': {
+            'method': 'GET', 'path': '/ready', 'protocol': 'https',
+            'port_relation': 'service'
+          },
+          'mimir': {
+            'method': 'GET', 'path': '/ready', 'protocol': 'https',
+            'port_relation': 'service'
+          },
+          'alertmanager': {
+            'method': 'GET', 'path': '/ready', 'protocol': 'https',
+            'port_relation': 'service'
+          },
+          's3': {
+            'method': 'GET', 'path': '/health', 'protocol': 'http',
+            'port_relation': 'separate'
+          },
+          'postgresql': {
+            'method': 'HEAD', 'path': '/primary', 'protocol': 'https',
+            'port_relation': 'separate'
+          }
+        }
+    fail_msg: >-
+      Monitoring HAProxy health policies are role-owned exact status-only
+      routing policy and cannot be overridden.
 
 - name: Validate monitoring HAProxy backend services
   ansible.builtin.include_tasks: validate_backend.yml
@@ -81,6 +131,28 @@
       target topology; standalone Alertmanager is outside the locked monitoring
       topology.
 
+- name: Assert separate monitoring health ports are isolated
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backends.s3.health_port
+        != monitoring_haproxy_backends.postgresql.health_port
+      - >-
+        monitoring_haproxy_backends.s3.health_port
+        not in monitoring_haproxy_listener_ports
+      - >-
+        monitoring_haproxy_backends.postgresql.health_port
+        not in monitoring_haproxy_listener_ports
+      - >-
+        monitoring_haproxy_backends.s3.health_port
+        not in monitoring_haproxy_backends.values() | map(attribute='port') | list
+      - >-
+        monitoring_haproxy_backends.postgresql.health_port
+        not in monitoring_haproxy_backends.values() | map(attribute='port') | list
+    fail_msg: >-
+      Garage Admin and Patroni REST health ports must be distinct private ports
+      that do not collide with HAProxy listeners or service backend ports.
+
 - name: Assert monitoring HAProxy metrics bind address
   ansible.builtin.assert:
     that:
@@ -111,6 +183,27 @@
   loop_control:
     loop_var: monitoring_haproxy_tls_source
     label: "{{ monitoring_haproxy_tls_source }}"
+
+- name: Assert monitoring HAProxy installed TLS and map paths
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_installed_path is string
+      - >-
+        monitoring_haproxy_installed_path
+        is match('^/[A-Za-z0-9_./-]+$')
+    fail_msg: >-
+      Monitoring HAProxy installed TLS and identity-map paths must be safe
+      absolute paths.
+  loop:
+    - "{{ monitoring_haproxy_frontend_pem_path }}"
+    - "{{ monitoring_haproxy_client_ca_path }}"
+    - "{{ monitoring_haproxy_client_crl_path }}"
+    - "{{ monitoring_haproxy_backend_ca_path }}"
+    - "{{ monitoring_haproxy_backend_client_pem_path }}"
+    - "{{ monitoring_haproxy_identity_map_path }}"
+  loop_control:
+    loop_var: monitoring_haproxy_installed_path
+    label: "{{ monitoring_haproxy_installed_path }}"
 
 - name: Build monitoring HAProxy service DNS list
   ansible.builtin.set_fact:
@@ -144,10 +237,25 @@
         == monitoring_haproxy_service_dns_names | length
     fail_msg: Monitoring HAProxy service DNS names must be unique.
 
+- name: Assert monitoring HAProxy identity map collection
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_identity_roles is sequence
+      - monitoring_haproxy_identity_roles is not string
+      - monitoring_haproxy_identity_roles | length >= 10
+    fail_msg: >-
+      Monitoring HAProxy requires a populated identity-role sequence.
+
+- name: Validate monitoring HAProxy identity entries
+  ansible.builtin.include_tasks: validate_identity.yml
+  loop: "{{ monitoring_haproxy_identity_roles }}"
+  loop_control:
+    loop_var: monitoring_haproxy_identity
+    label: "{{ monitoring_haproxy_identity.role | default('invalid') }}"
+
 - name: Assert monitoring HAProxy identity map is complete
   ansible.builtin.assert:
     that:
-      - monitoring_haproxy_identity_roles | length >= 10
       - >-
         [
           'alloy_loki_writer',
@@ -169,13 +277,6 @@
     fail_msg: >-
       Monitoring HAProxy requires every mandatory identity role and unique exact
       subject DNs.
-
-- name: Validate monitoring HAProxy identity entries
-  ansible.builtin.include_tasks: validate_identity.yml
-  loop: "{{ monitoring_haproxy_identity_roles }}"
-  loop_control:
-    loop_var: monitoring_haproxy_identity
-    label: "{{ monitoring_haproxy_identity.role | default('invalid') }}"
 
 - name: Assert monitoring HAProxy probe routes match observer profiles
   ansible.builtin.assert:
@@ -201,6 +302,13 @@
       The monitoring S3 probe identity requires exact DELETE, GET, and PUT
       access on the S3 host; Garage credentials enforce bucket and object scope.
 
+- name: Assert monitoring HAProxy S3 data methods
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_s3_methods == ['DELETE', 'GET', 'HEAD', 'POST', 'PUT']
+    fail_msg: >-
+      Monitoring HAProxy S3 forwarding requires exact Garage data-plane methods.
+
 - name: Validate monitoring HAProxy route groups
   ansible.builtin.include_tasks: validate_route_group.yml
   loop:
@@ -219,9 +327,6 @@
     - name: alertmanager
       routes: "{{ monitoring_haproxy_alertmanager_routes }}"
       methods: [DELETE, GET, PATCH, POST, PUT]
-    - name: operator
-      routes: "{{ monitoring_haproxy_operator_routes }}"
-      methods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
     - name: grafana_probe
       routes: "{{ monitoring_haproxy_grafana_probe_routes }}"
       methods: [GET]
@@ -234,6 +339,9 @@
   loop_control:
     loop_var: monitoring_haproxy_route_group
     label: "{{ monitoring_haproxy_route_group.name }}"
+
+- name: Validate monitoring HAProxy operator routes
+  ansible.builtin.include_tasks: validate_operator_routes.yml
 
 - name: Validate monitoring HAProxy restricted source groups
   ansible.builtin.include_tasks: validate_source_group.yml

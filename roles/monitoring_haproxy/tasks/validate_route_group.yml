@@ -13,6 +13,15 @@
   ansible.builtin.set_fact:
     monitoring_haproxy_route_keys: []
 
+- name: Validate monitoring HAProxy route entries
+  ansible.builtin.include_tasks: validate_route.yml
+  loop: "{{ monitoring_haproxy_route_group.routes }}"
+  loop_control:
+    loop_var: monitoring_haproxy_route
+    label: >-
+      {{ monitoring_haproxy_route.method | default('invalid') }}
+      {{ monitoring_haproxy_route.path | default('invalid') }}
+
 - name: Build monitoring HAProxy route keys
   ansible.builtin.set_fact:
     monitoring_haproxy_route_keys: >-
@@ -35,12 +44,3 @@
     fail_msg: >-
       Monitoring HAProxy route group {{ monitoring_haproxy_route_group.name }}
       contains duplicate method/path entries.
-
-- name: Validate monitoring HAProxy route entries
-  ansible.builtin.include_tasks: validate_route.yml
-  loop: "{{ monitoring_haproxy_route_group.routes }}"
-  loop_control:
-    loop_var: monitoring_haproxy_route
-    label: >-
-      {{ monitoring_haproxy_route.method | default('invalid') }}
-      {{ monitoring_haproxy_route.path | default('invalid') }}

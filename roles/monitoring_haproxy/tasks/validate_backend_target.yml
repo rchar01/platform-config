@@ -5,10 +5,13 @@
       - monitoring_haproxy_backend_target is mapping
       - >-
         monitoring_haproxy_backend_target.keys() | list | sort
-        == ['address', 'name', 'tls_server_name']
+        == (
+          ['address', 'name']
+          if monitoring_haproxy_backend_service.key == 's3'
+          else ['address', 'name', 'tls_server_name']
+        )
       - monitoring_haproxy_backend_target.name is string
       - monitoring_haproxy_backend_target.address is string
-      - monitoring_haproxy_backend_target.tls_server_name is string
       - >-
         monitoring_haproxy_backend_target.name
         is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
@@ -20,10 +23,22 @@
         monitoring_haproxy_backend_target.address.split('.') | map('int')
         | select('gt', 255) | list | length == 0
       - >-
+        monitoring_haproxy_backend_service.key != 's3'
+        or monitoring_haproxy_backend_target.address == '127.0.0.1'
+    fail_msg: >-
+      Monitoring HAProxy backend targets require exactly a safe name and
+      canonical IPv4 address; Garage S3 must use the node-local 127.0.0.1 target.
+
+- name: Assert monitoring HAProxy TLS backend target identity
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_backend_target.tls_server_name is string
+      - >-
         monitoring_haproxy_backend_target.tls_server_name is match(
           '^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
           ~ '(?:[.][a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$'
         )
     fail_msg: >-
-      Monitoring HAProxy backend targets require exactly a safe name, canonical
-      IPv4 address, and lowercase FQDN TLS server identity.
+      Monitoring HAProxy TLS backend targets require a lowercase FQDN server
+      identity.
+  when: monitoring_haproxy_backend_service.key != 's3'

@@ -1,0 +1,157 @@
+global
+  log /dev/log local0
+  maxconn {{ monitoring_haproxy_maxconn }}
+  user {{ monitoring_haproxy_user }}
+  group {{ monitoring_haproxy_group }}
+
+defaults
+  log global
+  option dontlognull
+  timeout connect {{ monitoring_haproxy_timeout_connect }}
+  timeout client {{ monitoring_haproxy_timeout_client }}
+  timeout server {{ monitoring_haproxy_timeout_server }}
+  timeout check {{ monitoring_haproxy_timeout_check }}
+
+frontend monitoring_https
+  bind {{ monitoring_haproxy_frontend_bind_address }}:{{ monitoring_haproxy_https_port }} ssl crt {{ monitoring_haproxy_frontend_pem_path }} ca-file {{ monitoring_haproxy_client_ca_path }} crl-file {{ monitoring_haproxy_client_crl_path }} verify required strict-sni alpn http/1.1
+  mode http
+  option httplog
+  acl monitoring_https_source src {{ monitoring_haproxy_https_allowed_sources | join(' ') }}
+  acl monitoring_operator_source src {{ monitoring_haproxy_operator_allowed_sources | join(' ') }}
+  tcp-request connection reject unless monitoring_https_source
+  http-request del-header X-Scope-OrgID
+  http-request set-var(txn.role) ssl_c_s_dn(,0,rfc2253),map_str({{ monitoring_haproxy_identity_map_path }},__denied__)
+{% for service, dns in {
+  'grafana': monitoring_haproxy_grafana_dns,
+  'loki': monitoring_haproxy_loki_dns,
+  'mimir': monitoring_haproxy_mimir_dns,
+  'alertmanager': monitoring_haproxy_alertmanager_dns,
+  's3': monitoring_haproxy_s3_dns
+}.items() %}
+  acl host_{{ service }} hdr(host),lower -m str {{ dns }} {{ dns }}:{{ monitoring_haproxy_https_port }}
+{% endfor %}
+  http-request deny deny_status 421 if !host_grafana !host_loki !host_mimir !host_alertmanager !host_s3
+  http-request deny deny_status 403 if { var(txn.role) -m str __denied__ }
+{% for role in [
+  'alloy_loki_writer',
+  'alloy_mimir_writer',
+  'garage_s3',
+  'grafana_alertmanager',
+  'grafana_browser',
+  'grafana_loki_query',
+  'grafana_mimir_query',
+  'monitoring_probe',
+  'monitoring_s3_probe',
+  'operator'
+] %}
+  acl role_{{ role }} var(txn.role) -m str {{ role }}
+{% endfor %}
+  acl method_grafana_browser method GET HEAD POST PUT PATCH DELETE OPTIONS
+  http-request set-var(txn.authorized) str(yes) if host_grafana role_grafana_browser method_grafana_browser
+{% for route in monitoring_haproxy_loki_writer_routes %}
+  acl method_loki_writer_{{ loop.index0 }} method {{ route.method }}
+  acl path_loki_writer_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_loki role_alloy_loki_writer method_loki_writer_{{ loop.index0 }} path_loki_writer_{{ loop.index0 }}
+{% endfor %}
+{% for route in monitoring_haproxy_loki_query_routes %}
+  acl method_loki_query_{{ loop.index0 }} method {{ route.method }}
+  acl path_loki_query_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_loki role_grafana_loki_query method_loki_query_{{ loop.index0 }} path_loki_query_{{ loop.index0 }}
+{% endfor %}
+{% for route in monitoring_haproxy_mimir_writer_routes %}
+  acl method_mimir_writer_{{ loop.index0 }} method {{ route.method }}
+  acl path_mimir_writer_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_mimir role_alloy_mimir_writer method_mimir_writer_{{ loop.index0 }} path_mimir_writer_{{ loop.index0 }}
+{% endfor %}
+{% for route in monitoring_haproxy_mimir_query_routes %}
+  acl method_mimir_query_{{ loop.index0 }} method {{ route.method }}
+  acl path_mimir_query_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_mimir role_grafana_mimir_query method_mimir_query_{{ loop.index0 }} path_mimir_query_{{ loop.index0 }}
+{% endfor %}
+{% for route in monitoring_haproxy_alertmanager_routes %}
+  acl method_alertmanager_{{ loop.index0 }} method {{ route.method }}
+  acl path_alertmanager_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_alertmanager role_grafana_alertmanager method_alertmanager_{{ loop.index0 }} path_alertmanager_{{ loop.index0 }}
+{% endfor %}
+{% for method in monitoring_haproxy_s3_methods %}
+  acl method_s3_{{ method | lower }} method {{ method }}
+  http-request set-var(txn.authorized) str(yes) if host_s3 role_garage_s3 method_s3_{{ method | lower }}
+{% endfor %}
+{% for method in monitoring_haproxy_s3_probe_methods %}
+  acl method_s3_probe_{{ method | lower }} method {{ method }}
+  http-request set-var(txn.authorized) str(yes) if host_s3 role_monitoring_s3_probe method_s3_probe_{{ method | lower }}
+{% endfor %}
+{% for service, routes in {
+  'grafana': monitoring_haproxy_grafana_probe_routes,
+  'loki': monitoring_haproxy_loki_probe_routes,
+  'mimir': monitoring_haproxy_mimir_probe_routes
+}.items() %}
+{% for route in routes %}
+  acl method_{{ service }}_probe_{{ loop.index0 }} method {{ route.method }}
+  acl path_{{ service }}_probe_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_{{ service }} role_monitoring_probe method_{{ service }}_probe_{{ loop.index0 }} path_{{ service }}_probe_{{ loop.index0 }}
+{% endfor %}
+{% endfor %}
+{% for route in monitoring_haproxy_operator_routes %}
+  acl method_operator_{{ loop.index0 }} method {{ route.method }}
+  acl path_operator_{{ loop.index0 }} path -m str {{ route.path }}
+  http-request set-var(txn.authorized) str(yes) if host_{{ route.service }} role_operator monitoring_operator_source method_operator_{{ loop.index0 }} path_operator_{{ loop.index0 }}
+{% endfor %}
+  http-request deny deny_status 403 unless { var(txn.authorized) -m str yes }
+  http-request set-header X-Scope-OrgID {{ monitoring_haproxy_tenant }} if host_loki
+  http-request set-header X-Scope-OrgID {{ monitoring_haproxy_tenant }} if host_mimir
+  http-request set-header X-Scope-OrgID {{ monitoring_haproxy_tenant }} if host_alertmanager
+  use_backend grafana_backend if host_grafana
+  use_backend loki_backend if host_loki
+  use_backend mimir_backend if host_mimir
+  use_backend alertmanager_backend if host_alertmanager
+  use_backend s3_backend if host_s3
+
+frontend monitoring_postgresql
+  bind {{ monitoring_haproxy_frontend_bind_address }}:{{ monitoring_haproxy_postgresql_frontend_port }}
+  mode tcp
+  option tcplog
+  acl monitoring_postgresql_source src {{ monitoring_haproxy_postgresql_allowed_sources | join(' ') }}
+  tcp-request connection reject unless monitoring_postgresql_source
+  default_backend postgresql_primary
+
+frontend monitoring_metrics
+  bind {{ monitoring_haproxy_metrics_bind_address }}:{{ monitoring_haproxy_metrics_port }}
+  mode http
+  acl monitoring_metrics_source src {{ monitoring_haproxy_metrics_allowed_sources | join(' ') }}
+  http-request deny deny_status 403 unless monitoring_metrics_source
+  http-request use-service prometheus-exporter if { path -m str {{ monitoring_haproxy_metrics_path }} }
+  http-request deny deny_status 404
+  no log
+
+{% macro tls_http_backend(service, dns) -%}
+backend {{ service }}_backend
+  mode http
+  option httpchk
+  http-check send meth {{ monitoring_haproxy_health_policies[service].method }} uri {{ monitoring_haproxy_health_policies[service].path }} ver HTTP/1.1 hdr Host {{ dns }}
+  http-check expect status 200
+{% for target in monitoring_haproxy_backends[service].targets %}
+  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends[service].port }} ssl check verify required ca-file {{ monitoring_haproxy_backend_ca_path }} crt {{ monitoring_haproxy_backend_client_pem_path }} sni str({{ target.tls_server_name }}) check-sni {{ target.tls_server_name }} verifyhost {{ target.tls_server_name }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
+{% endfor %}
+{%- endmacro %}
+{{ tls_http_backend('grafana', monitoring_haproxy_grafana_dns) }}
+{{ tls_http_backend('loki', monitoring_haproxy_loki_dns) }}
+{{ tls_http_backend('mimir', monitoring_haproxy_mimir_dns) }}
+{{ tls_http_backend('alertmanager', monitoring_haproxy_alertmanager_dns) }}
+backend s3_backend
+  mode http
+  option httpchk
+  http-check send meth GET uri /health ver HTTP/1.1 hdr Host localhost
+  http-check expect status 200
+{% for target in monitoring_haproxy_backends.s3.targets %}
+  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends.s3.port }} check port {{ monitoring_haproxy_backends.s3.health_port }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
+{% endfor %}
+
+backend postgresql_primary
+  mode tcp
+  option httpchk
+  http-check send meth HEAD uri /primary ver HTTP/1.1 hdr Host {{ monitoring_haproxy_postgresql_dns }}
+  http-check expect status 200
+{% for target in monitoring_haproxy_backends.postgresql.targets %}
+  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends.postgresql.port }} check port {{ monitoring_haproxy_backends.postgresql.health_port }} check-ssl check-sni {{ target.tls_server_name }} verify required ca-file {{ monitoring_haproxy_backend_ca_path }} crt {{ monitoring_haproxy_backend_client_pem_path }} verifyhost {{ target.tls_server_name }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
+{% endfor %}

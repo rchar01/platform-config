@@ -5,20 +5,36 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROCKY_IMAGE="${MONITORING_HAPROXY_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 CONTAINER="platform-config-monitoring-haproxy-capability-$$"
 TEST_DIR=/etc/monitoring-haproxy-test
-
-cleanup() {
-  if [[ "${MONITORING_HAPROXY_KEEP_CONTAINER:-0}" == 1 ]]; then
-    printf 'Retained capability container: %s\n' "$CONTAINER" >&2
-    return
-  fi
-  podman rm -f "$CONTAINER" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
+RENDER_PARENT="$ROOT_DIR/.ansible"
+RENDER_DIR=""
 
 fail() {
   printf '%s\n' "$1" >&2
   exit 1
 }
+
+cleanup() {
+  if [[ "${MONITORING_HAPROXY_KEEP_CONTAINER:-0}" == 1 ]]; then
+    printf 'Retained capability container: %s\n' "$CONTAINER" >&2
+  else
+    podman rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$RENDER_DIR" ]]; then
+    rm -rf -- "$RENDER_DIR"
+  fi
+}
+trap cleanup EXIT
+
+if [[ -L "$RENDER_PARENT" ]]; then
+  fail 'Monitoring HAProxy render parent must not be a symlink'
+fi
+mkdir -p "$RENDER_PARENT"
+RENDER_DIR="$(mktemp -d "$RENDER_PARENT/monitoring-haproxy-render.XXXXXXXX")"
+RENDER_NAME="$(basename "$RENDER_DIR")"
+"$ROOT_DIR/scripts/in-container" ansible-playbook \
+  tests/fixtures/monitoring-haproxy/render.yml \
+  -e "monitoring_haproxy_test_output_dir=/workspace/.ansible/$RENDER_NAME" \
+  >/dev/null
 
 client_request() {
   local identity=$1
@@ -40,11 +56,11 @@ client_request() {
     --http1.1 \
     --cacert "$TEST_DIR/server-ca.crt" \
     --cert "$TEST_DIR/${identity}.pem" \
-    --resolve "${connect_host}:8443:127.0.0.1" \
+    --resolve "${connect_host}:443:127.0.0.1" \
     "${method_args[@]}" \
     -H "Host: ${request_host}" \
     "$@" \
-    "https://${connect_host}:8443${path}"
+    "https://${connect_host}:443${path}"
 }
 
 client_status() {
@@ -53,7 +69,7 @@ client_status() {
 
 postgres_round_trip() {
   podman exec "$CONTAINER" python3 -c \
-    'import socket; s=socket.create_connection(("127.0.0.1",15432),2); s.sendall(b"pg-canary"); print(s.recv(64).decode("ascii")); s.close()'
+    'import socket; s=socket.create_connection(("127.0.0.1",5432),2); s.sendall(b"pg-canary"); print(s.recv(64).decode("ascii")); s.close()'
 }
 
 assert_frontend_tls_rejected() {
@@ -72,10 +88,10 @@ assert_frontend_tls_rejected() {
     --max-time 3 --http1.1 \
     --cacert "$TEST_DIR/server-ca.crt" \
     "${certificate_args[@]}" \
-    --resolve "${host}:8443:127.0.0.1" \
+    --resolve "${host}:443:127.0.0.1" \
     -H "Host: ${host}" \
     --output /dev/null --write-out '%{http_code}' \
-    "https://${host}:8443/" 2>/dev/null)"
+    "https://${host}:443/" 2>/dev/null)"
   status=$?
   set -e
 
@@ -89,7 +105,7 @@ assert_frontend_alpn() {
   local output
 
   output="$(podman exec --interactive "$CONTAINER" openssl s_client \
-    -connect 127.0.0.1:8443 \
+    -connect 127.0.0.1:443 \
     -servername grafana.test.invalid \
     -cert "$TEST_DIR/grafana-browser.crt" \
     -key "$TEST_DIR/grafana-browser.key" \
@@ -122,11 +138,14 @@ podman exec "$CONTAINER" mkdir -p "$TEST_DIR"
 podman exec "$CONTAINER" bash \
   /workspace/tests/fixtures/monitoring-haproxy/setup-pki.sh
 podman exec "$CONTAINER" install -m 0640 \
-  /workspace/tests/fixtures/monitoring-haproxy/capability.cfg \
-  "$TEST_DIR/haproxy.cfg"
+  "/workspace/.ansible/$RENDER_NAME/roles.map" \
+  "$TEST_DIR/rendered-roles.map"
+podman exec "$CONTAINER" /usr/sbin/haproxy -c \
+  -f "/workspace/.ansible/$RENDER_NAME/haproxy.cfg" \
+  || fail 'HAProxy 3.0.5 rejected the rendered monitoring policy'
 podman exec "$CONTAINER" install -m 0640 \
-  /workspace/tests/fixtures/monitoring-haproxy/roles.map \
-  "$TEST_DIR/roles.map"
+  "/workspace/.ansible/$RENDER_NAME/haproxy.cfg" \
+  "$TEST_DIR/haproxy.cfg"
 
 for fixture in loki mimir grafana s3 wrong untrusted patroni; do
   printf '%s\n' 200 | podman exec --interactive "$CONTAINER" \
@@ -135,19 +154,21 @@ done
 
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
-  --bind 127.0.0.7 --port 18443 \
-  --cert "$TEST_DIR/s3-backend.test.invalid.crt" \
-  --key "$TEST_DIR/s3-backend.test.invalid.key" \
-  --client-ca "$TEST_DIR/client-ca/ca.crt" \
+  --bind 127.0.0.1 --port 19000 --plaintext \
   --expected-host s3.test.invalid --node s3 \
   --status-file /tmp/s3.status --sni-log /tmp/s3.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
-  --bind 127.0.0.2 --port 18443 \
+  --bind 127.0.0.1 --port 19001 --plaintext --allowed-path /health \
+  --expected-host localhost --node s3-admin \
+  --status-file /tmp/s3.status --sni-log /tmp/s3-admin.sni >/dev/null
+podman exec --detach "$CONTAINER" python3 \
+  /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
+  --bind 127.0.0.2 --port 18444 \
   --cert "$TEST_DIR/loki-backend.test.invalid.crt" \
   --key "$TEST_DIR/loki-backend.test.invalid.key" \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
-  --expected-host loki-backend.test.invalid --node loki \
+  --expected-host loki.test.invalid --node loki \
   --status-file /tmp/loki.status --sni-log /tmp/loki.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
@@ -155,40 +176,41 @@ podman exec --detach "$CONTAINER" python3 \
   --cert "$TEST_DIR/grafana-backend.test.invalid.crt" \
   --key "$TEST_DIR/grafana-backend.test.invalid.key" \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
-  --expected-host grafana-backend.test.invalid --node grafana \
+  --expected-host grafana.test.invalid --node grafana \
   --status-file /tmp/grafana.status --sni-log /tmp/grafana.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
-  --bind 127.0.0.8 --port 18443 \
+  --bind 127.0.0.8 --port 18445 \
   --cert "$TEST_DIR/mimir-backend.test.invalid.crt" \
   --key "$TEST_DIR/mimir-backend.test.invalid.key" \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
-  --expected-host mimir-backend.test.invalid --node mimir \
+  --expected-host mimir.test.invalid \
+  --expected-host alertmanager.test.invalid --node mimir \
   --status-file /tmp/mimir.status --sni-log /tmp/mimir.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
-  --bind 127.0.0.4 --port 18443 \
+  --bind 127.0.0.4 --port 18444 \
   --cert "$TEST_DIR/other-backend.test.invalid.crt" \
   --key "$TEST_DIR/other-backend.test.invalid.key" \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
-  --expected-host bad-backend.test.invalid --node wrong \
+  --expected-host loki.test.invalid --node wrong \
   --status-file /tmp/wrong.status --sni-log /tmp/wrong.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
-  --bind 127.0.0.6 --port 18443 \
+  --bind 127.0.0.6 --port 18444 \
   --cert "$TEST_DIR/untrusted-backend.test.invalid.crt" \
   --key "$TEST_DIR/untrusted-backend.test.invalid.key" \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
-  --expected-host untrusted-backend.test.invalid --node untrusted \
+  --expected-host loki.test.invalid --node untrusted \
   --status-file /tmp/untrusted.status --sni-log /tmp/untrusted.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/https_fixture.py \
-  --bind 127.0.0.5 --port 18443 \
+  --bind 127.0.0.5 --port 18448 \
   --cert "$TEST_DIR/patroni.test.invalid.crt" \
   --key "$TEST_DIR/patroni.test.invalid.key" \
   --client-ca "$TEST_DIR/client-ca/ca.crt" \
   --allowed-path /primary \
-  --expected-host patroni.test.invalid --node patroni \
+  --expected-host postgresql.test.invalid --node patroni \
   --status-file /tmp/patroni.status --sni-log /tmp/patroni.sni >/dev/null
 podman exec --detach "$CONTAINER" python3 \
   /workspace/tests/fixtures/monitoring-haproxy/tcp_fixture.py \
@@ -200,15 +222,15 @@ for _ in {1..30}; do
   wrong_fixture_response="$(podman exec "$CONTAINER" curl --silent --show-error --noproxy '*' \
     --max-time 3 --cacert "$TEST_DIR/server-ca.crt" \
     --cert "$TEST_DIR/backend-client.pem" \
-    --resolve other-backend.test.invalid:18443:127.0.0.4 \
-    -H 'Host: bad-backend.test.invalid' \
-    https://other-backend.test.invalid:18443/ready 2>/dev/null || true)"
+    --resolve other-backend.test.invalid:18444:127.0.0.4 \
+    -H 'Host: loki.test.invalid' \
+    https://other-backend.test.invalid:18444/ready 2>/dev/null || true)"
   untrusted_fixture_response="$(podman exec "$CONTAINER" curl --silent --show-error --noproxy '*' \
     --max-time 3 --cacert "$TEST_DIR/untrusted-ca.crt" \
     --cert "$TEST_DIR/backend-client.pem" \
-    --resolve untrusted-backend.test.invalid:18443:127.0.0.6 \
-    -H 'Host: untrusted-backend.test.invalid' \
-    https://untrusted-backend.test.invalid:18443/ready 2>/dev/null || true)"
+    --resolve loki-3.test.invalid:18444:127.0.0.6 \
+    -H 'Host: loki.test.invalid' \
+    https://loki-3.test.invalid:18444/ready 2>/dev/null || true)"
   if grep -q '"node":"wrong"' <<<"$wrong_fixture_response" \
     && grep -q '"node":"untrusted"' <<<"$untrusted_fixture_response"; then
     break
@@ -245,10 +267,25 @@ grep -q '"tenant":"synthetic-tenant"' <<<"$writer_response" \
 grep -q '"method":"POST"' <<<"$writer_response" \
   || fail 'Monitoring HAProxy did not route the synthetic writer request'
 
-query_response="$(client_request grafana-loki-query GET \
-  loki.test.invalid loki.test.invalid /loki/api/v1/query_range)"
-grep -q '"node":"loki"' <<<"$query_response" \
-  || fail 'Monitoring HAProxy rejected the mapped Loki query identity'
+query_response=""
+for _ in {1..30}; do
+  query_response="$(client_request grafana-loki-query GET \
+    loki.test.invalid loki.test.invalid /loki/api/v1/query_range \
+    --write-out $'\n%{http_code}' 2>/dev/null || true)"
+  if grep -q '"node":"loki"' <<<"$query_response"; then
+    break
+  fi
+  sleep 1
+done
+if ! grep -q '"node":"loki"' <<<"$query_response"; then
+  printf 'Loki query response: %s\n' "$query_response" >&2
+  fail 'Monitoring HAProxy rejected the mapped Loki query identity'
+fi
+alertmanager_response="$(client_request grafana-alertmanager GET \
+  alertmanager.test.invalid alertmanager.test.invalid \
+  /alertmanager/api/v2/alerts)"
+grep -q '"node":"mimir"' <<<"$alertmanager_response" \
+  || fail 'Monitoring HAProxy rejected the integrated Alertmanager route'
 [[ "$(client_status alloy-writer GET loki.test.invalid \
   loki.test.invalid /loki/api/v1/query_range)" == 403 ]] \
   || fail 'Monitoring HAProxy allowed a writer to query Loki'
@@ -292,6 +329,20 @@ mimir_probe_response="$(client_request monitoring-probe GET \
   mimir.test.invalid mimir.test.invalid /ready)"
 grep -q '"node":"mimir"' <<<"$mimir_probe_response" \
   || fail 'Monitoring HAProxy rejected the Mimir probe route'
+operator_response="$(client_request operator GET \
+  mimir.test.invalid mimir.test.invalid /-/ready)"
+grep -q '"node":"mimir"' <<<"$operator_response" \
+  || fail 'Monitoring HAProxy rejected an approved operator route and source'
+[[ "$(client_status operator GET loki.test.invalid \
+  loki.test.invalid /-/ready)" == 403 ]] \
+  || fail 'Monitoring HAProxy ignored operator route service qualification'
+[[ "$(podman exec "$CONTAINER" curl --silent --show-error --noproxy '*' \
+  --max-time 3 --http1.1 --interface 127.0.0.2 \
+  --cacert "$TEST_DIR/server-ca.crt" --cert "$TEST_DIR/operator.pem" \
+  --resolve mimir.test.invalid:443:127.0.0.1 \
+  -H 'Host: mimir.test.invalid' --output /dev/null --write-out '%{http_code}' \
+  https://mimir.test.invalid/-/ready)" == 403 ]] \
+  || fail 'Monitoring HAProxy accepted an operator outside its management source policy'
 [[ "$(client_status monitoring-probe GET grafana.test.invalid \
   grafana.test.invalid /login)" == 403 ]] \
   || fail 'Monitoring probe identity reached an unapproved Grafana path'
@@ -402,24 +453,28 @@ done
   loki.test.invalid /loki/api/v1/push --data '{}')" == 403 ]] \
   || fail 'Monitoring HAProxy allowed the S3 identity to reach Loki'
 
-bad_backend_response="$(client_request grafana-loki-query GET \
-  bad-backend.test.invalid bad-backend.test.invalid /ready \
-  --write-out $'\n%{http_code}' || true)"
-[[ "${bad_backend_response##*$'\n'}" == 503 ]] \
-  || fail 'Monitoring HAProxy did not exclude the wrong-identity HTTPS backend'
-if grep -q '"node":"wrong"' <<<"$bad_backend_response"; then
-  fail 'Monitoring HAProxy forwarded to a wrong-identity HTTPS backend'
+printf '%s\n' 503 | podman exec --interactive "$CONTAINER" \
+  tee /tmp/loki.status >/dev/null
+excluded_backend_response=""
+for _ in {1..10}; do
+  sleep 1
+  excluded_backend_response="$(client_request grafana-loki-query GET \
+    loki.test.invalid loki.test.invalid /loki/api/v1/query_range \
+    --write-out $'\n%{http_code}' || true)"
+  if [[ "${excluded_backend_response##*$'\n'}" == 503 ]]; then
+    break
+  fi
+done
+if [[ "${excluded_backend_response##*$'\n'}" != 503 ]]; then
+  printf 'Invalid TLS backend exclusion response: %s\n' \
+    "$excluded_backend_response" >&2
+  fail 'Monitoring HAProxy did not exclude invalid TLS backend identities'
 fi
-untrusted_backend_response="$(client_request grafana-loki-query GET \
-  untrusted-backend.test.invalid untrusted-backend.test.invalid /ready \
-  --write-out $'\n%{http_code}' || true)"
-[[ "${untrusted_backend_response##*$'\n'}" == 503 ]] \
-  || fail 'Monitoring HAProxy did not exclude the untrusted-CA HTTPS backend'
-if grep -q '"node":"untrusted"' <<<"$untrusted_backend_response"; then
-  fail 'Monitoring HAProxy forwarded to an untrusted-CA HTTPS backend'
+if grep -Eq '"node":"(wrong|untrusted)"' <<<"$excluded_backend_response"; then
+  fail 'Monitoring HAProxy forwarded to an invalid TLS backend identity'
 fi
 
-for fixture in loki mimir grafana s3 patroni; do
+for fixture in loki mimir grafana wrong untrusted patroni; do
   for _ in {1..30}; do
     if podman exec "$CONTAINER" test -s "/tmp/${fixture}.sni"; then
       break
@@ -433,8 +488,10 @@ podman exec "$CONTAINER" grep -qx mimir-backend.test.invalid /tmp/mimir.sni \
   || fail 'Monitoring HAProxy omitted Mimir backend SNI'
 podman exec "$CONTAINER" grep -qx grafana-backend.test.invalid /tmp/grafana.sni \
   || fail 'Monitoring HAProxy omitted Grafana backend SNI'
-podman exec "$CONTAINER" grep -qx s3-backend.test.invalid /tmp/s3.sni \
-  || fail 'Monitoring HAProxy omitted S3 backend SNI'
+podman exec "$CONTAINER" grep -qx loki-2.test.invalid /tmp/wrong.sni \
+  || fail 'Monitoring HAProxy omitted the configured wrong-identity test SNI'
+podman exec "$CONTAINER" grep -qx loki-3.test.invalid /tmp/untrusted.sni \
+  || fail 'Monitoring HAProxy omitted the configured untrusted-CA test SNI'
 podman exec "$CONTAINER" grep -qx patroni.test.invalid /tmp/patroni.sni \
   || fail 'Monitoring HAProxy omitted Patroni check SNI'
 

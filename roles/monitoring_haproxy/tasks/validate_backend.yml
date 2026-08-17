@@ -1,20 +1,14 @@
 ---
-- name: Assert monitoring HAProxy backend service contract
+- name: Assert monitoring HAProxy backend service shape
   ansible.builtin.assert:
     that:
       - monitoring_haproxy_backend_service.value is mapping
       - >-
         monitoring_haproxy_backend_service.value.keys() | list | sort
-        == ['port', 'targets']
-      - monitoring_haproxy_backend_service.value.port is integer
-      - monitoring_haproxy_backend_service.value.port >= 1
-      - monitoring_haproxy_backend_service.value.port <= 65535
-      - monitoring_haproxy_backend_service.value.targets is sequence
-      - monitoring_haproxy_backend_service.value.targets is not string
-      - monitoring_haproxy_backend_service.value.targets | length == 3
+        == ['health_port', 'port', 'targets']
     fail_msg: >-
-      Each monitoring HAProxy backend requires exactly one private integer port
-      between 1 and 65535 and exactly three targets.
+      Each monitoring HAProxy backend requires exact private service and health
+      ports plus the role-owned target count and port relationship.
 
 - name: Reject monitoring backend and HAProxy listener port collisions
   ansible.builtin.assert:
@@ -25,6 +19,55 @@
     fail_msg: >-
       Monitoring HAProxy backend ports must not collide with HAProxy-owned HTTPS,
       PostgreSQL frontend, or metrics listeners.
+
+- name: Assert monitoring HAProxy backend service values
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_backend_service.value.port is integer
+      - monitoring_haproxy_backend_service.value.port >= 1
+      - monitoring_haproxy_backend_service.value.port <= 65535
+      - monitoring_haproxy_backend_service.value.health_port is integer
+      - monitoring_haproxy_backend_service.value.health_port >= 1
+      - monitoring_haproxy_backend_service.value.health_port <= 65535
+      - monitoring_haproxy_backend_service.value.targets is sequence
+      - monitoring_haproxy_backend_service.value.targets is not string
+      - >-
+        monitoring_haproxy_backend_service.value.targets | length
+        == (1 if monitoring_haproxy_backend_service.key == 's3' else 3)
+    fail_msg: >-
+      Each monitoring HAProxy backend requires exact private service and health
+      ports plus the role-owned target count and port relationship.
+
+- name: Assert shared-listener monitoring health port relationship
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backend_service.value.health_port
+        == monitoring_haproxy_backend_service.value.port
+    fail_msg: >-
+      A shared-listener monitoring backend must share its service and health port.
+  when: >-
+    monitoring_haproxy_health_policies[
+      monitoring_haproxy_backend_service.key
+    ].port_relation == 'service'
+
+- name: Assert Garage Admin uses a separate health port
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backend_service.value.health_port
+        != monitoring_haproxy_backend_service.value.port
+    fail_msg: Monitoring S3 requires a separate Garage Admin health port.
+  when: monitoring_haproxy_backend_service.key == 's3'
+
+- name: Assert Patroni REST uses a separate health port
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_backend_service.value.health_port
+        != monitoring_haproxy_backend_service.value.port
+    fail_msg: Monitoring PostgreSQL requires a separate Patroni REST health port.
+  when: monitoring_haproxy_backend_service.key == 'postgresql'
 
 - name: Validate monitoring HAProxy backend targets
   ansible.builtin.include_tasks: validate_backend_target.yml
@@ -39,13 +82,21 @@
     that:
       - >-
         monitoring_haproxy_backend_service.value.targets
-        | map(attribute='name') | unique | length == 3
+        | map(attribute='name') | unique | length
+        == monitoring_haproxy_backend_service.value.targets | length
       - >-
         monitoring_haproxy_backend_service.value.targets
-        | map(attribute='address') | unique | length == 3
+        | map(attribute='address') | unique | length
+        == monitoring_haproxy_backend_service.value.targets | length
+    fail_msg: >-
+      Monitoring HAProxy backends require unique target names and addresses.
+
+- name: Assert monitoring TLS backend target identity uniqueness
+  ansible.builtin.assert:
+    that:
       - >-
         monitoring_haproxy_backend_service.value.targets
         | map(attribute='tls_server_name') | unique | length == 3
     fail_msg: >-
-      Monitoring HAProxy backends require unique target names, addresses, and TLS
-      server identities.
+      Monitoring TLS backends require three unique TLS server identities.
+  when: monitoring_haproxy_backend_service.key != 's3'

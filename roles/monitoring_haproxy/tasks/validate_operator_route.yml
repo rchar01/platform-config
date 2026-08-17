@@ -1,0 +1,24 @@
+---
+- name: Assert monitoring HAProxy operator route is exact and safe
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_operator_route is mapping
+      - >-
+        monitoring_haproxy_operator_route.keys() | sort
+        == ['method', 'path', 'service']
+      - monitoring_haproxy_operator_route.service is string
+      - monitoring_haproxy_operator_route.method is string
+      - monitoring_haproxy_operator_route.path is string
+      - >-
+        monitoring_haproxy_operator_route.service
+        in ['alertmanager', 'grafana', 'loki', 'mimir', 's3']
+      - >-
+        monitoring_haproxy_operator_route.method
+        in ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT']
+      - >-
+        monitoring_haproxy_operator_route.path
+        is match('^/(?!/)[A-Za-z0-9._~!$&''()+,;=:@%/-]*$')
+      - monitoring_haproxy_operator_route.path is not search('[*?{}]')
+    fail_msg: >-
+      Monitoring HAProxy operator routes require exactly an approved service,
+      method, and literal absolute path.

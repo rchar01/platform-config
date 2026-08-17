@@ -2,7 +2,10 @@
 - name: Assert monitoring HAProxy identity is safe
   ansible.builtin.assert:
     that:
+      - monitoring_haproxy_identity is mapping
       - monitoring_haproxy_identity.keys() | sort == ['role', 'subject_dn']
+      - monitoring_haproxy_identity.role is string
+      - monitoring_haproxy_identity.subject_dn is string
       - >-
         monitoring_haproxy_identity.role in [
           'alloy_loki_writer',

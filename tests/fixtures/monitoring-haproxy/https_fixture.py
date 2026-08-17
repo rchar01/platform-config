@@ -10,7 +10,7 @@ from typing import cast
 
 class FixtureServer(http.server.ThreadingHTTPServer):
     allowed_paths: tuple[str, ...]
-    expected_host: str
+    expected_hosts: tuple[str, ...]
     node: str
     status_file: Path
     sni_log: Path
@@ -19,7 +19,7 @@ class FixtureServer(http.server.ThreadingHTTPServer):
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
     def _respond(self):
         server = cast(FixtureServer, self.server)
-        if self.headers.get("Host") != server.expected_host:
+        if self.headers.get("Host") not in server.expected_hosts:
             self.send_response(421)
             self.end_headers()
             return
@@ -31,9 +31,10 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", "0"))
         payload = self.rfile.read(content_length)
         status = int(server.status_file.read_text(encoding="ascii").strip())
+        peer_certificate = getattr(self.connection, "getpeercert", lambda: {})()
         peer_subject = dict(
             attribute
-            for relative_name in self.connection.getpeercert().get("subject", ())
+            for relative_name in peer_certificate.get("subject", ())
             for attribute in relative_name
         )
         body = json.dumps(
@@ -74,11 +75,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bind", required=True)
     parser.add_argument("--port", required=True, type=int)
-    parser.add_argument("--cert", required=True)
-    parser.add_argument("--key", required=True)
-    parser.add_argument("--client-ca", required=True)
+    parser.add_argument("--cert")
+    parser.add_argument("--key")
+    parser.add_argument("--client-ca")
+    parser.add_argument("--plaintext", action="store_true")
     parser.add_argument("--allowed-path", action="append", default=[])
-    parser.add_argument("--expected-host", required=True)
+    parser.add_argument("--expected-host", action="append", required=True)
     parser.add_argument("--node", required=True)
     parser.add_argument("--status-file", required=True)
     parser.add_argument("--sni-log", required=True)
@@ -86,10 +88,18 @@ def main():
 
     server = FixtureServer((args.bind, args.port), FixtureHandler)
     server.allowed_paths = tuple(args.allowed_path)
-    server.expected_host = args.expected_host
+    server.expected_hosts = tuple(args.expected_host)
     server.node = args.node
     server.status_file = Path(args.status_file)
     server.sni_log = Path(args.sni_log)
+
+    if args.plaintext:
+        if args.cert or args.key or args.client_ca:
+            parser.error("--plaintext cannot be combined with TLS inputs")
+        server.serve_forever()
+        return
+    if not args.cert or not args.key or not args.client_ca:
+        parser.error("TLS mode requires --cert, --key, and --client-ca")
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2

@@ -41,8 +41,9 @@ monitoring_haproxy_contract_ready: false
 monitoring_haproxy_enabled: false
 monitoring_haproxy_service_enabled: false
 monitoring_haproxy_service_state: stopped
-# Private inventory must provide each exact per-service port plus three named
-# targets containing canonical IPv4 addresses and lowercase FQDN TLS server
-# identities before enabling the validation contract. Integrated Alertmanager
-# uses the exact Mimir port and target topology.
+# Private inventory must provide exact service and health ports. TLS backends use
+# three named canonical-IPv4 targets with lowercase FQDN TLS identities;
+# node-local Garage S3 uses one 127.0.0.1 target without a TLS identity and a
+# separate Garage Admin health port. PostgreSQL uses a separate Patroni REST
+# health port. Integrated Alertmanager uses the exact Mimir port and topology.
 monitoring_haproxy_backends: {}

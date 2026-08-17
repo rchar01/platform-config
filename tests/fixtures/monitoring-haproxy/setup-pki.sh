@@ -36,10 +36,12 @@ issue_client() {
 issue_client alloy-writer
 issue_client alloy-writer-wrong-subject alloy-writer unauthorized
 issue_client grafana-loki-query
+issue_client grafana-alertmanager
 issue_client grafana-browser grafana-browser users
 issue_client garage-s3 garage-s3 storage
 issue_client monitoring-probe monitoring-probe observers
 issue_client monitoring-s3-probe monitoring-s3-probe observers
+issue_client operator operator operators
 issue_client unmapped-client
 issue_client revoked-client
 issue_client haproxy-backend haproxy-backend backends
@@ -74,7 +76,7 @@ issue_server() {
 }
 
 issue_server frontend.test.invalid \
-  'DNS:loki.test.invalid,DNS:mimir.test.invalid,DNS:grafana.test.invalid,DNS:s3.test.invalid,DNS:bad-backend.test.invalid,DNS:untrusted-backend.test.invalid'
+  'DNS:loki.test.invalid,DNS:mimir.test.invalid,DNS:grafana.test.invalid,DNS:alertmanager.test.invalid,DNS:s3.test.invalid'
 issue_server loki-backend.test.invalid 'DNS:loki-backend.test.invalid'
 issue_server mimir-backend.test.invalid 'DNS:mimir-backend.test.invalid'
 issue_server grafana-backend.test.invalid 'DNS:grafana-backend.test.invalid'
@@ -101,8 +103,8 @@ openssl x509 -req -days 1 \
 cat "$PKI_DIR/untrusted-client.key" "$PKI_DIR/untrusted-client.crt" \
   >"$PKI_DIR/untrusted-client.pem"
 openssl req -newkey rsa:2048 -nodes \
-  -subj /CN=untrusted-backend.test.invalid \
-  -addext 'subjectAltName=DNS:untrusted-backend.test.invalid' \
+  -subj /CN=loki-3.test.invalid \
+  -addext 'subjectAltName=DNS:loki-3.test.invalid' \
   -addext 'extendedKeyUsage=serverAuth' \
   -keyout "$PKI_DIR/untrusted-backend.test.invalid.key" \
   -out "$PKI_DIR/untrusted-backend.test.invalid.csr" >/dev/null 2>&1

@@ -8,10 +8,29 @@ monitoring_haproxy_service_enabled: false
 monitoring_haproxy_service_state: stopped
 
 monitoring_haproxy_package_nevra: ""
+monitoring_haproxy_user: haproxy
+monitoring_haproxy_group: haproxy
+monitoring_haproxy_maxconn: 4096
+monitoring_haproxy_timeout_connect: 5s
+monitoring_haproxy_timeout_client: 50s
+monitoring_haproxy_timeout_server: 50s
+monitoring_haproxy_timeout_check: 4s
+monitoring_haproxy_check_interval: 2s
+monitoring_haproxy_check_rise: 2
+monitoring_haproxy_check_fall: 2
 monitoring_haproxy_https_port: 443
 monitoring_haproxy_postgresql_frontend_port: 5432
 monitoring_haproxy_metrics_bind_address: ""
 monitoring_haproxy_metrics_port: 0
+monitoring_haproxy_metrics_path: /metrics
+
+monitoring_haproxy_frontend_bind_address: "*"
+monitoring_haproxy_frontend_pem_path: /etc/haproxy/tls/monitoring-frontend.pem
+monitoring_haproxy_client_ca_path: /etc/haproxy/tls/monitoring-client-ca.crt
+monitoring_haproxy_client_crl_path: /etc/haproxy/tls/monitoring-client-ca.crl
+monitoring_haproxy_backend_ca_path: /etc/haproxy/tls/monitoring-backend-ca.crt
+monitoring_haproxy_backend_client_pem_path: /etc/haproxy/tls/monitoring-backend-client.pem
+monitoring_haproxy_identity_map_path: /etc/haproxy/maps/monitoring-roles.map
 
 monitoring_haproxy_grafana_dns: ""
 monitoring_haproxy_loki_dns: ""
@@ -47,6 +66,12 @@ monitoring_haproxy_mimir_probe_routes:
 monitoring_haproxy_s3_probe_methods:
   - DELETE
   - GET
+  - PUT
+monitoring_haproxy_s3_methods:
+  - DELETE
+  - GET
+  - HEAD
+  - POST
   - PUT
 
 monitoring_haproxy_https_allowed_sources: []
