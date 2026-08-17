@@ -4,8 +4,7 @@ umask 077
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOCK="${ROOT_DIR}/tests/fixtures/monitoring-artifacts/candidates.json"
-POSTGRES_IMAGE="${MONITORING_GRAFANA_POSTGRES_IMAGE:-localhost/postgres-patroni:dev}"
-POSTGRES_EXPECTED_DIGEST='sha256:aa1fa024dd06337ae70ad55775ed07f8e472f630f903125b975fb26b8b63f52b'
+POSTGRES_LOCK="${ROOT_DIR}/tests/fixtures/monitoring-artifacts/postgres-patroni.json"
 ETCD_IMAGE='gcr.io/etcd-development/etcd@sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6'
 TEST_DIR="$(mktemp -d)"
 RUN_ID="platform-config-grafana-postgresql-${TEST_DIR##*/}"
@@ -131,22 +130,71 @@ GRAFANA_VERSION="$(jq -er '.components.grafana.version' "$LOCK")"
 GRAFANA_IMAGE="$(jq -er '
   .components.grafana.repository + "@" + .components.grafana.index_digest
 ' "$LOCK")"
+POSTGRES_IMAGE="$(jq -er '.image.immutable_reference' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_DIGEST="$(jq -er '.image.digest' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_REPOSITORY="$(jq -er '.image.repository' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_PLATFORM="$(jq -er '.image.platform' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_RELEASE_VERSION="$(jq -er '.release.version' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_VERSION="$(jq -er '.components.postgresql' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_PATRONI="$(jq -er '.components.patroni' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_PGBACKREST="$(jq -er '.components.pgbackrest' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_REVISION="$(jq -er '.release.source_revision' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_SOURCE="$(jq -er '.release.source_repository' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_CREATED="$(jq -er '.image.created' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_USER="$(jq -er '.image.configured_user' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_ENTRYPOINT="$(jq -cer '.image.entrypoint' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_COMMAND="$(jq -cer '.image.command' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_COMPONENTS_DIGEST="$(jq -er '.image.components_digest' "$POSTGRES_LOCK")"
+POSTGRES_EXPECTED_ROOT_LAYOUT="$(jq -er '.image.root_layout' "$POSTGRES_LOCK")"
+[[ "$POSTGRES_EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+  || fail 'PostgreSQL release lock has an invalid digest'
+[[ "$POSTGRES_IMAGE" == "${POSTGRES_EXPECTED_REPOSITORY}@${POSTGRES_EXPECTED_DIGEST}" ]] \
+  || fail 'PostgreSQL immutable reference does not match its repository and digest'
+jq -e '.image.mutable_tag_authoritative == false' "$POSTGRES_LOCK" >/dev/null \
+  || fail 'PostgreSQL release lock must not treat the mutable tag as authoritative'
 
 LAST_STAGE='exact image preflight'
+printf '%s\n' '{"auths":{}}' >"$TEST_DIR/registry-auth.json"
+chmod 0600 "$TEST_DIR/registry-auth.json"
 timeout "$PULL_TIMEOUT" podman pull --quiet --platform linux/amd64 \
-  "$GRAFANA_IMAGE" >/dev/null
+  --authfile "$TEST_DIR/registry-auth.json" "$GRAFANA_IMAGE" >/dev/null
 timeout "$PULL_TIMEOUT" podman pull --quiet --platform linux/amd64 \
-  "$ETCD_IMAGE" >/dev/null
+  --authfile "$TEST_DIR/registry-auth.json" "$ETCD_IMAGE" >/dev/null
+timeout "$PULL_TIMEOUT" podman pull --quiet --platform "$POSTGRES_EXPECTED_PLATFORM" \
+  --authfile "$TEST_DIR/registry-auth.json" "$POSTGRES_IMAGE" >/dev/null
 postgres_metadata="$(timeout "$OPERATION_TIMEOUT" \
   podman image inspect "$POSTGRES_IMAGE" 2>/dev/null)" \
-  || fail "Qualified PostgreSQL image is unavailable: ${POSTGRES_IMAGE}; build it in ../postgres-patroni"
+  || fail "Published PostgreSQL image is unavailable: ${POSTGRES_IMAGE}"
 postgres_digest="$(jq -er '.[0].Digest' <<< "$postgres_metadata")"
 [[ "$postgres_digest" == "$POSTGRES_EXPECTED_DIGEST" ]] \
-  || fail "PostgreSQL candidate digest mismatch: ${postgres_digest}"
-[[ "$(jq -er '.[0].Os + "/" + .[0].Architecture' <<< "$postgres_metadata")" == linux/amd64 ]] \
-  || fail 'PostgreSQL candidate is not Linux/AMD64'
-[[ "$(jq -er '.[0].Config.User' <<< "$postgres_metadata")" == 26:26 ]] \
-  || fail 'PostgreSQL candidate does not use configured UID/GID 26:26'
+  || fail "Published PostgreSQL digest mismatch: ${postgres_digest}"
+[[ "$(jq -er --arg reference "$POSTGRES_IMAGE" '
+  .[0].RepoDigests | index($reference) != null
+' <<< "$postgres_metadata")" == true ]] \
+  || fail 'Published PostgreSQL immutable reference is absent from RepoDigests'
+[[ "$(jq -er '.[0].Os + "/" + .[0].Architecture' <<< "$postgres_metadata")" == "$POSTGRES_EXPECTED_PLATFORM" ]] \
+  || fail "Published PostgreSQL image is not ${POSTGRES_EXPECTED_PLATFORM}"
+[[ "$(jq -er '.[0].Config.User' <<< "$postgres_metadata")" == "$POSTGRES_EXPECTED_USER" ]] \
+  || fail "Published PostgreSQL image does not use configured UID/GID ${POSTGRES_EXPECTED_USER}"
+[[ "$(jq -cer '.[0].Config.Entrypoint' <<< "$postgres_metadata")" == "$POSTGRES_EXPECTED_ENTRYPOINT" ]] \
+  || fail 'Published PostgreSQL image has the wrong entrypoint'
+[[ "$(jq -cer '.[0].Config.Cmd' <<< "$postgres_metadata")" == "$POSTGRES_EXPECTED_COMMAND" ]] \
+  || fail 'Published PostgreSQL image has the wrong command'
+jq -e \
+  --arg version "$POSTGRES_EXPECTED_RELEASE_VERSION" \
+  --arg revision "$POSTGRES_EXPECTED_REVISION" \
+  --arg source "$POSTGRES_EXPECTED_SOURCE" \
+  --arg created "$POSTGRES_EXPECTED_CREATED" \
+  --arg components "$POSTGRES_EXPECTED_COMPONENTS_DIGEST" \
+  --arg root_layout "$POSTGRES_EXPECTED_ROOT_LAYOUT" '
+    .[0].Config.Labels["org.opencontainers.image.version"] == $version and
+    .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
+    .[0].Config.Labels["org.opencontainers.image.source"] == $source and
+    .[0].Config.Labels["org.opencontainers.image.created"] == $created and
+    .[0].Config.Labels["io.postgres-patroni.components.digest"] == $components and
+    .[0].Config.Labels["io.postgres-patroni.root-layout"] == $root_layout
+  ' <<< "$postgres_metadata" >/dev/null \
+  || fail 'Published PostgreSQL image labels do not match the release lock'
 POSTGRES_IMAGE_ID="$(jq -er '.[0].Id' <<< "$postgres_metadata")"
 GRAFANA_IMAGE_ID="$(timeout "$OPERATION_TIMEOUT" \
   podman image inspect --format '{{.Id}}' "$GRAFANA_IMAGE")"
@@ -353,12 +401,12 @@ wait_for_postgresql() {
   while ((SECONDS < deadline)); do
     if state="$(postgres_query postgres \
       "SELECT current_setting('server_version') || '|' || pg_is_in_recovery()" \
-      2>&1)" && [[ "$state" == '18.4|false' ]]; then
+      2>&1)" && [[ "$state" == "${POSTGRES_EXPECTED_VERSION}|false" ]]; then
       return 0
     fi
     sleep 1
   done
-  fail "PostgreSQL 18.4 did not become writable within ${READY_TIMEOUT}s: ${state:-no response}"
+  fail "PostgreSQL ${POSTGRES_EXPECTED_VERSION} did not become writable within ${READY_TIMEOUT}s: ${state:-no response}"
 }
 
 create_grafana() {
@@ -563,8 +611,14 @@ postgres_container_image="$(timeout "$OPERATION_TIMEOUT" podman inspect \
   || "$postgres_container_image" == "$POSTGRES_IMAGE_ID" ]] \
   || fail 'PostgreSQL container did not use the qualified image'
 [[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$POSTGRES_CONTAINER" \
-  /opt/patroni/bin/patroni --version)" == 'patroni 4.1.4' ]] \
-  || fail 'PostgreSQL candidate did not provide Patroni 4.1.4'
+  /opt/patroni/bin/patroni --version)" == "patroni ${POSTGRES_EXPECTED_PATRONI}" ]] \
+  || fail "Published PostgreSQL image did not provide Patroni ${POSTGRES_EXPECTED_PATRONI}"
+[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$POSTGRES_CONTAINER" \
+  /usr/pgsql-18/bin/postgres --version)" == "postgres (PostgreSQL) ${POSTGRES_EXPECTED_VERSION}" ]] \
+  || fail "Published PostgreSQL image did not provide PostgreSQL ${POSTGRES_EXPECTED_VERSION}"
+[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$POSTGRES_CONTAINER" \
+  /usr/bin/pgbackrest version)" == "pgBackRest ${POSTGRES_EXPECTED_PGBACKREST}" ]] \
+  || fail "Published PostgreSQL image did not provide pgBackRest ${POSTGRES_EXPECTED_PGBACKREST}"
 postgres_query postgres \
   "CREATE ROLE grafana LOGIN PASSWORD '${GRAFANA_DB_PASSWORD}'" >/dev/null
 postgres_query postgres 'CREATE DATABASE grafana OWNER grafana' >/dev/null
@@ -727,4 +781,4 @@ done
   || fail 'Grafana migration state was not clean after PostgreSQL recovery'
 
 printf '%s\n' \
-  "Verified Grafana ${GRAFANA_VERSION} concurrent migrations (${migration_count} unique successful records; lock contender ${MIGRATION_LOCK_MEMBER}) and shared-state recovery against PostgreSQL 18.4 (${POSTGRES_EXPECTED_DIGEST})."
+  "Verified Grafana ${GRAFANA_VERSION} concurrent migrations (${migration_count} unique successful records; lock contender ${MIGRATION_LOCK_MEMBER}) and shared-state recovery against PostgreSQL ${POSTGRES_EXPECTED_VERSION} (${POSTGRES_EXPECTED_DIGEST})."

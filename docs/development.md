@@ -253,9 +253,16 @@ partitions, replacement, capacity, backup/restore, disk-full, or corruption
 behavior.
 
 `make test-monitoring-grafana-postgresql` runs a three-member qualification with
-the locked Grafana `13.1.3` image against the locally qualified Linux/AMD64
-PostgreSQL `18.4` and Patroni `4.1.4` candidate digest from the sibling
-`postgres-patroni` repository. It first starts a separate process that must
+the locked Grafana `13.1.3` image against published Linux/AMD64
+`postgres-patroni` `0.2.1`, containing PostgreSQL `18.6`, Patroni `4.1.4`, and
+pgBackRest `2.59.0`. The authoritative image identity is the digest-only
+reference recorded in
+`tests/fixtures/monitoring-artifacts/postgres-patroni.json`; the mutable release
+tag is metadata and is never pulled or used as a deployment identity. The lane
+pulls the immutable reference with an empty registry auth file, verifies its
+digest, platform, runtime user, entrypoint, command, source/revision/version,
+component digest, and curated-runtime labels, then uses the inspected image ID
+with `--pull never`. It first starts a separate process that must
 reject an untrusted PostgreSQL CA, then starts all three Grafana members against
 one empty database and requires exactly 713 unique successful migrations with
 no failed migration. The lane
@@ -271,11 +278,12 @@ observes database degradation, reconnects PostgreSQL, and requires all three
 Grafana processes and the dashboard to recover. The invocation-local bridge
 and PKI, single PostgreSQL member, direct application ports, generated
 credentials, and short timeouts are harness-only settings. The lane pulls the
-immutable Grafana and etcd references and requires
-`localhost/postgres-patroni:dev` at the recorded candidate digest; build the
-PostgreSQL image in `../postgres-patroni` first. It does not prove PostgreSQL HA
-failover or process restart, HAProxy/VIP behavior, production PKI,
-backup/restore, capacity, or managed-host deployment.
+immutable Grafana, etcd, and PostgreSQL references. It does not prove PostgreSQL
+HA failover or process restart, HAProxy/VIP behavior, production PKI,
+backup/restore, capacity, or managed-host deployment. The PostgreSQL release
+lock records verified managed-key destination signing, a non-authoritative
+mutable tag, and release-authority provenance without an independent builder;
+those limitations must remain visible in downstream acceptance.
 
 `make test-openbao-haproxy-rocky` installs the approved exact HAProxy `3.0`
 package in a disposable Rocky systemd container. It verifies check mode, exact
