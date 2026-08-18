@@ -184,3 +184,13 @@ def test_reuse_mode_guards_all_disk_and_vg_mutators(repo_root: Path) -> None:
     assert "vgcreate" not in task_text
     assert "vgextend" not in task_text
     assert "vgreduce" not in task_text
+
+
+def test_mounted_volume_restores_only_mount_root_selinux_type(
+    repo_root: Path,
+) -> None:
+    tasks = _load_yaml(repo_root / "roles/storage_volume/tasks/volume.yml")
+    ownership = _task(tasks, "Ensure mounted storage volume ownership")
+
+    assert ownership["ansible.builtin.file"]["setype"] == "_default"
+    assert "recurse" not in ownership["ansible.builtin.file"]

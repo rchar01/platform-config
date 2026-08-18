@@ -41,6 +41,10 @@ storage_volumes:
 
 Default mount options are `defaults,rw,nosuid,nodev,relatime`. Add `noexec` per volume only when the service is known to support it.
 
+After mounting, the role restores the policy-defined SELinux type on the mount
+root. This is intentionally non-recursive so service-managed labels below the
+mount, such as Podman's `container_file_t`, remain unchanged.
+
 Bounded multi-volume example:
 
 ```yaml

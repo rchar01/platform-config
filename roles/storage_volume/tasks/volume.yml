@@ -278,4 +278,5 @@
     owner: "{{ storage_volume_owner }}"
     group: "{{ storage_volume_group }}"
     mode: "{{ storage_volume_mode }}"
+    setype: _default
   when: not storage_volume_skip_lvm_tasks | bool
