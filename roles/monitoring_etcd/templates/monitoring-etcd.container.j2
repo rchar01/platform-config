@@ -1,0 +1,30 @@
+[Unit]
+Description=Monitoring Patroni etcd Member
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image={{ monitoring_etcd_image }}
+ContainerName={{ monitoring_etcd_container_name }}
+User={{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }}
+UserNS=keep-id:uid={{ monitoring_etcd_runtime_uid }},gid={{ monitoring_etcd_runtime_gid }}
+Network=host
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+PodmanArgs=--arch={{ monitoring_etcd_image_architecture }}
+Volume={{ monitoring_etcd_config_path }}:{{ monitoring_etcd_container_config_path }}:ro,Z
+Volume={{ monitoring_etcd_tls_dir }}:{{ monitoring_etcd_container_tls_dir }}:ro,Z
+Volume={{ monitoring_etcd_data_dir }}:{{ monitoring_etcd_container_data_dir }}:Z
+Exec=/usr/local/bin/etcd --config-file {{ monitoring_etcd_container_config_path }}
+
+[Service]
+Restart={{ monitoring_etcd_quadlet_restart_policy }}
+RestartSec={{ monitoring_etcd_quadlet_restart_sec }}
+TimeoutStartSec={{ monitoring_etcd_quadlet_timeout_start_sec }}
+MemorySwapMax={{ monitoring_etcd_quadlet_memory_swap_max }}
+
+{% if monitoring_etcd_service_enabled | bool %}
+[Install]
+WantedBy=multi-user.target
+{% endif %}

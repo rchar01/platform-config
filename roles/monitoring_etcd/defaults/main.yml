@@ -1,0 +1,41 @@
+---
+monitoring_etcd_enabled: false
+monitoring_etcd_contract_ready: false
+monitoring_etcd_service_enabled: false
+monitoring_etcd_service_state: stopped
+
+monitoring_etcd_container_name: monitoring-etcd
+monitoring_etcd_quadlet_name: monitoring-etcd.container
+monitoring_etcd_service_name: monitoring-etcd.service
+monitoring_etcd_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/containers/systemd') }}"
+monitoring_etcd_quadlet_path: "{{ monitoring_etcd_quadlet_dir }}/{{ monitoring_etcd_quadlet_name }}"
+
+monitoring_etcd_config_dir: /etc/monitoring/etcd
+monitoring_etcd_config_path: "{{ monitoring_etcd_config_dir }}/etcd.yml"
+monitoring_etcd_tls_dir: "{{ monitoring_etcd_config_dir }}/pki"
+monitoring_etcd_tls_ca_path: "{{ monitoring_etcd_tls_dir }}/ca.crt"
+monitoring_etcd_tls_cert_path: "{{ monitoring_etcd_tls_dir }}/tls.crt"
+monitoring_etcd_tls_key_path: "{{ monitoring_etcd_tls_dir }}/tls.key"
+monitoring_etcd_data_dir: /srv/monitoring/etcd
+
+monitoring_etcd_container_config_dir: /etc/etcd
+monitoring_etcd_container_config_path: "{{ monitoring_etcd_container_config_dir }}/etcd.yml"
+monitoring_etcd_container_tls_dir: "{{ monitoring_etcd_container_config_dir }}/pki"
+monitoring_etcd_container_data_dir: /var/lib/etcd
+
+monitoring_etcd_cluster_members: []
+monitoring_etcd_node_name: ""
+monitoring_etcd_node_address: ""
+monitoring_etcd_node_dns: ""
+monitoring_etcd_initial_cluster_token: ""
+
+monitoring_etcd_tls_ca_src: ""
+monitoring_etcd_tls_cert_src: ""
+monitoring_etcd_tls_key_src: ""
+
+monitoring_etcd_logger: zap
+monitoring_etcd_log_level: warn
+monitoring_etcd_quadlet_restart_policy: on-failure
+monitoring_etcd_quadlet_restart_sec: 5s
+monitoring_etcd_quadlet_timeout_start_sec: 90s
+monitoring_etcd_quadlet_memory_swap_max: "0"

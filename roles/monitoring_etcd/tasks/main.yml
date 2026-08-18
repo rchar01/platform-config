@@ -1,0 +1,16 @@
+---
+- name: Assert monitoring etcd lifecycle selectors
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_enabled is boolean
+      - monitoring_etcd_service_enabled is boolean
+      - not monitoring_etcd_service_enabled
+      - monitoring_etcd_service_state == 'stopped'
+    fail_msg: >-
+      The monitoring etcd role currently validates its disabled three-member
+      contract only. Service convergence remains unavailable until
+      package, storage, PKI, firewall, SELinux, and lifecycle work is complete.
+
+- name: Validate staged monitoring etcd contract
+  ansible.builtin.include_tasks: validate.yml
+  when: monitoring_etcd_enabled

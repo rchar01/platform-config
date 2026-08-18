@@ -1,0 +1,65 @@
+---
+- name: Render monitoring etcd role fixtures
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  pre_tasks:
+    - name: Load monitoring etcd role defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../../roles/monitoring_etcd/defaults/main.yml"
+
+    - name: Load locked monitoring etcd role variables
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../../roles/monitoring_etcd/vars/main.yml"
+
+    - name: Configure monitoring etcd render fixture inputs
+      ansible.builtin.set_fact:
+        monitoring_etcd_enabled: true
+        monitoring_etcd_contract_ready: true
+        monitoring_etcd_service_enabled: false
+        monitoring_etcd_service_state: stopped
+        monitoring_etcd_initial_cluster_token: synthetic-monitoring-etcd
+        monitoring_etcd_tls_ca_src: /fixture/etcd/ca.crt
+        monitoring_etcd_tls_cert_src: /fixture/etcd/tls.crt
+        monitoring_etcd_tls_key_src: /fixture/etcd/tls.key
+        monitoring_etcd_node_name: monitoring-etcd-1
+        monitoring_etcd_node_address: 127.0.0.2
+        monitoring_etcd_node_dns: monitoring-etcd-1.test.invalid
+        monitoring_etcd_cluster_members:
+          - name: monitoring-etcd-1
+            address: 127.0.0.2
+            dns: monitoring-etcd-1.test.invalid
+          - name: monitoring-etcd-2
+            address: 127.0.0.3
+            dns: monitoring-etcd-2.test.invalid
+          - name: monitoring-etcd-3
+            address: 127.0.0.4
+            dns: monitoring-etcd-3.test.invalid
+  tasks:
+    - name: Validate monitoring etcd render fixture
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate
+
+    - name: Render monitoring etcd member configurations
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../../roles/monitoring_etcd/templates/etcd.yml.j2"
+        dest: "{{ monitoring_etcd_render_output_dir }}/{{ monitoring_etcd_render_member.name }}.yml"
+        mode: "0600"
+      loop: "{{ monitoring_etcd_cluster_members }}"
+      loop_control:
+        loop_var: monitoring_etcd_render_member
+      vars:
+        monitoring_etcd_template_node_name: "{{ monitoring_etcd_render_member.name }}"
+        monitoring_etcd_template_node_address: >-
+          {{
+            monitoring_etcd_template_listen_address
+            | default(monitoring_etcd_render_member.address)
+          }}
+        monitoring_etcd_template_node_dns: "{{ monitoring_etcd_render_member.dns }}"
+
+    - name: Render monitoring etcd Quadlet
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../../roles/monitoring_etcd/templates/monitoring-etcd.container.j2"
+        dest: "{{ monitoring_etcd_render_output_dir }}/monitoring-etcd.container"
+        mode: "0600"

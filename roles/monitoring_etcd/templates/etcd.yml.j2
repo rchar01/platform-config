@@ -1,0 +1,27 @@
+---
+name: {{ monitoring_etcd_template_node_name | default(monitoring_etcd_node_name) | to_json }}
+data-dir: {{ monitoring_etcd_container_data_dir | to_json }}
+listen-client-urls: {{ ('https://' ~ (monitoring_etcd_template_node_address | default(monitoring_etcd_node_address)) ~ ':' ~ monitoring_etcd_client_port) | to_json }}
+advertise-client-urls: {{ ('https://' ~ (monitoring_etcd_template_node_dns | default(monitoring_etcd_node_dns)) ~ ':' ~ monitoring_etcd_client_port) | to_json }}
+listen-peer-urls: {{ ('https://' ~ (monitoring_etcd_template_node_address | default(monitoring_etcd_node_address)) ~ ':' ~ monitoring_etcd_peer_port) | to_json }}
+initial-advertise-peer-urls: {{ ('https://' ~ (monitoring_etcd_template_node_dns | default(monitoring_etcd_node_dns)) ~ ':' ~ monitoring_etcd_peer_port) | to_json }}
+initial-cluster: "{% for member in monitoring_etcd_cluster_members %}{{ member.name }}=https://{{ member.dns }}:{{ monitoring_etcd_peer_port }}{{ ',' if not loop.last else '' }}{% endfor %}"
+initial-cluster-token: {{ monitoring_etcd_initial_cluster_token | to_json }}
+initial-cluster-state: {{ monitoring_etcd_initial_cluster_state | to_json }}
+client-transport-security:
+  cert-file: {{ (monitoring_etcd_container_tls_dir ~ '/tls.crt') | to_json }}
+  key-file: {{ (monitoring_etcd_container_tls_dir ~ '/tls.key') | to_json }}
+  trusted-ca-file: {{ (monitoring_etcd_container_tls_dir ~ '/ca.crt') | to_json }}
+  client-cert-auth: true
+  auto-tls: false
+peer-transport-security:
+  cert-file: {{ (monitoring_etcd_container_tls_dir ~ '/tls.crt') | to_json }}
+  key-file: {{ (monitoring_etcd_container_tls_dir ~ '/tls.key') | to_json }}
+  trusted-ca-file: {{ (monitoring_etcd_container_tls_dir ~ '/ca.crt') | to_json }}
+  client-cert-auth: true
+  auto-tls: false
+enable-v2: false
+logger: {{ monitoring_etcd_logger | to_json }}
+log-level: {{ monitoring_etcd_log_level | to_json }}
+log-outputs:
+  - "stderr"

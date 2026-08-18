@@ -1,0 +1,122 @@
+---
+- name: Assert monitoring etcd scalar contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_enabled is boolean
+      - monitoring_etcd_contract_ready is boolean
+      - monitoring_etcd_contract_ready
+      - monitoring_etcd_service_enabled is boolean
+      - not monitoring_etcd_service_enabled
+      - monitoring_etcd_service_state == 'stopped'
+      - monitoring_etcd_version == '3.6.14'
+      - monitoring_etcd_image_repository == 'gcr.io/etcd-development/etcd'
+      - >-
+        monitoring_etcd_image_digest
+        == 'sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6'
+      - >-
+        monitoring_etcd_image
+        == monitoring_etcd_image_repository ~ '@' ~ monitoring_etcd_image_digest
+      - monitoring_etcd_image_architecture == 'amd64'
+      - monitoring_etcd_image_declared_user == '0'
+      - monitoring_etcd_runtime_uid == '10001'
+      - monitoring_etcd_runtime_gid == '10001'
+      - monitoring_etcd_client_port == 2379
+      - monitoring_etcd_peer_port == 2380
+      - monitoring_etcd_client_port != monitoring_etcd_peer_port
+      - monitoring_etcd_initial_cluster_state == 'new'
+      - monitoring_etcd_logger == 'zap'
+      - monitoring_etcd_log_level in ['error', 'warn', 'info']
+      - >-
+        monitoring_etcd_initial_cluster_token
+        is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+    fail_msg: >-
+      Monitoring etcd requires the approved immutable image, explicit non-root
+      runtime, fixed ports, disabled lifecycle, and safe cluster token.
+
+- name: Assert monitoring etcd path contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_config_dir == '/etc/monitoring/etcd'
+      - monitoring_etcd_config_path == '/etc/monitoring/etcd/etcd.yml'
+      - monitoring_etcd_tls_dir == '/etc/monitoring/etcd/pki'
+      - monitoring_etcd_tls_ca_path == '/etc/monitoring/etcd/pki/ca.crt'
+      - monitoring_etcd_tls_cert_path == '/etc/monitoring/etcd/pki/tls.crt'
+      - monitoring_etcd_tls_key_path == '/etc/monitoring/etcd/pki/tls.key'
+      - monitoring_etcd_data_dir == '/srv/monitoring/etcd'
+      - monitoring_etcd_container_config_dir == '/etc/etcd'
+      - monitoring_etcd_container_config_path == '/etc/etcd/etcd.yml'
+      - monitoring_etcd_container_tls_dir == '/etc/etcd/pki'
+      - monitoring_etcd_container_data_dir == '/var/lib/etcd'
+      - monitoring_etcd_quadlet_dir == '/etc/containers/systemd'
+      - >-
+        monitoring_etcd_quadlet_path
+        == monitoring_etcd_quadlet_dir ~ '/monitoring-etcd.container'
+    fail_msg: Monitoring etcd paths must match the role-owned fixed layout.
+
+- name: Assert monitoring etcd controller TLS source contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_tls_source is string
+      - >-
+        monitoring_etcd_tls_source
+        is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+      - monitoring_etcd_tls_source is not search('(^|/)[.][.]?(/|$)')
+      - monitoring_etcd_tls_source is not search('(^|/)(latest|current)(/|$)')
+    fail_msg: >-
+      Monitoring etcd TLS sources require pinned canonical outside-Git paths.
+  loop:
+    - "{{ monitoring_etcd_tls_ca_src }}"
+    - "{{ monitoring_etcd_tls_cert_src }}"
+    - "{{ monitoring_etcd_tls_key_src }}"
+  loop_control:
+    loop_var: monitoring_etcd_tls_source
+    label: tls-source
+  no_log: true
+
+- name: Assert monitoring etcd cluster shape
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_cluster_members is sequence
+      - monitoring_etcd_cluster_members is not string
+      - monitoring_etcd_cluster_members | length == 3
+    fail_msg: Monitoring etcd requires exactly three canonical members.
+
+- name: Validate monitoring etcd members
+  ansible.builtin.include_tasks: validate_member.yml
+  loop: "{{ monitoring_etcd_cluster_members }}"
+  loop_control:
+    loop_var: monitoring_etcd_member
+    label: "{{ monitoring_etcd_member.name | default('invalid') }}"
+
+- name: Assert monitoring etcd member uniqueness
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_cluster_members | map(attribute='name') | unique | length
+        == 3
+      - >-
+        monitoring_etcd_cluster_members | map(attribute='address') | unique
+        | length == 3
+      - >-
+        monitoring_etcd_cluster_members | map(attribute='dns') | unique | length
+        == 3
+    fail_msg: Monitoring etcd member names, addresses, and DNS identities must be unique.
+
+- name: Select local monitoring etcd member
+  ansible.builtin.set_fact:
+    monitoring_etcd_local_members: >-
+      {{
+        monitoring_etcd_cluster_members
+        | selectattr('name', 'equalto', monitoring_etcd_node_name)
+        | list
+      }}
+
+- name: Assert local monitoring etcd identity
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_local_members | length == 1
+      - monitoring_etcd_node_address == monitoring_etcd_local_members[0].address
+      - monitoring_etcd_node_dns == monitoring_etcd_local_members[0].dns
+    fail_msg: >-
+      Monitoring etcd local name, address, and DNS must match one canonical
+      cluster member exactly.

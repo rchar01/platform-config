@@ -1,0 +1,32 @@
+---
+- name: Validate monitoring etcd contract fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    monitoring_etcd_enabled: true
+    monitoring_etcd_contract_ready: true
+    monitoring_etcd_service_enabled: false
+    monitoring_etcd_service_state: stopped
+    monitoring_etcd_initial_cluster_token: synthetic-monitoring-etcd
+    monitoring_etcd_tls_ca_src: /fixture/etcd/ca.crt
+    monitoring_etcd_tls_cert_src: /fixture/etcd/tls.crt
+    monitoring_etcd_tls_key_src: /fixture/etcd/tls.key
+    monitoring_etcd_node_name: monitoring-etcd-1
+    monitoring_etcd_node_address: 127.0.0.2
+    monitoring_etcd_node_dns: monitoring-etcd-1.test.invalid
+    monitoring_etcd_cluster_members:
+      - name: monitoring-etcd-1
+        address: 127.0.0.2
+        dns: monitoring-etcd-1.test.invalid
+      - name: monitoring-etcd-2
+        address: 127.0.0.3
+        dns: monitoring-etcd-2.test.invalid
+      - name: monitoring-etcd-3
+        address: 127.0.0.4
+        dns: monitoring-etcd-3.test.invalid
+  tasks:
+    - name: Validate monitoring etcd fixture inputs
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate

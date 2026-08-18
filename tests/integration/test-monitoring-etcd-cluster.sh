@@ -2,6 +2,7 @@
 set -euo pipefail
 umask 077
 
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE='gcr.io/etcd-development/etcd@sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6'
 TEST_DIR="$(mktemp -d)"
 RUN_ID="platform-config-etcd-cluster-${TEST_DIR##*/}"
@@ -12,7 +13,6 @@ READY_TIMEOUT="${MONITORING_ETCD_CLUSTER_READY_TIMEOUT:-90}"
 PULL_TIMEOUT="${MONITORING_ETCD_CLUSTER_PULL_TIMEOUT:-300}"
 MEMBERS=(etcd-1 etcd-2 etcd-3)
 ALL_ENDPOINTS='https://etcd-1:2379,https://etcd-2:2379,https://etcd-3:2379'
-INITIAL_CLUSTER='etcd-1=https://etcd-1:2380,etcd-2=https://etcd-2:2380,etcd-3=https://etcd-3:2380'
 declare -A CONTAINERS=(
   [etcd-1]="${RUN_ID}-etcd-1"
   [etcd-2]="${RUN_ID}-etcd-2"
@@ -20,8 +20,8 @@ declare -A CONTAINERS=(
 )
 LAST_MEMBERS=
 LAST_STATUS=
-NETWORK_CREATED=false
 CREATED_CONTAINERS=()
+CONFIG_DIR="${ROOT_DIR}/.ansible/${RUN_ID}-config"
 
 fail() {
   printf '%s\n' "$1" >&2
@@ -32,10 +32,22 @@ cleanup() {
   local status=$?
   local container_id
   local -a containers=()
+  local -a networks=()
 
   trap - EXIT INT TERM
   if ((status != 0)); then
+    for member in "${MEMBERS[@]}"; do
+      [[ -f "${CONFIG_DIR}/${member}.yml" ]] || continue
+      printf '\n===== %s rendered configuration =====\n' "$member" >&2
+      while IFS= read -r line; do
+        printf '%s\n' "$line" >&2
+      done < "${CONFIG_DIR}/${member}.yml"
+    done
     for container_id in "${CREATED_CONTAINERS[@]}"; do
+      printf '\n===== %s state =====\n' "$container_id" >&2
+      timeout 10 podman inspect --format \
+        'state={{json .State}} command={{json .Config.Cmd}} mounts={{json .Mounts}}' \
+        "$container_id" >&2 2>/dev/null || true
       printf '\n===== %s logs =====\n' "$container_id" >&2
       timeout 10 podman logs "$container_id" >&2 2>/dev/null || true
     done
@@ -52,9 +64,13 @@ cleanup() {
     # Labels constrain this list to resources created by this invocation.
     timeout 20 podman rm -f "${containers[@]}" >/dev/null 2>&1 || true
   fi
-  if [[ "$NETWORK_CREATED" == true ]]; then
-    timeout 10 podman network rm -f "$NETWORK" >/dev/null 2>&1 || true
+  mapfile -t networks < <(
+    timeout 10 podman network ls -q --filter "label=${LABEL}" 2>/dev/null || true
+  )
+  if ((${#networks[@]})); then
+    timeout 10 podman network rm -f "${networks[@]}" >/dev/null 2>&1 || true
   fi
+  rm -rf -- "$CONFIG_DIR"
   rm -rf -- "$TEST_DIR"
   exit "$status"
 }
@@ -67,20 +83,66 @@ for command in jq openssl podman sed timeout; do
     || fail "Required command not found: ${command}"
 done
 
+mkdir -p "${ROOT_DIR}/.ansible"
+mkdir "$CONFIG_DIR"
+render_output="$CONFIG_DIR"
+render_playbook="${ROOT_DIR}/tests/fixtures/monitoring-etcd/render-role.yml"
+render_command=(ansible-playbook -i "localhost," -c local "$render_playbook")
+if ! command -v ansible-playbook >/dev/null 2>&1; then
+  render_output="/workspace/.ansible/${CONFIG_DIR##*/}"
+  render_command=(
+    "${ROOT_DIR}/scripts/in-container"
+    ansible-playbook
+    -i "localhost,"
+    -c local
+    tests/fixtures/monitoring-etcd/render-role.yml
+  )
+fi
+render_vars="$(jq -cn --arg output "$render_output" '
+  {
+    monitoring_etcd_render_output_dir: $output,
+    monitoring_etcd_template_listen_address: "0.0.0.0",
+    monitoring_etcd_node_name: "etcd-1",
+    monitoring_etcd_node_address: "127.0.0.2",
+    monitoring_etcd_node_dns: "etcd-1.test.invalid",
+    monitoring_etcd_cluster_members: [
+      {name: "etcd-1", address: "127.0.0.2", dns: "etcd-1.test.invalid"},
+      {name: "etcd-2", address: "127.0.0.3", dns: "etcd-2.test.invalid"},
+      {name: "etcd-3", address: "127.0.0.4", dns: "etcd-3.test.invalid"}
+    ]
+  }
+')"
+ANSIBLE_ROLES_PATH="${ROOT_DIR}/roles" \
+  "${render_command[@]}" --extra-vars "$render_vars" >/dev/null
+
+for member in "${MEMBERS[@]}"; do
+  [[ -f "${CONFIG_DIR}/${member}.yml" ]] \
+    || fail "Rendered etcd member configuration is absent: ${member}"
+done
+
 CA_DIR="${TEST_DIR}/ca"
 CLIENT_DIR="${TEST_DIR}/client"
-mkdir -p "$CA_DIR" "$CLIENT_DIR"
+UNTRUSTED_CA_DIR="${TEST_DIR}/untrusted-ca"
+UNTRUSTED_CLIENT_DIR="${TEST_DIR}/pki/untrusted-client"
+mkdir -p "$CA_DIR" "$CLIENT_DIR" "$UNTRUSTED_CA_DIR"
 openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 1 \
   -subj "/CN=${RUN_ID}-ca" \
   -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
   -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -keyout "${CA_DIR}/ca.key" \
   -out "${CA_DIR}/ca.crt" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 1 \
+  -subj "/CN=${RUN_ID}-untrusted-ca" \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -keyout "${UNTRUSTED_CA_DIR}/ca.key" \
+  -out "${UNTRUSTED_CA_DIR}/ca.crt" >/dev/null 2>&1
 
 issue_certificate() {
   local name=$1
   local extended_usage=$2
   local subject_alt_name=${3:-}
+  local signer_dir=${4:-$CA_DIR}
   local certificate_dir="${TEST_DIR}/pki/${name}"
   local extensions="${certificate_dir}/extensions.cnf"
 
@@ -102,29 +164,57 @@ issue_certificate() {
   } > "$extensions"
   openssl x509 -req -sha256 -days 1 \
     -in "${certificate_dir}/tls.csr" \
-    -CA "${CA_DIR}/ca.crt" \
-    -CAkey "${CA_DIR}/ca.key" \
+    -CA "${signer_dir}/ca.crt" \
+    -CAkey "${signer_dir}/ca.key" \
     -CAcreateserial \
     -extfile "$extensions" \
     -out "${certificate_dir}/tls.crt" >/dev/null 2>&1
-  cp "${CA_DIR}/ca.crt" "${certificate_dir}/ca.crt"
+  cp "${signer_dir}/ca.crt" "${certificate_dir}/ca.crt"
   chmod 0400 "${certificate_dir}/tls.key"
   chmod 0444 "${certificate_dir}/tls.crt" "${certificate_dir}/ca.crt"
 }
 
 for member in "${MEMBERS[@]}"; do
-  issue_certificate "$member" 'serverAuth,clientAuth' "DNS:${member}"
+  issue_certificate \
+    "$member" \
+    'serverAuth,clientAuth' \
+    "DNS:${member},DNS:${member}.test.invalid"
 done
 issue_certificate qualification-client clientAuth
+issue_certificate untrusted-client clientAuth '' "$UNTRUSTED_CA_DIR"
+chmod 0600 "${UNTRUSTED_CLIENT_DIR}/ca.crt"
+cp "${CA_DIR}/ca.crt" "${UNTRUSTED_CLIENT_DIR}/ca.crt"
+chmod 0444 "${UNTRUSTED_CLIENT_DIR}/ca.crt"
 cp "${TEST_DIR}/pki/qualification-client/ca.crt" "$CLIENT_DIR/ca.crt"
 cp "${TEST_DIR}/pki/qualification-client/tls.crt" "$CLIENT_DIR/tls.crt"
 cp "${TEST_DIR}/pki/qualification-client/tls.key" "$CLIENT_DIR/tls.key"
 [[ ! -e "${CLIENT_DIR}/ca.key" ]] || fail 'CA private key leaked into client material'
 
 timeout "$PULL_TIMEOUT" podman pull --quiet --platform linux/amd64 "$IMAGE" >/dev/null
+PREFLIGHT_DATA_DIR="${TEST_DIR}/preflight-data"
+mkdir "$PREFLIGHT_DATA_DIR"
+chmod 0700 "$PREFLIGHT_DATA_DIR"
+preflight_status=0
+preflight_output="$(timeout 5 podman run --rm \
+  --label "$LABEL" \
+  --platform linux/amd64 \
+  --pull never \
+  --network none \
+  --read-only \
+  --userns=keep-id:uid=10001,gid=10001 \
+  --user 10001:10001 \
+  --cap-drop all \
+  --security-opt no-new-privileges \
+  --volume "${PREFLIGHT_DATA_DIR}:/var/lib/etcd:Z" \
+  --volume "${TEST_DIR}/pki/etcd-1:/etc/etcd/pki:ro,Z" \
+  --volume "${CONFIG_DIR}/etcd-1.yml:/etc/etcd/etcd.yml:ro,Z" \
+  --entrypoint /usr/local/bin/etcd \
+  "$IMAGE" \
+  --config-file /etc/etcd/etcd.yml 2>&1)" || preflight_status=$?
+[[ "$preflight_status" == 124 ]] \
+  || fail "Rendered etcd configuration preflight exited ${preflight_status}: ${preflight_output}"
 timeout "$OPERATION_TIMEOUT" podman network create \
   --internal --label "$LABEL" "$NETWORK" >/dev/null
-NETWORK_CREATED=true
 network_internal="$(timeout "$OPERATION_TIMEOUT" \
   podman network inspect --format '{{.Internal}}' "$NETWORK")"
 [[ "$network_internal" == true ]] || fail 'Disposable etcd network is not internal'
@@ -141,6 +231,7 @@ for member in "${MEMBERS[@]}"; do
     --pull never \
     --network "$NETWORK" \
     --network-alias "$member" \
+    --network-alias "${member}.test.invalid" \
     --hostname "$member" \
     --read-only \
     --userns=keep-id:uid=10001,gid=10001 \
@@ -149,34 +240,24 @@ for member in "${MEMBERS[@]}"; do
     --security-opt no-new-privileges \
     --volume "${data_dir}:/var/lib/etcd:Z" \
     --volume "${TEST_DIR}/pki/${member}:/etc/etcd/pki:ro,Z" \
+    --volume "${CONFIG_DIR}/${member}.yml:/etc/etcd/etcd.yml:ro,Z" \
     --entrypoint /usr/local/bin/etcd \
     "$IMAGE" \
-    --name "$member" \
-    --data-dir /var/lib/etcd \
-    --listen-client-urls https://0.0.0.0:2379 \
-    --advertise-client-urls "https://${member}:2379" \
-    --listen-peer-urls https://0.0.0.0:2380 \
-    --initial-advertise-peer-urls "https://${member}:2380" \
-    --initial-cluster "$INITIAL_CLUSTER" \
-    --initial-cluster-token "$RUN_ID" \
-    --initial-cluster-state new \
-    --cert-file /etc/etcd/pki/tls.crt \
-    --key-file /etc/etcd/pki/tls.key \
-    --trusted-ca-file /etc/etcd/pki/ca.crt \
-    --client-cert-auth \
-    --peer-cert-file /etc/etcd/pki/tls.crt \
-    --peer-key-file /etc/etcd/pki/tls.key \
-    --peer-trusted-ca-file /etc/etcd/pki/ca.crt \
-    --peer-client-cert-auth \
-    --logger zap \
-    --log-level warn \
-    --log-outputs stderr)"
+    --config-file /etc/etcd/etcd.yml)"
   CREATED_CONTAINERS+=("$container_id")
 done
 
 etcdctl() {
   local endpoints=$1
   shift
+
+  etcdctl_with_client "$endpoints" "$CLIENT_DIR" "$@"
+}
+
+etcdctl_with_client() {
+  local endpoints=$1
+  local client_dir=$2
+  shift 2
 
   timeout "$OPERATION_TIMEOUT" podman run --rm \
     --label "$LABEL" \
@@ -188,7 +269,7 @@ etcdctl() {
     --user 10001:10001 \
     --cap-drop all \
     --security-opt no-new-privileges \
-    --volume "${CLIENT_DIR}:/etc/etcdctl/pki:ro,Z" \
+    --volume "${client_dir}:/etc/etcdctl/pki:ro,Z" \
     --env ETCDCTL_DIAL_TIMEOUT=3s \
     --env ETCDCTL_COMMAND_TIMEOUT=8s \
     --entrypoint /usr/local/bin/etcdctl \
@@ -278,6 +359,16 @@ unauthenticated_output="$(unauthenticated_etcdctl "$ALL_ENDPOINTS" endpoint heal
   || fail 'etcd accepted a client without a certificate'
 grep -Eqi 'certificate required|tls:' <<< "$unauthenticated_output" \
   || fail "Unexpected unauthenticated client failure: ${unauthenticated_output}"
+
+untrusted_status=0
+untrusted_output="$(etcdctl_with_client \
+  "$ALL_ENDPOINTS" "$UNTRUSTED_CLIENT_DIR" endpoint health 2>&1)" \
+  || untrusted_status=$?
+[[ "$untrusted_status" != 0 ]] \
+  || fail 'etcd accepted a client certificate signed by an untrusted CA'
+grep -Eqi 'bad certificate|certificate signed by unknown authority|tls:' \
+  <<< "$untrusted_output" \
+  || fail "Unexpected untrusted client failure: ${untrusted_output}"
 
 etcdctl "$ALL_ENDPOINTS" put qualification-initial initial-value >/dev/null
 [[ "$(etcdctl "$ALL_ENDPOINTS" get qualification-initial --print-value-only)" == initial-value ]] \
