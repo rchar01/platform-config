@@ -50,7 +50,7 @@ Build and smoke-test the Proxmox template before running `platform-infra`. The c
 
 For full template-builder setup, see `../platform-template-builder/README.md` and `../platform-template-builder/docs/proxmox-requirements.md`.
 
-Install `platform-tools` once per its README before running these commands. The platform runbooks assume installed helper commands such as `platform-ssh-init` and `platform-pki-init` are available on `PATH`, typically under `~/.local/bin`.
+Install `platform-tools` once per its README before running these commands. The platform runbooks assume installed helper commands such as `platform-ssh-init` and `platform-pki` are available on `PATH`, typically under `~/.local/bin`.
 
 From `platform-template-builder`:
 
@@ -312,13 +312,13 @@ retention decision before declaring the migration complete.
 Initial PKI setup:
 
 ```bash
-platform-pki-init
-platform-pki-root-create \
+platform-pki init
+platform-pki root-create \
   --name "Example Platform Root CA" \
   --org "Example Platform" \
   --country "XX" \
   --root-pass-file /run/secrets/platform-pki-root-pass
-platform-pki-intermediate-create \
+platform-pki intermediate-create \
   --name "Example Platform Intermediate CA" \
   --org "Example Platform" \
   --country "XX" \
@@ -326,7 +326,8 @@ platform-pki-intermediate-create \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 ```
 
-Define services in `~/.config/platform-infrastructure/pki/inventory/services.yml`:
+Define and review services in the canonical private source at
+`../platform-private/pki/services.yml`:
 
 ```yaml
 services:
@@ -348,16 +349,24 @@ services:
 
 ```
 
+Install the reviewed snapshot into the protected runtime namespace before
+issuing or renewing certificates:
+
+```bash
+platform-pki inventory-install \
+  --private-repo /absolute/path/to/platform-private
+```
+
 Issue and export service certificates:
 
 ```bash
-platform-pki-service-issue gitlab-example \
+platform-pki service-issue gitlab-example \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-issue registry-example \
+platform-pki service-issue registry-example \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-verify gitlab-example
-platform-pki-service-verify registry-example
-platform-pki-export-ansible --force
+platform-pki service-verify gitlab-example
+platform-pki service-verify registry-example
+platform-pki export-ansible --force
 ```
 
 After issuing or renewing, deploy the exported files with the matching playbooks:
@@ -383,22 +392,22 @@ make smoke-rke2 ENV=dev
 List service certificate expiry:
 
 ```bash
-platform-pki-list-expiry --warn-days 90 --critical-days 30
+platform-pki list-expiry --warn-days 90 --critical-days 30
 ```
 
 Print one service certificate:
 
 ```bash
-platform-pki-print-cert registry-example
+platform-pki print-cert registry-example
 ```
 
 Renew a service certificate while reusing the existing service private key:
 
 ```bash
-platform-pki-service-renew registry-example \
+platform-pki service-renew registry-example \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-verify registry-example
-platform-pki-export-ansible --force
+platform-pki service-verify registry-example
+platform-pki export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
 make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 make smoke-registry ENV=dev
@@ -408,11 +417,11 @@ make smoke-rke2 ENV=dev
 Rotate a service private key and certificate when the key may be exposed or a rotation is intentionally scheduled:
 
 ```bash
-platform-pki-service-renew registry-example \
+platform-pki service-renew registry-example \
   --rotate-key \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-verify registry-example
-platform-pki-export-ansible --force
+platform-pki service-verify registry-example
+platform-pki export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
 make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 make smoke-registry ENV=dev
@@ -422,10 +431,10 @@ make smoke-rke2 ENV=dev
 Use the same pattern for GitLab, but include runner trust deployment:
 
 ```bash
-platform-pki-service-renew gitlab-example \
+platform-pki service-renew gitlab-example \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
-platform-pki-service-verify gitlab-example
-platform-pki-export-ansible --force
+platform-pki service-verify gitlab-example
+platform-pki export-ansible --force
 make apply ENV=homelab PLAYBOOK=playbooks/gitlab.yml
 make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 make smoke-gitlab
@@ -440,16 +449,21 @@ service apply.
 Back up the PKI state after initial CA creation, after issuing certificates, and after every renewal or key rotation:
 
 ```bash
-platform-pki-backup --age-recipient "$AGE_RECIPIENT"
+platform-pki backup --age-recipient "$AGE_RECIPIENT"
 ```
 
 Plain backups are allowed only with an explicit override and still contain secrets:
 
 ```bash
-platform-pki-backup --allow-plain-backup
+platform-pki backup --allow-plain-backup
 ```
 
-If service IPs or hostnames change, update `~/.config/platform-infrastructure/pki/inventory/services.yml`, renew the affected certificate, export again, apply the matching service role, and run the matching smoke check. Root or intermediate CA rotation is a separate trust-rollover operation and should not be treated as a normal service certificate renewal.
+If service IPs or hostnames change, update and review
+`../platform-private/pki/services.yml`, install the new snapshot with
+`platform-pki inventory-install`, renew the affected certificate, export again,
+apply the matching service role, and run the matching smoke check. Root or
+intermediate CA rotation is a separate trust-rollover operation and should not
+be treated as a normal service certificate renewal.
 
 ### Host-Local Zot Certificate Workflow
 
@@ -494,6 +508,15 @@ journal-bound recovery action:
 
 ```bash
 make registry-pki-recover ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
+```
+
+If recovery reports `publish-rolled-back-evidence`, validate the restored
+predecessor locally and from the reviewed runner and publish its exact evidence:
+
+```bash
+make registry-pki-publish-rolled-back-evidence ENV=dev \
+  LIMIT=registry-example RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
 ```
 

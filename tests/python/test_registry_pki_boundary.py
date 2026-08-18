@@ -32,6 +32,7 @@ ALLOWED_ACTIONS = {
     "ansible.builtin.fail",
     "ansible.builtin.file",
     "ansible.builtin.import_tasks",
+    "ansible.builtin.package",
     "ansible.builtin.pause",
     "ansible.builtin.stat",
     "platform_pki_evidence_collection",
@@ -51,6 +52,7 @@ TASK_METADATA = {
     "delegate_to",
     "register",
     "changed_when",
+    "failed_when",
     "check_mode",
 }
 METADATA_BY_ACTION = {
@@ -59,6 +61,7 @@ METADATA_BY_ACTION = {
         "name",
         "register",
         "changed_when",
+        "failed_when",
         "check_mode",
         "when",
         "delegate_to",
@@ -79,6 +82,7 @@ METADATA_BY_ACTION = {
         "delegate_to",
     },
     "ansible.builtin.import_tasks": {"name", "vars", "when"},
+    "ansible.builtin.package": {"name", "when"},
     "ansible.builtin.pause": {"name", "register", "when"},
     "ansible.builtin.stat": {
         "name",
@@ -168,6 +172,21 @@ ALLOWED_CONDITIONS = {
         "not ansible_check_mode and not "
         "pki_host_local_certificate_target_trust.stat.exists"
     ),
+    (
+        "ansible.builtin.command",
+        "Probe host-local certificate lifecycle Python runtime",
+    ): [
+        "not ansible_check_mode",
+        "not pki_host_local_certificate_helper_read_only",
+    ],
+    (
+        "ansible.builtin.package",
+        "Install host-local certificate lifecycle Python runtime",
+    ): [
+        "not ansible_check_mode",
+        "not pki_host_local_certificate_helper_read_only",
+        "pki_host_local_certificate_lifecycle_python_runtime.rc != 0",
+    ],
     (
         "ansible.builtin.copy",
         "Install host-local certificate lifecycle helper",
@@ -429,6 +448,14 @@ COMMAND_DISPATCHES = {
         "pki_host_local_certificate_request_helper_path",
         "request",
     ),
+    "Abandon exact expired host-local certificate request": (
+        "pki_host_local_certificate_lifecycle_helper_path",
+        "abandon-expired-request",
+    ),
+    "Cancel exact pending host-local certificate request": (
+        "pki_host_local_certificate_lifecycle_helper_path",
+        "cancel-pending-request",
+    ),
     "Prepare protected target trust ingress": (
         "pki_host_local_certificate_trust_helper_path",
         "prepare",
@@ -458,6 +485,18 @@ COMMAND_DISPATCHES = {
         "--service",
     ),
     "Finalize exact activated host-local certificate evidence": (
+        "pki_host_local_certificate_lifecycle_helper_path",
+        "activate-finish",
+    ),
+    "Strictly validate restored predecessor on registry target": (
+        "pki_host_local_certificate_lifecycle_helper_path",
+        "activate-finish",
+    ),
+    "Validate exact restored Zot endpoint from reviewed runner": (
+        "pki_host_local_certificate_validator_helper_path",
+        "--service",
+    ),
+    "Publish exact rolled-back host-local certificate evidence": (
         "pki_host_local_certificate_lifecycle_helper_path",
         "activate-finish",
     ),
@@ -547,21 +586,30 @@ def _validate_task(task: Any, source: str | Path) -> None:
         set(task).difference(TASK_METADATA).difference({"block", "rescue", "always"})
     )
     if nested and not actions:
-        if (
-            set(task) != {"name", "when", "block", "rescue", "always"}
-            or task.get("name")
-            != "Activate, validate, and finalize exact host-local certificate"
-            or task.get("when") != "not ansible_check_mode"
-            or not task.get("block")
-            or [child.get("name") for child in task.get("rescue", [])]
-            != [
+        valid_activation_block = (
+            set(task) == {"name", "when", "block", "rescue", "always"}
+            and task.get("name")
+            == "Activate, validate, and finalize exact host-local certificate"
+            and task.get("when") == "not ansible_check_mode"
+            and bool(task.get("block"))
+            and [child.get("name") for child in task.get("rescue", [])]
+            == [
                 "Recover exact interrupted host-local certificate activation",
                 "Validate exact activation recovery metadata",
                 "Fail activation after exact recovery",
             ]
-            or [child.get("name") for child in task.get("always", [])]
-            != ["Remove only transient host-local certificate observation"]
-        ):
+            and [child.get("name") for child in task.get("always", [])]
+            == ["Remove only transient host-local certificate observation"]
+        )
+        valid_rollback_publication_block = (
+            set(task) == {"name", "block", "always"}
+            and task.get("name")
+            == "Validate restored predecessor and publish rolled-back evidence"
+            and bool(task.get("block"))
+            and [child.get("name") for child in task.get("always", [])]
+            == ["Remove only transient host-local certificate observation"]
+        )
+        if not valid_activation_block and not valid_rollback_publication_block:
             raise BoundaryViolation(
                 f"host-local boundary contains an unexpected block shape in {source}"
             )
@@ -605,7 +653,25 @@ def _validate_task(task: Any, source: str | Path) -> None:
         raise BoundaryViolation(
             f"host-local boundary command must use argv only in {source}"
         )
+    if action == "ansible.builtin.package" and task[action] != {
+        "name": "python3-cryptography",
+        "state": "present",
+    }:
+        raise BoundaryViolation(
+            f"host-local boundary contains an unexpected package in {source}"
+        )
     if action == "ansible.builtin.command":
+        if task_name == "Probe host-local certificate lifecycle Python runtime":
+            if task[action] != {
+                "argv": ["/usr/bin/env", "python3", "-c", "import cryptography"]
+            } or any(
+                task.get(name) is not False
+                for name in ("changed_when", "failed_when", "check_mode")
+            ):
+                raise BoundaryViolation(
+                    f"host-local lifecycle runtime probe is not fixed in {source}"
+                )
+            return
         dispatch = COMMAND_DISPATCHES.get(task_name)
         if dispatch is None:
             raise BoundaryViolation(
@@ -635,6 +701,7 @@ def _validate_task(task: Any, source: str | Path) -> None:
             if task_name
             in {
                 "Validate exact active Zot endpoint from reviewed runner",
+                "Validate exact restored Zot endpoint from reviewed runner",
                 "Revalidate exact exported active Zot endpoint from reviewed runner",
             }
             else None
@@ -724,6 +791,14 @@ def _validate_operator_playbook(
         raise BoundaryViolation(f"{source} must contain exactly one play")
     play = plays[0]
     required_play_keys = {"name", "hosts", "become", "gather_facts", "tasks"}
+    if expected_tasks_from in {
+        "request",
+        "abandon_expired_request",
+        "cancel_pending_request",
+        "activate",
+        "publish_rolled_back_evidence",
+    }:
+        required_play_keys.add("vars")
     if set(play) != required_play_keys:
         raise BoundaryViolation(
             f"{source} contains imports, roles, handlers, or another executable section"
@@ -734,6 +809,49 @@ def _validate_operator_playbook(
         or play.get("gather_facts") is not False
     ):
         raise BoundaryViolation(f"{source} is not constrained to the registry boundary")
+    if expected_tasks_from == "request":
+        expected_vars = {
+            "registry_pki_request_ttl_seconds": 3600,
+            "pki_host_local_certificate_request_ttl_seconds": (
+                "{{ registry_pki_request_ttl_seconds | int }}"
+            ),
+            "pki_host_local_certificate_validation_boundary_sha256": "",
+            "pki_host_local_certificate_rollback_seconds": 0,
+        }
+        if play["vars"] != expected_vars:
+            raise BoundaryViolation(f"{source} does not pin exact request-phase values")
+    if expected_tasks_from == "abandon_expired_request" and play["vars"] != {
+        "pki_host_local_certificate_request_ttl_seconds": 0,
+        "pki_host_local_certificate_validation_boundary_sha256": "",
+        "pki_host_local_certificate_rollback_seconds": 0,
+    }:
+        raise BoundaryViolation(
+            f"{source} does not pin exact expired-request abandonment values"
+        )
+    if expected_tasks_from == "cancel_pending_request" and play["vars"] != {
+        "pki_host_local_certificate_request_ttl_seconds": 0,
+        "pki_host_local_certificate_validation_boundary_sha256": "",
+        "pki_host_local_certificate_rollback_seconds": 0,
+    }:
+        raise BoundaryViolation(
+            f"{source} does not pin exact pending-request cancellation values"
+        )
+    if expected_tasks_from == "activate" and play["vars"] != {
+        "pki_host_local_certificate_activation_action": "finalize",
+        "pki_host_local_certificate_activation_result": "activated",
+        "pki_host_local_certificate_interactive_confirmation": True,
+    }:
+        raise BoundaryViolation(
+            f"{source} does not pin exact activation-phase values"
+        )
+    if expected_tasks_from == "publish_rolled_back_evidence" and play["vars"] != {
+        "pki_host_local_certificate_activation_action": "abandon",
+        "pki_host_local_certificate_activation_result": "rolled-back",
+        "pki_host_local_certificate_interactive_confirmation": False,
+    }:
+        raise BoundaryViolation(
+            f"{source} does not pin exact rolled-back evidence values"
+        )
     play_tasks = play.get("tasks", [])
     if len(play_tasks) != 1:
         raise BoundaryViolation(
@@ -756,6 +874,18 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     in_container = (repo_root / "scripts/in-container").read_text(encoding="utf-8")
     if "--env PYTHONPATH=/workspace" not in in_container:
         raise BoundaryViolation("controller cannot import shared PKI utilities")
+    private_home_permissions = in_container[
+        in_container.index("chmod 0700") : in_container.index('case "$profile"')
+    ]
+    for private_home_ancestor in (
+        '"$tmp_home/.config"',
+        '"$tmp_home/Projects"',
+        '"$tmp_home/Projects/public"',
+    ):
+        if private_home_ancestor not in private_home_permissions:
+            raise BoundaryViolation(
+                "controller private-source mount ancestry is not owner-only"
+            )
     defaults = _load_yaml(role_dir / "defaults/main.yml")
     tasks = _load_yaml(role_dir / "tasks/main.yml")
     validation_tasks = _load_yaml(role_dir / "tasks/validate.yml")
@@ -834,11 +964,23 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     site = (repo_root / "playbooks/site.yml").read_text(encoding="utf-8")
     operator_playbooks = (
         (repo_root / "playbooks/registry-pki-request.yml", "request"),
+        (
+            repo_root / "playbooks/registry-pki-abandon-expired-request.yml",
+            "abandon_expired_request",
+        ),
+        (
+            repo_root / "playbooks/registry-pki-cancel-request.yml",
+            "cancel_pending_request",
+        ),
         (repo_root / "playbooks/registry-pki-activate.yml", "activate"),
         (repo_root / "playbooks/registry-pki-trust.yml", "trust"),
         (repo_root / "playbooks/registry-pki-response-check.yml", "response_check"),
         (repo_root / "playbooks/registry-pki-status.yml", "status"),
         (repo_root / "playbooks/registry-pki-recover.yml", "recover"),
+        (
+            repo_root / "playbooks/registry-pki-publish-rolled-back-evidence.yml",
+            "publish_rolled_back_evidence",
+        ),
         (repo_root / "playbooks/registry-pki-evidence-export.yml", "evidence_export"),
         (
             repo_root / "playbooks/registry-pki-decision-preflight.yml",
@@ -924,6 +1066,16 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
             raise BoundaryViolation(f"fetch allowlist/helper binding is incomplete in {plugin}")
 
     activation_tasks = _load_yaml(role_dir / "tasks/activate.yml")
+    activation_contract = _task_named(
+        activation_tasks,
+        "Validate host-local certificate activation contract",
+    )["ansible.builtin.assert"]["that"]
+    if not {
+        "pki_host_local_certificate_activation_action == 'finalize'",
+        "pki_host_local_certificate_activation_result == 'activated'",
+        "pki_host_local_certificate_interactive_confirmation is sameas true",
+    }.issubset(activation_contract):
+        raise BoundaryViolation("activation dispatch is overrideable")
     activation_block = _task_named(
         activation_tasks,
         "Activate, validate, and finalize exact host-local certificate",
@@ -931,6 +1083,20 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     _validate_task(activation_block, role_dir / "tasks/activate.yml")
     if "smoke" in (role_dir / "tasks/activate.yml").read_text(encoding="utf-8").lower():
         raise BoundaryViolation("activation references a general registry smoke path")
+
+    rolled_back_tasks = _load_yaml(
+        role_dir / "tasks/publish_rolled_back_evidence.yml"
+    )
+    rolled_back_contract = _task_named(
+        rolled_back_tasks,
+        "Validate rolled-back evidence publication contract",
+    )["ansible.builtin.assert"]["that"]
+    if not {
+        "pki_host_local_certificate_activation_action == 'abandon'",
+        "pki_host_local_certificate_activation_result == 'rolled-back'",
+        "pki_host_local_certificate_interactive_confirmation is sameas false",
+    }.issubset(rolled_back_contract):
+        raise BoundaryViolation("rolled-back evidence dispatch is overrideable")
 
     read_only_phase_tasks = {
         name: _load_yaml(role_dir / f"tasks/{name}.yml")
@@ -1005,6 +1171,8 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     }
     if lifecycle_commands != {
         "collection-prepare",
+        "abandon-expired-request",
+        "cancel-pending-request",
         "evidence-collection-prepare",
         "response-prepare",
         "response-install",
@@ -1063,15 +1231,21 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
             "trust action does not structurally dispatch the pinned ingress action"
         )
     action_plugin_text = action_plugin.read_text(encoding="utf-8")
+    secure_source_text = (
+        repo_root / "plugins/module_utils/platform_pki_secure_source.py"
+    ).read_text(encoding="utf-8")
     for fragment in (
-        "O_NOFOLLOW",
         "source.recheck()",
         "self._transfer_data",
-        "REPOSITORY_ROOT",
     ):
         if fragment not in action_plugin_text:
             raise BoundaryViolation(
                 f"pinned ingress action is missing required boundary logic: {fragment}"
+            )
+    for fragment in ("O_NOFOLLOW", "REPOSITORY_ROOT", "PinnedSource"):
+        if fragment not in secure_source_text:
+            raise BoundaryViolation(
+                f"shared source pinning is missing required boundary logic: {fragment}"
             )
     if "trust_sources" in request_apply_tasks:
         raise BoundaryViolation(
@@ -1338,6 +1512,8 @@ def test_registry_pki_make_guards_accept_canonical_coordinates(
             "_guard-pki-env",
             "_guard-pki-limit",
             "_guard-pki-request-id",
+            "_guard-pki-request-sha256",
+            "_guard-pki-request-ttl",
             "_guard-pki-artifact",
             "_guard-pki-deployment",
             "_guard-pki-response-dir",
@@ -1346,12 +1522,29 @@ def test_registry_pki_make_guards_accept_canonical_coordinates(
             "ENV=dev",
             "RUNNER_LIMIT=runner-one.test",
             "REQUEST_ID=0123456789abcdef0123456789abcdef",
+            f"REQUEST_SHA256={digest}",
+            "REQUEST_TTL_SECONDS=604800",
             f"ARTIFACT_SHA256={digest}",
             f"DEPLOYMENT_SHA256={digest}",
             "RESPONSE_DIR=/outside-git/pki-response",
         ),
         cwd=repo_root,
     ).assert_success()
+
+
+@pytest.mark.parametrize("value", ("0", "01", "604801", "not-a-number"))
+def test_registry_pki_request_ttl_guard_rejects_invalid_values(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    value: str,
+) -> None:
+    result = command_runner.run(
+        ("make", "_guard-pki-request-ttl", f"REQUEST_TTL_SECONDS={value}"),
+        cwd=repo_root,
+    )
+
+    result.assert_failure()
+    assert "canonical integer from 1 through 604800" in result.stderr
 
 
 def test_one_runner_pty_waits_for_prompt_before_confirmation(

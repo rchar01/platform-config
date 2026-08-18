@@ -3,6 +3,10 @@
   hosts: registry
   become: true
   gather_facts: false
+  vars:
+    pki_host_local_certificate_activation_action: finalize
+    pki_host_local_certificate_activation_result: activated
+    pki_host_local_certificate_interactive_confirmation: true
   tasks:
     - name: Run structurally fixed registry certificate activation boundary
       ansible.builtin.include_role:

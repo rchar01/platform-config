@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import pwd
 import re
 import secrets
 import stat
 import time
+from typing import Any
 
 from ansible.errors import AnsibleActionFail
 from ansible.plugins.action import ActionBase
@@ -70,6 +72,8 @@ ACTION_ARGUMENTS = frozenset(
 )
 _PATH_COMPONENT = re.compile(r"[A-Za-z0-9_@%+=:,.-]+\Z", re.ASCII)
 _TRUST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z", re.ASCII)
+_REMOTE_STAGE_ROOT = "/var/tmp"
+_REMOTE_USER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}\Z", re.ASCII)
 _FILE_METADATA_KEYS = {
     name: f"{name.replace('-', '_').replace('.', '_')}_sha256"
     for name in EVIDENCE_NAMES
@@ -103,6 +107,27 @@ def _remote_path(output_dir: str, name: str) -> str:
     if name not in EVIDENCE_NAMES:
         raise AnsibleActionFail("evidence collection remote basename is not allowlisted")
     return posixpath.join(output_dir, name)
+
+
+def _authenticated_remote_user(connection: Any) -> str:
+    unavailable = False
+    try:
+        remote_user = connection.get_option("remote_user")
+    except (AttributeError, KeyError, TypeError):
+        unavailable = True
+        remote_user = None
+    if (unavailable or remote_user is None) and getattr(
+        connection, "transport", None
+    ) == "local":
+        try:
+            remote_user = pwd.getpwuid(os.geteuid()).pw_name
+        except KeyError:
+            raise ExchangeError("authenticated local user is unavailable") from None
+    elif unavailable:
+        raise ExchangeError("authenticated remote user is unavailable") from None
+    if not isinstance(remote_user, str) or _REMOTE_USER.fullmatch(remote_user) is None:
+        raise ExchangeError("authenticated remote user is not canonical")
+    return remote_user
 
 
 def _private_access(metadata: dict[str, object], *, directory: bool) -> bool:
@@ -220,6 +245,15 @@ class ActionModule(ActionBase):
             task_vars=task_vars,
         )
         if result.get("failed") or result.get("rc") != 0:
+            detail = result.get("stderr")
+            if (
+                isinstance(detail, str)
+                and 0 < len(detail) <= 512
+                and re.fullmatch(r"[\x20-\x7e]+", detail) is not None
+            ):
+                raise AnsibleActionFail(
+                    f"lifecycle helper evidence collection failed: {detail}"
+                )
             raise AnsibleActionFail("lifecycle helper evidence collection failed")
         stdout = result.get("stdout")
         if not isinstance(stdout, str) or not stdout or "\r" in stdout or "\x00" in stdout:
@@ -271,7 +305,8 @@ class ActionModule(ActionBase):
             raise AnsibleActionFail("evidence collection is unavailable in check mode")
 
         parent = request_tree = response_tree = trust_tree = fetched = evidence_parent = None
-        remote_tmp = remote_tmp_root = fetch_stage = None
+        remote_tmp = fetch_stage = None
+        operation = "validate coordinates"
         try:
             request_id = require_request_id(args["request_id"])
             service = require_service(args["service"])
@@ -290,6 +325,7 @@ class ActionModule(ActionBase):
             if not isinstance(args["exchange_root"], str):
                 raise ExchangeError("exchange_root must be an absolute canonical path")
 
+            operation = "open exchange request parent"
             parent = PinnedDirectory.open(
                 os.path.join(args["exchange_root"], service, request_id),
                 "exchange request parent",
@@ -310,17 +346,25 @@ class ActionModule(ActionBase):
                 "controller frozen trust",
             )
 
-            remote_tmp_root = _canonical_remote_path(
-                self._make_tmp_path().rstrip("/"),
-                "action-owned remote temporary directory",
-            )
+            remote_user = _authenticated_remote_user(self._connection)
+
+            operation = "prepare remote evidence stage"
             remote_tmp = _canonical_remote_path(
-                posixpath.join(remote_tmp_root, "public-evidence"),
+                posixpath.join(
+                    _REMOTE_STAGE_ROOT,
+                    f".platform-pki-evidence-{secrets.token_hex(16)}",
+                ),
                 "action-owned remote evidence directory",
             )
+            directory_args = {
+                "path": remote_tmp,
+                "state": "directory",
+                "mode": "0700",
+            }
+            directory_args["owner"] = remote_user
             create_directory = self._execute_module(
                 module_name="ansible.legacy.file",
-                module_args={"path": remote_tmp, "state": "directory", "mode": "0700"},
+                module_args=directory_args,
                 task_vars=task_vars,
             )
             if create_directory.get("failed"):
@@ -345,12 +389,14 @@ class ActionModule(ActionBase):
                     raise ExchangeError(f"remote evidence checksum differs from helper metadata: {name}")
                 remote_files[name] = snapshot
 
+            operation = "create controller evidence stage"
             fetch_stage = f".platform-pki-evidence.{secrets.token_hex(16)}"
             os.mkdir(fetch_stage, 0o700, dir_fd=parent.fileno())
             fetch_path = os.path.join(parent.path, fetch_stage)
             old_umask = os.umask(0o077)
             try:
                 for name in EVIDENCE_NAMES:
+                    operation = f"fetch evidence file {name}"
                     self._connection.fetch_file(
                         _remote_path(remote_tmp, name), os.path.join(fetch_path, name)
                     )
@@ -375,6 +421,7 @@ class ActionModule(ActionBase):
             finally:
                 os.umask(old_umask)
 
+            operation = "open collected evidence stage"
             fetched = PinnedTree.open(fetch_path, EVIDENCE_NAMES, "collected evidence stage")
             second = self._prepare(
                 args, task_vars, remote_tmp, owner_uid, "existing", first
@@ -406,6 +453,7 @@ class ActionModule(ActionBase):
                 args,
                 now=int(time.time()),
             )
+            operation = "prepare controller evidence parent"
             evidence_parent = prepare_evidence_parent(parent)
 
             def recheck() -> None:
@@ -431,6 +479,7 @@ class ActionModule(ActionBase):
                         "action-owned remote evidence directory changed at publication"
                     )
 
+            operation = "publish controller evidence"
             changed = publish_exact_tree(
                 evidence_parent,
                 args["deployment_sha256"],
@@ -449,11 +498,19 @@ class ActionModule(ActionBase):
             return result
         except ExchangeError as error:
             raise AnsibleActionFail(str(error)) from None
-        except OSError:
-            raise AnsibleActionFail("evidence collection filesystem operation failed") from None
+        except OSError as error:
+            message = error.strerror or "filesystem operation failed"
+            raise AnsibleActionFail(
+                f"evidence collection filesystem operation failed while "
+                f"attempting to {operation}: {message}"
+            ) from None
         finally:
-            if remote_tmp_root is not None:
-                self._remove_tmp_path(remote_tmp_root)
+            if remote_tmp is not None:
+                self._execute_module(
+                    module_name="ansible.legacy.file",
+                    module_args={"path": remote_tmp, "state": "absent"},
+                    task_vars=task_vars,
+                )
             if fetched is not None:
                 fetched.close()
             if fetch_stage is not None and parent is not None:

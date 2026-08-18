@@ -1,0 +1,14 @@
+---
+- name: Publish evidence for one rolled-back host-local registry certificate activation
+  hosts: registry
+  become: true
+  gather_facts: false
+  vars:
+    pki_host_local_certificate_activation_action: abandon
+    pki_host_local_certificate_activation_result: rolled-back
+    pki_host_local_certificate_interactive_confirmation: false
+  tasks:
+    - name: Run structurally fixed rolled-back evidence publication boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: publish_rolled_back_evidence

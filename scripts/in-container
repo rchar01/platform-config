@@ -116,6 +116,12 @@ trap 'forward_signal INT' INT
 trap 'forward_signal TERM' TERM
 
 mkdir -p "$tmp_home/.ansible/tmp" "$tmp_home/.config" "$tmp_home/Projects/public"
+chmod 0700 \
+  "$tmp_home/.ansible" \
+  "$tmp_home/.ansible/tmp" \
+  "$tmp_home/.config" \
+  "$tmp_home/Projects" \
+  "$tmp_home/Projects/public"
 
 case "$profile" in
   development)

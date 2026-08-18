@@ -186,6 +186,115 @@ class LifecycleCase:
             (ingress / name).chmod(0o600)
         return ingress
 
+    def expire_request(self) -> None:
+        request_path = self.pending / "request"
+        values = dict(
+            line.split("=", 1)
+            for line in request_path.read_text(encoding="ascii").splitlines()
+        )
+        now = int(time.time())
+        values["created_epoch"] = str(now - 3601)
+        values["expires_epoch"] = str(now - 1)
+        private_file(request_path, record(self.module.REQUEST_FIELDS, values))
+        signature = self.pending / "request.sig"
+        signature.unlink()
+        self.runner.run(
+            [
+                "ssh-keygen",
+                "-Y",
+                "sign",
+                "-f",
+                self.signing_key,
+                "-n",
+                self.module.REQUEST_NAMESPACE,
+                request_path,
+            ]
+        ).assert_success()
+        signature.chmod(0o600)
+
+    def abandon_expired(self, *, check: bool = False) -> CommandResult:
+        argv = [
+            *self.common("abandon-expired-request"),
+            "--trust-id",
+            "reviewed-v1",
+            "--request-id",
+            REQUEST_ID,
+        ]
+        if check:
+            argv.append("--check")
+        return self.run(argv)
+
+    def cancel_pending(
+        self,
+        *,
+        request_sha256: str | None = None,
+        check: bool = False,
+    ) -> CommandResult:
+        argv = [
+            *self.common("cancel-pending-request"),
+            "--trust-id",
+            "reviewed-v1",
+            "--request-id",
+            REQUEST_ID,
+            "--request-sha256",
+            request_sha256 or digest(self.pending / "request"),
+        ]
+        if check:
+            argv.append("--check")
+        return self.run(argv)
+
+    def write_expired_abandonment_journal(self, source: Path | None = None) -> None:
+        request_root = self.pending if source is None else source
+        request_values = dict(
+            line.split("=", 1)
+            for line in (request_root / "request")
+            .read_text(encoding="ascii")
+            .splitlines()
+        )
+        values = {
+            "schema": "1",
+            "kind": "host-local-expired-request-abandonment",
+            "service": SERVICE,
+            "target": TARGET,
+            "request_id": REQUEST_ID,
+            "request_sha256": digest(request_root / "request"),
+            "request_signature_sha256": digest(request_root / "request.sig"),
+            "csr_sha256": digest(request_root / "tls.csr"),
+            "csr_spki_sha256": request_values["csr_spki_sha256"],
+            "created_epoch": request_values["created_epoch"],
+            "expires_epoch": request_values["expires_epoch"],
+        }
+        private_file(
+            self.state / "expired-request-abandonment-journal",
+            record(self.module.EXPIRED_REQUEST_ABANDONMENT_JOURNAL_FIELDS, values),
+        )
+
+    def write_pending_cancellation_journal(self, source: Path | None = None) -> None:
+        request_root = self.pending if source is None else source
+        request_values = dict(
+            line.split("=", 1)
+            for line in (request_root / "request")
+            .read_text(encoding="ascii")
+            .splitlines()
+        )
+        values = {
+            "schema": "1",
+            "kind": "host-local-pending-request-cancellation",
+            "service": SERVICE,
+            "target": TARGET,
+            "request_id": REQUEST_ID,
+            "request_sha256": digest(request_root / "request"),
+            "request_signature_sha256": digest(request_root / "request.sig"),
+            "csr_sha256": digest(request_root / "tls.csr"),
+            "csr_spki_sha256": request_values["csr_spki_sha256"],
+            "created_epoch": request_values["created_epoch"],
+            "expires_epoch": request_values["expires_epoch"],
+        }
+        private_file(
+            self.state / "pending-request-cancellation-journal",
+            record(self.module.EXPIRED_REQUEST_ABANDONMENT_JOURNAL_FIELDS, values),
+        )
+
     def install_response(self, *, check: bool = False) -> CommandResult:
         argv = [*self.common("response-install"), *self.candidate()]
         if check:
@@ -268,6 +377,23 @@ class LifecycleCase:
         if fresh:
             argv.append("--fresh-evidence")
         return self.run(argv, environment=environment)
+
+    def prepare_rolled_back_abandonment(
+        self, *extra: str | Path
+    ) -> CommandResult:
+        return self.run([
+            *self.common("activate-finish", config=True),
+            *self.candidate(),
+            *self.boundary_args(),
+            "--validation-boundary", self.boundary,
+            "--deployment-signing-key", self.signing_key,
+            "--reviewed-ca", self.reviewed_ca,
+            "--rollback-seconds", "1209600",
+            "--action", "abandon",
+            "--result", "rolled-back",
+            "--prepare-rolled-back-abandonment",
+            *extra,
+        ])
 
     def recover(self, *, check: bool = False) -> CommandResult:
         argv = [
@@ -614,6 +740,186 @@ def test_status_precedence_never_claims_complete_or_renewal(
     assert exported["signer_outcome_state"] == "unavailable"
 
 
+def test_expired_request_abandonment_is_explicit_and_checkable(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    active_key = Path(
+        json.loads(lifecycle_case.zot_config.read_text(encoding="ascii"))["http"]["tls"]["key"]
+    )
+    active_key_before = active_key.read_bytes()
+    assert_failure(lifecycle_case.abandon_expired())
+    assert lifecycle_case.pending.is_dir()
+
+    lifecycle_case.expire_request()
+    assert result_json(lifecycle_case.status())["status"] == "request-expired"
+    checked = result_json(lifecycle_case.abandon_expired(check=True))
+    assert checked == {"request_id": REQUEST_ID, "status": "would-abandon"}
+    assert lifecycle_case.pending.is_dir()
+
+    abandoned = result_json(lifecycle_case.abandon_expired())
+    assert abandoned == {"request_id": REQUEST_ID, "status": "abandoned"}
+    assert not lifecycle_case.pending.exists()
+    assert not any(lifecycle_case.pending_root.iterdir())
+    assert active_key.read_bytes() == active_key_before
+
+
+def test_pending_request_cancellation_requires_exact_id_and_digest(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    active_key = Path(
+        json.loads(lifecycle_case.zot_config.read_text(encoding="ascii"))["http"]["tls"]["key"]
+    )
+    active_key_before = active_key.read_bytes()
+    assert_failure(lifecycle_case.cancel_pending(request_sha256="0" * 64))
+    assert lifecycle_case.pending.is_dir()
+
+    checked = result_json(lifecycle_case.cancel_pending(check=True))
+    assert checked == {"request_id": REQUEST_ID, "status": "would-cancel"}
+    assert lifecycle_case.pending.is_dir()
+
+    cancelled = result_json(lifecycle_case.cancel_pending())
+    assert cancelled == {"request_id": REQUEST_ID, "status": "cancelled"}
+    assert not lifecycle_case.pending.exists()
+    assert not any(lifecycle_case.pending_root.iterdir())
+    assert active_key.read_bytes() == active_key_before
+
+
+def test_pending_request_cancellation_refuses_response_state(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.prepare_response()
+
+    assert_failure(lifecycle_case.cancel_pending())
+    assert lifecycle_case.pending.is_dir()
+
+
+def test_pending_request_cancellation_resumes_exact_partial_cleanup(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    request_sha256 = digest(lifecycle_case.pending / "request")
+    lifecycle_case.write_pending_cancellation_journal()
+    stage = lifecycle_case.pending_root / f".cancel-pending-{REQUEST_ID}"
+    lifecycle_case.pending.rename(stage)
+    (stage / "tls.key").unlink()
+
+    checked = result_json(
+        lifecycle_case.cancel_pending(
+            request_sha256=request_sha256,
+            check=True,
+        )
+    )
+    assert checked == {
+        "request_id": REQUEST_ID,
+        "status": "would-complete-cancellation",
+    }
+    assert result_json(
+        lifecycle_case.cancel_pending(request_sha256=request_sha256)
+    )["status"] == "cancelled"
+    assert not stage.exists()
+
+
+def test_request_is_expired_at_exact_expiry_epoch(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    expires = 1_800_000_000
+
+    assert lifecycle_case.module.request_is_expired(expires, expires - 1) is False
+    assert lifecycle_case.module.request_is_expired(expires, expires) is True
+    assert lifecycle_case.module.request_is_expired(expires, expires + 1) is True
+
+
+def test_expired_request_abandonment_resumes_exact_partial_cleanup(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.expire_request()
+    stage = lifecycle_case.pending_root / f".abandon-expired-{REQUEST_ID}"
+    lifecycle_case.pending.rename(stage)
+    assert_failure(lifecycle_case.abandon_expired())
+    lifecycle_case.write_expired_abandonment_journal(stage)
+    (stage / "tls.key").unlink()
+
+    checked = result_json(lifecycle_case.abandon_expired(check=True))
+    assert checked == {
+        "request_id": REQUEST_ID,
+        "status": "would-complete-abandonment",
+    }
+    assert stage.is_dir()
+    assert result_json(lifecycle_case.abandon_expired())["status"] == "abandoned"
+    assert not stage.exists()
+
+
+def test_expired_request_abandonment_recovers_partial_journal_stage(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.expire_request()
+    private_file(
+        lifecycle_case.state / "expired-request-abandonment-journal.stage",
+        b"partial\n",
+    )
+
+    assert result_json(lifecycle_case.abandon_expired())["status"] == "abandoned"
+    assert not lifecycle_case.pending.exists()
+    assert not (
+        lifecycle_case.state / "expired-request-abandonment-journal.stage"
+    ).exists()
+    assert not (
+        lifecycle_case.state / "expired-request-abandonment-journal"
+    ).exists()
+
+
+def test_expired_request_abandonment_refuses_response_state(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.expire_request()
+    lifecycle_case.prepare_response()
+
+    assert_failure(lifecycle_case.abandon_expired())
+    assert lifecycle_case.pending.is_dir()
+
+
+def test_response_preparation_cannot_interrupt_abandonment_recovery(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.expire_request()
+    lifecycle_case.write_expired_abandonment_journal()
+
+    assert_failure(
+        lifecycle_case.run(
+            [
+                *lifecycle_case.common("response-prepare"),
+                "--request-id",
+                REQUEST_ID,
+            ]
+        )
+    )
+    assert not (lifecycle_case.versions_root / f".ingress-{REQUEST_ID}").exists()
+    assert result_json(lifecycle_case.abandon_expired())["status"] == "abandoned"
+
+
+def test_expired_request_cannot_be_collected_or_consume_response(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.expire_request()
+    output = private_dir(lifecycle_case.root / "expired-collection")
+    collection = [
+        *lifecycle_case.common("collection-prepare"),
+        "--trust-id",
+        "reviewed-v1",
+        "--request-id",
+        REQUEST_ID,
+        "--output-dir",
+        output,
+        "--output-owner-uid",
+        "0",
+    ]
+
+    assert_failure(lifecycle_case.run(collection))
+    assert not any(output.iterdir())
+    lifecycle_case.prepare_response()
+    assert_failure(lifecycle_case.install_response())
+    assert lifecycle_case.pending.is_dir()
+
+
 def test_collection_exports_only_public_files_and_rechecks_key_locally(
     lifecycle_case: LifecycleCase,
 ) -> None:
@@ -705,6 +1011,20 @@ def test_response_and_activation_check_modes_are_read_only(
     before = tree_snapshot(lifecycle_case.root)
     assert result_json(lifecycle_case.activate(check=True))["status"] == "would-activate"
     assert tree_snapshot(lifecycle_case.root) == before
+
+
+def test_migration_activation_binds_leaf_from_managed_predecessor_fullchain(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    config = json.loads(lifecycle_case.zot_config.read_text(encoding="ascii"))
+    predecessor = Path(config["http"]["tls"]["cert"])
+    leaf = predecessor.read_bytes()
+    with predecessor.open("ab") as stream:
+        stream.write(leaf)
+
+    assert result_json(lifecycle_case.activate(check=True))["status"] == "would-activate"
 
 
 def test_activation_journal_is_durable_before_config_mutation(
@@ -1219,7 +1539,7 @@ def test_rolled_back_abandonment_binds_restored_predecessor_and_retained_hold(
         type("Args", (), {"service": SERVICE, "target": TARGET})(),
     )
     predecessor_certificate = rollback["predecessor_certificate_sha256"]
-    predecessor_intermediate = "d" * 64
+    predecessor_intermediate = lifecycle_case.intermediate_sha256
     lifecycle_case.local_observation.write_bytes(record(
         ("schema", "service_result", "tls_result", "served_certificate_sha256", "served_intermediate_sha256"),
         {
@@ -1229,6 +1549,21 @@ def test_rolled_back_abandonment_binds_restored_predecessor_and_retained_hold(
         },
     ))
     lifecycle_case.local_observation.chmod(0o600)
+    prepared_snapshot = tree_snapshot(lifecycle_case.root)
+    prepared = result_json(lifecycle_case.prepare_rolled_back_abandonment())
+    assert prepared == {
+        "status": "rolled-back-abandonment-local-validated",
+        "action": "abandon",
+        "result": "rolled-back",
+        "request_id": REQUEST_ID,
+        "artifact_sha256": lifecycle_case.artifact_sha256,
+        "served_certificate_sha256": predecessor_certificate,
+        "served_intermediate_sha256": predecessor_intermediate,
+        "activation_epoch": activated["activation_epoch"],
+        "rollback_deadline_epoch": activated["rollback_deadline_epoch"],
+    }
+    assert tree_snapshot(lifecycle_case.root) == prepared_snapshot
+    assert lifecycle_case.state.joinpath("activation-journal").is_file()
     evidence_epoch = activated["activation_epoch"] + 10
     observation = lifecycle_case.observation(
         evidence_epoch + 1,
@@ -1277,6 +1612,155 @@ def test_rolled_back_abandonment_binds_restored_predecessor_and_retained_hold(
     assert (collected["action"], collected["result"]) == (
         "abandon", "rolled-back",
     )
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    (
+        ("--action", "finalize"),
+        ("--result", "not-activated"),
+        ("--observation-file", "/tmp/unexpected-observation"),
+        ("--served-intermediate-sha256", "d" * 64),
+        ("--fresh-evidence",),
+        ("--check",),
+    ),
+)
+def test_rolled_back_abandonment_preparation_rejects_conflicting_arguments(
+    lifecycle_case: LifecycleCase,
+    conflict: tuple[str, ...],
+) -> None:
+    assert_failure(
+        lifecycle_case.prepare_rolled_back_abandonment(*conflict)
+    )
+
+
+def test_rolled_back_abandonment_preparation_failure_preserves_journal(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    result_json(lifecycle_case.activate())
+    assert result_json(lifecycle_case.recover())["status"] == "restored"
+    journal = lifecycle_case.state.joinpath("activation-journal")
+    journal_before = journal.read_bytes()
+
+    # The fixture still describes the failed candidate, not the predecessor.
+    assert_failure(lifecycle_case.prepare_rolled_back_abandonment())
+
+    assert journal.read_bytes() == journal_before
+    assert not lifecycle_case.state.joinpath("evidence").exists()
+
+
+def test_retry_after_rolled_back_evidence_ignores_authenticated_history(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    first_activation = result_json(lifecycle_case.activate())
+    assert result_json(lifecycle_case.recover())["status"] == "restored"
+    journal = lifecycle_case.module.journal_record(
+        lifecycle_case.state.joinpath("activation-journal").read_bytes(),
+        type("Args", (), {
+            "service": SERVICE,
+            "target": TARGET,
+            "versions_root": str(lifecycle_case.versions_root),
+        })(),
+    )
+    rollback = lifecycle_case.module.parse_rollback(
+        lifecycle_case.module.decode_bound_bytes(
+            journal["new_rollback_b64"],
+            journal["new_rollback_sha256"],
+            "rollback",
+        ),
+        type("Args", (), {"service": SERVICE, "target": TARGET})(),
+    )
+    predecessor_certificate = rollback["predecessor_certificate_sha256"]
+    private_file(
+        lifecycle_case.local_observation,
+        record(
+            (
+                "schema",
+                "service_result",
+                "tls_result",
+                "served_certificate_sha256",
+                "served_intermediate_sha256",
+            ),
+            {
+                "schema": "1",
+                "service_result": "passed",
+                "tls_result": "passed",
+                "served_certificate_sha256": predecessor_certificate,
+                "served_intermediate_sha256": lifecycle_case.intermediate_sha256,
+            },
+        ),
+    )
+    rollback_observation = lifecycle_case.observation(
+        first_activation["activation_epoch"] + 1,
+        served_certificate_sha256=predecessor_certificate,
+    )
+    rolled_back = result_json(lifecycle_case.finish(
+        rollback_observation,
+        action="abandon",
+        result="rolled-back",
+    ))
+
+    private_file(
+        lifecycle_case.local_observation,
+        record(
+            (
+                "schema",
+                "service_result",
+                "tls_result",
+                "served_certificate_sha256",
+                "served_intermediate_sha256",
+            ),
+            {
+                "schema": "1",
+                "service_result": "passed",
+                "tls_result": "passed",
+                "served_certificate_sha256": lifecycle_case.certificate_sha256,
+                "served_intermediate_sha256": lifecycle_case.intermediate_sha256,
+            },
+        ),
+    )
+    second_activation = result_json(lifecycle_case.activate())
+    activated_observation = lifecycle_case.observation(
+        second_activation["activation_epoch"] + 1
+    )
+    activated = result_json(lifecycle_case.finish(activated_observation))
+
+    status = result_json(lifecycle_case.status(
+        "--controller-evidence-exported",
+        "--deployment-sha256",
+        activated["deployment_sha256"],
+    ))
+    assert status["status"] == "evidence-exported"
+    assert status["evidence_state"] == "controller-exported"
+
+    historical = Path(rolled_back["evidence_path"])
+    result_path = historical / "validation-result"
+    result = lifecycle_case.module.parse_record(
+        result_path.read_bytes(),
+        lifecycle_case.module.VALIDATION_RESULT_FIELDS,
+        "historical validation result",
+    )
+    result["kind"] = "malformed-history"
+    private_file(
+        result_path,
+        record(lifecycle_case.module.VALIDATION_RESULT_FIELDS, result),
+    )
+    signature = historical / "validation-result.sig"
+    signature.unlink()
+    lifecycle_case.runner.run([
+        "ssh-keygen", "-Y", "sign", "-f", lifecycle_case.signing_key,
+        "-n", lifecycle_case.module.DEPLOYMENT_NAMESPACE, result_path,
+    ]).assert_success()
+    signature.chmod(0o600)
+    assert_failure(lifecycle_case.status(
+        "--controller-evidence-exported",
+        "--deployment-sha256",
+        activated["deployment_sha256"],
+    ))
 
 
 def test_fresh_evidence_extends_hold_revalidates_and_retains_attempts(

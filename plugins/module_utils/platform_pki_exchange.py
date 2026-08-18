@@ -296,6 +296,34 @@ def require_service(value: object) -> str:
     return value
 
 
+def require_validation_endpoint(value: object) -> str:
+    if not isinstance(value, str):
+        fail("validation endpoint is not canonical")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        fail("validation endpoint is not canonical")
+    hostname = parsed.hostname
+    if (
+        parsed.scheme != "https"
+        or hostname is None
+        or _PRINCIPAL.fullmatch(hostname) is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/v2/"
+        or parsed.query
+        or parsed.fragment
+        or port is not None
+        and not 1 <= port <= 65535
+    ):
+        fail("validation endpoint is not canonical")
+    authority = hostname if port is None else f"{hostname}:{port}"
+    if value != f"https://{authority}/v2/":
+        fail("validation endpoint is not canonical")
+    return value
+
+
 def require_principal(value: object, label: str) -> str:
     if not isinstance(value, str) or _PRINCIPAL.fullmatch(value) is None:
         fail(f"{label} is not canonical")
@@ -343,6 +371,115 @@ def serialize_record(fields: Sequence[str], values: Mapping[str, str], label: st
             fail(f"cannot serialize unsafe {label}")
         lines.append(f"{field}={value}")
     return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def validate_reviewed_ca_bundle(data: bytes) -> None:
+    matches = tuple(_CERTIFICATE_PEM.finditer(data))
+    if (
+        len(matches) != 2
+        or b"".join(match.group(0) for match in matches) != data
+    ):
+        fail("reviewed CA is not the exact intermediate-plus-root PEM bundle")
+    certificates: list[x509.Certificate] = []
+    try:
+        for match in matches:
+            pem = match.group(0)
+            certificate = x509.load_pem_x509_certificate(pem)
+            if certificate.public_bytes(serialization.Encoding.PEM) != pem:
+                fail("reviewed CA contains noncanonical PEM")
+            certificates.append(certificate)
+    except x509.ExtensionNotFound:
+        fail("reviewed CA certificate lacks required CA extensions")
+    except ValueError:
+        fail("reviewed CA contains an invalid PEM certificate")
+    intermediate, root = certificates
+    if intermediate.issuer != root.subject or root.issuer != root.subject:
+        fail("reviewed CA certificates are not ordered intermediate then root")
+    for certificate, path_length, label in (
+        (intermediate, 0, "intermediate"),
+        (root, 1, "root"),
+    ):
+        try:
+            constraints = certificate.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            )
+            usage = certificate.extensions.get_extension_for_class(x509.KeyUsage)
+        except x509.ExtensionNotFound:
+            fail(f"reviewed CA {label} lacks required CA extensions")
+        if (
+            not constraints.critical
+            or not constraints.value.ca
+            or constraints.value.path_length != path_length
+            or not usage.critical
+            or not usage.value.key_cert_sign
+            or not usage.value.crl_sign
+            or usage.value.digital_signature
+            or usage.value.key_encipherment
+            or usage.value.key_agreement
+        ):
+            fail(f"reviewed CA {label} profile is invalid")
+    for certificate, issuer, label in (
+        (intermediate, root, "intermediate"),
+        (root, root, "root"),
+    ):
+        key = issuer.public_key()
+        algorithm = certificate.signature_hash_algorithm
+        if isinstance(key, (ec.EllipticCurvePublicKey, rsa.RSAPublicKey)) and algorithm is None:
+            fail(f"reviewed CA {label} signature algorithm is unavailable")
+        try:
+            if isinstance(key, ec.EllipticCurvePublicKey):
+                assert algorithm is not None
+                key.verify(
+                    certificate.signature,
+                    certificate.tbs_certificate_bytes,
+                    ec.ECDSA(algorithm),
+                )
+            elif isinstance(key, rsa.RSAPublicKey):
+                assert algorithm is not None
+                key.verify(
+                    certificate.signature,
+                    certificate.tbs_certificate_bytes,
+                    padding.PKCS1v15(),
+                    algorithm,
+                )
+            elif isinstance(key, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
+                key.verify(certificate.signature, certificate.tbs_certificate_bytes)
+            else:
+                fail(f"reviewed CA {label} uses an unsupported key")
+        except ExchangeError:
+            raise
+        except Exception:
+            fail(f"reviewed CA {label} signature verification failed")
+
+
+def validate_validation_boundary(
+    data: bytes,
+    *,
+    service: object,
+    target: object,
+    remote_validator: object,
+    endpoint: object,
+) -> None:
+    expected = {
+        "schema": "1",
+        "kind": "pki-validation-boundary",
+        "service": require_service(service),
+        "target": require_principal(target, "target"),
+        "local_validator": require_principal(target, "target"),
+        "remote_validator": require_principal(
+            remote_validator, "remote_validator"
+        ),
+        "endpoint": require_validation_endpoint(endpoint),
+        "local_check": LOCAL_CHECK,
+        "remote_check": REMOTE_CHECK,
+    }
+    if expected["remote_validator"] == expected["target"]:
+        fail("validation boundary requires a distinct remote validator")
+    boundary = parse_record(
+        data, VALIDATION_BOUNDARY_FIELDS, "validation boundary"
+    )
+    if boundary != expected:
+        fail("validation boundary differs from the exact reviewed contract")
 
 
 def _identity(metadata: os.stat_result, *, mutable_times: bool = True) -> tuple[int, ...]:

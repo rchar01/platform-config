@@ -1,4 +1,28 @@
 ---
+- name: Probe host-local certificate lifecycle Python runtime
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/env
+      - python3
+      - -c
+      - import cryptography
+  register: pki_host_local_certificate_lifecycle_python_runtime
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - not pki_host_local_certificate_helper_read_only
+
+- name: Install host-local certificate lifecycle Python runtime
+  ansible.builtin.package:
+    name: python3-cryptography
+    state: present
+  when:
+    - not ansible_check_mode
+    - not pki_host_local_certificate_helper_read_only
+    - pki_host_local_certificate_lifecycle_python_runtime.rc != 0
+
 - name: Inspect host-local certificate lifecycle helper directory
   ansible.builtin.stat:
     path: "{{ pki_host_local_certificate_lifecycle_helper_path | dirname }}"

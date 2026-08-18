@@ -41,6 +41,11 @@ REQUEST_FIELDS = (
     "inventory_sha256", "csr_sha256", "csr_spki_sha256",
     "current_cert_sha256", "profile", "response_principal",
 )
+EXPIRED_REQUEST_ABANDONMENT_JOURNAL_FIELDS = (
+    "schema", "kind", "service", "target", "request_id", "request_sha256",
+    "request_signature_sha256", "csr_sha256", "csr_spki_sha256",
+    "created_epoch", "expires_epoch",
+)
 RESPONSE_FIELDS = (
     "schema", "request_id", "nonce", "operation", "service", "target",
     "request_sha256", "approval_sha256", "inventory_sha256", "csr_sha256",
@@ -802,9 +807,15 @@ def private_key_spki(data: bytes) -> str:
     return spki_digest(key.public_key())
 
 
-def pem_certificates(data: bytes, count: int, label: str) -> tuple[x509.Certificate, ...]:
+def pem_certificates(
+    data: bytes, count: int | None, label: str
+) -> tuple[x509.Certificate, ...]:
     matches = tuple(PEM_CERT_RE.finditer(data))
-    if len(matches) != count or b"".join(match.group(0) for match in matches) != data:
+    if (
+        not matches
+        or (count is not None and len(matches) != count)
+        or b"".join(match.group(0) for match in matches) != data
+    ):
         fail(f"{label} does not contain the exact certificate count")
     certificates: list[x509.Certificate] = []
     for match in matches:
@@ -850,12 +861,27 @@ def require_ca(certificate: x509.Certificate, path_length: int, label: str) -> N
         fail(f"{label} CA profile is invalid")
 
 
-def validate_pending(path: str, trust: Mapping[str, bytes], *, now: int | None = None) -> dict[str, object]:
+def request_is_expired(expires: int, current: int) -> bool:
+    return current >= expires
+
+
+def validate_pending(
+    path: str,
+    trust: Mapping[str, bytes],
+    *,
+    now: int | None = None,
+    expected_request_id: str | None = None,
+) -> dict[str, object]:
     directory, files, identities = open_exact_tree(path, PENDING_NAMES, "pending request")
     try:
         request = parse_record(files["request"], REQUEST_FIELDS, "pending request record")
         current = int(time.time()) if now is None else now
-        if request["schema"] != "1" or request["request_id"] != os.path.basename(path):
+        path_request_id = (
+            os.path.basename(path)
+            if expected_request_id is None
+            else expected_request_id
+        )
+        if request["schema"] != "1" or request["request_id"] != path_request_id:
             fail("pending request identity is invalid")
         require_request_id(request["request_id"])
         require_service(request["service"])
@@ -876,7 +902,12 @@ def validate_pending(path: str, trust: Mapping[str, bytes], *, now: int | None =
         verify_ssh_signature(files["request"], files["request.sig"], trust["requesters.allowed_signers"], request["requester_principal"], REQUEST_NAMESPACE, "request")
         for name, identity in identities.items():
             require_snapshot(directory, name, identity, f"pending request file {name}")
-        return {"record": request, "files": files, "expires": expires, "expired": current > expires}
+        return {
+            "record": request,
+            "files": files,
+            "expires": expires,
+            "expired": request_is_expired(expires, current),
+        }
     finally:
         directory.close()
 
@@ -1116,7 +1147,7 @@ def validate_boundary(data: bytes, args) -> dict[str, str]:
 
 def state_entries(state: PinnedDirectory) -> set[str]:
     entries = set(scan(state, "state root"))
-    allowed = {"lock", "trust", "active", "rollback", "validation-boundary", "evidence", "activation-journal", "evidence-attempt-journal", "abandonment-journal", "request.journal", "trust-install.journal"}
+    allowed = {"lock", "trust", "active", "rollback", "validation-boundary", "evidence", "activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}
     if not entries.issubset(allowed):
         fail("state root contains unexpected entries")
     return entries
@@ -1209,11 +1240,13 @@ def collection_prepare(args) -> None:
     state, lock = common_open(args)
     try:
         entries = state_entries(state)
-        if entries & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "request.journal", "trust-install.journal"}:
+        if entries & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}:
             fail("unresolved lifecycle state blocks request collection")
         trust, policy = load_trust(state, args.trust_id, args.target)
         pending_path = os.path.join(args.pending_root, require_request_id(args.request_id))
         pending = validate_pending(pending_path, trust)
+        if pending["expired"]:
+            fail("expired pending request cannot be collected")
         request = pending["record"]
         assert isinstance(request, dict)
         if request["service"] != args.service or request["target"] != args.target or request["response_principal"] != policy["response_principal"]:
@@ -1232,12 +1265,417 @@ def collection_prepare(args) -> None:
         state.close()
 
 
+def parse_expired_request_abandonment_journal(
+    data: bytes, args
+) -> dict[str, str]:
+    cancelling = getattr(args, "removal_mode", "expired") == "cancel"
+    label = "pending request cancellation" if cancelling else "expired request abandonment"
+    expected_kind = (
+        "host-local-pending-request-cancellation"
+        if cancelling
+        else "host-local-expired-request-abandonment"
+    )
+    record = parse_record(
+        data,
+        EXPIRED_REQUEST_ABANDONMENT_JOURNAL_FIELDS,
+        f"{label} journal",
+    )
+    if (
+        record["schema"] != "1"
+        or record["kind"] != expected_kind
+        or record["service"] != args.service
+        or record["target"] != args.target
+        or record["request_id"] != args.request_id
+        or (
+            cancelling
+            and record["request_sha256"] != args.request_sha256
+        )
+    ):
+        fail(f"{label} journal identity is invalid")
+    for name in (
+        "request_sha256",
+        "request_signature_sha256",
+        "csr_sha256",
+        "csr_spki_sha256",
+    ):
+        require_digest(record[name], f"{label} {name}")
+    created = require_epoch(
+        record["created_epoch"], f"{label} created epoch"
+    )
+    expires = require_epoch(
+        record["expires_epoch"], f"{label} expiry epoch"
+    )
+    if (
+        created is None
+        or expires is None
+        or expires <= created
+        or expires - created > 604800
+        or (not cancelling and int(time.time()) < expires)
+    ):
+        fail(f"{label} journal lifetime is invalid")
+    return record
+
+
+def require_no_expired_request_consumers(
+    args, state: PinnedDirectory, entries: set[str], request_id: str
+) -> None:
+    active = authenticate_active(state, args, require_config=False)
+    if active is not None and active["record"]["request_id"] == request_id:
+        fail("active state blocks pending request removal")
+    if "evidence" in entries:
+        evidence = PinnedDirectory.open(
+            os.path.join(args.state_root, "evidence"), "evidence root"
+        )
+        try:
+            if request_id in scan(evidence, "evidence root"):
+                fail("existing evidence blocks pending request removal")
+        finally:
+            evidence.close()
+    if os.path.lexists(args.versions_root):
+        versions = PinnedDirectory.open(args.versions_root, "versions root")
+        try:
+            conflicting_names = {request_id, f".ingress-{request_id}"}
+            if any(
+                name in conflicting_names
+                or name.startswith(f".stage-{request_id}-")
+                for name in scan(versions, "versions root")
+            ):
+                fail("response or version state blocks pending request removal")
+        finally:
+            versions.close()
+
+
+def validate_abandonment_stage(
+    path: str, journal: Mapping[str, str]
+) -> tuple[PinnedDirectory, dict[str, tuple[int, ...]]]:
+    stage = PinnedDirectory.open(path, "expired request abandonment stage")
+    try:
+        remaining = scan(stage, "expired request abandonment stage")
+        if not set(remaining).issubset(set(PENDING_NAMES)):
+            fail("expired request abandonment stage contains unexpected entries")
+        identities: dict[str, tuple[int, ...]] = {}
+        for name in remaining:
+            data, identity = read_at(
+                stage, name, f"expired pending request file {name}"
+            )
+            expected = {
+                "tls.csr": journal["csr_sha256"],
+                "request": journal["request_sha256"],
+                "request.sig": journal["request_signature_sha256"],
+            }.get(name)
+            if expected is not None and sha256(data) != expected:
+                fail(f"expired pending request file differs from its journal: {name}")
+            if name == "tls.key" and private_key_spki(data) != journal["csr_spki_sha256"]:
+                fail("expired pending private key differs from its journal")
+            identities[name] = identity
+        return stage, identities
+    except Exception:
+        stage.close()
+        raise
+
+
+def publish_expired_request_abandonment_journal(
+    state: PinnedDirectory,
+    data: bytes,
+    journal_name: str = "expired-request-abandonment-journal",
+) -> tuple[int, ...]:
+    stage_name = f"{journal_name}.stage"
+    label = journal_name.replace("-journal", "").replace("-", " ")
+    entries = state_entries(state)
+    if journal_name in entries:
+        fail(f"{label} journal appeared during publication")
+    if stage_name in entries:
+        staged_data, staged_identity = read_at(
+            state, stage_name, f"{label} journal stage"
+        )
+        if staged_data != data:
+            require_snapshot(
+                state,
+                stage_name,
+                staged_identity,
+                f"{label} journal stage",
+            )
+            os.unlink(stage_name, dir_fd=state.fd)
+            os.fsync(state.fd)
+        else:
+            rename_noreplace(
+                state,
+                stage_name,
+                journal_name,
+                f"{label} journal publication",
+            )
+            os.fsync(state.fd)
+            published_data, published_identity = read_at(
+                state, journal_name, f"{label} journal"
+            )
+            if published_data != data:
+                fail(f"{label} journal changed at publication")
+            return published_identity
+    staged_identity = write_new_at(
+        state,
+        stage_name,
+        data,
+        f"{label} journal stage",
+    )
+    os.fsync(state.fd)
+    staged_data, current_identity = read_at(
+        state, stage_name, f"{label} journal stage"
+    )
+    if staged_data != data or current_identity != staged_identity:
+        fail(f"{label} journal stage changed")
+    rename_noreplace(
+        state,
+        stage_name,
+        journal_name,
+        f"{label} journal publication",
+    )
+    os.fsync(state.fd)
+    published_data, published_identity = read_at(
+        state, journal_name, f"{label} journal"
+    )
+    if published_data != data:
+        fail(f"{label} journal changed at publication")
+    return published_identity
+
+
+def abandon_expired_request(args) -> None:
+    state, lock = common_open(args)
+    pending_root: PinnedDirectory | None = None
+    try:
+        entries = state_entries(state)
+        cancelling = getattr(args, "removal_mode", "expired") == "cancel"
+        label = "pending request cancellation" if cancelling else "expired request abandonment"
+        journal_name = (
+            "pending-request-cancellation-journal"
+            if cancelling
+            else "expired-request-abandonment-journal"
+        )
+        journal_stage_name = f"{journal_name}.stage"
+        if entries & {
+            "activation-journal",
+            "evidence-attempt-journal",
+            "abandonment-journal",
+            "pending-request-cancellation-journal" if not cancelling else "expired-request-abandonment-journal",
+            "pending-request-cancellation-journal.stage" if not cancelling else "expired-request-abandonment-journal.stage",
+            "request.journal",
+            "trust-install.journal",
+        }:
+            fail(f"unresolved lifecycle state blocks {label}")
+        trust, policy = load_trust(state, args.trust_id, args.target)
+        request_id = require_request_id(args.request_id)
+        stage_name = (
+            f".cancel-pending-{request_id}"
+            if cancelling
+            else f".abandon-expired-{request_id}"
+        )
+        journal: dict[str, str] | None = None
+        journal_identity: tuple[int, ...] | None = None
+        if journal_name in entries and journal_stage_name in entries:
+            fail(f"{label} has conflicting journal state")
+        if journal_name in entries:
+            journal_data, journal_identity = read_at(
+                state, journal_name, f"{label} journal"
+            )
+            journal = parse_expired_request_abandonment_journal(journal_data, args)
+        require_no_expired_request_consumers(args, state, entries, request_id)
+
+        pending_root = PinnedDirectory.open(args.pending_root, "pending root")
+        pending_entries = set(scan(pending_root, "pending root"))
+        if not pending_entries:
+            if journal is None or journal_identity is None:
+                fail(f"{label} state is absent")
+            if args.check:
+                json_output(
+                    {
+                        "status": (
+                            "would-complete-cancellation"
+                            if cancelling
+                            else "would-complete-abandonment"
+                        ),
+                        "request_id": request_id,
+                    }
+                )
+                return
+            require_snapshot(
+                state,
+                journal_name,
+                journal_identity,
+                f"{label} journal",
+            )
+            os.unlink(journal_name, dir_fd=state.fd)
+            os.fsync(state.fd)
+            json_output(
+                {"status": "cancelled" if cancelling else "abandoned", "request_id": request_id}
+            )
+            return
+
+        if pending_entries == {stage_name}:
+            if journal is None or journal_identity is None:
+                fail(f"{label} stage lacks its authorization journal")
+            stage, stage_identities = validate_abandonment_stage(
+                os.path.join(args.pending_root, stage_name), journal
+            )
+            try:
+                if args.check:
+                    json_output(
+                        {
+                            "status": (
+                                "would-complete-cancellation"
+                                if cancelling
+                                else "would-complete-abandonment"
+                            ),
+                            "request_id": request_id,
+                        }
+                    )
+                    return
+                require_snapshot(
+                    state,
+                    journal_name,
+                    journal_identity,
+                    f"{label} journal",
+                )
+                remove_exact_tree(
+                    pending_root,
+                    stage_name,
+                    stage,
+                    stage_identities,
+                    f"{label} stage",
+                )
+                stage = None
+            finally:
+                if stage is not None:
+                    stage.close()
+            require_snapshot(
+                state,
+                journal_name,
+                journal_identity,
+                f"{label} journal",
+            )
+            os.unlink(journal_name, dir_fd=state.fd)
+            os.fsync(state.fd)
+            json_output(
+                {"status": "cancelled" if cancelling else "abandoned", "request_id": request_id}
+            )
+            return
+
+        if pending_entries != {request_id}:
+            fail("pending root does not contain only the exact request to remove")
+        pending_path = os.path.join(args.pending_root, request_id)
+        pending = validate_pending(pending_path, trust)
+        request = pending["record"]
+        files = pending["files"]
+        assert isinstance(request, dict) and isinstance(files, dict)
+        if (
+            request["service"] != args.service
+            or request["target"] != args.target
+            or request["response_principal"] != policy["response_principal"]
+        ):
+            fail("pending request differs from removal bindings")
+        request_sha256 = sha256(files["request"])
+        if cancelling and request_sha256 != args.request_sha256:
+            fail("pending request differs from the exact cancellation digest")
+        if not cancelling and not pending["expired"]:
+            fail("pending request is not expired")
+        expected_journal = {
+            "schema": "1",
+            "kind": (
+                "host-local-pending-request-cancellation"
+                if cancelling
+                else "host-local-expired-request-abandonment"
+            ),
+            "service": args.service,
+            "target": args.target,
+            "request_id": request_id,
+            "request_sha256": request_sha256,
+            "request_signature_sha256": sha256(files["request.sig"]),
+            "csr_sha256": sha256(files["tls.csr"]),
+            "csr_spki_sha256": request["csr_spki_sha256"],
+            "created_epoch": request["created_epoch"],
+            "expires_epoch": request["expires_epoch"],
+        }
+        if journal is not None and journal != expected_journal:
+            fail("pending request differs from its removal journal")
+        if args.check:
+            validate_pending(pending_path, trust)
+            json_output(
+                {
+                    "status": "would-cancel" if cancelling else "would-abandon",
+                    "request_id": request_id,
+                }
+            )
+            return
+        if journal is None:
+            journal_data = serialize_record(
+                EXPIRED_REQUEST_ABANDONMENT_JOURNAL_FIELDS,
+                expected_journal,
+                f"{label} journal",
+            )
+            journal_identity = publish_expired_request_abandonment_journal(
+                state, journal_data, journal_name
+            )
+        assert journal_identity is not None
+        validate_pending(pending_path, trust)
+        require_no_expired_request_consumers(args, state, state_entries(state), request_id)
+        require_snapshot(
+            state,
+            journal_name,
+            journal_identity,
+            f"{label} journal",
+        )
+        rename_noreplace(
+            pending_root,
+            request_id,
+            stage_name,
+            f"{label} staging",
+        )
+        os.fsync(pending_root.fd)
+        stage, stage_identities = validate_abandonment_stage(
+            os.path.join(args.pending_root, stage_name), expected_journal
+        )
+        try:
+            remove_exact_tree(
+                pending_root,
+                stage_name,
+                stage,
+                stage_identities,
+                f"{label} stage",
+            )
+            stage = None
+        finally:
+            if stage is not None:
+                stage.close()
+        require_snapshot(
+            state,
+            journal_name,
+            journal_identity,
+            f"{label} journal",
+        )
+        os.unlink(journal_name, dir_fd=state.fd)
+        os.fsync(state.fd)
+        json_output(
+            {"status": "cancelled" if cancelling else "abandoned", "request_id": request_id}
+        )
+    finally:
+        if pending_root is not None:
+            pending_root.close()
+        os.close(lock)
+        state.close()
+
+
 def response_prepare(args) -> None:
     state, lock = common_open(args)
     versions: PinnedDirectory | None = None
     ingress: PinnedDirectory | None = None
     try:
-        if state_entries(state) & {"activation-journal", "evidence-attempt-journal", "abandonment-journal"}:
+        if state_entries(state) & {
+            "activation-journal",
+            "evidence-attempt-journal",
+            "abandonment-journal",
+            "expired-request-abandonment-journal",
+            "expired-request-abandonment-journal.stage",
+            "pending-request-cancellation-journal",
+            "pending-request-cancellation-journal.stage",
+        }:
             fail("lifecycle recovery is required before response preparation")
         request_id = require_request_id(args.request_id)
         if not os.path.lexists(args.versions_root):
@@ -1298,13 +1736,15 @@ def response_install(args) -> None:
     stage: PinnedDirectory | None = None
     pending_directory: PinnedDirectory | None = None
     try:
-        if state_entries(state) & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "request.journal", "trust-install.journal"}:
+        if state_entries(state) & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}:
             fail("unresolved lifecycle state blocks response installation")
         trust, _policy = load_trust(state, args.trust_id, args.target)
         request_id = require_request_id(args.request_id)
         require_digest(args.artifact_sha256, "artifact pin")
         pending_path = os.path.join(args.pending_root, request_id)
         pending = validate_pending(pending_path, trust)
+        if pending["expired"]:
+            fail("expired pending request cannot consume a response")
         if pending["record"]["service"] != args.service or pending["record"]["target"] != args.target:
             fail("pending request differs from response installation bindings")
         versions = PinnedDirectory.open(args.versions_root, "versions root")
@@ -1949,11 +2389,21 @@ def activation_records(args, validated: Mapping[str, object], version: PinnedDir
     elif validated["request"]["operation"] == "migrate":
         prior_cert_data, _ = read_path(prior_cert, "managed predecessor certificate", mode=args.prior_certificate_mode)
         prior_key_data, _ = read_path(prior_key, "managed predecessor key")
-        leaf = pem_certificates(prior_cert_data, 1, "managed predecessor certificate")[0]
+        leaf = pem_certificates(
+            prior_cert_data, None, "managed predecessor certificate"
+        )[0]
+        leaf_data = leaf.public_bytes(serialization.Encoding.PEM)
         key_spki = private_key_spki(prior_key_data)
-        if spki_digest(leaf.public_key()) != key_spki or sha256(prior_cert_data) != validated["request"]["current_cert_sha256"]:
+        if (
+            spki_digest(leaf.public_key()) != key_spki
+            or sha256(leaf_data) != validated["request"]["current_cert_sha256"]
+        ):
             fail("managed predecessor key/certificate/request binding is invalid")
-        predecessor.update(kind="managed", certificate_sha256=sha256(prior_cert_data), certificate_spki_sha256=key_spki)
+        predecessor.update(
+            kind="managed",
+            certificate_sha256=sha256(leaf_data),
+            certificate_spki_sha256=key_spki,
+        )
     rollback_values = {
         "schema": "1", "kind": "host-local-rollback", "service": args.service,
         "target": args.target, "activating_request_id": args.request_id,
@@ -1982,7 +2432,7 @@ def activate_start(args) -> None:
     version: PinnedDirectory | None = None
     try:
         entries = state_entries(state)
-        if entries & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "request.journal", "trust-install.journal"}:
+        if entries & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}:
             fail("unresolved lifecycle state blocks activation")
         trust, _policy = load_trust(state, args.trust_id, args.target)
         request_id = require_request_id(args.request_id)
@@ -2538,7 +2988,8 @@ def abandonment_finish(args, state: PinnedDirectory, trust: Mapping[str, bytes])
         else:
             assert journal is not None
             if args.observation_file is None:
-                fail("rolled-back abandonment requires a restored-state observation")
+                if not args.prepare_rolled_back_abandonment:
+                    fail("rolled-back abandonment requires a restored-state observation")
             rollback_bytes = decode_bound_bytes(
                 journal["new_rollback_b64"], journal["new_rollback_sha256"],
                 "activation rollback",
@@ -2549,6 +3000,39 @@ def abandonment_finish(args, state: PinnedDirectory, trust: Mapping[str, bytes])
                 fail("rolled-back abandonment lacks a predecessor")
             served_certificate = rollback["predecessor_certificate_sha256"]
             require_digest(served_certificate, "restored predecessor certificate")
+            if args.prepare_rolled_back_abandonment:
+                ca_data, _ = read_path(
+                    args.reviewed_ca, "reviewed validation CA",
+                    mode=args.reviewed_ca_mode,
+                )
+                certificates = pem_certificates(
+                    ca_data, 2, "reviewed validation CA"
+                )
+                served_intermediate = sha256(
+                    certificates[0].public_bytes(serialization.Encoding.PEM)
+                )
+                strict_local_validation(
+                    args, served_certificate, served_intermediate
+                )
+                activation = require_epoch(
+                    journal["created_epoch"], "candidate activation epoch"
+                )
+                hold = require_epoch(
+                    journal["rollback_deadline_epoch"], "retained rollback hold"
+                )
+                assert activation is not None and hold is not None
+                json_output({
+                    "status": "rolled-back-abandonment-local-validated",
+                    "action": "abandon", "result": "rolled-back",
+                    "request_id": args.request_id,
+                    "artifact_sha256": args.artifact_sha256,
+                    "served_certificate_sha256": served_certificate,
+                    "served_intermediate_sha256": served_intermediate,
+                    "activation_epoch": activation,
+                    "rollback_deadline_epoch": hold,
+                })
+                return
+            assert args.served_intermediate_sha256 is not None
             served_intermediate = args.served_intermediate_sha256
             hold = require_epoch(
                 journal["rollback_deadline_epoch"], "retained rollback hold"
@@ -2827,7 +3311,14 @@ def activate_finish(args) -> None:
     state, lock = common_open(args)
     try:
         entries = state_entries(state)
-        if "request.journal" in entries or "trust-install.journal" in entries:
+        if (
+            "request.journal" in entries
+            or "trust-install.journal" in entries
+            or "expired-request-abandonment-journal" in entries
+            or "expired-request-abandonment-journal.stage" in entries
+            or "pending-request-cancellation-journal" in entries
+            or "pending-request-cancellation-journal.stage" in entries
+        ):
             fail("unrelated unresolved lifecycle state blocks evidence finalization")
         if "abandonment-journal" in entries:
             fail("abandonment publication recovery is required")
@@ -3605,7 +4096,7 @@ def evidence_journals_allow_collection(
     state: PinnedDirectory, args, deployment: Mapping[str, str]
 ) -> None:
     entries = state_entries(state)
-    if entries & {"request.journal", "trust-install.journal"}:
+    if entries & {"request.journal", "trust-install.journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage"}:
         fail("unrelated unresolved PKI journal blocks evidence collection")
     journals = entries & {
         "activation-journal", "evidence-attempt-journal", "abandonment-journal"
@@ -3727,6 +4218,126 @@ def validate_evidence(
                 if endpoint.scheme != "https" or not endpoint.hostname or endpoint.path != "/v2/" or endpoint.query or endpoint.fragment:
                     fail("evidence validation boundary endpoint is invalid")
                 boundary_sha = sha256(files["validation-boundary"])
+                action_result = (deployment["action"], deployment["result"])
+                if action_result != ("finalize", "activated"):
+                    created = require_epoch(
+                        deployment["created_epoch"],
+                        "historical abandonment created epoch",
+                    )
+                    expires = require_epoch(
+                        deployment["expires_epoch"],
+                        "historical abandonment expiry epoch",
+                    )
+                    assert created is not None and expires is not None
+                    if (
+                        action_result not in {
+                            ("abandon", "not-activated"),
+                            ("abandon", "rolled-back"),
+                        }
+                        or deployment["schema"] != "1"
+                        or deployment["request_id"] != active["request_id"]
+                        or deployment["artifact_request_id"] != active["request_id"]
+                        or deployment["artifact_manifest_sha256"]
+                        != active["artifact_manifest_sha256"]
+                        or deployment["response_sha256"] != active["response_sha256"]
+                        or deployment["response_signature_sha256"]
+                        != active["response_signature_sha256"]
+                        or deployment["certificate_sha256"]
+                        != active["certificate_sha256"]
+                        or deployment["certificate_spki_sha256"]
+                        != active["certificate_spki_sha256"]
+                        or deployment["chain_sha256"] != active["chain_sha256"]
+                        or deployment["fullchain_sha256"] != active["fullchain_sha256"]
+                        or HEX_RE.fullmatch(deployment["nonce"]) is None
+                        or deployment["operation"] not in {"issue", "migrate", "renew"}
+                        or HEX_RE.fullmatch(deployment["request_sha256"]) is None
+                        or HEX_RE.fullmatch(deployment["candidate_sha256"]) is None
+                        or deployment["service"] != args.service
+                        or deployment["target"] != args.target
+                        or deployment["deployment_principal"] != args.target
+                        or deployment["local_certificate_sha256"]
+                        != active["certificate_sha256"]
+                        or deployment["local_key_spki_sha256"]
+                        != active["certificate_spki_sha256"]
+                        or deployment["local_key_certificate_match"] != "true"
+                        or deployment["validation_boundary_sha256"] != boundary_sha
+                        or expires <= created
+                        or expires - created > 86400
+                        or created > lifecycle_epoch() + 300
+                        or result["schema"] != "1"
+                        or result["kind"] != "pki-validation-result"
+                        or result["service"] != args.service
+                        or result["target"] != args.target
+                        or result["request_id"] != active["request_id"]
+                        or result["artifact_manifest_sha256"]
+                        != active["artifact_manifest_sha256"]
+                        or result["validation_boundary_sha256"] != boundary_sha
+                        or (result["action"], result["result"]) != action_result
+                        or result["local_validator"] != boundary["local_validator"]
+                        or result["remote_validator"] != boundary["remote_validator"]
+                        or result["endpoint"] != boundary["endpoint"]
+                        or result["served_certificate_sha256"]
+                        != deployment["served_certificate_sha256"]
+                        or result["served_intermediate_sha256"]
+                        != deployment["served_intermediate_sha256"]
+                        or result["activation_epoch"] != deployment["activation_epoch"]
+                        or result["validation_epoch"] != deployment["validation_epoch"]
+                        or result["deployment_sha256"] != digest
+                    ):
+                        fail("historical abandonment evidence binding is invalid")
+                    observed_fields = (
+                        "local_service_result", "local_tls_result",
+                        "remote_tls_result", "remote_application_result",
+                    )
+                    if action_result == ("abandon", "not-activated"):
+                        not_run_fields = (
+                            *observed_fields, "remote_http_status",
+                            "remote_api_version", "remote_auth_challenge",
+                        )
+                        if (
+                            any(result[field] != "not-run" for field in not_run_fields)
+                            or deployment["served_certificate_sha256"] != "none"
+                            or deployment["served_intermediate_sha256"] != "none"
+                            or deployment["validation_result"] != "not-run"
+                            or deployment["activation_epoch"] != "none"
+                            or deployment["validation_epoch"] != "none"
+                            or deployment["rollback_state"] != "none"
+                            or deployment["rollback_hold_until_epoch"] != "none"
+                        ):
+                            fail("historical not-activated evidence is inconsistent")
+                    else:
+                        activation = require_epoch(
+                            deployment["activation_epoch"],
+                            "historical rolled-back activation epoch",
+                        )
+                        validation = require_epoch(
+                            deployment["validation_epoch"],
+                            "historical rolled-back validation epoch",
+                        )
+                        hold = require_epoch(
+                            deployment["rollback_hold_until_epoch"],
+                            "historical rolled-back hold",
+                        )
+                        assert activation is not None and validation is not None and hold is not None
+                        if (
+                            deployment["operation"] == "issue"
+                            or any(result[field] != "passed" for field in observed_fields)
+                            or result["remote_api_version"] != "registry/2.0"
+                            or (
+                                result["remote_http_status"],
+                                result["remote_auth_challenge"],
+                            ) not in {("200", "not-required"), ("401", "present")}
+                            or HEX_RE.fullmatch(deployment["served_certificate_sha256"])
+                            is None
+                            or HEX_RE.fullmatch(deployment["served_intermediate_sha256"])
+                            is None
+                            or deployment["validation_result"] != "passed"
+                            or not activation <= validation <= created + 300
+                            or deployment["rollback_state"] != "restored"
+                            or hold < created + MIN_ROLLBACK_SECONDS
+                        ):
+                            fail("historical rolled-back evidence is inconsistent")
+                    continue
                 activation = require_epoch(deployment["activation_epoch"], "evidence activation epoch")
                 validation = require_epoch(deployment["validation_epoch"], "evidence validation epoch")
                 created = require_epoch(deployment["created_epoch"], "evidence created epoch")
@@ -3854,7 +4465,7 @@ def status(args) -> None:
                 args,
             )
             recovery = True
-        if entries & {"request.journal", "trust-install.journal"}:
+        if entries & {"request.journal", "trust-install.journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage"}:
             fail("another unresolved PKI journal blocks lifecycle status")
         pending_id = "none"
         pending_expires: int | str = "none"
@@ -3994,7 +4605,7 @@ def status(args) -> None:
 def active_paths(args) -> None:
     state, lock = common_open(args, shared=True)
     try:
-        if state_entries(state) & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "request.journal", "trust-install.journal"}:
+        if state_entries(state) & {"activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}:
             fail("unresolved lifecycle state blocks active path selection")
         authenticated = authenticate_active(state, args)
         if authenticated is None:
@@ -4050,6 +4661,34 @@ def build_parser() -> argparse.ArgumentParser:
     collection.add_argument("--check", action="store_true")
     collection.set_defaults(function=collection_prepare)
 
+    abandon_expired = commands.add_parser(
+        "abandon-expired-request",
+        help="remove only one exact authenticated expired pending request",
+    )
+    add_common(abandon_expired)
+    abandon_expired.add_argument("--trust-id", required=True)
+    abandon_expired.add_argument("--request-id", required=True)
+    abandon_expired.add_argument("--check", action="store_true")
+    abandon_expired.set_defaults(
+        function=abandon_expired_request,
+        removal_mode="expired",
+        request_sha256=None,
+    )
+
+    cancel_pending = commands.add_parser(
+        "cancel-pending-request",
+        help="remove one exact authenticated pending request by ID and digest",
+    )
+    add_common(cancel_pending)
+    cancel_pending.add_argument("--trust-id", required=True)
+    cancel_pending.add_argument("--request-id", required=True)
+    cancel_pending.add_argument("--request-sha256", required=True)
+    cancel_pending.add_argument("--check", action="store_true")
+    cancel_pending.set_defaults(
+        function=abandon_expired_request,
+        removal_mode="cancel",
+    )
+
     evidence_collection = commands.add_parser(
         "evidence-collection-prepare",
         help="authenticate and expose one exact five-file evidence attempt",
@@ -4094,12 +4733,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_boundary(finish)
     finish.add_argument("--validation-boundary", required=True)
     finish.add_argument("--observation-file")
-    finish.add_argument("--served-intermediate-sha256", required=True)
+    finish.add_argument("--served-intermediate-sha256")
     finish.add_argument("--deployment-signing-key", required=True)
     finish.add_argument("--reviewed-ca", required=True)
     finish.add_argument("--reviewed-ca-mode", type=lambda value: int(value, 8), default=0o600)
     finish.add_argument("--rollback-seconds", type=int, required=True)
     finish.add_argument("--fresh-evidence", action="store_true")
+    finish.add_argument("--prepare-rolled-back-abandonment", action="store_true")
     finish.add_argument("--action", choices=("finalize", "abandon"), default="finalize")
     finish.add_argument("--result", choices=("activated", "not-activated", "rolled-back"), default="activated")
     finish.add_argument("--check", action="store_true")
@@ -4134,12 +4774,17 @@ def validate_arguments(args) -> None:
         require_request_id(args.request_id)
     if hasattr(args, "artifact_sha256") and args.artifact_sha256 is not None:
         require_digest(args.artifact_sha256, "artifact digest")
+    if hasattr(args, "request_sha256") and args.request_sha256 is not None:
+        require_digest(args.request_sha256, "request digest")
     if hasattr(args, "deployment_sha256") and args.deployment_sha256 is not None:
         require_digest(args.deployment_sha256, "deployment digest")
     if hasattr(args, "validation_boundary_sha256"):
         require_digest(args.validation_boundary_sha256, "validation boundary digest")
         require_identity(args.remote_validator, "remote validator")
-    if hasattr(args, "served_intermediate_sha256"):
+    if (
+        hasattr(args, "served_intermediate_sha256")
+        and args.served_intermediate_sha256 is not None
+    ):
         require_digest(args.served_intermediate_sha256, "served intermediate digest")
     if hasattr(args, "minimum_remaining_lifetime_seconds") and args.minimum_remaining_lifetime_seconds <= 0:
         fail("minimum remaining lifetime must be positive")
@@ -4159,6 +4804,17 @@ def validate_arguments(args) -> None:
             fail("deployment action and result are inconsistent")
         if args.fresh_evidence and args.action != "finalize":
             fail("fresh evidence is available only for finalization")
+        if args.prepare_rolled_back_abandonment:
+            if (
+                (args.action, args.result) != ("abandon", "rolled-back")
+                or args.observation_file is not None
+                or args.served_intermediate_sha256 is not None
+                or args.fresh_evidence
+                or args.check
+            ):
+                fail("rolled-back abandonment preparation has conflicting arguments")
+        elif args.served_intermediate_sha256 is None:
+            fail("served intermediate digest is required for evidence publication")
     if hasattr(args, "zot_config"):
         args.zot_config = canonical_path(args.zot_config, "Zot configuration")
     if hasattr(args, "deployment_signing_key"):

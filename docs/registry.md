@@ -55,13 +55,24 @@ Use these Make entry points with one exact registry `LIMIT` and carry the exact
 request, artifact, and deployment coordinates returned by each phase:
 
 ```bash
+make registry-pki-validation-material ENV=dev LIMIT=registry-example \
+  RUNNER_LIMIT=registry-validator-example
 make registry-pki-request ENV=dev LIMIT=registry-example
+make registry-pki-request ENV=dev LIMIT=registry-example \
+  REQUEST_TTL_SECONDS=604800
+make registry-pki-abandon-expired-request ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<expired-request-id>
+make registry-pki-cancel-request ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> REQUEST_SHA256=<request-sha256>
 make registry-pki-status ENV=dev LIMIT=registry-example
 make registry-pki-response-check ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   RESPONSE_DIR=/outside-git/protected-response
 make registry-pki-activate ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
+make registry-pki-publish-rolled-back-evidence ENV=dev \
+  LIMIT=registry-example RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
 make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
@@ -74,6 +85,34 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
 ```
+
+Request lifetime defaults to 3600 seconds. `REQUEST_TTL_SECONDS` is an explicit
+per-invocation override from 1 through the schema-2 policy maximum of 604800;
+it is not persisted in private inventory. Expired request abandonment requires
+the exact request ID, refuses unexpired or response-bearing state, removes only
+the unused pending request and key, and never changes Zot's active TLS paths.
+Exact cancellation is a separate on-demand operation that requires both the
+request ID and request digest and applies the same consumer-state guards.
+After recovery restores an activated candidate's predecessor, rolled-back
+evidence publication strictly revalidates that predecessor locally and from the
+reviewed runner before signing evidence and clearing the retained journal.
+Migration requests canonicalize the first leaf from Zot's current certificate
+file, so a deployed fullchain binds the signer-managed leaf digest rather than
+the concatenated file digest.
+
+Validation material provisioning is a separate prerequisite boundary. It pins
+current-user-owned mode-`0600` reviewed CA and validation-boundary controller
+sources outside this public repository, validates their exact contents, and
+installs them at the existing lifecycle target and runner destination
+coordinates on the one selected registry and one distinct delegated runner.
+The reviewed CA must contain exactly the profiled intermediate followed by its
+self-signed root, with valid chain signatures.
+The CA uses the configured mode (`0600` or `0644`); the boundary and all parent
+directories remain private. Set the controller paths with
+`pki_host_local_validation_material_reviewed_ca_src` and
+`pki_host_local_validation_material_boundary_src`; the role reuses the existing
+certificate lifecycle destination and digest variables. The lifecycle role does
+not import this provisioning role.
 
 Trust bootstrap remains a separate one-time action without a dedicated Make
 wrapper:

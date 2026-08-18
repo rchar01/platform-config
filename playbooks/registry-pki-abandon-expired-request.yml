@@ -1,0 +1,14 @@
+---
+- name: Abandon one exact expired host-local registry certificate request
+  hosts: registry
+  become: true
+  gather_facts: false
+  vars:
+    pki_host_local_certificate_request_ttl_seconds: 0
+    pki_host_local_certificate_validation_boundary_sha256: ""
+    pki_host_local_certificate_rollback_seconds: 0
+  tasks:
+    - name: Run structurally fixed expired request abandonment boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: abandon_expired_request

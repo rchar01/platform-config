@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import pwd
 import re
 import secrets
 import stat
 import time
+from typing import Any
 
 from ansible.errors import AnsibleActionFail
 from ansible.plugins.action import ActionBase
@@ -96,6 +98,8 @@ _HELPER_METADATA = frozenset(
     )
 )
 _SAFE_HELPER_ERROR = re.compile(r"[A-Za-z0-9 .,:;()_-]{1,400}\Z", re.ASCII)
+_REMOTE_STAGE_ROOT = "/var/tmp"
+_REMOTE_USER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}\Z", re.ASCII)
 
 
 def _canonical_remote_path(value: object, label: str) -> str:
@@ -114,6 +118,27 @@ def _remote_path(output_dir: str, name: str) -> str:
     if name not in REQUEST_REMOTE_NAMES:
         raise AnsibleActionFail("request collection remote basename is not allowlisted")
     return posixpath.join(output_dir, name)
+
+
+def _authenticated_remote_user(connection: Any) -> str:
+    unavailable = False
+    try:
+        remote_user = connection.get_option("remote_user")
+    except (AttributeError, KeyError, TypeError):
+        unavailable = True
+        remote_user = None
+    if (unavailable or remote_user is None) and getattr(
+        connection, "transport", None
+    ) == "local":
+        try:
+            remote_user = pwd.getpwuid(os.geteuid()).pw_name
+        except KeyError:
+            raise ExchangeError("authenticated local user is unavailable") from None
+    elif unavailable:
+        raise ExchangeError("authenticated remote user is unavailable") from None
+    if not isinstance(remote_user, str) or _REMOTE_USER.fullmatch(remote_user) is None:
+        raise ExchangeError("authenticated remote user is not canonical")
+    return remote_user
 
 
 def _access_is_private(stat_result: dict[str, object], *, directory: bool) -> bool:
@@ -289,7 +314,6 @@ class ActionModule(ActionBase):
         trust = {}
         fetch_stage = None
         remote_tmp = None
-        remote_tmp_root = None
         try:
             request_id = require_request_id(args["request_id"])
             service = require_service(args["service"])
@@ -321,17 +345,24 @@ class ActionModule(ActionBase):
                 raise ExchangeError("frozen trust set is incomplete")
             parent = prepare_request_parent(args["exchange_root"], service, request_id)
 
-            remote_tmp_root = _canonical_remote_path(
-                self._make_tmp_path().rstrip("/"),
-                "action-owned remote temporary directory",
-            )
+            remote_user = _authenticated_remote_user(self._connection)
+
             remote_tmp = _canonical_remote_path(
-                posixpath.join(remote_tmp_root, "public-request"),
+                posixpath.join(
+                    _REMOTE_STAGE_ROOT,
+                    f".platform-pki-request-{secrets.token_hex(16)}",
+                ),
                 "action-owned remote collection directory",
             )
+            directory_args = {
+                "path": remote_tmp,
+                "state": "directory",
+                "mode": "0700",
+            }
+            directory_args["owner"] = remote_user
             create_directory = self._execute_module(
                 module_name="ansible.legacy.file",
-                module_args={"path": remote_tmp, "state": "directory", "mode": "0700"},
+                module_args=directory_args,
                 task_vars=task_vars,
             )
             if create_directory.get("failed"):
@@ -531,8 +562,12 @@ class ActionModule(ActionBase):
         except OSError:
             raise AnsibleActionFail("request collection filesystem operation failed") from None
         finally:
-            if remote_tmp_root is not None:
-                self._remove_tmp_path(remote_tmp_root)
+            if remote_tmp is not None:
+                self._execute_module(
+                    module_name="ansible.legacy.file",
+                    module_args={"path": remote_tmp, "state": "absent"},
+                    task_vars=task_vars,
+                )
             if fetched is not None:
                 fetched.close()
             if fetch_stage is not None and parent is not None:

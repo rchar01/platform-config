@@ -34,6 +34,7 @@ pki_host_local_certificate_transport: ""
 pki_host_local_certificate_transport_host_key_sha256: ""
 
 pki_host_local_certificate_request_id: ""
+pki_host_local_certificate_request_sha256: ""
 pki_host_local_certificate_artifact_manifest_sha256: ""
 pki_host_local_certificate_validation_boundary_sha256: ""
 pki_host_local_certificate_rollback_seconds: 0

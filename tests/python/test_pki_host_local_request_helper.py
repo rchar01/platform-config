@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import shutil
 import signal
 import stat
@@ -530,6 +531,26 @@ def test_created_request_record_is_canonical_and_digest_bound(
     assert output["csr_spki_sha256"] == record["csr_spki_sha256"]
 
 
+def test_request_binds_canonical_leaf_from_current_fullchain(
+    request_scenario: RequestScenario,
+) -> None:
+    leaf = request_scenario.current_cert.read_bytes()
+    with request_scenario.current_cert.open("ab") as stream:
+        stream.write(leaf)
+    request_scenario.current_cert.chmod(0o600)
+    assert _sha256(request_scenario.current_cert) != request_scenario.current_digest
+
+    output = _json_result(request_scenario.run())
+    request = dict(
+        line.split("=", 1)
+        for line in (
+            request_scenario.pending / output["request_id"] / "request"
+        ).read_text(encoding="ascii").splitlines()
+    )
+
+    assert request["current_cert_sha256"] == request_scenario.current_digest
+
+
 def test_created_request_signature_verifies(
     created_request: tuple[RequestScenario, dict[str, Any]],
 ) -> None:
@@ -752,6 +773,18 @@ def test_expired_pending_request_is_rejected(
     _json_result(request_scenario.run(state=state, pending=pending, ttl=1))
     time.sleep(2)
     _assert_helper_failure(request_scenario.run(state=state, pending=pending, ttl=1))
+
+
+def test_pending_request_is_not_current_at_exact_expiry(
+    request_scenario: RequestScenario,
+) -> None:
+    helper = runpy.run_path(os.fspath(request_scenario.helper))
+    is_current = helper["pending_request_lifetime_is_current"]
+    expires = 1_800_000_000
+
+    assert is_current(expires - 3600, expires, expires - 1, 3600) is True
+    assert is_current(expires - 3600, expires, expires, 3600) is False
+    assert is_current(expires - 3600, expires, expires + 1, 3600) is False
 
 
 def test_prepublication_crash_check_is_non_mutating_and_apply_recovers(
@@ -1032,7 +1065,6 @@ def test_helper_stdout_redacts_private_signing_key(
             request_scenario.run(
                 state=expired_state,
                 pending=expired_pending,
-                ttl=1,
             )
         )
     )

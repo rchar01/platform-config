@@ -11,6 +11,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from ansible.errors import AnsibleActionFail
@@ -957,6 +958,7 @@ def test_collection_action_fetches_only_exact_public_remote_paths(
     ) = _request_material(root)
     exchange = _private_dir(root / "exchange")
     remote_temp = _private_dir(root / "remote-temp")
+    remote_collection = remote_temp / ".platform-pki-request-fixed"
     remote_uid = 1234
     fetched_paths: list[str] = []
     stat_paths: list[str] = []
@@ -998,12 +1000,21 @@ def test_collection_action_fetches_only_exact_public_remote_paths(
     def execute_module(*, module_name: str, module_args: dict[str, object], task_vars: object):
         del task_vars
         if module_name == "ansible.legacy.file":
+            if module_args.get("state") == "directory":
+                assert module_args == {
+                    "path": os.fspath(remote_collection),
+                    "state": "directory",
+                    "owner": "rocky",
+                    "mode": "0700",
+                }
+                remote_collection.mkdir(mode=0o700)
+                return {"changed": True}
             assert module_args == {
-                "path": os.fspath(remote_temp / "public-request"),
-                "state": "directory",
-                "mode": "0700",
+                "path": os.fspath(remote_collection),
+                "state": "absent",
             }
-            (remote_temp / "public-request").mkdir(mode=0o700)
+            shutil.rmtree(remote_collection)
+            removed_paths.append(os.fspath(remote_collection))
             return {"changed": True}
         if module_name == "ansible.legacy.stat":
             remote_value = module_args["path"]
@@ -1064,11 +1075,14 @@ def test_collection_action_fetches_only_exact_public_remote_paths(
         },
         check_mode=False,
     )
-    action._connection = SimpleNamespace(fetch_file=fetch_file)
+    action._connection = SimpleNamespace(
+        fetch_file=fetch_file,
+        get_option=lambda name: "rocky" if name == "remote_user" else None,
+    )
     action._execute_module = execute_module
-    action._make_tmp_path = lambda: os.fspath(remote_temp) + "/"
-    action._remove_tmp_path = lambda path: removed_paths.append(path)
-    result = action.run(task_vars={})
+    monkeypatch.setattr(collection_action, "_REMOTE_STAGE_ROOT", os.fspath(remote_temp))
+    monkeypatch.setattr(collection_action.secrets, "token_hex", lambda _length: "fixed")
+    result = action.run(task_vars={"ansible_user": "ignored-inventory-user"})
     assert result["status"] == "collected"
     published_trust = exchange / SERVICE / REQUEST_ID / "trust"
     assert result["trust_dir"] == os.fspath(published_trust)
@@ -1077,7 +1091,6 @@ def test_collection_action_fetches_only_exact_public_remote_paths(
         sha256((published_trust / name).read_bytes()) == trust_digests[name]
         for name in TRUST_NAMES
     )
-    remote_collection = remote_temp / "public-request"
     assert fetched_paths == [f"{remote_collection}/{name}" for name in REQUEST_REMOTE_NAMES]
     assert all("key" not in path for path in fetched_paths)
     assert all("/pending/" not in path for path in fetched_paths)
@@ -1116,7 +1129,108 @@ def test_collection_action_fetches_only_exact_public_remote_paths(
         path == os.fspath(remote_temp) or path.startswith(os.fspath(remote_temp) + "/")
         for path in stat_paths
     )
-    assert removed_paths == [os.fspath(remote_temp)]
+    assert removed_paths == [os.fspath(remote_collection)]
+
+
+@pytest.mark.parametrize(
+    ("module", "remote_user"),
+    (
+        (collection_action, None),
+        (evidence_action, None),
+        (collection_action, "bad user"),
+        (evidence_action, "bad user"),
+    ),
+)
+def test_collection_actions_require_effective_connection_user(
+    module: Any, remote_user: object
+) -> None:
+    connection = SimpleNamespace(get_option=lambda name: remote_user)
+    with pytest.raises(ExchangeError, match="not canonical"):
+        module._authenticated_remote_user(connection)
+
+    with pytest.raises(ExchangeError, match="unavailable"):
+        module._authenticated_remote_user(SimpleNamespace())
+
+
+@pytest.mark.parametrize("module", (collection_action, evidence_action))
+@pytest.mark.parametrize("transport", ("ssh", "sftp"))
+def test_collection_actions_never_derive_nonlocal_connection_user(
+    module: Any,
+    transport: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_lookup(_uid: int) -> None:
+        raise AssertionError("non-local transport attempted a passwd lookup")
+
+    monkeypatch.setattr(module.pwd, "getpwuid", reject_lookup)
+
+    with pytest.raises(ExchangeError, match="not canonical"):
+        module._authenticated_remote_user(
+            SimpleNamespace(
+                transport=transport,
+                get_option=lambda _name: None,
+            )
+        )
+    with pytest.raises(ExchangeError, match="unavailable"):
+        module._authenticated_remote_user(SimpleNamespace(transport=transport))
+
+
+@pytest.mark.parametrize("module", (collection_action, evidence_action))
+def test_collection_actions_derive_effective_local_connection_user(
+    module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def local_account(uid: int) -> SimpleNamespace:
+        assert uid == 4321
+        return SimpleNamespace(pw_name="local-user")
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 4321)
+    monkeypatch.setattr(module.pwd, "getpwuid", local_account)
+    connection = SimpleNamespace(
+        transport="local",
+        get_option=lambda _name: None,
+    )
+
+    assert module._authenticated_remote_user(connection) == "local-user"
+
+
+@pytest.mark.parametrize("module", (collection_action, evidence_action))
+def test_collection_actions_reject_missing_local_account(
+    module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_account(_uid: int) -> None:
+        raise KeyError
+
+    monkeypatch.setattr(module.pwd, "getpwuid", missing_account)
+
+    with pytest.raises(ExchangeError, match="authenticated local user is unavailable"):
+        module._authenticated_remote_user(
+            SimpleNamespace(
+                transport="local",
+                get_option=lambda _name: None,
+            )
+        )
+
+
+@pytest.mark.parametrize("module", (collection_action, evidence_action))
+def test_collection_actions_reject_noncanonical_local_account(
+    module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        module.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="bad user"),
+    )
+
+    with pytest.raises(ExchangeError, match="not canonical"):
+        module._authenticated_remote_user(
+            SimpleNamespace(
+                transport="local",
+                get_option=lambda _name: None,
+            )
+        )
 
 
 def test_request_collection_helper_failure_exposes_only_safe_diagnostics() -> None:
@@ -1141,7 +1255,8 @@ def test_evidence_collection_uses_helper_temp_and_publishes_idempotently(
 ) -> None:
     root = _private_dir(isolated_test_dir / "evidence-action")
     source, exchange, args, _signing_key = _evidence_material(root)
-    remote_temp = _private_dir(root / "remote-evidence-temp")
+    remote_stage_root = _private_dir(root / "remote-stage-root")
+    remote_temp = remote_stage_root / (".platform-pki-evidence-" + "a" * 32)
     owner_uid = 2345
     fetches: list[str] = []
     helper_argv: list[list[object]] = []
@@ -1181,12 +1296,20 @@ def test_evidence_collection_uses_helper_temp_and_publishes_idempotently(
     def execute_module(*, module_name: str, module_args: dict[str, object], task_vars: object):
         del task_vars
         if module_name == "ansible.legacy.file":
+            if module_args.get("state") == "directory":
+                assert module_args == {
+                    "path": os.fspath(remote_temp),
+                    "state": "directory",
+                    "mode": "0700",
+                    "owner": "rocky",
+                }
+                remote_temp.mkdir(mode=0o700)
+                return {"changed": True}
             assert module_args == {
-                "path": os.fspath(remote_temp / "public-evidence"),
-                "state": "directory",
-                "mode": "0700",
+                "path": os.fspath(remote_temp),
+                "state": "absent",
             }
-            (remote_temp / "public-evidence").mkdir(mode=0o700)
+            shutil.rmtree(remote_temp)
             return {"changed": True}
         if module_name == "ansible.legacy.stat":
             path = module_args["path"]
@@ -1234,20 +1357,19 @@ def test_evidence_collection_uses_helper_temp_and_publishes_idempotently(
         events.append(f"fetch:{Path(remote).name}")
         Path(local).write_bytes(Path(remote).read_bytes())
 
-    def remove_tmp(path: str) -> None:
-        assert path == os.fspath(remote_temp)
-        shutil.rmtree(remote_temp / "public-evidence")
-
     monkeypatch.setattr(evidence_action.ActionBase, "run", lambda self, **kwargs: {})
+    monkeypatch.setattr(evidence_action, "_REMOTE_STAGE_ROOT", os.fspath(remote_stage_root))
+    monkeypatch.setattr(evidence_action.secrets, "token_hex", lambda _length: "a" * 32)
 
     def run_action() -> dict[str, object]:
         action = object.__new__(evidence_action.ActionModule)
         action._task = SimpleNamespace(args=args, check_mode=False)
-        action._connection = SimpleNamespace(fetch_file=fetch_file)
+        action._connection = SimpleNamespace(
+            fetch_file=fetch_file,
+            get_option=lambda name: "rocky" if name == "remote_user" else None,
+        )
         action._execute_module = execute_module
-        action._make_tmp_path = lambda: os.fspath(remote_temp) + "/"
-        action._remove_tmp_path = remove_tmp
-        return action.run(task_vars={})
+        return action.run(task_vars={"ansible_user": "ignored-inventory-user"})
 
     first = run_action()
     assert first["status"] == "collected"
@@ -1264,7 +1386,7 @@ def test_evidence_collection_uses_helper_temp_and_publishes_idempotently(
     assert not any("key" in path.name for path in published.iterdir())
     second = run_action()
     assert second["status"] == "existing"
-    remote_evidence = remote_temp / "public-evidence"
+    remote_evidence = remote_temp
     assert fetches == [
         f"{remote_evidence}/{name}" for name in (*EVIDENCE_NAMES, *EVIDENCE_NAMES)
     ]

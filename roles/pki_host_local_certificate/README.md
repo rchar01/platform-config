@@ -8,10 +8,20 @@ this role or any `registry-pki-*.yml` playbook.
 
 Use only these structural playbooks:
 
+- `registry-pki-validation-material.yml` invokes the separate
+  `pki_host_local_validation_material` role to provision the reviewed CA and
+  validation boundary on one exact target and one distinct runner. The
+  certificate lifecycle role does not import that prerequisite role.
 - `registry-pki-trust.yml` bootstraps the exact reviewed five-file target trust.
 - `registry-pki-request.yml` creates or validates a target-local request and,
   outside check mode, collects only `tls.csr`, `request`, and `request.sig` into
   the protected controller exchange.
+- `registry-pki-abandon-expired-request.yml` removes only one exact authenticated
+  expired pending request. It refuses unexpired requests and any response,
+  version, active, evidence, or unresolved journal state for that request.
+- `registry-pki-cancel-request.yml` removes one exact authenticated pending
+  request only when both its request ID and request SHA-256 match. It has the
+  same response, version, active, evidence, and journal refusal boundaries.
 - `registry-pki-status.yml` reads and strictly validates lifecycle status.
 - `registry-pki-response-check.yml` authenticates one exact external signer
   response entirely on the controller and publishes its immutable controller
@@ -27,7 +37,15 @@ Use only these structural playbooks:
 - `registry-pki-decision-preflight.yml` binds controller-exported evidence to
   current target status and a fresh read-only runner observation.
 
-Trust, request, activation, and recovery remain explicit operator actions.
+Trust, request, expired-request abandonment, activation, and recovery remain
+explicit operator actions. Request lifetime defaults to 3600 seconds and may be
+overridden for one invocation with `REQUEST_TTL_SECONDS`, up to the schema-2
+policy maximum of 604800 seconds.
+
+Migration requests bind the canonical first leaf certificate from the current
+Zot certificate file. Zot may serve a concatenated fullchain, but the digest in
+`current_cert_sha256` remains the signer-managed leaf certificate digest used
+by CSR history and candidate finalization.
 Signer outcome import, completion, renewal, archive handling, and live inventory
 enablement are intentionally outside this role.
 
@@ -39,6 +57,10 @@ validator is installed only as
 `/usr/local/libexec/platform-pki-zot-read-only-validate`. Check mode never
 installs either helper and requires reviewed root-owned mode-`0755` copies to
 already exist.
+
+Mutable lifecycle phases install the distribution `python3-cryptography`
+package required by the lifecycle helper. Read-only and check-mode phases do
+not install packages; run a mutable request or activation phase first.
 
 The request and trust phases retain their dedicated existing helpers. Private
 keys remain on the target. Do not add `fetch`, `slurp`, facts, debug output, or
@@ -95,7 +117,11 @@ controller evidence when the deployment digest is empty.
 Activation requires exactly one registry play target and one distinct inventory
 host named by `pki_host_local_certificate_remote_validator`. The reviewed CA and
 validation boundary must already exist at their exact target and runner paths;
-the role never distributes them.
+this lifecycle role never distributes them. Provision those public prerequisites
+separately with `make registry-pki-validation-material ENV=... LIMIT=...`
+`RUNNER_LIMIT=...` after reviewing and pinning both controller sources. The CA
+source is exactly the profiled intermediate followed by its self-signed root;
+extra, reversed, unrelated, or incorrectly profiled certificates are rejected.
 
 Before mutation, `activate-start --check` must return the exact candidate. The
 operator must then type exactly:

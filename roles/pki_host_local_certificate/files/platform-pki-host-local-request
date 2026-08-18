@@ -525,9 +525,7 @@ def validate_signing_key(path, expected_key):
 def validate_current_certificate(args):
     if args.current_cert_path is None:
         return
-    data, snapshot = read_safe_file(args.current_cert_path, "current certificate")
-    if sha256(data) != args.current_cert_sha256:
-        fail("current certificate digest mismatch")
+    _data, snapshot = read_safe_file(args.current_cert_path, "current certificate")
     descriptor, opened_snapshot = open_safe_descriptor(
         args.current_cert_path, "current certificate", stat.S_IMODE(os.lstat(args.current_cert_path).st_mode)
     )
@@ -536,11 +534,20 @@ def validate_current_certificate(args):
         staged_descriptor = copy_to_memfd(
             descriptor, opened_snapshot[5], "current-certificate"
         )
-        run_command(
-            ["openssl", "x509", "-in", f"/proc/self/fd/{staged_descriptor}", "-noout"],
+        canonical_leaf = run_command(
+            [
+                "openssl",
+                "x509",
+                "-in",
+                f"/proc/self/fd/{staged_descriptor}",
+                "-outform",
+                "PEM",
+            ],
             "current certificate validation",
             pass_fds=(staged_descriptor,),
         )
+        if sha256(canonical_leaf) != args.current_cert_sha256:
+            fail("current leaf certificate digest mismatch")
     finally:
         if staged_descriptor is not None:
             os.close(staged_descriptor)
@@ -880,6 +887,14 @@ def verify_request_signature(request_path, signature_path, allowed_signers, prin
     require_unchanged(allowed_signers, opened_trust, "frozen requester trust")
 
 
+def pending_request_lifetime_is_current(created, expires, now, request_ttl_seconds):
+    return (
+        created <= now
+        and now < expires
+        and expires - created == request_ttl_seconds
+    )
+
+
 def validate_pending_directory(path, args, requesters_path, expected_request_id=None):
     require_dir(path, "pending request directory")
     names = {name for name, _ in scan_directory(path, "pending request directory")}
@@ -904,7 +919,9 @@ def validate_pending_directory(path, args, requesters_path, expected_request_id=
         fail("pending request identity is invalid")
     created = canonical_decimal(record["created_epoch"], "created epoch", 0, 2**63 - 1)
     expires = canonical_decimal(record["expires_epoch"], "expires epoch", 0, 2**63 - 1)
-    if created > now or expires < now or expires - created != args.request_ttl_seconds:
+    if not pending_request_lifetime_is_current(
+        created, expires, now, args.request_ttl_seconds
+    ):
         fail("pending request is expired, future-dated, or has a conflicting lifetime")
     expected_fields = {
         "operation": args.operation,

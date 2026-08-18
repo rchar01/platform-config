@@ -1,0 +1,9 @@
+---
+- name: Provision reviewed host-local registry validation material
+  hosts: registry
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run isolated registry validation material provisioning boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_validation_material
