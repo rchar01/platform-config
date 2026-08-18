@@ -146,6 +146,11 @@
           - monitoring_group_example.monitoring_grafana_dns is match('^[a-z0-9.-]+[.]invalid$')
           - monitoring_group_example.monitoring_loki_dns is match('^[a-z0-9.-]+[.]invalid$')
           - monitoring_group_example.monitoring_mimir_dns is match('^[a-z0-9.-]+[.]invalid$')
+          - not monitoring_group_example.monitoring_haproxy_orchestration_ready | bool
+          - not monitoring_group_example.monitoring_haproxy_contract_ready | bool
+          - not monitoring_group_example.monitoring_haproxy_enabled | bool
+          - not monitoring_group_example.monitoring_haproxy_service_enabled | bool
+          - monitoring_group_example.monitoring_haproxy_service_state == 'stopped'
           - not monitoring_group_example.monitoring_keepalived_enabled | bool
           - not monitoring_group_example.keepalived_vip_enabled | bool
           - not monitoring_group_example.keepalived_vip_service_enabled | bool

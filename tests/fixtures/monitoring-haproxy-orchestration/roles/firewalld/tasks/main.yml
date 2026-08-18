@@ -1,0 +1,13 @@
+---
+- name: Record entry into mocked monitoring HAProxy convergence
+  ansible.builtin.copy:
+    dest: "{{ monitoring_haproxy_test_marker_path }}"
+    content: firewalld
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]
+
+- name: Start mocked monitoring HAProxy role order
+  ansible.builtin.set_fact:
+    monitoring_haproxy_test_role_order:
+      - firewalld

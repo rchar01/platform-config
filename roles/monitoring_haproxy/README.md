@@ -54,6 +54,14 @@ and is produced through `platform-tools`; the role never generates production
 certificates. Enabling the role in a playbook and authorizing managed-host
 activation remain separate rollout decisions.
 
+`playbooks/monitoring-haproxy.yml` is the focused three-node staging lane. It
+requires all monitoring members, validates the role contracts, confirms that
+controller PKI sources are safe regular files, stops any existing HAProxy, and
+converges the new role with HAProxy still disabled and stopped. Package and
+target-runtime failures can still leave an intentionally quiesced proxy for
+operator inspection. The lane does not make `playbooks/monitoring.yml` a
+successful combined-stack convergence path or activate the monitoring VIP.
+
 Subject DNs must be unique. Multiple explicitly listed identities may map to the
 same least-privilege role, including individual collectors, browser users, and
 operators. Membership is an exact identity allowlist; role-name uniqueness is

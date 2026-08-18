@@ -1,0 +1,33 @@
+---
+all:
+  hosts:
+    localhost:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    platform_environment: dev
+    monitoring_haproxy_orchestration_ready: true
+    monitoring_haproxy_contract_ready: true
+    monitoring_haproxy_enabled: true
+    monitoring_haproxy_service_enabled: false
+    monitoring_haproxy_service_state: stopped
+    monitoring_haproxy_firewalld_manage: true
+    monitoring_haproxy_selinux_manage: true
+    monitoring_haproxy_frontend_pem_src: >-
+      {{ inventory_dir }}/pki-input.txt
+    monitoring_haproxy_client_ca_src: >-
+      {{ inventory_dir }}/pki-input.txt
+    monitoring_haproxy_client_crl_src: >-
+      {{ inventory_dir }}/pki-input.txt
+    monitoring_haproxy_backend_ca_src: >-
+      {{ inventory_dir }}/pki-input.txt
+    monitoring_haproxy_backend_client_pem_src: >-
+      {{ inventory_dir }}/pki-input.txt
+    firewalld_enabled: true
+    firewalld_service_enabled: true
+    firewalld_service_state: started
+  children:
+    monitoring:
+      hosts:
+        monitoring-stage-1:
+        monitoring-stage-2:

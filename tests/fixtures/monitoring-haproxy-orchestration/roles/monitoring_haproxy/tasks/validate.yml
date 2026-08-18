@@ -1,0 +1,6 @@
+---
+- name: Validate mocked monitoring HAProxy policy inputs
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_test_invalid_component | default('') != 'policy'
+    fail_msg: Mocked monitoring HAProxy policy inputs are invalid.

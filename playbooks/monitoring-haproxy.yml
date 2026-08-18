@@ -1,0 +1,173 @@
+---
+- name: Require the canonical monitoring HAProxy staging inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    monitoring_haproxy_inventory_environment: >-
+      {{
+        hostvars[groups['all'] | first].platform_environment | default('dev')
+        if groups.get('all', []) | length > 0
+        else 'dev'
+      }}
+    monitoring_haproxy_selected_hosts: >-
+      {{
+        query(
+          'ansible.builtin.inventory_hostnames',
+          'monitoring:&' ~ (ansible_limit | default('all'))
+        )
+      }}
+  tasks:
+    - name: Require all three monitoring members in managed environments
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_haproxy_inventory_environment == 'homelab'
+            or (
+              groups.get('monitoring', []) | length == 3
+              and monitoring_haproxy_selected_hosts | list | sort
+                  == groups.get('monitoring', []) | list | sort
+            )
+        fail_msg: >-
+          Monitoring HAProxy staging requires exactly three monitoring inventory
+          members and requires all three monitoring inventory hosts to be
+          selected in managed environments. A limit that did not select the
+          complete monitoring service group is not successful convergence.
+
+- name: Validate and quiesce the monitoring HAProxy staging contract
+  hosts: monitoring
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit full-cluster monitoring HAProxy staging
+      ansible.builtin.assert:
+        that:
+          - groups.get('monitoring', []) | length == 3
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring HAProxy staging requires all three monitoring inventory
+          hosts without a partial limit.
+      run_once: true # noqa run-once[task]
+
+    - name: Require ready stopped monitoring HAProxy ownership
+      ansible.builtin.assert:
+        that:
+          - (monitoring_haproxy_orchestration_ready | default(false)) is boolean
+          - monitoring_haproxy_orchestration_ready | default(false)
+          - (monitoring_haproxy_contract_ready | default(false)) is boolean
+          - monitoring_haproxy_contract_ready | default(false)
+          - (monitoring_haproxy_enabled | default(false)) is boolean
+          - monitoring_haproxy_enabled | default(false)
+          - (monitoring_haproxy_service_enabled | default(false)) is boolean
+          - not (monitoring_haproxy_service_enabled | default(false))
+          - monitoring_haproxy_service_state | default('stopped') == 'stopped'
+          - (monitoring_haproxy_firewalld_manage | default(true)) is boolean
+          - monitoring_haproxy_firewalld_manage | default(true)
+          - (monitoring_haproxy_selinux_manage | default(true)) is boolean
+          - monitoring_haproxy_selinux_manage | default(true)
+          - (firewalld_enabled | default(false)) is boolean
+          - firewalld_enabled | default(false)
+          - (firewalld_service_enabled | default(false)) is boolean
+          - firewalld_service_enabled | default(false)
+          - firewalld_service_state | default('stopped') == 'started'
+        fail_msg: >-
+          Monitoring HAProxy staging requires an explicit ready contract,
+          enabled role ownership, stopped/disabled HAProxy, managed SELinux, and
+          a declared enabled firewalld contract on every node.
+
+    - name: Validate monitoring HAProxy policy before staging
+      ansible.builtin.include_role:
+        name: monitoring_haproxy
+        tasks_from: validate.yml
+
+    - name: Validate monitoring HAProxy operations before staging
+      ansible.builtin.include_role:
+        name: monitoring_haproxy
+        tasks_from: validate_operational.yml
+
+    - name: Inspect monitoring HAProxy controller PKI inputs before staging
+      ansible.builtin.stat:
+        path: "{{ monitoring_haproxy_preflight_pki_source }}"
+        follow: false
+      loop:
+        - "{{ monitoring_haproxy_frontend_pem_src }}"
+        - "{{ monitoring_haproxy_client_ca_src }}"
+        - "{{ monitoring_haproxy_client_crl_src }}"
+        - "{{ monitoring_haproxy_backend_ca_src }}"
+        - "{{ monitoring_haproxy_backend_client_pem_src }}"
+      loop_control:
+        loop_var: monitoring_haproxy_preflight_pki_source
+        label: pki-input
+      register: monitoring_haproxy_preflight_pki_stats
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      no_log: true
+
+    - name: Track monitoring HAProxy controller PKI input safety
+      ansible.builtin.set_fact:
+        monitoring_haproxy_preflight_pki_safe: true
+
+    - name: Compare monitoring HAProxy controller PKI input safety
+      ansible.builtin.set_fact:
+        monitoring_haproxy_preflight_pki_safe: >-
+          {{
+            monitoring_haproxy_preflight_pki_safe
+            and monitoring_haproxy_preflight_pki_stat.stat.exists
+            and monitoring_haproxy_preflight_pki_stat.stat.isreg
+            and not monitoring_haproxy_preflight_pki_stat.stat.islnk
+          }}
+      loop: "{{ monitoring_haproxy_preflight_pki_stats.results }}"
+      loop_control:
+        loop_var: monitoring_haproxy_preflight_pki_stat
+        label: pki-input
+      no_log: true
+
+    - name: Require safe monitoring HAProxy controller PKI inputs
+      ansible.builtin.assert:
+        that:
+          - monitoring_haproxy_preflight_pki_safe | bool
+        fail_msg: >-
+          Monitoring HAProxy staging requires every controller PKI input to be a
+          regular non-symlink file before service quiescing.
+
+    - name: Inspect existing monitoring HAProxy service
+      ansible.builtin.service_facts:
+
+    - name: Disable and stop existing monitoring HAProxy before staging
+      become: true
+      ansible.builtin.systemd_service:
+        name: "{{ monitoring_haproxy_service_name | default('haproxy.service') }}"
+        enabled: false
+        state: stopped
+      when:
+        - >-
+          (monitoring_haproxy_service_name | default('haproxy.service'))
+          in (ansible_facts.services | default({}))
+
+- name: Stage the disabled monitoring HAProxy foundation
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - firewalld
+    - monitoring_haproxy
+
+- name: Reject limits that exclude monitoring HAProxy staging
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require a selected monitoring host before reporting convergence
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('monitoring', []))
+            | length > 0
+        fail_msg: >-
+          Monitoring HAProxy staging did not select the monitoring service
+          group. A limit that excludes monitoring is not successful convergence.
+      when: platform_environment | default('dev') != 'homelab'
+      run_once: true # noqa run-once[task]

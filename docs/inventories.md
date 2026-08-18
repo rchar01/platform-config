@@ -68,6 +68,13 @@ select the preferred order, while a 300-second preemption delay prevents immedia
 automatic failback. Real interfaces, peers, VRIDs, priorities, and VIPs belong in
 private inventory and must remain disabled until their activation gates pass.
 
+The focused `playbooks/monitoring-haproxy.yml` lane can stage only the host-native
+monitoring proxy on all three monitoring nodes. Set
+`monitoring_haproxy_orchestration_ready` only after every policy, backend, PKI,
+firewalld, and SELinux input is complete; the staging contract requires HAProxy
+to remain disabled and stopped. This does not unblock combined monitoring
+convergence or authorize VIP activation.
+
 The focused OpenBao staging playbook owns Podman installation directly, so
 OpenBao nodes do not require `container_hosts` membership. Storage remains a
 separate destructive boundary: add real nodes to `storage_volume_hosts` only

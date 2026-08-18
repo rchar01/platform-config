@@ -1,0 +1,13 @@
+---
+- name: Require mocked monitoring HAProxy role order
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_test_role_order == ['firewalld']
+
+- name: Complete mocked monitoring HAProxy convergence
+  ansible.builtin.copy:
+    dest: "{{ monitoring_haproxy_test_marker_path }}"
+    content: complete
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]
