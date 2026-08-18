@@ -6,9 +6,9 @@ The dev registry is a Zot OCI registry deployed by `zot_registry` on hosts in th
 
 The `playbooks/registry-pki-*.yml` playbooks are operator-only host-local
 certificate entry points. They are not imported by `site.yml` or normal
-registry convergence. The implemented workflow ends after authenticated
-deployment evidence is exported; it does not automate signing, controlled-media
-transport, signer-outcome import, completion, or renewal.
+registry convergence. The implemented workflow imports one explicit
+digest-pinned authenticated signer outcome after deployment evidence export. It
+does not automate signing, controlled-media transport, or renewal.
 
 The trust playbook is a separate initial-install-only bootstrap. It requires an
 explicit exact five-key `pki_host_local_certificate_trust_sources` mapping to
@@ -84,6 +84,11 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
+make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256> \
+  OUTCOME_SHA256=<outcome-manifest-sha256> \
+  OUTCOME_DIR=/outside-git/export/csr-outcomes/v1/artifacts/registry-dev/<request-id>
 ```
 
 Request lifetime defaults to 3600 seconds. `REQUEST_TTL_SECONDS` is an explicit
@@ -132,6 +137,65 @@ already; it fails rather than reporting incomplete readiness. Activation check
 mode validates the installed response and candidate without transfer, prompts,
 service restart, runner invocation, or cleanup. Status, response check, evidence
 export, and decision preflight remain read-only with respect to Zot.
+
+Outcome import accepts exactly `outcome`, `outcome.sig`, `deployment`,
+`deployment.sig`, `deployers.allowed_signers`, and `decision` from one explicit
+current-user-owned mode-`0700` controller directory. Every file must be a
+single-link mode-`0600` regular file. The controller independently verifies the
+outcome signature with frozen response trust and verifies deployment evidence
+with frozen deployer trust. The target repeats both checks against its own frozen
+trust and requires the deployment and signature to equal its exact evidence
+attempt. Normal mode uses a protected randomized transient target stage. Check
+mode fully authenticates and rechecks the controller package, then invokes a
+read-only target preflight with canonical scalar outcome coordinates through the
+safely quoted, become-aware low-level connection path. It executes no Ansible
+module, creates no AnsiballZ payload, remote stage, or Ansible transfer path, and
+leaves lifecycle and Zot state unchanged. Target preflight authenticates active
+state from named public version files, signed request material when available,
+the signed response, artifact/certificate chain, and matching signed target
+evidence. It does not enumerate or access the private-key version entry and does
+not claim to authenticate the package signature. No private key crosses either
+boundary.
+More strictly, the importer never stats, opens, reads, hashes, stages, or
+transfers candidate/version/restored-managed private-key files. Managed rollback
+validation parses the restored Zot TLS path object but accesses only its selected
+public certificate chain. Other target bindings use authenticated public outcome
+and deployment records, exact target evidence, certificate digests, and
+active/rollback records.
+
+Accepted immutable history is stored at
+`STATE_ROOT/outcomes/REQUEST_ID/OUTCOME_SHA256/`; the authenticated pointer is
+`STATE_ROOT/accepted-outcome`. A finalized outcome reports `status=complete`,
+`signer_outcome_state=finalized`, `evidence_state=controller-exported`, and
+`required_action=none` only while current target active state remains consistent.
+`renewal_eligible` remains false because authenticated renewal completion is not
+implemented by this workflow.
+An abandoned outcome with no predecessor or authenticated managed-migration
+rollback reports
+`status=signer-outcome-abandoned` without treating the abandoned candidate as
+active. Finalized managed predecessors must exactly match rollback
+certificate/SPKI/public-chain state; managed response, artifact, deployment, and
+decision history fields are `none`. Managed rollback abandonment additionally
+requires signed served leaf/intermediate evidence to match the restored
+Zot-selected public certificate chain. Host-local predecessor
+outcomes fail closed until rollback history records authenticated predecessor
+intermediate, response, deployment, and decision digests. Abandonment with a
+non-managed predecessor also fails closed because terminal cleanup removes the
+candidate rollback record required to prove it. Missing outcomes preserve
+`evidence-exported` and `await-signer-outcome`. Historical signer packages are
+evidence, not live authority; target active state remains mandatory.
+
+Pointer publication is atomic and no-clobber. If interruption leaves immutable
+history without `accepted-outcome`, status fails closed; rerun the import with the
+same exact digests and source package to authenticate that history and publish
+the pointer. Ordinary failures remove the randomized remote stage and temporary
+pointer stage. If remote stage identity changes or verified cleanup is
+impossible, the action fails and reports the retained canonical stage. Preserve
+that stage as failure evidence, confirm no import remains active, and inspect it
+under the approved host-local PKI recovery procedure before removing only that
+exact reported path. A retained `.accepted-outcome-stage-*` similarly blocks
+import as ambiguous lifecycle state until that exact root-owned stage is reviewed
+and recovered. Never use wildcard stage cleanup.
 
 Managed Zot TLS custody remains the default. After activation has authenticated
 an active version, private inventory may set:

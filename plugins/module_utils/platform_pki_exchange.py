@@ -49,6 +49,14 @@ EVIDENCE_NAMES = (
     "validation-result",
     "validation-result.sig",
 )
+OUTCOME_NAMES = (
+    "outcome",
+    "outcome.sig",
+    "deployment",
+    "deployment.sig",
+    "deployers.allowed_signers",
+    "decision",
+)
 REQUEST_FIELDS = (
     "schema",
     "request_id",
@@ -220,6 +228,25 @@ VALIDATION_RESULT_FIELDS = (
     "validation_epoch",
     "deployment_sha256",
 )
+OUTCOME_FIELDS = tuple(
+    """schema kind service target request_id operation request_sha256
+    response_sha256 response_signature_sha256 candidate_sha256
+    artifact_manifest_sha256 certificate_sha256 certificate_spki_sha256 chain_sha256
+    fullchain_sha256 deployment_sha256 deployment_signature_sha256 deployers_sha256
+    decision_sha256 action state resulting_active_request_id created_epoch
+    outcome_principal""".split()
+)
+DECISION_FIELDS = tuple(
+    """schema action state service target request_id operation request_sha256
+    response_sha256 response_signature_sha256 candidate_sha256
+    artifact_manifest_sha256 certificate_sha256 certificate_spki_sha256
+    chain_sha256 fullchain_sha256 deployment_sha256 deployment_signature_sha256
+    deployers_sha256 predecessor_kind predecessor_request_id
+    predecessor_certificate_sha256 predecessor_certificate_spki_sha256
+    predecessor_intermediate_sha256 predecessor_response_sha256
+    predecessor_artifact_manifest_sha256 predecessor_deployment_sha256
+    predecessor_decision_sha256 resulting_active_request_id created_epoch""".split()
+)
 
 MAX_SIZES = {
     "tls.csr": 65536,
@@ -242,11 +269,15 @@ MAX_SIZES = {
     "validation-boundary": 16384,
     "validation-result": 32768,
     "validation-result.sig": 16384,
+    "outcome": 16384,
+    "outcome.sig": 16384,
+    "decision": 32768,
 }
 REPOSITORY_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 REQUEST_NAMESPACE = "platform-pki-csr-request-v1"
 RESPONSE_NAMESPACE = "platform-pki-csr-response-v1"
 DEPLOYMENT_NAMESPACE = "platform-pki-csr-deployment-v1"
+OUTCOME_NAMESPACE = "platform-pki-csr-outcome-v1"
 PROFILE = "server-p384-sha384-v1"
 LOCAL_CHECK = "platform-zot-local-active-tls-v1"
 REMOTE_CHECK = "platform-oci-v2-read-only-strict-tls-v1"
@@ -268,6 +299,51 @@ _CERTIFICATE_PEM = re.compile(
 
 class ExchangeError(RuntimeError):
     """A fixed PKI exchange invariant failed."""
+
+
+class DescriptorCleanupError(ExchangeError):
+    """Descriptor cleanup failed after every owned descriptor was attempted."""
+
+    def __init__(
+        self,
+        message: str,
+        failed_descriptors: Sequence[int],
+        failure_count: int,
+    ) -> None:
+        super().__init__(message)
+        self.failed_descriptors = list(failed_descriptors)
+        self.failure_count = failure_count
+
+    def retry_close(self) -> None:
+        remaining, failures = _close_descriptors(self.failed_descriptors)
+        self.failed_descriptors[:] = remaining
+        self.failure_count = failures
+        if failures:
+            raise self
+
+
+def _descriptor_is_open(descriptor: int) -> bool:
+    try:
+        os.fstat(descriptor)
+    except OSError as error:
+        return error.errno != errno.EBADF
+    except Exception:
+        return True
+    return True
+
+
+def _close_descriptors(descriptors: Sequence[int]) -> tuple[list[int], int]:
+    remaining: list[int] = []
+    failures = 0
+    for descriptor in reversed(tuple(descriptors)):
+        try:
+            os.close(descriptor)
+        except Exception:
+            failures += 1
+            if _descriptor_is_open(descriptor):
+                remaining.append(descriptor)
+    remaining.reverse()
+    return remaining, failures
 
 
 def fail(message: str) -> NoReturn:
@@ -545,6 +621,7 @@ class PinnedDirectory:
     descriptors: list[int]
     components: list[str]
     identities: list[tuple[int, ...]]
+    close_pending: bool = False
 
     @classmethod
     def open(cls, path: object, label: str, *, outside_repository: bool = True) -> "PinnedDirectory":
@@ -577,15 +654,24 @@ class PinnedDirectory:
             pinned = cls(canonical, descriptors, components, identities)
             pinned.recheck()
             return pinned
-        except Exception:
-            for descriptor in reversed(descriptors):
-                os.close(descriptor)
+        except Exception as error:
+            remaining, failures = _close_descriptors(descriptors)
+            if failures:
+                raise DescriptorCleanupError(
+                    "protected directory construction descriptor cleanup failed",
+                    remaining,
+                    failures,
+                ) from error
             raise
 
     def fileno(self) -> int:
+        if self.close_pending or not self.descriptors:
+            fail("protected directory is closing or closed")
         return self.descriptors[-1]
 
     def recheck(self) -> None:
+        if self.close_pending:
+            fail("protected directory is closing or closed")
         for index, expected in enumerate(self.identities):
             if _identity(os.fstat(self.descriptors[index]), mutable_times=False) != expected:
                 fail(f"protected directory identity changed: {self.path}")
@@ -599,9 +685,15 @@ class PinnedDirectory:
                     fail(f"protected directory path changed: {self.path}")
 
     def close(self) -> None:
-        for descriptor in reversed(self.descriptors):
-            os.close(descriptor)
-        self.descriptors.clear()
+        self.close_pending = True
+        remaining, failures = _close_descriptors(self.descriptors)
+        self.descriptors[:] = remaining
+        if failures:
+            raise DescriptorCleanupError(
+                "protected directory descriptor cleanup failed",
+                remaining,
+                failures,
+            )
 
 
 @dataclass
@@ -612,6 +704,7 @@ class PinnedFile:
     descriptor: int
     identity: tuple[int, ...]
     data: bytes
+    close_pending: bool = False
 
     @classmethod
     def open(
@@ -656,21 +749,54 @@ class PinnedFile:
             pinned = cls(canonical, parent, os.path.basename(canonical), descriptor, identity, data)
             pinned.recheck()
             return pinned
-        except Exception:
+        except Exception as error:
+            remaining: list[int] = []
+            failures = 0
             if descriptor >= 0:
-                os.close(descriptor)
-            parent.close()
+                file_remaining, file_failures = _close_descriptors((descriptor,))
+                remaining.extend(file_remaining)
+                failures += file_failures
+            try:
+                parent.close()
+            except DescriptorCleanupError as cleanup_error:
+                remaining.extend(parent.descriptors)
+                failures += cleanup_error.failure_count
+            if failures:
+                raise DescriptorCleanupError(
+                    "protected file construction descriptor cleanup failed",
+                    remaining,
+                    failures,
+                ) from error
             raise
 
     def recheck(self) -> None:
+        if self.close_pending or self.descriptor < 0:
+            fail("protected file is closing or closed")
         self.parent.recheck()
         actual = os.stat(self.name, dir_fd=self.parent.fileno(), follow_symlinks=False)
         if _identity(actual) != self.identity or _identity(os.fstat(self.descriptor)) != self.identity:
             fail(f"protected file changed: {self.path}")
 
     def close(self) -> None:
-        os.close(self.descriptor)
-        self.parent.close()
+        self.close_pending = True
+        remaining: list[int] = []
+        failures = 0
+        if self.descriptor >= 0:
+            file_remaining, file_failures = _close_descriptors((self.descriptor,))
+            self.descriptor = file_remaining[0] if file_remaining else -1
+            remaining.extend(file_remaining)
+            failures += file_failures
+        try:
+            self.parent.close()
+        except DescriptorCleanupError as cleanup_error:
+            remaining.extend(self.parent.descriptors)
+            failures += cleanup_error.failure_count
+        if failures:
+            raise DescriptorCleanupError(
+                "protected file descriptor cleanup failed",
+                remaining,
+                failures,
+            )
 
 
 def _read_bounded(descriptor: int, maximum: int, label: str) -> bytes:
@@ -691,6 +817,7 @@ class PinnedTree:
     directory_identity: tuple[int, ...]
     files: dict[str, PinnedFile]
     names: frozenset[str]
+    close_pending: bool = False
 
     @classmethod
     def open(
@@ -703,6 +830,7 @@ class PinnedTree:
     ) -> "PinnedTree":
         directory = PinnedDirectory.open(path, label, outside_repository=outside_repository)
         files: dict[str, PinnedFile] = {}
+        file_descriptors: list[int] = []
         expected = frozenset(names)
         try:
             actual = frozenset(os.listdir(directory.fileno()))
@@ -718,6 +846,7 @@ class PinnedTree:
                     | getattr(os, "O_NOATIME", 0),
                     dir_fd=directory.fileno(),
                 )
+                file_descriptors.append(descriptor)
                 before = os.fstat(descriptor)
                 maximum = MAX_SIZES[name]
                 if (
@@ -728,12 +857,10 @@ class PinnedTree:
                     or before.st_size <= 0
                     or before.st_size > maximum
                 ):
-                    os.close(descriptor)
                     fail(f"{label} file has unsafe metadata: {name}")
                 data = _read_bounded(descriptor, maximum, f"{label} file {name}")
                 identity = _identity(before)
                 if _identity(os.fstat(descriptor)) != identity or len(data) != before.st_size:
-                    os.close(descriptor)
                     fail(f"{label} file changed while being read: {name}")
                 files[name] = PinnedFile(
                     os.path.join(directory.path, name), directory, name, descriptor, identity, data
@@ -742,9 +869,18 @@ class PinnedTree:
             tree.recheck()
             return tree
         except Exception as error:
-            for source in files.values():
-                os.close(source.descriptor)
-            directory.close()
+            remaining, failures = _close_descriptors(file_descriptors)
+            try:
+                directory.close()
+            except DescriptorCleanupError as cleanup_error:
+                remaining.extend(directory.descriptors)
+                failures += cleanup_error.failure_count
+            if failures:
+                raise DescriptorCleanupError(
+                    "protected tree construction descriptor cleanup failed",
+                    remaining,
+                    failures,
+                ) from error
             if isinstance(error, OSError):
                 fail(f"{label} contains an unsafe or unreadable entry")
             raise
@@ -754,6 +890,8 @@ class PinnedTree:
         return {name: source.data for name, source in self.files.items()}
 
     def recheck(self) -> None:
+        if self.close_pending:
+            fail("protected tree is closing or closed")
         self.directory.recheck()
         if _identity(os.fstat(self.directory.fileno())) != self.directory_identity:
             fail(f"protected source directory changed: {self.directory.path}")
@@ -765,10 +903,28 @@ class PinnedTree:
                 fail(f"protected source file changed: {source.name}")
 
     def close(self) -> None:
-        for source in self.files.values():
-            os.close(source.descriptor)
-        self.files.clear()
-        self.directory.close()
+        self.close_pending = True
+        remaining: list[int] = []
+        failures = 0
+        for name, source in tuple(self.files.items()):
+            source.close_pending = True
+            file_remaining, file_failures = _close_descriptors((source.descriptor,))
+            source.descriptor = file_remaining[0] if file_remaining else -1
+            failures += file_failures
+            remaining.extend(file_remaining)
+            if not file_remaining:
+                del self.files[name]
+        try:
+            self.directory.close()
+        except DescriptorCleanupError as cleanup_error:
+            remaining.extend(self.directory.descriptors)
+            failures += cleanup_error.failure_count
+        if failures:
+            raise DescriptorCleanupError(
+                "protected tree descriptor cleanup failed",
+                remaining,
+                failures,
+            )
 
 
 def prepare_request_parent(exchange_root: object, service: str, request_id: str) -> PinnedDirectory:
@@ -1903,4 +2059,218 @@ def validate_evidence_snapshot(
         "result": deployment["result"],
         "validation_boundary_sha256": boundary_sha,
         "validation_result_sha256": sha256(files["validation-result"]),
+    }
+
+
+def validate_outcome_snapshot(
+    package: PinnedTree,
+    evidence: PinnedTree,
+    request_tree: PinnedTree,
+    response_tree: PinnedTree,
+    trust_tree: PinnedTree,
+    bindings: Mapping[str, object],
+    *,
+    now: int,
+) -> dict[str, str]:
+    """Authenticate one exact signer-outcome package and all controller bindings."""
+
+    if package.names != frozenset(OUTCOME_NAMES):
+        fail("signer outcome does not contain the exact six files")
+    outcome_pin = require_digest(bindings["outcome_sha256"], "outcome_sha256")
+    deployment_pin = require_digest(
+        bindings["deployment_sha256"], "deployment_sha256"
+    )
+    service = require_service(bindings["service"])
+    target = require_principal(bindings["target"], "target")
+    request_id = require_request_id(bindings["request_id"])
+    artifact_pin = require_digest(bindings["artifact_sha256"], "artifact_sha256")
+    response_principal = require_principal(
+        bindings["response_principal"], "response_principal"
+    )
+
+    evidence_metadata = validate_evidence_snapshot(
+        evidence,
+        request_tree,
+        response_tree,
+        trust_tree,
+        bindings,
+        now=now,
+        require_current=False,
+    )
+    files = package.data
+    if (
+        files["deployment"] != evidence.files["deployment"].data
+        or files["deployment.sig"] != evidence.files["deployment.sig"].data
+        or files["deployers.allowed_signers"]
+        != trust_tree.files["deployers.allowed_signers"].data
+    ):
+        fail("signer outcome deployment or deployer trust differs from controller evidence")
+
+    outcome = parse_record(files["outcome"], OUTCOME_FIELDS, "signer outcome")
+    decision = parse_record(files["decision"], DECISION_FIELDS, "signer decision")
+    deployment = parse_record(
+        files["deployment"], DEPLOYMENT_FIELDS, "signer outcome deployment"
+    )
+    outcome_sha = sha256(files["outcome"])
+    decision_sha = sha256(files["decision"])
+    deployment_signature_sha = sha256(files["deployment.sig"])
+    deployers_sha = sha256(files["deployers.allowed_signers"])
+    if outcome_sha != outcome_pin:
+        fail("signer outcome manifest differs from the reviewed digest")
+    verify_ssh_signature(
+        files["outcome"],
+        package.files["outcome.sig"],
+        trust_tree.files["responses.allowed_signers"],
+        response_principal,
+        OUTCOME_NAMESPACE,
+    )
+    verify_ssh_signature(
+        files["deployment"],
+        package.files["deployment.sig"],
+        trust_tree.files["deployers.allowed_signers"],
+        target,
+        DEPLOYMENT_NAMESPACE,
+    )
+
+    shared = (
+        "service",
+        "target",
+        "request_id",
+        "operation",
+        "request_sha256",
+        "response_sha256",
+        "response_signature_sha256",
+        "candidate_sha256",
+        "artifact_manifest_sha256",
+        "certificate_sha256",
+        "certificate_spki_sha256",
+        "chain_sha256",
+        "fullchain_sha256",
+        "deployment_sha256",
+        "deployment_signature_sha256",
+        "deployers_sha256",
+        "action",
+        "state",
+        "resulting_active_request_id",
+        "created_epoch",
+    )
+    deployment_shared = (
+        "service",
+        "target",
+        "request_id",
+        "operation",
+        "request_sha256",
+        "response_sha256",
+        "response_signature_sha256",
+        "candidate_sha256",
+        "artifact_manifest_sha256",
+        "certificate_sha256",
+        "certificate_spki_sha256",
+        "chain_sha256",
+        "fullchain_sha256",
+        "action",
+        "created_epoch",
+    )
+    expected_state = "finalized" if decision["action"] == "finalize" else "abandoned"
+    predecessor_kind = decision["predecessor_kind"]
+    predecessor_id = decision["predecessor_request_id"]
+    resulting = (
+        request_id
+        if decision["action"] == "finalize"
+        else predecessor_id
+        if predecessor_kind == "host-local"
+        else "none"
+    )
+    predecessor_digest_fields = tuple(
+        name
+        for name in DECISION_FIELDS
+        if name.startswith("predecessor_") and name not in {"predecessor_kind", "predecessor_request_id"}
+    )
+    if predecessor_kind not in {"none", "managed", "host-local"}:
+        fail("signer decision predecessor kind is invalid")
+    if predecessor_kind == "none" and (
+        predecessor_id != "none"
+        or any(decision[name] != "none" for name in predecessor_digest_fields)
+    ):
+        fail("signer decision empty predecessor is inconsistent")
+    if predecessor_kind == "host-local":
+        require_request_id(predecessor_id)
+        for name in predecessor_digest_fields:
+            require_digest(decision[name], f"signer decision {name}")
+    if predecessor_kind == "managed":
+        if predecessor_id != "none":
+            fail("managed signer decision predecessor request ID is invalid")
+        for name in (
+            "predecessor_certificate_sha256",
+            "predecessor_certificate_spki_sha256",
+            "predecessor_intermediate_sha256",
+        ):
+            require_digest(decision[name], f"signer decision {name}")
+        for name in (
+            "predecessor_response_sha256",
+            "predecessor_artifact_manifest_sha256",
+            "predecessor_deployment_sha256",
+            "predecessor_decision_sha256",
+        ):
+            if decision[name] != "none":
+                fail("managed signer decision predecessor history is invalid")
+
+    if (
+        outcome["schema"] != "1"
+        or outcome["kind"] != "csr-signer-outcome"
+        or outcome["service"] != service
+        or outcome["target"] != target
+        or outcome["request_id"] != request_id
+        or outcome["artifact_manifest_sha256"] != artifact_pin
+        or outcome["deployment_sha256"] != deployment_pin
+        or outcome["decision_sha256"] != decision_sha
+        or outcome["outcome_principal"] != response_principal
+        or decision["schema"] != "1"
+        or decision["action"] not in {"finalize", "abandon"}
+        or decision["state"] != expected_state
+        or decision["resulting_active_request_id"] != resulting
+        or any(outcome[name] != decision[name] for name in shared)
+        or any(decision[name] != deployment[name] for name in deployment_shared)
+        or decision["deployment_sha256"] != deployment_pin
+        or decision["deployment_signature_sha256"] != deployment_signature_sha
+        or decision["deployers_sha256"] != deployers_sha
+        or deployment["action"] != decision["action"]
+        or deployment["created_epoch"] != decision["created_epoch"]
+        or (decision["action"] == "finalize" and deployment["result"] != "activated")
+        or (decision["action"] == "abandon" and deployment["result"] not in {"not-activated", "rolled-back"})
+        or evidence_metadata["action"] != decision["action"]
+        or evidence_metadata["result"] != deployment["result"]
+    ):
+        fail("signer outcome, decision, and deployment cross-binding is invalid")
+    for name in (
+        "request_sha256",
+        "response_sha256",
+        "response_signature_sha256",
+        "candidate_sha256",
+        "artifact_manifest_sha256",
+        "certificate_sha256",
+        "certificate_spki_sha256",
+        "chain_sha256",
+        "fullchain_sha256",
+        "deployment_sha256",
+        "deployment_signature_sha256",
+        "deployers_sha256",
+        "decision_sha256",
+    ):
+        require_digest(outcome[name], f"signer outcome {name}")
+    canonical_epoch(outcome["created_epoch"], "signer outcome created_epoch")
+    package.recheck()
+    evidence.recheck()
+    request_tree.recheck()
+    response_tree.recheck()
+    trust_tree.recheck()
+    return {
+        "action": outcome["action"],
+        "state": outcome["state"],
+        "result": deployment["result"],
+        "resulting_active_request_id": outcome["resulting_active_request_id"],
+        "outcome_sha256": outcome_sha,
+        "decision_sha256": decision_sha,
+        "deployment_signature_sha256": deployment_signature_sha,
+        "deployers_sha256": deployers_sha,
     }

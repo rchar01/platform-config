@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -436,6 +436,166 @@ class LifecycleCase:
             *extra,
         ])
 
+    def outcome_package(self, evidence_path: Path) -> tuple[Path, str]:
+        package = private_dir(self.root / "outcome-package")
+        deployment_bytes = evidence_path.joinpath("deployment").read_bytes()
+        deployment = self.module.parse_record(
+            deployment_bytes, self.module.DEPLOYMENT_FIELDS, "deployment"
+        )
+        action = deployment["action"]
+        if action == "finalize":
+            rollback = self.module.parse_rollback(
+                self.state.joinpath("rollback").read_bytes(),
+                type("Args", (), {"service": SERVICE, "target": TARGET})(),
+            )
+            predecessor_kind = rollback["predecessor_kind"]
+            predecessor_request_id = rollback["predecessor_request_id"]
+            predecessor_certificate = rollback["predecessor_certificate_sha256"]
+            predecessor_spki = rollback["predecessor_certificate_spki_sha256"]
+            if predecessor_kind == "managed":
+                predecessor_chain = Path(
+                    rollback["prior_zot_cert_path"]
+                ).read_bytes()
+            else:
+                predecessor_chain = Path(
+                    rollback["predecessor_version_path"]
+                ).joinpath("ca-chain.crt").read_bytes()
+        else:
+            predecessor_kind = "managed"
+            predecessor_request_id = "none"
+            predecessor_certificate = self.module.parse_record(
+                self.pending.joinpath("request").read_bytes(),
+                self.module.REQUEST_FIELDS,
+                "request",
+            )["current_cert_sha256"]
+            config = json.loads(self.zot_config.read_text(encoding="ascii"))
+            managed = x509.load_pem_x509_certificate(
+                Path(config["http"]["tls"]["cert"]).read_bytes()
+            )
+            predecessor_spki = digest(managed.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            ))
+            predecessor_chain = Path(config["http"]["tls"]["cert"]).read_bytes()
+        predecessor_certificates = self.module.pem_certificates(
+            predecessor_chain, None, "fixture predecessor public chain"
+        )
+        predecessor_intermediate = digest(
+            predecessor_certificates[1].public_bytes(serialization.Encoding.PEM)
+        )
+        predecessor = {
+            "predecessor_kind": predecessor_kind,
+            "predecessor_request_id": predecessor_request_id,
+            "predecessor_certificate_sha256": predecessor_certificate,
+            "predecessor_certificate_spki_sha256": predecessor_spki,
+            "predecessor_intermediate_sha256": predecessor_intermediate,
+            "predecessor_response_sha256": "none",
+            "predecessor_artifact_manifest_sha256": "none",
+            "predecessor_deployment_sha256": "none",
+            "predecessor_decision_sha256": "none",
+        }
+        decision_values = {
+            "schema": "1",
+            "action": action,
+            "state": "finalized" if action == "finalize" else "abandoned",
+            "service": SERVICE,
+            "target": TARGET,
+            "request_id": REQUEST_ID,
+            "operation": deployment["operation"],
+            "request_sha256": deployment["request_sha256"],
+            "response_sha256": deployment["response_sha256"],
+            "response_signature_sha256": deployment["response_signature_sha256"],
+            "candidate_sha256": deployment["candidate_sha256"],
+            "artifact_manifest_sha256": deployment["artifact_manifest_sha256"],
+            "certificate_sha256": deployment["certificate_sha256"],
+            "certificate_spki_sha256": deployment["certificate_spki_sha256"],
+            "chain_sha256": deployment["chain_sha256"],
+            "fullchain_sha256": deployment["fullchain_sha256"],
+            "deployment_sha256": digest(deployment_bytes),
+            "deployment_signature_sha256": digest(evidence_path / "deployment.sig"),
+            "deployers_sha256": digest(
+                self.state / "trust/reviewed-v1/deployers.allowed_signers"
+            ),
+            **predecessor,
+            "resulting_active_request_id": (
+                REQUEST_ID if action == "finalize" else "none"
+            ),
+            "created_epoch": deployment["created_epoch"],
+        }
+        decision = record(self.module.DECISION_FIELDS, decision_values)
+        outcome_values = {
+            name: decision_values[name]
+            for name in self.module.OUTCOME_FIELDS
+            if name in decision_values
+        }
+        outcome_values.update(
+            kind="csr-signer-outcome",
+            decision_sha256=digest(decision),
+            outcome_principal=RESPONSE_PRINCIPAL,
+        )
+        outcome = record(self.module.OUTCOME_FIELDS, outcome_values)
+        for name, data in (
+            ("outcome", outcome),
+            ("deployment", deployment_bytes),
+            ("deployment.sig", evidence_path.joinpath("deployment.sig").read_bytes()),
+            (
+                "deployers.allowed_signers",
+                self.state.joinpath(
+                    "trust/reviewed-v1/deployers.allowed_signers"
+                ).read_bytes(),
+            ),
+            ("decision", decision),
+        ):
+            private_file(package / name, data)
+        self.runner.run([
+            "ssh-keygen", "-Y", "sign", "-f", self.signing_key,
+            "-n", self.module.OUTCOME_NAMESPACE, package / "outcome",
+        ]).assert_success()
+        package.joinpath("outcome.sig").chmod(0o600)
+        return package, digest(outcome)
+
+    def import_outcome(
+        self,
+        package: Path,
+        outcome_sha256: str,
+        deployment_sha256: str,
+        *,
+        check: bool = False,
+        environment: dict[str, str] | None = None,
+    ) -> CommandResult:
+        command = "outcome-preflight" if check else "outcome-import"
+        argv = [
+            *self.common(command, config=True),
+            "--trust-id", "reviewed-v1",
+            "--request-id", REQUEST_ID,
+            "--artifact-sha256", self.artifact_sha256,
+            "--deployment-sha256", deployment_sha256,
+            "--outcome-sha256", outcome_sha256,
+        ]
+        if check:
+            decision = self.module.parse_record(
+                package.joinpath("decision").read_bytes(),
+                self.module.DECISION_FIELDS,
+                "preflight fixture decision",
+            )
+            outcome = self.module.parse_record(
+                package.joinpath("outcome").read_bytes(),
+                self.module.OUTCOME_FIELDS,
+                "preflight fixture outcome",
+            )
+            argv.extend((
+                "--decision-sha256", digest(package / "decision"),
+                "--outcome-principal", outcome["outcome_principal"],
+            ))
+            for field in self.module.DECISION_FIELDS:
+                if field != "schema":
+                    argv.extend((
+                        f"--decision-{field.replace('_', '-')}", decision[field]
+                    ))
+        else:
+            argv.extend(("--outcome-dir", package))
+        return self.run(argv, environment=environment)
+
 
 @pytest.fixture
 def lifecycle_case(
@@ -567,7 +727,9 @@ def lifecycle_case(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    managed_cert_path = private_file(zot_root / "managed.crt", managed_cert, 0o644)
+    managed_cert_path = private_file(
+        zot_root / "managed.crt", managed_cert + intermediate, 0o644
+    )
     managed_key_path = private_file(zot_root / "managed.key", managed_key_bytes)
     request_values["current_cert_sha256"] = digest(managed_cert)
     request_bytes = record(module.REQUEST_FIELDS, request_values)
@@ -709,7 +871,7 @@ def test_frozen_record_constants_and_parser_are_exact(
             module.parse_record(malformed, ("schema", "kind"), "fixture")
 
 
-def test_status_precedence_never_claims_complete_or_renewal(
+def test_status_falls_back_until_authenticated_outcome(
     lifecycle_case: LifecycleCase,
 ) -> None:
     initial = result_json(lifecycle_case.status())
@@ -738,6 +900,854 @@ def test_status_precedence_never_claims_complete_or_renewal(
     ))
     assert exported["status"] == "evidence-exported"
     assert exported["signer_outcome_state"] == "unavailable"
+
+
+def rewrite_lifecycle_outcome_decision(
+    lifecycle_case: LifecycleCase,
+    package: Path,
+    updates: dict[str, str],
+) -> str:
+    decision = lifecycle_case.module.parse_record(
+        package.joinpath("decision").read_bytes(),
+        lifecycle_case.module.DECISION_FIELDS,
+        "fixture decision",
+    )
+    decision.update(updates)
+    decision_bytes = record(lifecycle_case.module.DECISION_FIELDS, decision)
+    private_file(package / "decision", decision_bytes)
+    outcome = lifecycle_case.module.parse_record(
+        package.joinpath("outcome").read_bytes(),
+        lifecycle_case.module.OUTCOME_FIELDS,
+        "fixture outcome",
+    )
+    for name, value in updates.items():
+        if name in lifecycle_case.module.OUTCOME_FIELDS:
+            outcome[name] = value
+    outcome["decision_sha256"] = digest(decision_bytes)
+    outcome_bytes = record(lifecycle_case.module.OUTCOME_FIELDS, outcome)
+    private_file(package / "outcome", outcome_bytes)
+    package.joinpath("outcome.sig").unlink()
+    lifecycle_case.runner.run([
+        "ssh-keygen", "-Y", "sign", "-f", lifecycle_case.signing_key,
+        "-n", lifecycle_case.module.OUTCOME_NAMESPACE, package / "outcome",
+    ]).assert_success()
+    package.joinpath("outcome.sig").chmod(0o600)
+    return digest(outcome_bytes)
+
+
+def rewrite_signed_validation_result(
+    lifecycle_case: LifecycleCase,
+    evidence: Path,
+    field: str,
+    value: str,
+) -> None:
+    result_path = evidence / "validation-result"
+    result = lifecycle_case.module.parse_record(
+        result_path.read_bytes(),
+        lifecycle_case.module.VALIDATION_RESULT_FIELDS,
+        "fixture validation result",
+    )
+    result[field] = value
+    private_file(
+        result_path,
+        record(lifecycle_case.module.VALIDATION_RESULT_FIELDS, result),
+    )
+    evidence.joinpath("validation-result.sig").unlink()
+    lifecycle_case.runner.run([
+        "ssh-keygen", "-Y", "sign", "-f", lifecycle_case.signing_key,
+        "-n", lifecycle_case.module.DEPLOYMENT_NAMESPACE, result_path,
+    ]).assert_success()
+    evidence.joinpath("validation-result.sig").chmod(0o600)
+
+
+def test_finalized_outcome_import_is_checkable_idempotent_and_completes_status(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    evidence = Path(finished["evidence_path"])
+    package, outcome_sha = lifecycle_case.outcome_package(evidence)
+    before = tree_snapshot(lifecycle_case.state)
+    checked = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"], check=True,
+    ))
+    assert checked["status"] == "would-import"
+    assert tree_snapshot(lifecycle_case.state) == before
+
+    imported = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert imported["status"] == "imported"
+    history = Path(imported["history_path"])
+    assert {path.name for path in history.iterdir()} == set(
+        lifecycle_case.module.OUTCOME_NAMES
+    )
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in history.iterdir())
+    assert stat.S_IMODE(history.stat().st_mode) == 0o700
+    assert stat.S_IMODE(history.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(history.parent.parent.stat().st_mode) == 0o700
+    assert "tls.key" not in {path.name for path in history.iterdir()}
+    assert lifecycle_case.pending.joinpath("tls.key").read_bytes() == (
+        lifecycle_case.private_key_bytes
+    )
+    before_existing_preflight = tree_snapshot(lifecycle_case.state)
+    existing_preflight = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"], check=True,
+    ))
+    assert existing_preflight["status"] == "existing"
+    assert tree_snapshot(lifecycle_case.state) == before_existing_preflight
+    assert result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))["status"] == "existing"
+    status = result_json(lifecycle_case.status(
+        "--minimum-remaining-lifetime-seconds", "999999999",
+    ))
+    assert status["status"] == "complete"
+    assert status["signer_outcome_state"] == "finalized"
+    assert status["evidence_state"] == "controller-exported"
+    assert status["renewal_eligible"] is False
+    assert status["required_action"] == "none"
+
+
+@pytest.mark.parametrize("alteration", ("malformed", "conflicting"))
+def test_outcome_preflight_rejects_invalid_target_state_without_mutation(
+    lifecycle_case: LifecycleCase,
+    alteration: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    active_path = lifecycle_case.state / "active"
+    if alteration == "malformed":
+        private_file(active_path, b"malformed\n")
+    else:
+        active = lifecycle_case.module.parse_record(
+            active_path.read_bytes(), lifecycle_case.module.ACTIVE_FIELDS, "active"
+        )
+        active["certificate_sha256"] = "f" * 64
+        private_file(active_path, record(lifecycle_case.module.ACTIVE_FIELDS, active))
+    before = tree_snapshot(lifecycle_case.state)
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"], check=True,
+    )
+    assert_failure(failure)
+    assert tree_snapshot(lifecycle_case.state) == before
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+def test_outcome_preflight_public_authentication_never_accesses_private_key(
+    lifecycle_case: LifecycleCase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    module = lifecycle_case.module
+    version_path = lifecycle_case.versions_root / REQUEST_ID
+    accessed: list[tuple[str, str]] = []
+    original_read_at = module.read_at
+    original_scan = module.scan
+    original_directory_open = module.PinnedDirectory.open.__func__
+
+    def mapped_directory_open(cls, path, label, **kwargs):
+        metadata = os.stat(path, follow_symlinks=False)
+        owners = {0, os.getuid(), os.getgid(), metadata.st_uid, metadata.st_gid}
+        kwargs.setdefault("allowed_owner_uids", owners)
+        kwargs.setdefault("final_owner_uid", metadata.st_uid)
+        return original_directory_open(cls, path, label, **kwargs)
+
+    def guarded_read_at(directory, name, label, **kwargs):
+        assert name != "tls.key"
+        accessed.append((directory.path, name))
+        metadata = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+        kwargs.setdefault("owner_uid", metadata.st_uid)
+        kwargs.setdefault("owner_gid", metadata.st_gid)
+        return original_read_at(directory, name, label, **kwargs)
+
+    def guarded_scan(directory, label):
+        assert directory.path != str(version_path)
+        return original_scan(directory, label)
+
+    monkeypatch.setattr(
+        module.PinnedDirectory, "open", classmethod(mapped_directory_open)
+    )
+    monkeypatch.setattr(module, "read_at", guarded_read_at)
+    monkeypatch.setattr(module, "scan", guarded_scan)
+    state = module.PinnedDirectory.open(str(lifecycle_case.state), "test state")
+    trust, policy = module.load_trust(state, "reviewed-v1", TARGET)
+    args = SimpleNamespace(
+        versions_root=str(lifecycle_case.versions_root),
+        pending_root=str(lifecycle_case.pending_root),
+        service=SERVICE,
+        target=TARGET,
+        trust_id="reviewed-v1",
+        request_id=REQUEST_ID,
+        deployment_sha256=finished["deployment_sha256"],
+    )
+    try:
+        authenticated = module.authenticate_active_public(
+            state, args, trust, policy
+        )
+    finally:
+        state.close()
+
+    assert authenticated["record"]["request_id"] == REQUEST_ID
+    assert (str(version_path), "artifact") in accessed
+    assert not any(name == "tls.key" for _path, name in accessed)
+
+
+def test_outcome_preflight_rejects_forged_public_version_without_mutation(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(
+        Path(finished["evidence_path"])
+    )
+    artifact_path = lifecycle_case.versions_root / REQUEST_ID / "artifact"
+    artifact = lifecycle_case.module.parse_record(
+        artifact_path.read_bytes(), lifecycle_case.module.ARTIFACT_FIELDS,
+        "fixture artifact",
+    )
+    artifact["issuer_root"] = "forged-root"
+    private_file(
+        artifact_path,
+        record(lifecycle_case.module.ARTIFACT_FIELDS, artifact),
+    )
+    before = tree_snapshot(lifecycle_case.state)
+
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"], check=True,
+    )
+
+    assert_failure(failure)
+    assert tree_snapshot(lifecycle_case.state) == before
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+def test_outcome_preflight_rejects_canonical_active_forged_against_evidence(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(
+        Path(finished["evidence_path"])
+    )
+    active_path = lifecycle_case.state / "active"
+    active = lifecycle_case.module.parse_record(
+        active_path.read_bytes(), lifecycle_case.module.ACTIVE_FIELDS,
+        "fixture active",
+    )
+    active["activation_epoch"] = str(int(active["activation_epoch"]) + 1)
+    private_file(
+        active_path,
+        record(lifecycle_case.module.ACTIVE_FIELDS, active),
+    )
+    before = tree_snapshot(lifecycle_case.state)
+
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"], check=True,
+    )
+
+    assert_failure(failure)
+    assert tree_snapshot(lifecycle_case.state) == before
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+@pytest.mark.parametrize("forgery", ("pointer", "history"))
+def test_outcome_preflight_rejects_forged_accepted_state_without_mutation(
+    lifecycle_case: LifecycleCase,
+    forgery: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(
+        Path(finished["evidence_path"])
+    )
+    imported = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    if forgery == "pointer":
+        pointer_path = lifecycle_case.state / "accepted-outcome"
+        pointer = lifecycle_case.module.parse_record(
+            pointer_path.read_bytes(),
+            lifecycle_case.module.ACCEPTED_OUTCOME_FIELDS,
+            "fixture accepted pointer",
+        )
+        pointer["decision_sha256"] = "f" * 64
+        private_file(
+            pointer_path,
+            record(lifecycle_case.module.ACCEPTED_OUTCOME_FIELDS, pointer),
+        )
+    else:
+        private_file(Path(imported["history_path"]) / "outcome.sig", b"forged\n")
+    before = tree_snapshot(lifecycle_case.state)
+
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"], check=True,
+    )
+
+    assert_failure(failure)
+    assert tree_snapshot(lifecycle_case.state) == before
+
+
+def test_outcome_import_does_not_depend_on_candidate_private_key_entries(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    private_entries = (
+        lifecycle_case.pending / "tls.key",
+        lifecycle_case.versions_root / REQUEST_ID / "tls.key",
+    )
+    saved = []
+    for index, path in enumerate(private_entries):
+        destination = lifecycle_case.root / f"saved-private-entry-{index}"
+        path.rename(destination)
+        saved.append((destination, path))
+
+    imported = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert imported["status"] == "imported"
+    assert all(source.exists() and not original.exists() for source, original in saved)
+
+
+def test_abandoned_outcome_with_unrecorded_managed_predecessor_fails_closed(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    abandoned = result_json(lifecycle_case.finish(
+        None, action="abandon", result="not-activated",
+    ))
+    package, outcome_sha = lifecycle_case.outcome_package(
+        Path(abandoned["evidence_path"])
+    )
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, abandoned["deployment_sha256"],
+    )
+    assert_failure(failure)
+    assert "candidate rollback record" in failure.stderr
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("service", "other-service"),
+        ("target", "other-target"),
+        ("request_id", "f" * 32),
+        ("artifact_manifest_sha256", "f" * 64),
+        ("validation_boundary_sha256", "f" * 64),
+        ("action", "abandon"),
+        ("result", "rolled-back"),
+        ("local_validator", "other-local"),
+        ("remote_validator", "other-remote"),
+        ("endpoint", "https://other.example/v2/"),
+        ("served_certificate_sha256", "f" * 64),
+        ("served_intermediate_sha256", "f" * 64),
+        ("activation_epoch", "1"),
+        ("validation_epoch", "1"),
+        ("deployment_sha256", "f" * 64),
+        ("local_service_result", "failed"),
+        ("local_tls_result", "failed"),
+        ("remote_tls_result", "failed"),
+        ("remote_application_result", "failed"),
+        ("remote_http_status", "500"),
+        ("remote_api_version", "other"),
+        ("remote_auth_challenge", "other"),
+    ),
+)
+def test_outcome_import_rejects_each_signed_validation_result_mismatch(
+    lifecycle_case: LifecycleCase,
+    field: str,
+    value: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    evidence = Path(finished["evidence_path"])
+    rewrite_signed_validation_result(lifecycle_case, evidence, field, value)
+    package, outcome_sha = lifecycle_case.outcome_package(evidence)
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"]
+    )
+    assert_failure(failure)
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("predecessor_kind", "none"),
+        ("predecessor_request_id", "f" * 32),
+        ("predecessor_certificate_sha256", "f" * 64),
+        ("predecessor_certificate_spki_sha256", "f" * 64),
+        ("predecessor_intermediate_sha256", "f" * 64),
+        ("predecessor_response_sha256", "f" * 64),
+        ("predecessor_artifact_manifest_sha256", "f" * 64),
+        ("predecessor_deployment_sha256", "f" * 64),
+        ("predecessor_decision_sha256", "f" * 64),
+    ),
+)
+def test_outcome_import_rejects_each_signed_managed_predecessor_mismatch(
+    lifecycle_case: LifecycleCase,
+    field: str,
+    value: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, _outcome_sha = lifecycle_case.outcome_package(
+        Path(finished["evidence_path"])
+    )
+    outcome_sha = rewrite_lifecycle_outcome_decision(
+        lifecycle_case, package, {field: value}
+    )
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"]
+    )
+    assert_failure(failure)
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+def test_outcome_import_rejects_host_local_predecessor_without_history_digests(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, _outcome_sha = lifecycle_case.outcome_package(
+        Path(finished["evidence_path"])
+    )
+    predecessor_id = "f" * 32
+    predecessor = {
+        "predecessor_kind": "host-local",
+        "predecessor_request_id": predecessor_id,
+        "predecessor_certificate_sha256": "a" * 64,
+        "predecessor_certificate_spki_sha256": "b" * 64,
+        "predecessor_intermediate_sha256": "c" * 64,
+        "predecessor_response_sha256": "d" * 64,
+        "predecessor_artifact_manifest_sha256": "e" * 64,
+        "predecessor_deployment_sha256": "1" * 64,
+        "predecessor_decision_sha256": "2" * 64,
+    }
+    outcome_sha = rewrite_lifecycle_outcome_decision(
+        lifecycle_case, package, predecessor
+    )
+    rollback_path = lifecycle_case.state / "rollback"
+    rollback = lifecycle_case.module.parse_record(
+        rollback_path.read_bytes(), lifecycle_case.module.ROLLBACK_FIELDS, "rollback"
+    )
+    rollback.update(
+        predecessor_kind="host-local",
+        predecessor_request_id=predecessor_id,
+        predecessor_artifact_manifest_sha256="e" * 64,
+        predecessor_certificate_sha256="a" * 64,
+        predecessor_certificate_spki_sha256="b" * 64,
+        predecessor_chain_sha256="3" * 64,
+        predecessor_fullchain_sha256="4" * 64,
+    )
+    private_file(
+        rollback_path, record(lifecycle_case.module.ROLLBACK_FIELDS, rollback)
+    )
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"]
+    )
+    assert_failure(failure)
+    assert "absent from the rollback record" in failure.stderr
+
+
+def test_outcome_publication_interruption_recovers_by_exact_rerun(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    interrupted = lifecycle_case.import_outcome(
+        package,
+        outcome_sha,
+        finished["deployment_sha256"],
+        environment={"PLATFORM_PKI_LIFECYCLE_CRASH_AT": "after-outcome-history-publication"},
+    )
+    assert_failure(interrupted)
+    history = lifecycle_case.state / "outcomes" / REQUEST_ID / outcome_sha
+    assert history.is_dir()
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+    assert_failure(lifecycle_case.status())
+    recovered = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert recovered["status"] == "imported"
+    assert result_json(lifecycle_case.status())["status"] == "complete"
+
+
+def test_outcome_pointer_stage_failure_cleans_and_exact_rerun_recovers(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    failed = lifecycle_case.import_outcome(
+        package,
+        outcome_sha,
+        finished["deployment_sha256"],
+        environment={
+            "PLATFORM_PKI_LIFECYCLE_FAIL_AT": "after-accepted-outcome-stage"
+        },
+    )
+    assert_failure(failed)
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+    assert not tuple(lifecycle_case.state.glob(".accepted-outcome-stage-*"))
+    history = lifecycle_case.state / "outcomes" / REQUEST_ID / outcome_sha
+    assert history.is_dir()
+    recovered = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert recovered["status"] == "imported"
+
+
+def test_outcome_pointer_post_publication_interruption_is_idempotent(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    interrupted = lifecycle_case.import_outcome(
+        package,
+        outcome_sha,
+        finished["deployment_sha256"],
+        environment={
+            "PLATFORM_PKI_LIFECYCLE_CRASH_AT": "after-accepted-outcome-publication"
+        },
+    )
+    assert_failure(interrupted)
+    assert lifecycle_case.state.joinpath("accepted-outcome").is_file()
+    assert not tuple(lifecycle_case.state.glob(".accepted-outcome-stage-*"))
+    assert result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))["status"] == "existing"
+
+
+def test_atomic_outcome_pointer_fsyncs_stage_and_parent(
+    lifecycle_case: LifecycleCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pointer_root = private_dir(lifecycle_case.root / "pointer-fsync")
+    opened = lifecycle_case.module.PinnedDirectory.open(
+        os.fspath(pointer_root),
+        "pointer fsync root",
+        allowed_owner_uids={0, os.geteuid(), os.getegid()},
+        final_owner_uid=os.geteuid(),
+    )
+    directory_descriptor = opened.fd
+    original_fsync = lifecycle_case.module.os.fsync
+    calls: list[int] = []
+
+    def tracking_fsync(descriptor: int) -> None:
+        calls.append(descriptor)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(lifecycle_case.module.os, "fsync", tracking_fsync)
+    monkeypatch.setattr(lifecycle_case.module.os, "fchown", lambda *_args: None)
+    try:
+        lifecycle_case.module.atomic_create_at(
+            opened, "accepted-outcome", b"exact-pointer\n", "test pointer"
+        )
+    finally:
+        opened.close()
+    assert pointer_root.joinpath("accepted-outcome").read_bytes() == b"exact-pointer\n"
+    assert len(calls) >= 3
+    assert calls.count(directory_descriptor) >= 2
+
+
+def test_atomic_outcome_pointer_reports_retained_stage_on_cleanup_failure(
+    lifecycle_case: LifecycleCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pointer_root = private_dir(lifecycle_case.root / "pointer-cleanup-failure")
+    opened = lifecycle_case.module.PinnedDirectory.open(
+        os.fspath(pointer_root),
+        "pointer cleanup root",
+        allowed_owner_uids={0, os.geteuid(), os.getegid()},
+        final_owner_uid=os.geteuid(),
+    )
+    original_unlink = lifecycle_case.module.os.unlink
+
+    def fail_after_stage(point: str) -> None:
+        if point == "after-accepted-outcome-stage":
+            raise lifecycle_case.module.LifecycleError("injected pointer failure")
+
+    def fail_stage_unlink(path: str, *, dir_fd: int | None = None) -> None:
+        if path.startswith(".accepted-outcome-stage-"):
+            raise PermissionError("injected cleanup failure")
+        original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(lifecycle_case.module, "fault", fail_after_stage)
+    monkeypatch.setattr(lifecycle_case.module.os, "unlink", fail_stage_unlink)
+    monkeypatch.setattr(lifecycle_case.module.os, "fchown", lambda *_args: None)
+    try:
+        with pytest.raises(
+            lifecycle_case.module.LifecycleError,
+            match="retained after cleanup failure",
+        ):
+            lifecycle_case.module.atomic_create_at(
+                opened, "accepted-outcome", b"exact-pointer\n", "test pointer"
+            )
+    finally:
+        opened.close()
+    assert not pointer_root.joinpath("accepted-outcome").exists()
+    assert len(tuple(pointer_root.glob(".accepted-outcome-stage-*"))) == 1
+
+
+@pytest.mark.parametrize("race", ("exact", "conflict"))
+def test_outcome_pointer_publication_race_never_clobbers(
+    lifecycle_case: LifecycleCase,
+    race: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    outcome = lifecycle_case.module.parse_record(
+        package.joinpath("outcome").read_bytes(),
+        lifecycle_case.module.OUTCOME_FIELDS,
+        "outcome",
+    )
+    pointer_values = {
+        "schema": "1",
+        "kind": "host-local-accepted-signer-outcome",
+        "service": SERVICE,
+        "target": TARGET,
+        "request_id": REQUEST_ID,
+        "artifact_manifest_sha256": lifecycle_case.artifact_sha256,
+        "deployment_sha256": finished["deployment_sha256"],
+        "outcome_sha256": outcome_sha if race == "exact" else "f" * 64,
+        "decision_sha256": digest(package / "decision"),
+        "action": outcome["action"],
+        "state": outcome["state"],
+        "resulting_active_request_id": outcome["resulting_active_request_id"],
+    }
+    pointer = record(lifecycle_case.module.ACCEPTED_OUTCOME_FIELDS, pointer_values)
+    process = subprocess.Popen(
+        lifecycle_case.runner.argv([
+            *lifecycle_case.common("outcome-import", config=True),
+            "--trust-id", "reviewed-v1",
+            "--request-id", REQUEST_ID,
+            "--artifact-sha256", lifecycle_case.artifact_sha256,
+            "--deployment-sha256", finished["deployment_sha256"],
+            "--outcome-sha256", outcome_sha,
+            "--outcome-dir", package,
+        ]),
+        env=lifecycle_case.runner.environment(lifecycle_case.environment({
+            "PLATFORM_PKI_LIFECYCLE_PAUSE_AT": "before-accepted-outcome-publication"
+        })),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    history = lifecycle_case.state / "outcomes" / REQUEST_ID / outcome_sha
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if history.is_dir():
+            break
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(f"outcome import exited before pointer race: {stdout} {stderr}")
+        time.sleep(0.01)
+    else:
+        process.kill()
+        pytest.fail("outcome import did not reach pointer race seam")
+    private_file(lifecycle_case.state / "accepted-outcome", pointer)
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode != 0
+    assert stdout == ""
+    assert "appeared during no-clobber publication" in stderr
+    assert lifecycle_case.state.joinpath("accepted-outcome").read_bytes() == pointer
+    assert not tuple(lifecycle_case.state.glob(".accepted-outcome-stage-*"))
+    rerun = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"]
+    )
+    if race == "exact":
+        assert result_json(rerun)["status"] == "existing"
+    else:
+        assert_failure(rerun)
+
+
+def test_outcome_import_rejects_remote_package_replacement_before_publication(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    argv = [
+        *lifecycle_case.common("outcome-import", config=True),
+        "--trust-id", "reviewed-v1",
+        "--request-id", REQUEST_ID,
+        "--artifact-sha256", lifecycle_case.artifact_sha256,
+        "--deployment-sha256", finished["deployment_sha256"],
+        "--outcome-sha256", outcome_sha,
+        "--outcome-dir", package,
+    ]
+    process = subprocess.Popen(
+        lifecycle_case.runner.argv(argv),
+        env=lifecycle_case.runner.environment(
+            lifecycle_case.environment(
+                {"PLATFORM_PKI_LIFECYCLE_PAUSE_AT": "before-outcome-history-publication"}
+            )
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    request_history = lifecycle_case.state / "outcomes" / REQUEST_ID
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        stages = tuple(request_history.glob(".outcome-stage-*"))
+        if stages and {path.name for path in stages[0].iterdir()} == set(
+            lifecycle_case.module.OUTCOME_NAMES
+        ):
+            break
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(
+                "outcome import exited before reaching its publication race seam\n"
+                f"stdout: {stdout}\nstderr: {stderr}"
+            )
+        time.sleep(0.01)
+    else:
+        process.kill()
+        pytest.fail("outcome import did not reach its publication race seam")
+
+    signature = package / "outcome.sig"
+    signature.write_bytes(signature.read_bytes())
+    signature.chmod(0o600)
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode != 0
+    assert stdout == ""
+    assert "imported signer-outcome package file outcome.sig path binding changed" in stderr
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+    assert not (request_history / outcome_sha).exists()
+    assert not tuple(request_history.glob(".outcome-stage-*"))
+
+    assert result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))["status"] == "imported"
+
+
+def test_outcome_import_rejects_unresolved_journal_and_wrong_coordinates(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    assert_failure(lifecycle_case.import_outcome(
+        package, "f" * 64, finished["deployment_sha256"],
+    ))
+    private_file(lifecycle_case.state / "request.journal", b"unresolved\n")
+    assert_failure(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+@pytest.mark.parametrize("mismatch", ("active", "rollback", "evidence"))
+def test_outcome_import_rejects_live_target_and_evidence_mismatch(
+    lifecycle_case: LifecycleCase,
+    mismatch: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    if mismatch == "active":
+        path = lifecycle_case.state / "active"
+        values = lifecycle_case.module.parse_record(
+            path.read_bytes(), lifecycle_case.module.ACTIVE_FIELDS, "active"
+        )
+        values["certificate_sha256"] = "f" * 64
+    elif mismatch == "rollback":
+        path = lifecycle_case.state / "rollback"
+        values = lifecycle_case.module.parse_record(
+            path.read_bytes(), lifecycle_case.module.ROLLBACK_FIELDS, "rollback"
+        )
+        values["predecessor_certificate_sha256"] = "f" * 64
+    else:
+        path = Path(finished["evidence_path"]) / "deployment.sig"
+        path.write_bytes(b"conflicting target evidence\n")
+        path.chmod(0o600)
+        values = None
+    if values is not None:
+        private_file(path, record(
+            lifecycle_case.module.ACTIVE_FIELDS
+            if mismatch == "active"
+            else lifecycle_case.module.ROLLBACK_FIELDS,
+            values,
+        ))
+
+    assert_failure(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+def test_outcome_import_rejects_conflicting_pointer_and_unknown_history_state(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    pointer = lifecycle_case.state / "accepted-outcome"
+    values = lifecycle_case.module.parse_record(
+        pointer.read_bytes(), lifecycle_case.module.ACCEPTED_OUTCOME_FIELDS, "pointer"
+    )
+    values["outcome_sha256"] = "f" * 64
+    private_file(pointer, record(lifecycle_case.module.ACCEPTED_OUTCOME_FIELDS, values))
+    assert_failure(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert_failure(lifecycle_case.status())
+
+    private_file(pointer, record(
+        lifecycle_case.module.ACCEPTED_OUTCOME_FIELDS,
+        {**values, "outcome_sha256": outcome_sha},
+    ))
+    unknown = private_dir(
+        lifecycle_case.state / "outcomes" / REQUEST_ID / ".outcome-stage-unknown"
+    )
+    private_file(unknown / "partial", b"partial\n")
+    assert_failure(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert_failure(lifecycle_case.status())
+
+
+@pytest.mark.parametrize("count", (1, 2))
+def test_outcome_import_rejects_retained_pointer_stage_ambiguity(
+    lifecycle_case: LifecycleCase,
+    count: int,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    for index in range(count):
+        private_file(
+            lifecycle_case.state / f".accepted-outcome-stage-{'a' * 31}{index}",
+            b"retained pointer evidence\n",
+        )
+    failure = lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"]
+    )
+    assert_failure(failure)
+    assert "retained accepted signer outcome pointer stage" in failure.stderr
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+
+
+@pytest.mark.parametrize("alteration", ("namespace", "decision", "deployment"))
+def test_outcome_import_rejects_signature_and_digest_cross_binding_changes(
+    lifecycle_case: LifecycleCase,
+    alteration: str,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(Path(finished["evidence_path"]))
+    if alteration == "namespace":
+        package.joinpath("outcome.sig").unlink()
+        lifecycle_case.runner.run([
+            "ssh-keygen", "-Y", "sign", "-f", lifecycle_case.signing_key,
+            "-n", "wrong-outcome-namespace", package / "outcome",
+        ]).assert_success()
+        package.joinpath("outcome.sig").chmod(0o600)
+    elif alteration == "decision":
+        private_file(package / "decision", package.joinpath("decision").read_bytes() + b"extra=x\n")
+    else:
+        private_file(package / "deployment", package.joinpath("deployment").read_bytes() + b"extra=x\n")
+    before = tree_snapshot(lifecycle_case.state)
+    assert_failure(lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"],
+    ))
+    assert tree_snapshot(lifecycle_case.state) == before
 
 
 def test_expired_request_abandonment_is_explicit_and_checkable(
@@ -1612,6 +2622,38 @@ def test_rolled_back_abandonment_binds_restored_predecessor_and_retained_hold(
     assert (collected["action"], collected["result"]) == (
         "abandon", "rolled-back",
     )
+    package, outcome_sha = lifecycle_case.outcome_package(evidence)
+    restored_config = json.loads(
+        lifecycle_case.zot_config.read_text(encoding="ascii")
+    )
+    restored_certificate = Path(restored_config["http"]["tls"]["cert"])
+    restored_certificate_bytes = restored_certificate.read_bytes()
+    private_file(
+        restored_certificate,
+        lifecycle_case.versions_root.joinpath(
+            REQUEST_ID, "fullchain.crt"
+        ).read_bytes(),
+        0o644,
+    )
+    mismatched = lifecycle_case.import_outcome(
+        package, outcome_sha, abandoned["deployment_sha256"],
+    )
+    assert_failure(mismatched)
+    assert "restored Zot certificate and rollback evidence" in mismatched.stderr
+    assert not lifecycle_case.state.joinpath("accepted-outcome").exists()
+    private_file(restored_certificate, restored_certificate_bytes, 0o644)
+    imported = result_json(lifecycle_case.import_outcome(
+        package, outcome_sha, abandoned["deployment_sha256"],
+    ))
+    assert imported["status"] == "imported"
+    assert imported["action"] == "abandon"
+    assert imported["state"] == "abandoned"
+    status = result_json(lifecycle_case.status())
+    assert status["status"] == "signer-outcome-abandoned"
+    assert status["signer_outcome_state"] == "abandoned"
+    assert status["evidence_state"] == "controller-exported"
+    assert status["active_request_id"] == "none"
+    assert status["required_action"] == "none"
 
 
 @pytest.mark.parametrize(

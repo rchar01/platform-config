@@ -48,9 +48,17 @@
       - pki_host_local_certificate_controller_evidence_status.request_id == pki_host_local_certificate_request_id
       - pki_host_local_certificate_controller_evidence_status.artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256
       - pki_host_local_certificate_controller_evidence_status.deployment_sha256 == pki_host_local_certificate_deployment_sha256
-      - pki_host_local_certificate_controller_evidence_status.action == 'finalize'
-      - pki_host_local_certificate_controller_evidence_status.result == 'activated'
-    fail_msg: Controller evidence status did not verify the exact activated deployment.
+      - >-
+        [
+          pki_host_local_certificate_controller_evidence_status.action,
+          pki_host_local_certificate_controller_evidence_status.result
+        ]
+        in [
+          ['finalize', 'activated'],
+          ['abandon', 'not-activated'],
+          ['abandon', 'rolled-back']
+        ]
+    fail_msg: Controller evidence status did not verify the exact terminal deployment.
   when: pki_host_local_certificate_deployment_sha256 | length > 0
 
 - name: Read authenticated host-local certificate lifecycle status
@@ -132,7 +140,7 @@
         )
       - pki_host_local_certificate_status.recovery_required is boolean
       - pki_host_local_certificate_status.evidence_state in ['none', 'target-published', 'controller-exported']
-      - pki_host_local_certificate_status.signer_outcome_state == 'unavailable'
+      - pki_host_local_certificate_status.signer_outcome_state in ['unavailable', 'finalized', 'abandoned']
       - pki_host_local_certificate_status.renewal_eligible is sameas false
       - >-
         (pki_host_local_certificate_status.active_request_id == 'none')
@@ -147,11 +155,22 @@
         (pki_host_local_certificate_status.status == 'activation-recovery-required')
         == pki_host_local_certificate_status.recovery_required
       - >-
-        (pki_host_local_certificate_deployment_sha256 | length > 0)
-        == (pki_host_local_certificate_status.status == 'evidence-exported')
+        pki_host_local_certificate_deployment_sha256 | length == 0
+        or pki_host_local_certificate_status.status
+           in ['evidence-exported', 'complete', 'signer-outcome-abandoned']
       - >-
-        (pki_host_local_certificate_status.status == 'evidence-exported')
+        (pki_host_local_certificate_status.status
+         in ['evidence-exported', 'complete', 'signer-outcome-abandoned'])
         == (pki_host_local_certificate_status.evidence_state == 'controller-exported')
+      - >-
+        (pki_host_local_certificate_status.status == 'complete')
+        == (pki_host_local_certificate_status.signer_outcome_state == 'finalized')
+      - >-
+        (pki_host_local_certificate_status.status == 'signer-outcome-abandoned')
+        == (pki_host_local_certificate_status.signer_outcome_state == 'abandoned')
+      - >-
+        pki_host_local_certificate_status.status != 'complete'
+        or pki_host_local_certificate_status.active_request_id != 'none'
     success_msg: "{{ pki_host_local_certificate_status_result.stdout }}"
     fail_msg: Lifecycle helper returned noncanonical or inconsistent status metadata.
   vars:
@@ -181,9 +200,11 @@
       - [abandonment-evidence-required, publish-not-activated-evidence]
       - [abandonment-evidence-required, publish-rolled-back-evidence]
       - [conflict, resolve-conflict]
+      - [complete, none]
       - [evidence-exported, await-signer-outcome]
       - [activated-and-validated, export-evidence]
       - [response-ready, activate-response]
       - [request-expired, abandon-expired-request]
       - [request-pending, collect-or-await-response]
+      - [signer-outcome-abandoned, none]
       - [managed-migration-needed, create-migration-request]

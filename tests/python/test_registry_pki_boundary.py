@@ -15,11 +15,13 @@ import yaml
 from conftest import CommandRunner
 from plugins.action import platform_pki_evidence_collection as evidence_collection_action
 from plugins.action import platform_pki_evidence_status as evidence_status_action
+from plugins.action import platform_pki_outcome_import as outcome_import_action
 from plugins.action import platform_pki_request_collection as request_collection_action
 from plugins.action import platform_pki_response_ingress as response_ingress_action
 from plugins.action import platform_pki_response_intake as response_intake_action
 from plugins.module_utils.platform_pki_exchange import (
     EVIDENCE_NAMES,
+    OUTCOME_NAMES,
     REQUEST_REMOTE_NAMES,
     RESPONSE_NAMES,
 )
@@ -37,6 +39,7 @@ ALLOWED_ACTIONS = {
     "ansible.builtin.stat",
     "platform_pki_evidence_collection",
     "platform_pki_evidence_status",
+    "platform_pki_outcome_import",
     "platform_pki_request_collection",
     "platform_pki_response_ingress",
     "platform_pki_response_intake",
@@ -54,6 +57,7 @@ TASK_METADATA = {
     "changed_when",
     "failed_when",
     "check_mode",
+    "no_log",
 }
 METADATA_BY_ACTION = {
     "ansible.builtin.assert": {"name", "vars", "loop", "loop_control", "when"},
@@ -100,6 +104,7 @@ METADATA_BY_ACTION = {
         "register",
         "when",
     },
+    "platform_pki_outcome_import": {"name", "register", "no_log"},
     "platform_pki_request_collection": {"name", "register", "when"},
     "platform_pki_response_ingress": {"name", "register", "when"},
     "platform_pki_response_intake": {
@@ -416,6 +421,23 @@ ACTION_OPTION_SETS = {
         "artifact_sha256",
         "deployment_sha256",
     },
+    "platform_pki_outcome_import": {
+        "lifecycle_helper_path",
+        "state_root",
+        "pending_root",
+        "versions_root",
+        "zot_config_path",
+        "trust_id",
+        "exchange_root",
+        "outcome_dir",
+        "service",
+        "target",
+        "request_id",
+        "artifact_sha256",
+        "deployment_sha256",
+        "outcome_sha256",
+        "response_principal",
+    },
 }
 CUSTOM_ACTIONS = {
     "Transfer pinned reviewed public trust into protected target ingress": (
@@ -441,6 +463,10 @@ CUSTOM_ACTIONS = {
     "Authenticate exact controller evidence publication": (
         "platform_pki_evidence_status",
         ACTION_OPTION_SETS["platform_pki_evidence_status"],
+    ),
+    "Authenticate, transfer, and import exact signer outcome": (
+        "platform_pki_outcome_import",
+        ACTION_OPTION_SETS["platform_pki_outcome_import"],
     ),
 }
 COMMAND_DISPATCHES = {
@@ -874,6 +900,14 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     in_container = (repo_root / "scripts/in-container").read_text(encoding="utf-8")
     if "--env PYTHONPATH=/workspace" not in in_container:
         raise BoundaryViolation("controller cannot import shared PKI utilities")
+    for outcome_mount_contract in (
+        "PLATFORM_CONFIG_PKI_OUTCOME_DIR=/platform-pki-outcome",
+        '$outcome_dir:/platform-pki-outcome:ro,Z',
+    ):
+        if outcome_mount_contract not in in_container:
+            raise BoundaryViolation(
+                "controller does not mount the exact signer outcome read-only"
+            )
     private_home_permissions = in_container[
         in_container.index("chmod 0700") : in_container.index('case "$profile"')
     ]
@@ -898,6 +932,10 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     assert (
         defaults["pki_host_local_certificate_deployment_namespace"]
         == "platform-pki-csr-deployment-v1"
+    )
+    assert (
+        defaults["pki_host_local_certificate_outcome_namespace"]
+        == "platform-pki-csr-outcome-v1"
     )
     assert defaults["pki_host_local_certificate_helper_read_only"] is False
     assert (
@@ -982,6 +1020,7 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
             "publish_rolled_back_evidence",
         ),
         (repo_root / "playbooks/registry-pki-evidence-export.yml", "evidence_export"),
+        (repo_root / "playbooks/registry-pki-outcome-import.yml", "outcome_import"),
         (
             repo_root / "playbooks/registry-pki-decision-preflight.yml",
             "decision_preflight",
@@ -1019,6 +1058,7 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         "platform_pki_response_ingress": response_ingress_action,
         "platform_pki_evidence_collection": evidence_collection_action,
         "platform_pki_evidence_status": evidence_status_action,
+        "platform_pki_outcome_import": outcome_import_action,
     }
     for action_name, module in action_modules.items():
         if set(module.ACTION_ARGUMENTS) != ACTION_OPTION_SETS[action_name]:
@@ -1043,7 +1083,12 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         "validation-result.sig",
     ):
         raise BoundaryViolation("evidence collection is not exactly five files")
-    if "tls.key" in {*REQUEST_REMOTE_NAMES, *RESPONSE_NAMES, *EVIDENCE_NAMES}:
+    if "tls.key" in {
+        *REQUEST_REMOTE_NAMES,
+        *RESPONSE_NAMES,
+        *EVIDENCE_NAMES,
+        *OUTCOME_NAMES,
+    }:
         raise BoundaryViolation("a controller transfer allowlist addresses tls.key")
 
     collection_plugin = repo_root / "plugins/action/platform_pki_request_collection.py"
@@ -1131,6 +1176,22 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
             or read_only_command.get("check_mode") is not False
         ):
             raise BoundaryViolation(f"{phase} command is not pinned read-only")
+    decision_status_task = _task_named(
+        read_only_phase_tasks["decision_preflight"],
+        "Require exact active and exported evidence identity",
+    )
+    decision_status_contract = "\n".join(
+        decision_status_task["ansible.builtin.assert"]["that"]
+    )
+    for required_state in (
+        "status in ['evidence-exported', 'complete']",
+        "signer_outcome_state == 'unavailable'",
+        "signer_outcome_state == 'finalized'",
+    ):
+        if required_state not in decision_status_contract:
+            raise BoundaryViolation(
+                "decision preflight does not preserve pre/post-finalization status"
+            )
     validator_import = _task_named(
         read_only_phase_tasks["decision_preflight"],
         "Load reviewed runner validator helper preflight",
@@ -1181,16 +1242,70 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         "recover",
         "status",
         "active-paths",
+        "outcome-import",
+        "outcome-preflight",
     }:
         raise BoundaryViolation("lifecycle helper command surface changed")
+    lifecycle_functions = {
+        node.name: node
+        for node in lifecycle_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    reachable = set()
+    pending = ["outcome_import", "outcome_preflight"]
+    while pending:
+        name = pending.pop()
+        if name in reachable or name not in lifecycle_functions:
+            continue
+        reachable.add(name)
+        pending.extend(
+            call.func.id
+            for call in ast.walk(lifecycle_functions[name])
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in lifecycle_functions
+        )
+    outcome_import_source = "\n".join(
+        ast.get_source_segment(lifecycle_text, lifecycle_functions[name]) or ""
+        for name in sorted(reachable)
+    )
+    for forbidden in ('"tls.key"', "'tls.key'", "PENDING_NAMES", "VERSION_NAMES"):
+        if forbidden in outcome_import_source:
+            raise BoundaryViolation(
+                "outcome import call graph references candidate private-key state"
+            )
+    if "authenticate_active_public" not in reachable:
+        raise BoundaryViolation(
+            "scalar preflight does not authenticate active public state"
+        )
+    public_auth_calls = {
+        call.func.id
+        for call in ast.walk(lifecycle_functions["authenticate_active_public"])
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    if public_auth_calls & {
+        "authenticate_active", "open_exact_tree", "scan", "validate_version"
+    }:
+        raise BoundaryViolation(
+            "active public authentication can enumerate or open private version state"
+        )
+    public_open_calls = {
+        call.func.id
+        for call in ast.walk(lifecycle_functions["open_public_files"])
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    if public_open_calls & {"open_exact_tree", "scan", "validate_version"}:
+        raise BoundaryViolation(
+            "public file opener can enumerate private version state"
+        )
     status_text = (role_dir / "tasks/status.yml").read_text(encoding="utf-8")
-    if (
-        "pki_host_local_certificate_status.signer_outcome_state == 'unavailable'"
-        not in status_text
-        or "pki_host_local_certificate_status.renewal_eligible is sameas false"
-        not in status_text
+    for required_status in (
+        "pki_host_local_certificate_status.signer_outcome_state in ['unavailable', 'finalized', 'abandoned']",
+        "[complete, none]",
+        "[signer-outcome-abandoned, none]",
     ):
-        raise BoundaryViolation("signer outcome or renewal behavior is implemented")
+        if required_status not in status_text:
+            raise BoundaryViolation("signer-outcome status contract is incomplete")
 
     executable_sources = [
         *(role_dir / "tasks").glob("*.yml"),
@@ -1322,6 +1437,53 @@ def test_container_wrapper_mounts_only_validated_exchange_root_read_write(
     ) in arguments
 
 
+def test_container_wrapper_mounts_only_validated_outcome_directory_read_only(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    log = isolated_test_dir / "podman.json"
+    environment = _container_wrapper_environment(isolated_test_dir, log)
+    outcome_dir = isolated_test_dir / "outcome"
+    outcome_dir.mkdir(mode=0o700)
+    environment["PLATFORM_CONFIG_PKI_OUTCOME_DIR"] = str(outcome_dir)
+
+    command_runner.run(
+        (repo_root / "scripts/in-container", "true"), environment=environment
+    ).assert_success()
+    arguments = json.loads(log.read_text(encoding="utf-8"))
+    assert "PLATFORM_CONFIG_PKI_OUTCOME_DIR=/platform-pki-outcome" in arguments
+    assert f"{outcome_dir}:/platform-pki-outcome:ro,Z" in arguments
+
+
+@pytest.mark.parametrize("unsafe_kind", ("mode", "symlink"))
+def test_container_wrapper_rejects_unsafe_outcome_directory(
+    unsafe_kind: str,
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    log = isolated_test_dir / "podman.json"
+    environment = _container_wrapper_environment(isolated_test_dir, log)
+    actual = isolated_test_dir / "outcome-actual"
+    actual.mkdir(mode=0o700)
+    if unsafe_kind == "mode":
+        actual.chmod(0o755)
+        outcome_dir = actual
+        expected = "current-user-owned with mode 0700"
+    else:
+        outcome_dir = isolated_test_dir / "outcome-link"
+        outcome_dir.symlink_to(actual, target_is_directory=True)
+        expected = "canonical non-symlink directory"
+    environment["PLATFORM_CONFIG_PKI_OUTCOME_DIR"] = str(outcome_dir)
+
+    result = command_runner.run(
+        (repo_root / "scripts/in-container", "true"), environment=environment
+    ).assert_failure()
+    assert expected in result.stderr
+    assert not log.exists()
+
+
 @pytest.mark.parametrize("unsafe_kind", ("mode", "symlink"))
 def test_container_wrapper_rejects_unsafe_exchange_root(
     unsafe_kind: str,
@@ -1411,6 +1573,7 @@ def test_test_container_profile_never_exposes_exchange_root(
         {
             "PLATFORM_CONFIG_CONTAINER_PROFILE": "test",
             "PLATFORM_CONFIG_PKI_EXCHANGE_ROOT": str(exchange_root),
+            "PLATFORM_CONFIG_PKI_OUTCOME_DIR": str(exchange_root),
             "PLATFORM_CONFIG_TEST_SCRATCH_ROOT": str(isolated_test_dir / "runtime"),
         }
     )
@@ -1421,6 +1584,8 @@ def test_test_container_profile_never_exposes_exchange_root(
     arguments = json.loads(log.read_text(encoding="utf-8"))
     assert not any("PLATFORM_CONFIG_PKI_EXCHANGE_ROOT" in value for value in arguments)
     assert not any("/platform-pki-exchange" in value for value in arguments)
+    assert not any("PLATFORM_CONFIG_PKI_OUTCOME_DIR" in value for value in arguments)
+    assert not any("/platform-pki-outcome" in value for value in arguments)
 
 
 def test_registry_pki_epoch_conversion_is_timezone_independent(
@@ -1516,6 +1681,8 @@ def test_registry_pki_make_guards_accept_canonical_coordinates(
             "_guard-pki-request-ttl",
             "_guard-pki-artifact",
             "_guard-pki-deployment",
+            "_guard-pki-outcome-dir",
+            "_guard-pki-outcome",
             "_guard-pki-response-dir",
             "_guard-pki-runner",
             "LIMIT=registry-one.test",
@@ -1526,10 +1693,39 @@ def test_registry_pki_make_guards_accept_canonical_coordinates(
             "REQUEST_TTL_SECONDS=604800",
             f"ARTIFACT_SHA256={digest}",
             f"DEPLOYMENT_SHA256={digest}",
+            f"OUTCOME_SHA256={digest}",
+            "OUTCOME_DIR=/outside-git/csr-outcomes/request-id",
             "RESPONSE_DIR=/outside-git/pki-response",
         ),
         cwd=repo_root,
     ).assert_success()
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "",
+        "/",
+        "relative/outcome",
+        "/outside-git/outcome/",
+        "/outside-git//outcome",
+        "/outside-git/./outcome",
+        "/outside-git/../outcome",
+        "/outside git/outcome",
+    ),
+)
+def test_registry_pki_outcome_directory_guard_rejects_noncanonical_paths(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    value: str,
+) -> None:
+    result = command_runner.run(
+        ("make", "_guard-pki-outcome-dir", f"OUTCOME_DIR={value}"),
+        cwd=repo_root,
+    )
+
+    result.assert_failure()
+    assert "canonical absolute protected directory" in result.stderr
 
 
 @pytest.mark.parametrize("value", ("0", "01", "604801", "not-a-number"))

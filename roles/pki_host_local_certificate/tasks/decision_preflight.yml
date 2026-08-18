@@ -32,8 +32,17 @@
 - name: Require exact active and exported evidence identity
   ansible.builtin.assert:
     that:
-      - pki_host_local_certificate_decision_status.status == 'evidence-exported'
-      - pki_host_local_certificate_decision_status.required_action == 'await-signer-outcome'
+      - pki_host_local_certificate_decision_status.status in ['evidence-exported', 'complete']
+      - >-
+        (
+          pki_host_local_certificate_decision_status.status == 'evidence-exported'
+          and pki_host_local_certificate_decision_status.required_action == 'await-signer-outcome'
+          and pki_host_local_certificate_decision_status.signer_outcome_state == 'unavailable'
+        ) or (
+          pki_host_local_certificate_decision_status.status == 'complete'
+          and pki_host_local_certificate_decision_status.required_action == 'none'
+          and pki_host_local_certificate_decision_status.signer_outcome_state == 'finalized'
+        )
       - pki_host_local_certificate_decision_status.evidence_state == 'controller-exported'
       - pki_host_local_certificate_decision_status.active_request_id == pki_host_local_certificate_request_id
       - pki_host_local_certificate_decision_status.active_artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256

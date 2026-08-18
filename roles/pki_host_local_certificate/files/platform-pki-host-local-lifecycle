@@ -167,6 +167,30 @@ VALIDATION_RESULT_FIELDS = (
     "served_intermediate_sha256", "activation_epoch", "validation_epoch",
     "deployment_sha256",
 )
+OUTCOME_FIELDS = tuple(
+    """schema kind service target request_id operation request_sha256
+    response_sha256 response_signature_sha256 candidate_sha256
+    artifact_manifest_sha256 certificate_sha256 certificate_spki_sha256 chain_sha256
+    fullchain_sha256 deployment_sha256 deployment_signature_sha256 deployers_sha256
+    decision_sha256 action state resulting_active_request_id created_epoch
+    outcome_principal""".split()
+)
+DECISION_FIELDS = tuple(
+    """schema action state service target request_id operation request_sha256
+    response_sha256 response_signature_sha256 candidate_sha256
+    artifact_manifest_sha256 certificate_sha256 certificate_spki_sha256
+    chain_sha256 fullchain_sha256 deployment_sha256 deployment_signature_sha256
+    deployers_sha256 predecessor_kind predecessor_request_id
+    predecessor_certificate_sha256 predecessor_certificate_spki_sha256
+    predecessor_intermediate_sha256 predecessor_response_sha256
+    predecessor_artifact_manifest_sha256 predecessor_deployment_sha256
+    predecessor_decision_sha256 resulting_active_request_id created_epoch""".split()
+)
+ACCEPTED_OUTCOME_FIELDS = (
+    "schema", "kind", "service", "target", "request_id", "artifact_manifest_sha256",
+    "deployment_sha256", "outcome_sha256", "decision_sha256", "action", "state",
+    "resulting_active_request_id",
+)
 
 TRUST_NAMES = (
     "policy", "requesters.allowed_signers", "approvers.allowed_signers",
@@ -175,11 +199,18 @@ TRUST_NAMES = (
 PENDING_NAMES = ("tls.key", "tls.csr", "request", "request.sig")
 RESPONSE_NAMES = ("artifact", "tls.crt", "ca-chain.crt", "fullchain.crt", "response", "response.sig")
 VERSION_NAMES = ("tls.key", "tls.csr", "tls.crt", "ca-chain.crt", "fullchain.crt", "response", "response.sig", "artifact")
+PUBLIC_REQUEST_NAMES = ("tls.csr", "request", "request.sig")
+PUBLIC_ACTIVE_FILES = (
+    "tls.csr", "tls.crt", "ca-chain.crt", "fullchain.crt", "response",
+    "response.sig", "artifact",
+)
 EVIDENCE_NAMES = ("deployment", "deployment.sig", "validation-boundary", "validation-result", "validation-result.sig")
+OUTCOME_NAMES = ("outcome", "outcome.sig", "deployment", "deployment.sig", "deployers.allowed_signers", "decision")
 CERTIFICATE_NAMES = frozenset(("tls.crt", "ca-chain.crt", "fullchain.crt"))
 REQUEST_NAMESPACE = "platform-pki-csr-request-v1"
 RESPONSE_NAMESPACE = "platform-pki-csr-response-v1"
 DEPLOYMENT_NAMESPACE = "platform-pki-csr-deployment-v1"
+OUTCOME_NAMESPACE = "platform-pki-csr-outcome-v1"
 PROFILE = "server-p384-sha384-v1"
 LOCAL_CHECK = "platform-zot-local-active-tls-v1"
 REMOTE_CHECK = "platform-oci-v2-read-only-strict-tls-v1"
@@ -595,6 +626,37 @@ def rename_noreplace(parent: PinnedDirectory, source: str, destination: str, lab
         fail(f"no-clobber {label} failed: {os.strerror(error)}")
 
 
+def atomic_create_at(
+    directory: PinnedDirectory, name: str, data: bytes, label: str
+) -> None:
+    temporary = f".{name}-stage-{secrets.token_hex(16)}"
+    temporary_identity = write_new_at(
+        directory, temporary, data, f"temporary {label}"
+    )
+    published = False
+    try:
+        fault(f"after-{name}-stage")
+        try:
+            rename_noreplace(directory, temporary, name, label)
+        except FileExistsError:
+            fail(f"{label} appeared during no-clobber publication")
+        published = True
+        os.fsync(directory.fd)
+        fault(f"after-{name}-publication")
+    finally:
+        if not published:
+            try:
+                require_snapshot(
+                    directory, temporary, temporary_identity, f"temporary {label}"
+                )
+                os.unlink(temporary, dir_fd=directory.fd)
+                os.fsync(directory.fd)
+            except FileNotFoundError:
+                pass
+            except (LifecycleError, OSError):
+                fail(f"temporary {label} retained after cleanup failure")
+
+
 def acquire_lock(state: PinnedDirectory, *, shared: bool = False) -> tuple[int, tuple[int, ...]]:
     data, identity, descriptor = read_at(state, "lock", "lifecycle lock", maximum=0, allow_empty=True, keep_open=True)
     if data:
@@ -731,6 +793,19 @@ def open_exact_tree(path: str, names: Sequence[str], label: str, modes: Mapping[
     except Exception:
         directory.close()
         raise
+
+
+def recheck_exact_tree(
+    directory: PinnedDirectory,
+    names: Sequence[str],
+    identities: Mapping[str, tuple[int, ...]],
+    label: str,
+) -> None:
+    directory.recheck(label)
+    if set(scan(directory, label)) != set(names) or set(identities) != set(names):
+        fail(f"{label} entries changed")
+    for name in names:
+        require_snapshot(directory, name, identities[name], f"{label} file {name}")
 
 
 def validate_dns(value: str, label: str) -> str:
@@ -1037,6 +1112,35 @@ def validate_version(path: str, expected_request_id: str | None = None) -> tuple
     return open_exact_tree(path, VERSION_NAMES, "immutable certificate version", version_modes())
 
 
+def open_public_files(
+    path: str, names: Sequence[str], label: str
+) -> tuple[PinnedDirectory, dict[str, bytes], dict[str, tuple[int, ...]]]:
+    directory = PinnedDirectory.open(path, label)
+    contents: dict[str, bytes] = {}
+    identities: dict[str, tuple[int, ...]] = {}
+    try:
+        for name in names:
+            mode = 0o644 if name in CERTIFICATE_NAMES else 0o600
+            contents[name], identities[name] = read_at(
+                directory, name, f"{label} file {name}", mode=mode
+            )
+        directory.recheck(label)
+        return directory, contents, identities
+    except Exception:
+        directory.close()
+        raise
+
+
+def recheck_public_files(
+    directory: PinnedDirectory,
+    identities: Mapping[str, tuple[int, ...]],
+    label: str,
+) -> None:
+    directory.recheck(label)
+    for name, identity in identities.items():
+        require_snapshot(directory, name, identity, f"{label} file {name}")
+
+
 def parse_active(data: bytes, args) -> dict[str, str]:
     record = parse_record(data, ACTIVE_FIELDS, "active record")
     if record["schema"] != "1" or record["kind"] != "host-local-active" or record["service"] != args.service or record["target"] != args.target:
@@ -1132,6 +1236,198 @@ def authenticate_active(state: PinnedDirectory, args, *, require_config: bool = 
         version.close()
 
 
+def authenticate_active_public(
+    state: PinnedDirectory,
+    args,
+    trust: Mapping[str, bytes],
+    policy: Mapping[str, str],
+) -> dict[str, object] | None:
+    active_data, _identity = read_optional_state(state, "active")
+    if active_data is None:
+        return None
+    active = parse_active(active_data, args)
+    expected_path = os.path.join(args.versions_root, active["request_id"])
+    if active["version_path"] != expected_path:
+        fail("active record does not use the canonical public version path")
+    version, files, identities = open_public_files(
+        expected_path, PUBLIC_ACTIVE_FILES, "immutable public certificate version"
+    )
+    request_directory = None
+    try:
+        metadata = os.fstat(version.fd)
+        if (
+            str(metadata.st_dev) != active["version_device"]
+            or str(metadata.st_ino) != active["version_inode"]
+        ):
+            fail("active public version directory identity differs from its record")
+
+        csr, csr_spki = validate_csr(files["tls.csr"])
+        response = parse_record(files["response"], RESPONSE_FIELDS, "active response")
+        artifact = parse_record(files["artifact"], ARTIFACT_FIELDS, "active artifact")
+        response_sha = sha256(files["response"])
+        response_signature_sha = sha256(files["response.sig"])
+        certificate_sha = sha256(files["tls.crt"])
+        chain_sha = sha256(files["ca-chain.crt"])
+        fullchain_sha = sha256(files["fullchain.crt"])
+        if (
+            response["schema"] != "1"
+            or response["request_id"] != active["request_id"]
+            or response["service"] != args.service
+            or response["target"] != args.target
+            or response["operation"] not in {"issue", "migrate", "renew"}
+            or HEX_RE.fullmatch(response["request_sha256"]) is None
+            or response["csr_sha256"] != sha256(files["tls.csr"])
+            or response["csr_spki_sha256"] != csr_spki
+            or response["response_principal"] != policy["response_principal"]
+        ):
+            fail("active response does not bind the public request coordinates")
+        verify_ssh_signature(
+            files["response"], files["response.sig"],
+            trust["responses.allowed_signers"], response["response_principal"],
+            RESPONSE_NAMESPACE, "active response",
+        )
+
+        request_path = os.path.join(args.pending_root, active["request_id"])
+        request = None
+        if os.path.lexists(request_path):
+            request_directory, request_files, request_identities = open_public_files(
+                request_path, PUBLIC_REQUEST_NAMES, "active public request"
+            )
+            request = parse_record(
+                request_files["request"], REQUEST_FIELDS, "active public request"
+            )
+            created = require_epoch(
+                request["created_epoch"], "active public request created epoch"
+            )
+            expires = require_epoch(
+                request["expires_epoch"], "active public request expiry epoch"
+            )
+            assert created is not None and expires is not None
+            if (
+                request["schema"] != "1"
+                or request["request_id"] != active["request_id"]
+                or request["service"] != args.service
+                or request["target"] != args.target
+                or request["requester_principal"] != args.target
+                or request["response_principal"] != policy["response_principal"]
+                or request["profile"] != PROFILE
+                or request["operation"] != response["operation"]
+                or request["nonce"] != response["nonce"]
+                or request["inventory_sha256"] != response["inventory_sha256"]
+                or request["csr_sha256"] != sha256(request_files["tls.csr"])
+                or request["csr_spki_sha256"] != csr_spki
+                or request_files["tls.csr"] != files["tls.csr"]
+                or response["request_sha256"] != sha256(request_files["request"])
+                or expires <= created
+                or expires - created > 604800
+                or created > lifecycle_epoch() + 300
+            ):
+                fail("active signed request does not bind the public version")
+            verify_ssh_signature(
+                request_files["request"], request_files["request.sig"],
+                trust["requesters.allowed_signers"], request["requester_principal"],
+                REQUEST_NAMESPACE, "active public request",
+            )
+            recheck_public_files(
+                request_directory, request_identities, "active public request"
+            )
+
+        expected_artifact = {
+            "schema": "1", "kind": "certificate-export",
+            "service": args.service, "request_id": active["request_id"],
+            "operation": response["operation"], "target": args.target,
+            "source_kind": "csr-response",
+            "source_response_sha256": response_sha,
+            "source_response_signature_sha256": response_signature_sha,
+            "certificate_sha256": certificate_sha,
+            "certificate_spki_sha256": response["certificate_spki_sha256"],
+            "chain_sha256": chain_sha, "fullchain_sha256": fullchain_sha,
+            "issuer_root": response["issuer_root"],
+            "issuer_intermediate": response["issuer_intermediate"],
+            "serial": response["serial"],
+            "not_before_epoch": response["not_before_epoch"],
+            "not_after_epoch": response["not_after_epoch"],
+            "candidate_state": "pending", "deployment_state": "unfinalized",
+            "response_principal": response["response_principal"],
+            "created_epoch": response["created_epoch"],
+        }
+        if (
+            artifact != expected_artifact
+            or response["certificate_sha256"] != certificate_sha
+            or response["chain_sha256"] != chain_sha
+        ):
+            fail("active artifact or response does not bind the public version")
+
+        leaf = pem_certificates(files["tls.crt"], 1, "active public leaf")[0]
+        intermediate, root = pem_certificates(
+            files["ca-chain.crt"], 2, "active public CA chain"
+        )
+        if files["fullchain.crt"] != files["tls.crt"] + intermediate.public_bytes(
+            serialization.Encoding.PEM
+        ):
+            fail("active public full chain is not leaf plus intermediate")
+        if (
+            leaf.issuer != intermediate.subject
+            or intermediate.issuer != root.subject
+            or root.issuer != root.subject
+        ):
+            fail("active public certificate names do not form a chain")
+        verify_certificate_signature(leaf, intermediate, "active public leaf")
+        verify_certificate_signature(intermediate, root, "active public intermediate")
+        verify_certificate_signature(root, root, "active public root")
+        require_ca(intermediate, 0, "active public intermediate")
+        require_ca(root, 1, "active public root")
+        leaf_spki = spki_digest(leaf.public_key())
+        not_before = int(leaf.not_valid_before_utc.timestamp())
+        not_after = int(leaf.not_valid_after_utc.timestamp())
+        serial = format(leaf.serial_number, "X")
+        if len(serial) % 2:
+            serial = "0" + serial
+        if (
+            leaf_spki != csr_spki
+            or leaf_spki != response["certificate_spki_sha256"]
+            or leaf.subject != csr.subject
+            or serial != response["serial"]
+            or str(not_before) != response["not_before_epoch"]
+            or str(not_after) != response["not_after_epoch"]
+        ):
+            fail("active certificate differs from its authenticated public request")
+        checks = {
+            "artifact_manifest_sha256": sha256(files["artifact"]),
+            "response_sha256": response_sha,
+            "response_signature_sha256": response_signature_sha,
+            "certificate_sha256": certificate_sha,
+            "certificate_spki_sha256": leaf_spki,
+            "chain_sha256": chain_sha,
+            "fullchain_sha256": fullchain_sha,
+        }
+        if any(active[name] != value for name, value in checks.items()):
+            fail("active record public authentication binding is invalid")
+        recheck_public_files(
+            version, identities, "immutable public certificate version"
+        )
+    finally:
+        if request_directory is not None:
+            request_directory.close()
+        version.close()
+
+    evidence_state, evidence_digests = validate_evidence(state, args, active)
+    if (
+        active["request_id"] == args.request_id
+        and (
+            evidence_state != "target-published"
+            or args.deployment_sha256 not in evidence_digests
+        )
+    ):
+        fail("active public state lacks its authenticated target evidence")
+    return {
+        "record": active,
+        "record_bytes": active_data,
+        "not_before_epoch": not_before,
+        "not_after_epoch": not_after,
+    }
+
+
 def validate_boundary(data: bytes, args) -> dict[str, str]:
     record = parse_record(data, VALIDATION_BOUNDARY_FIELDS, "validation boundary")
     expected = {
@@ -1147,7 +1443,9 @@ def validate_boundary(data: bytes, args) -> dict[str, str]:
 
 def state_entries(state: PinnedDirectory) -> set[str]:
     entries = set(scan(state, "state root"))
-    allowed = {"lock", "trust", "active", "rollback", "validation-boundary", "evidence", "activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}
+    if any(name.startswith(".accepted-outcome-stage-") for name in entries):
+        fail("retained accepted signer outcome pointer stage blocks lifecycle access")
+    allowed = {"lock", "trust", "active", "rollback", "validation-boundary", "evidence", "outcomes", "accepted-outcome", "activation-journal", "evidence-attempt-journal", "abandonment-journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage", "request.journal", "trust-install.journal"}
     if not entries.issubset(allowed):
         fail("state root contains unexpected entries")
     return entries
@@ -4172,6 +4470,774 @@ def evidence_collection_prepare(args) -> None:
         state.close()
 
 
+def managed_predecessor_public_identity(certificate_path: str) -> dict[str, str]:
+    certificate_data, _ = read_path(
+        certificate_path, "managed predecessor public certificate chain", mode=0o644
+    )
+    certificates = pem_certificates(
+        certificate_data, None, "managed predecessor public certificate chain"
+    )
+    if len(certificates) < 2:
+        fail("managed predecessor public certificate chain lacks an intermediate")
+    leaf = certificates[0]
+    intermediate = certificates[1]
+    return {
+        "certificate_sha256": sha256(
+            leaf.public_bytes(serialization.Encoding.PEM)
+        ),
+        "certificate_spki_sha256": spki_digest(leaf.public_key()),
+        "intermediate_sha256": sha256(
+            intermediate.public_bytes(serialization.Encoding.PEM)
+        ),
+    }
+
+
+def validate_target_outcome_package(
+    state: PinnedDirectory,
+    args,
+    trust: Mapping[str, bytes],
+    policy: Mapping[str, str],
+    files: Mapping[str, bytes] | None,
+    *,
+    reviewed_outcome: Mapping[str, str] | None = None,
+    reviewed_decision: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    if files is None:
+        if reviewed_outcome is None or reviewed_decision is None:
+            fail("outcome preflight lacks reviewed scalar records")
+        outcome = dict(reviewed_outcome)
+        decision = dict(reviewed_decision)
+    else:
+        if reviewed_outcome is not None or reviewed_decision is not None:
+            fail("package import cannot mix reviewed scalar records")
+        outcome = parse_record(files["outcome"], OUTCOME_FIELDS, "signer outcome")
+        decision = parse_record(files["decision"], DECISION_FIELDS, "signer decision")
+        if sha256(files["outcome"]) != args.outcome_sha256:
+            fail("signer outcome differs from the supplied digest")
+        if sha256(files["deployment"]) != args.deployment_sha256:
+            fail("outcome deployment differs from the supplied digest")
+        if files["deployers.allowed_signers"] != trust["deployers.allowed_signers"]:
+            fail("outcome deployer trust differs from target-frozen trust")
+        verify_ssh_signature(
+            files["outcome"], files["outcome.sig"],
+            trust["responses.allowed_signers"], policy["response_principal"],
+            OUTCOME_NAMESPACE, "signer outcome",
+        )
+        verify_ssh_signature(
+            files["deployment"], files["deployment.sig"],
+            trust["deployers.allowed_signers"], args.target,
+            DEPLOYMENT_NAMESPACE, "outcome deployment",
+        )
+
+    evidence_dir, evidence_files, _ = open_exact_tree(
+        os.path.join(state.path, "evidence", args.request_id, args.deployment_sha256),
+        EVIDENCE_NAMES, "outcome target evidence",
+    )
+    evidence_dir.close()
+    if files is not None and (
+        files["deployment"] != evidence_files["deployment"]
+        or files["deployment.sig"] != evidence_files["deployment.sig"]
+    ):
+        fail("imported deployment differs from exact target evidence")
+    deployment = parse_record(
+        evidence_files["deployment"], DEPLOYMENT_FIELDS,
+        "outcome target deployment",
+    )
+    verify_ssh_signature(
+        evidence_files["deployment"], evidence_files["deployment.sig"],
+        trust["deployers.allowed_signers"], args.target,
+        DEPLOYMENT_NAMESPACE, "outcome target deployment",
+    )
+    verify_ssh_signature(
+        evidence_files["validation-result"], evidence_files["validation-result.sig"],
+        trust["deployers.allowed_signers"], args.target,
+        DEPLOYMENT_NAMESPACE, "outcome validation result",
+    )
+    validation = parse_record(
+        evidence_files["validation-result"], VALIDATION_RESULT_FIELDS,
+        "outcome validation result",
+    )
+    boundary, _ = read_at(state, "validation-boundary", "outcome validation boundary")
+    if evidence_files["validation-boundary"] != boundary:
+        fail("outcome evidence differs from installed validation boundary")
+    boundary_record = parse_record(
+        boundary, VALIDATION_BOUNDARY_FIELDS, "installed outcome validation boundary"
+    )
+    boundary_sha = sha256(boundary)
+    endpoint = urllib.parse.urlsplit(boundary_record["endpoint"])
+    if (
+        boundary_record["schema"] != "1"
+        or boundary_record["kind"] != "pki-validation-boundary"
+        or boundary_record["service"] != args.service
+        or boundary_record["target"] != args.target
+        or boundary_record["local_validator"] != args.target
+        or IDENTITY_RE.fullmatch(boundary_record["remote_validator"]) is None
+        or boundary_record["local_check"] != LOCAL_CHECK
+        or boundary_record["remote_check"] != REMOTE_CHECK
+        or endpoint.scheme != "https"
+        or not endpoint.hostname
+        or endpoint.path != "/v2/"
+        or endpoint.query
+        or endpoint.fragment
+    ):
+        fail("installed outcome validation boundary is invalid")
+
+    result_pair = (deployment["action"], deployment["result"])
+    if (
+        deployment["schema"] != "1"
+        or deployment["request_id"] != args.request_id
+        or deployment["artifact_request_id"] != args.request_id
+        or deployment["service"] != args.service
+        or deployment["target"] != args.target
+        or deployment["deployment_principal"] != args.target
+        or deployment["artifact_manifest_sha256"] != args.artifact_sha256
+        or result_pair not in {
+            ("finalize", "activated"), ("abandon", "not-activated"),
+            ("abandon", "rolled-back"),
+        }
+        or validation["schema"] != "1"
+        or validation["kind"] != "pki-validation-result"
+        or validation["request_id"] != args.request_id
+        or validation["service"] != args.service
+        or validation["target"] != args.target
+        or validation["artifact_manifest_sha256"] != args.artifact_sha256
+        or validation["validation_boundary_sha256"] != boundary_sha
+        or validation["deployment_sha256"] != args.deployment_sha256
+        or (validation["action"], validation["result"]) != result_pair
+        or validation["local_validator"] != boundary_record["local_validator"]
+        or validation["remote_validator"] != boundary_record["remote_validator"]
+        or validation["endpoint"] != boundary_record["endpoint"]
+        or validation["served_certificate_sha256"]
+        != deployment["served_certificate_sha256"]
+        or validation["served_intermediate_sha256"]
+        != deployment["served_intermediate_sha256"]
+        or validation["activation_epoch"] != deployment["activation_epoch"]
+        or validation["validation_epoch"] != deployment["validation_epoch"]
+    ):
+        fail("outcome deployment does not bind exact target evidence")
+    created = require_epoch(deployment["created_epoch"], "outcome deployment created epoch")
+    assert created is not None
+    observation_fields = (
+        "local_service_result", "local_tls_result", "remote_tls_result",
+        "remote_application_result",
+    )
+    if result_pair == ("abandon", "not-activated"):
+        if (
+            any(validation[name] != "not-run" for name in (
+                *observation_fields, "remote_http_status", "remote_api_version",
+                "remote_auth_challenge",
+            ))
+            or deployment["served_certificate_sha256"] != "none"
+            or deployment["served_intermediate_sha256"] != "none"
+            or deployment["validation_result"] != "not-run"
+            or deployment["activation_epoch"] != "none"
+            or deployment["validation_epoch"] != "none"
+            or deployment["rollback_state"] != "none"
+            or deployment["rollback_hold_until_epoch"] != "none"
+        ):
+            fail("outcome not-activated observation semantics are invalid")
+    else:
+        activation = require_epoch(
+            deployment["activation_epoch"], "outcome deployment activation epoch"
+        )
+        validation_epoch = require_epoch(
+            deployment["validation_epoch"], "outcome deployment validation epoch"
+        )
+        assert activation is not None and validation_epoch is not None
+        require_digest(
+            deployment["served_certificate_sha256"],
+            "outcome served certificate",
+        )
+        require_digest(
+            deployment["served_intermediate_sha256"],
+            "outcome served intermediate",
+        )
+        if (
+            any(validation[name] != "passed" for name in observation_fields)
+            or validation["remote_api_version"] != "registry/2.0"
+            or (
+                validation["remote_http_status"],
+                validation["remote_auth_challenge"],
+            ) not in {("200", "not-required"), ("401", "present")}
+            or deployment["validation_result"] != "passed"
+            or not activation <= validation_epoch <= created + 300
+        ):
+            fail("outcome observed deployment semantics are invalid")
+        if result_pair == ("finalize", "activated"):
+            if (
+                deployment["served_certificate_sha256"]
+                != deployment["certificate_sha256"]
+            ):
+                fail("outcome finalized deployment serves a different certificate")
+            if deployment["operation"] == "issue":
+                if (
+                    deployment["rollback_state"] != "none"
+                    or deployment["rollback_hold_until_epoch"] != "none"
+                ):
+                    fail("outcome issue observation contains rollback state")
+            else:
+                hold = require_epoch(
+                    deployment["rollback_hold_until_epoch"],
+                    "outcome retained rollback hold",
+                )
+                assert hold is not None
+                if (
+                    deployment["rollback_state"] != "retained"
+                    or hold < created + MIN_ROLLBACK_SECONDS
+                ):
+                    fail("outcome finalized rollback observation is invalid")
+        else:
+            hold = require_epoch(
+                deployment["rollback_hold_until_epoch"],
+                "outcome rolled-back hold",
+            )
+            assert hold is not None
+            if (
+                deployment["rollback_state"] != "restored"
+                or hold < created + MIN_ROLLBACK_SECONDS
+            ):
+                fail("outcome rolled-back observation semantics are invalid")
+
+    shared = (
+        "service", "target", "request_id", "operation", "request_sha256",
+        "response_sha256", "response_signature_sha256", "candidate_sha256",
+        "artifact_manifest_sha256", "certificate_sha256",
+        "certificate_spki_sha256", "chain_sha256", "fullchain_sha256",
+        "deployment_sha256", "deployment_signature_sha256", "deployers_sha256",
+        "action", "state", "resulting_active_request_id", "created_epoch",
+    )
+    deployment_shared = (
+        "operation", "request_sha256", "response_sha256",
+        "response_signature_sha256", "candidate_sha256",
+        "artifact_manifest_sha256", "certificate_sha256",
+        "certificate_spki_sha256", "chain_sha256", "fullchain_sha256",
+        "action", "created_epoch",
+    )
+    expected_state = "finalized" if decision["action"] == "finalize" else "abandoned"
+    predecessor_kind = decision["predecessor_kind"]
+    predecessor_id = decision["predecessor_request_id"]
+    predecessor_digest_fields = tuple(
+        name for name in DECISION_FIELDS
+        if name.startswith("predecessor_")
+        and name not in {"predecessor_kind", "predecessor_request_id"}
+    )
+    resulting = (
+        args.request_id
+        if decision["action"] == "finalize"
+        else predecessor_id
+        if predecessor_kind == "host-local"
+        else "none"
+    )
+    if predecessor_kind not in {"none", "managed", "host-local"}:
+        fail("signer decision predecessor kind is invalid")
+    if predecessor_kind == "none" and (
+        predecessor_id != "none"
+        or any(decision[name] != "none" for name in predecessor_digest_fields)
+    ):
+        fail("empty signer decision predecessor is inconsistent")
+    if predecessor_kind == "managed":
+        if predecessor_id != "none":
+            fail("managed signer decision predecessor request ID is invalid")
+        for name in (
+            "predecessor_certificate_sha256",
+            "predecessor_certificate_spki_sha256",
+            "predecessor_intermediate_sha256",
+        ):
+            require_digest(decision[name], f"signer decision {name}")
+        for name in (
+            "predecessor_response_sha256",
+            "predecessor_artifact_manifest_sha256",
+            "predecessor_deployment_sha256",
+            "predecessor_decision_sha256",
+        ):
+            if decision[name] != "none":
+                fail("managed signer decision predecessor history is invalid")
+    if predecessor_kind == "host-local":
+        require_request_id(predecessor_id)
+        for name in predecessor_digest_fields:
+            require_digest(decision[name], f"signer decision {name}")
+    decision_bytes = serialize_record(
+        DECISION_FIELDS, decision, "reviewed signer decision"
+    )
+    outcome_bytes = serialize_record(
+        OUTCOME_FIELDS, outcome, "reviewed signer outcome"
+    )
+    deployment_signature_sha = sha256(evidence_files["deployment.sig"])
+    deployers_sha = sha256(trust["deployers.allowed_signers"])
+    if (
+        sha256(outcome_bytes) != args.outcome_sha256
+        or outcome["schema"] != "1"
+        or outcome["kind"] != "csr-signer-outcome"
+        or outcome["service"] != args.service
+        or outcome["target"] != args.target
+        or outcome["request_id"] != args.request_id
+        or outcome["artifact_manifest_sha256"] != args.artifact_sha256
+        or outcome["deployment_sha256"] != args.deployment_sha256
+        or outcome["deployment_signature_sha256"] != deployment_signature_sha
+        or outcome["deployers_sha256"] != deployers_sha
+        or outcome["decision_sha256"] != sha256(decision_bytes)
+        or outcome["outcome_principal"] != policy["response_principal"]
+        or decision["schema"] != "1"
+        or decision["state"] != expected_state
+        or decision["resulting_active_request_id"] != resulting
+        or any(outcome[name] != decision[name] for name in shared)
+        or any(decision[name] != deployment[name] for name in deployment_shared)
+    ):
+        fail("signer outcome and decision cross-binding is invalid")
+    for name in (
+        "request_sha256", "response_sha256", "response_signature_sha256",
+        "candidate_sha256", "artifact_manifest_sha256", "certificate_sha256",
+        "certificate_spki_sha256", "chain_sha256", "fullchain_sha256",
+        "deployment_sha256", "deployment_signature_sha256", "deployers_sha256",
+        "decision_sha256",
+    ):
+        require_digest(outcome[name], f"signer outcome {name}")
+    require_epoch(outcome["created_epoch"], "signer outcome created epoch")
+
+    active_data, _ = read_optional_state(state, "active")
+    active = None if active_data is None else parse_active(active_data, args)
+    rollback_data, _ = read_optional_state(state, "rollback")
+    rollback = None if rollback_data is None else parse_rollback(rollback_data, args)
+    if decision["action"] == "finalize":
+        if (
+            active is None or rollback is None
+            or active["request_id"] != args.request_id
+            or active["artifact_manifest_sha256"] != args.artifact_sha256
+            or active["certificate_sha256"] != outcome["certificate_sha256"]
+            or active["certificate_spki_sha256"] != outcome["certificate_spki_sha256"]
+            or active["chain_sha256"] != outcome["chain_sha256"]
+            or active["fullchain_sha256"] != outcome["fullchain_sha256"]
+            or rollback["activating_request_id"] != args.request_id
+            or rollback["predecessor_kind"] != predecessor_kind
+            or rollback["predecessor_request_id"] != predecessor_id
+            or rollback["predecessor_certificate_sha256"]
+            != decision["predecessor_certificate_sha256"]
+            or rollback["predecessor_certificate_spki_sha256"]
+            != decision["predecessor_certificate_spki_sha256"]
+        ):
+            fail("finalized signer outcome differs from current target active state")
+        if predecessor_kind == "host-local":
+            fail(
+                "host-local predecessor outcome requires authenticated predecessor "
+                "intermediate, response, deployment, and decision digests absent "
+                "from the rollback record"
+            )
+        managed_identity = (
+            managed_predecessor_public_identity(rollback["prior_zot_cert_path"])
+            if predecessor_kind == "managed"
+            else None
+        )
+        predecessor_expected = {
+            "predecessor_kind": rollback["predecessor_kind"],
+            "predecessor_request_id": rollback["predecessor_request_id"],
+            "predecessor_certificate_sha256": rollback[
+                "predecessor_certificate_sha256"
+            ],
+            "predecessor_certificate_spki_sha256": rollback[
+                "predecessor_certificate_spki_sha256"
+            ],
+            "predecessor_intermediate_sha256": (
+                managed_identity["intermediate_sha256"]
+                if managed_identity is not None else "none"
+            ),
+            "predecessor_response_sha256": "none",
+            "predecessor_artifact_manifest_sha256": rollback[
+                "predecessor_artifact_manifest_sha256"
+            ],
+            "predecessor_deployment_sha256": "none",
+            "predecessor_decision_sha256": "none",
+        }
+        if managed_identity is not None and (
+            rollback["predecessor_certificate_sha256"]
+            != managed_identity["certificate_sha256"]
+            or rollback["predecessor_certificate_spki_sha256"]
+            != managed_identity["certificate_spki_sha256"]
+        ):
+            fail("managed predecessor public certificate differs from rollback history")
+        if any(decision[name] != value for name, value in predecessor_expected.items()):
+            fail("finalized signer outcome predecessor differs from rollback history")
+    else:
+        if predecessor_kind == "managed" and result_pair == (
+            "abandon", "rolled-back"
+        ):
+            config_data, _ = read_path(
+                args.zot_config, "restored managed Zot configuration", mode=0o644
+            )
+            _config, certificate_path, _key_path = parse_zot_config(config_data)
+            managed_identity = managed_predecessor_public_identity(certificate_path)
+            predecessor_expected = {
+                "predecessor_kind": "managed",
+                "predecessor_request_id": "none",
+                "predecessor_certificate_sha256": managed_identity[
+                    "certificate_sha256"
+                ],
+                "predecessor_certificate_spki_sha256": managed_identity[
+                    "certificate_spki_sha256"
+                ],
+                "predecessor_intermediate_sha256": managed_identity[
+                    "intermediate_sha256"
+                ],
+                "predecessor_response_sha256": "none",
+                "predecessor_artifact_manifest_sha256": "none",
+                "predecessor_deployment_sha256": "none",
+                "predecessor_decision_sha256": "none",
+            }
+            if (
+                deployment["served_certificate_sha256"]
+                != managed_identity["certificate_sha256"]
+                or deployment["served_intermediate_sha256"]
+                != managed_identity["intermediate_sha256"]
+                or deployment["rollback_state"] != "restored"
+                or any(
+                    decision[name] != value
+                    for name, value in predecessor_expected.items()
+                )
+            ):
+                fail(
+                    "abandoned managed predecessor differs from restored Zot "
+                    "certificate and rollback evidence"
+                )
+        elif predecessor_kind != "none":
+            fail(
+                "abandoned outcome predecessor requires the candidate rollback "
+                "record, which is unavailable after terminal abandonment"
+            )
+        if active is not None and active["request_id"] == args.request_id:
+            fail("abandoned signer outcome candidate is still target active")
+        if resulting == "none":
+            if active is not None:
+                fail("abandoned signer outcome unexpectedly leaves a host-local active identity")
+        elif active is None or active["request_id"] != resulting:
+            fail("abandoned signer outcome resulting active identity differs from target")
+    return outcome, decision, deployment
+
+
+def ensure_outcome_directory(parent: PinnedDirectory, name: str, label: str) -> PinnedDirectory:
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent.fd)
+        os.fsync(parent.fd)
+    except FileExistsError:
+        pass
+    return PinnedDirectory.open(os.path.join(parent.path, name), label)
+
+
+def validate_outcome_history_layout(
+    state: PinnedDirectory, args
+) -> set[tuple[str, str]]:
+    coordinates: set[tuple[str, str]] = set()
+    if "outcomes" not in scan(state, "state root"):
+        return coordinates
+    root = PinnedDirectory.open(
+        os.path.join(state.path, "outcomes"), "signer outcome history root"
+    )
+    try:
+        for request_id, metadata in scan(root, "signer outcome history root").items():
+            if REQUEST_ID_RE.fullmatch(request_id) is None or not stat.S_ISDIR(metadata.st_mode):
+                fail("signer outcome history contains an invalid request entry")
+            request = PinnedDirectory.open(
+                os.path.join(root.path, request_id), "signer outcome request history"
+            )
+            try:
+                for outcome_sha, outcome_metadata in scan(
+                    request, "signer outcome request history"
+                ).items():
+                    if HEX_RE.fullmatch(outcome_sha) is None or not stat.S_ISDIR(outcome_metadata.st_mode):
+                        fail("signer outcome request history contains an invalid digest entry")
+                    coordinates.add((request_id, outcome_sha))
+                    history, files, identities = open_exact_tree(
+                        os.path.join(request.path, outcome_sha),
+                        OUTCOME_NAMES,
+                        "immutable signer outcome history",
+                    )
+                    try:
+                        outcome = parse_record(
+                            files["outcome"], OUTCOME_FIELDS, "historical signer outcome"
+                        )
+                        if (
+                            sha256(files["outcome"]) != outcome_sha
+                            or outcome["request_id"] != request_id
+                            or outcome["service"] != args.service
+                            or outcome["target"] != args.target
+                        ):
+                            fail("signer outcome history coordinate binding is invalid")
+                        recheck_exact_tree(
+                            history,
+                            OUTCOME_NAMES,
+                            identities,
+                            "immutable signer outcome history",
+                        )
+                    finally:
+                        history.close()
+            finally:
+                request.close()
+    finally:
+        root.close()
+    return coordinates
+
+
+def publish_outcome_history(
+    state: PinnedDirectory, args, files: Mapping[str, bytes], pre_publish
+) -> tuple[bool, str]:
+    root = ensure_outcome_directory(state, "outcomes", "signer outcome history root")
+    request = ensure_outcome_directory(root, args.request_id, "signer outcome request history")
+    path = os.path.join(request.path, args.outcome_sha256)
+    try:
+        entries = scan(request, "signer outcome request history")
+        if args.outcome_sha256 in entries:
+            existing, existing_files, _ = open_exact_tree(
+                path, OUTCOME_NAMES, "existing signer outcome history"
+            )
+            existing.close()
+            if existing_files != dict(files):
+                fail("existing signer outcome history conflicts with imported package")
+            return False, path
+        stage_name = f".outcome-stage-{secrets.token_hex(16)}"
+        os.mkdir(stage_name, 0o700, dir_fd=request.fd)
+        stage = PinnedDirectory.open(
+            os.path.join(request.path, stage_name), "signer outcome history stage"
+        )
+        stage_identity = dir_identity(os.fstat(stage.fd))
+        published = False
+        created: dict[str, tuple[int, ...]] = {}
+        try:
+            for name in OUTCOME_NAMES:
+                created[name] = write_new_at(
+                    stage, name, files[name], f"signer outcome history file {name}"
+                )
+            os.fsync(stage.fd)
+            fault("before-outcome-history-publication")
+            pre_publish()
+            rename_noreplace(
+                request, stage_name, args.outcome_sha256,
+                "signer outcome history publication",
+            )
+            published = True
+            os.fsync(request.fd)
+            fault("after-outcome-history-publication")
+        finally:
+            stage.close()
+            if not published:
+                try:
+                    actual = os.stat(stage_name, dir_fd=request.fd, follow_symlinks=False)
+                    if dir_identity(actual) == stage_identity:
+                        cleanup = PinnedDirectory.open(
+                            os.path.join(request.path, stage_name),
+                            "signer outcome history cleanup stage",
+                        )
+                        try:
+                            for name, identity in created.items():
+                                require_snapshot(cleanup, name, identity, f"signer outcome cleanup {name}")
+                                os.unlink(name, dir_fd=cleanup.fd)
+                        finally:
+                            cleanup.close()
+                        os.rmdir(stage_name, dir_fd=request.fd)
+                        os.fsync(request.fd)
+                except FileNotFoundError:
+                    pass
+        existing, existing_files, _ = open_exact_tree(
+            path, OUTCOME_NAMES, "published signer outcome history"
+        )
+        existing.close()
+        if existing_files != dict(files):
+            fail("published signer outcome history bytes changed")
+        return True, path
+    finally:
+        request.close()
+        root.close()
+
+
+def accepted_outcome_pointer(
+    args, outcome: Mapping[str, str], decision_sha256: str
+) -> bytes:
+    return serialize_record(
+        ACCEPTED_OUTCOME_FIELDS,
+        {
+            "schema": "1", "kind": "host-local-accepted-signer-outcome",
+            "service": args.service, "target": args.target,
+            "request_id": args.request_id,
+            "artifact_manifest_sha256": args.artifact_sha256,
+            "deployment_sha256": args.deployment_sha256,
+            "outcome_sha256": args.outcome_sha256,
+            "decision_sha256": decision_sha256,
+            "action": outcome["action"], "state": outcome["state"],
+            "resulting_active_request_id": outcome["resulting_active_request_id"],
+        },
+        "accepted signer outcome pointer",
+    )
+
+
+def outcome_preflight(args) -> None:
+    state, lock = common_open(args, shared=True)
+    try:
+        entries = state_entries(state)
+        if entries & {
+            "activation-journal", "evidence-attempt-journal", "abandonment-journal",
+            "expired-request-abandonment-journal",
+            "expired-request-abandonment-journal.stage",
+            "pending-request-cancellation-journal",
+            "pending-request-cancellation-journal.stage", "request.journal",
+            "trust-install.journal",
+        }:
+            fail("unresolved lifecycle state blocks signer-outcome preflight")
+        history_coordinates = validate_outcome_history_layout(state, args)
+        trust, policy = load_trust(state, args.trust_id, args.target)
+        authenticate_active_public(state, args, trust, policy)
+        expected_coordinate = (args.request_id, args.outcome_sha256)
+        if history_coordinates - {expected_coordinate}:
+            fail("unrelated signer outcome history blocks scalar preflight")
+        decision = {
+            name: "1" if name == "schema" else getattr(
+                args, f"decision_{name}"
+            )
+            for name in DECISION_FIELDS
+        }
+        outcome_values = {
+            name: decision[name]
+            for name in OUTCOME_FIELDS
+            if name in decision
+        }
+        outcome_values.update(
+            schema="1",
+            kind="csr-signer-outcome",
+            decision_sha256=args.decision_sha256,
+            outcome_principal=args.outcome_principal,
+        )
+        outcome, decision, _deployment = validate_target_outcome_package(
+            state,
+            args,
+            trust,
+            policy,
+            None,
+            reviewed_outcome=outcome_values,
+            reviewed_decision=decision,
+        )
+        pointer = accepted_outcome_pointer(
+            args, outcome, args.decision_sha256
+        )
+        existing_pointer, _ = read_optional_state(state, "accepted-outcome")
+        history_path = os.path.join(
+            state.path, "outcomes", args.request_id, args.outcome_sha256
+        )
+        history_records = None
+        if os.path.lexists(history_path):
+            history, history_files, _ = open_exact_tree(
+                history_path, OUTCOME_NAMES, "preflight outcome history"
+            )
+            history.close()
+            historical_outcome, historical_decision, _ = validate_target_outcome_package(
+                state, args, trust, policy, history_files
+            )
+            if historical_outcome != outcome or historical_decision != decision:
+                fail("signer outcome history conflicts with preflight")
+            history_records = (historical_outcome, historical_decision)
+        if existing_pointer is None:
+            status_value = "would-import"
+        else:
+            if existing_pointer != pointer:
+                fail("accepted signer outcome pointer conflicts with preflight")
+            if history_records is None:
+                fail("accepted signer outcome history is absent during preflight")
+            status_value = "existing"
+        json_output({
+            "status": status_value, "request_id": args.request_id,
+            "artifact_sha256": args.artifact_sha256,
+            "deployment_sha256": args.deployment_sha256,
+            "outcome_sha256": args.outcome_sha256,
+            "action": outcome["action"], "result": _deployment["result"],
+            "state": outcome["state"],
+            "resulting_active_request_id": decision["resulting_active_request_id"],
+            "history_path": history_path,
+        })
+    finally:
+        os.close(lock)
+        state.close()
+
+
+def outcome_import(args) -> None:
+    state, lock = common_open(args)
+    package = None
+    try:
+        entries = state_entries(state)
+        unresolved = entries & {
+            "activation-journal", "evidence-attempt-journal", "abandonment-journal",
+            "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage",
+            "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage",
+            "request.journal", "trust-install.journal",
+        }
+        if unresolved:
+            fail("unresolved lifecycle state blocks signer-outcome import")
+        validate_outcome_history_layout(state, args)
+        trust, policy = load_trust(state, args.trust_id, args.target)
+        package, files, package_identities = open_exact_tree(
+            args.outcome_dir, OUTCOME_NAMES, "imported signer-outcome package"
+        )
+        outcome, decision, _deployment = validate_target_outcome_package(
+            state, args, trust, policy, files
+        )
+        recheck_exact_tree(
+            package,
+            OUTCOME_NAMES,
+            package_identities,
+            "imported signer-outcome package",
+        )
+        pointer = accepted_outcome_pointer(
+            args, outcome, sha256(files["decision"])
+        )
+        existing_pointer, _ = read_optional_state(state, "accepted-outcome")
+        history_path = os.path.join(
+            state.path, "outcomes", args.request_id, args.outcome_sha256
+        )
+        if existing_pointer is not None:
+            if existing_pointer != pointer:
+                fail("accepted signer outcome pointer conflicts with imported package")
+            history, history_files, _ = open_exact_tree(
+                history_path, OUTCOME_NAMES, "accepted signer outcome history"
+            )
+            history.close()
+            if history_files != files:
+                fail("accepted signer outcome history conflicts with imported package")
+            status_value = "existing"
+        else:
+            _created, history_path = publish_outcome_history(
+                state,
+                args,
+                files,
+                lambda: recheck_exact_tree(
+                    package,
+                    OUTCOME_NAMES,
+                    package_identities,
+                    "imported signer-outcome package",
+                ),
+            )
+            recheck_exact_tree(
+                package,
+                OUTCOME_NAMES,
+                package_identities,
+                "imported signer-outcome package",
+            )
+            fault("before-accepted-outcome-publication")
+            atomic_create_at(
+                state, "accepted-outcome", pointer,
+                "accepted signer outcome pointer",
+            )
+            status_value = "imported"
+        json_output({
+            "status": status_value, "request_id": args.request_id,
+            "artifact_sha256": args.artifact_sha256,
+            "deployment_sha256": args.deployment_sha256,
+            "outcome_sha256": args.outcome_sha256,
+            "action": outcome["action"], "result": _deployment["result"],
+            "state": outcome["state"],
+            "resulting_active_request_id": decision["resulting_active_request_id"],
+            "history_path": history_path,
+        })
+    finally:
+        if package is not None:
+            package.close()
+        os.close(lock)
+        state.close()
+
+
 def validate_evidence(
     state: PinnedDirectory, args, active: Mapping[str, str]
 ) -> tuple[str, frozenset[str]]:
@@ -4366,6 +5432,7 @@ def validate_evidence(
                     or HEX_RE.fullmatch(deployment["served_intermediate_sha256"]) is None
                     or deployment["validation_boundary_sha256"] != boundary_sha
                     or deployment["validation_result"] != "passed"
+                    or deployment["activation_epoch"] != active["activation_epoch"]
                     or not activation <= validation <= created + 300
                     or expires <= created or expires - created > 86400
                 ):
@@ -4437,6 +5504,7 @@ def status(args) -> None:
     state, lock = common_open(args, shared=True)
     try:
         entries = state_entries(state)
+        validate_outcome_history_layout(state, args)
         trust, _policy = load_trust(state, args.trust_id, args.target)
         recovery = False
         activation_checkpoint: str | None = None
@@ -4467,6 +5535,54 @@ def status(args) -> None:
             recovery = True
         if entries & {"request.journal", "trust-install.journal", "expired-request-abandonment-journal", "expired-request-abandonment-journal.stage", "pending-request-cancellation-journal", "pending-request-cancellation-journal.stage"}:
             fail("another unresolved PKI journal blocks lifecycle status")
+        accepted: dict[str, str] | None = None
+        pointer_data, _pointer_identity = read_optional_state(state, "accepted-outcome")
+        if pointer_data is None:
+            if "outcomes" in entries:
+                fail("signer outcome history exists without an accepted pointer")
+        else:
+            pointer = parse_record(
+                pointer_data, ACCEPTED_OUTCOME_FIELDS, "accepted signer outcome pointer"
+            )
+            if (
+                pointer["schema"] != "1"
+                or pointer["kind"] != "host-local-accepted-signer-outcome"
+                or pointer["service"] != args.service
+                or pointer["target"] != args.target
+            ):
+                fail("accepted signer outcome pointer identity is invalid")
+            require_request_id(pointer["request_id"])
+            for field in (
+                "artifact_manifest_sha256", "deployment_sha256",
+                "outcome_sha256", "decision_sha256",
+            ):
+                require_digest(pointer[field], f"accepted outcome {field}")
+            synthetic = argparse.Namespace(**vars(args))
+            synthetic.request_id = pointer["request_id"]
+            synthetic.artifact_sha256 = pointer["artifact_manifest_sha256"]
+            synthetic.deployment_sha256 = pointer["deployment_sha256"]
+            synthetic.outcome_sha256 = pointer["outcome_sha256"]
+            history_path = os.path.join(
+                state.path, "outcomes", pointer["request_id"], pointer["outcome_sha256"]
+            )
+            history, history_files, _ = open_exact_tree(
+                history_path, OUTCOME_NAMES, "accepted signer outcome history"
+            )
+            history.close()
+            authenticated_outcome, _decision, _deployment = validate_target_outcome_package(
+                state, synthetic, trust, _policy, history_files
+            )
+            if (
+                pointer["decision_sha256"] != sha256(history_files["decision"])
+                or pointer["action"] != authenticated_outcome["action"]
+                or pointer["state"] != authenticated_outcome["state"]
+                or pointer["resulting_active_request_id"]
+                != authenticated_outcome["resulting_active_request_id"]
+            ):
+                fail("accepted signer outcome pointer does not bind authenticated history")
+            accepted = pointer
+            if args.controller_evidence_exported and args.deployment_sha256 != pointer["deployment_sha256"]:
+                fail("controller evidence coordinate conflicts with accepted signer outcome")
         pending_id = "none"
         pending_expires: int | str = "none"
         pending_state: dict[str, object] | None = None
@@ -4525,6 +5641,8 @@ def status(args) -> None:
                 if evidence_state != "target-published" or args.deployment_sha256 not in evidence_digests:
                     fail("controller export claim lacks exact authenticated target evidence")
                 evidence_state = "controller-exported"
+        if accepted is not None:
+            evidence_state = "controller-exported"
         conflict = False
         response_ready = False
         if os.path.lexists(args.versions_root):
@@ -4576,6 +5694,10 @@ def status(args) -> None:
             )
         elif conflict:
             selected = ("conflict", "resolve-conflict")
+        elif accepted is not None and accepted["state"] == "finalized":
+            selected = ("complete", "none")
+        elif accepted is not None:
+            selected = ("signer-outcome-abandoned", "none")
         elif active_auth is not None and evidence_state == "controller-exported":
             selected = ("evidence-exported", "await-signer-outcome")
         elif active_auth is not None:
@@ -4593,7 +5715,8 @@ def status(args) -> None:
             "status": selected[0], "service": args.service, "target": args.target,
             **active_values, "pending_request_id": pending_id,
             "pending_expires_epoch": pending_expires, "recovery_required": recovery,
-            "evidence_state": evidence_state, "signer_outcome_state": "unavailable",
+            "evidence_state": evidence_state,
+            "signer_outcome_state": "unavailable" if accepted is None else accepted["state"],
             "renewal_eligible": False, "required_action": selected[1],
         }
         json_output(result)
@@ -4703,6 +5826,38 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_collection.add_argument("--check", action="store_true")
     evidence_collection.set_defaults(function=evidence_collection_prepare)
 
+    preflight = commands.add_parser(
+        "outcome-preflight",
+        help="read-only target authentication for one controller-reviewed outcome",
+    )
+    add_common(preflight, config=True)
+    preflight.add_argument("--trust-id", required=True)
+    preflight.add_argument("--request-id", required=True)
+    preflight.add_argument("--artifact-sha256", required=True)
+    preflight.add_argument("--deployment-sha256", required=True)
+    preflight.add_argument("--outcome-sha256", required=True)
+    preflight.add_argument("--decision-sha256", required=True)
+    preflight.add_argument("--outcome-principal", required=True)
+    for field in DECISION_FIELDS:
+        if field != "schema":
+            preflight.add_argument(
+                f"--decision-{field.replace('_', '-')}", required=True
+            )
+    preflight.set_defaults(function=outcome_preflight)
+
+    outcome = commands.add_parser(
+        "outcome-import",
+        help="authenticate and publish one exact terminal signer outcome",
+    )
+    add_common(outcome, config=True)
+    outcome.add_argument("--trust-id", required=True)
+    outcome.add_argument("--request-id", required=True)
+    outcome.add_argument("--artifact-sha256", required=True)
+    outcome.add_argument("--deployment-sha256", required=True)
+    outcome.add_argument("--outcome-sha256", required=True)
+    outcome.add_argument("--outcome-dir", required=True)
+    outcome.set_defaults(function=outcome_import)
+
     prepare = commands.add_parser("response-prepare", help="create or reuse one protected hidden response ingress")
     add_common(prepare)
     prepare.add_argument("--request-id", required=True)
@@ -4778,6 +5933,13 @@ def validate_arguments(args) -> None:
         require_digest(args.request_sha256, "request digest")
     if hasattr(args, "deployment_sha256") and args.deployment_sha256 is not None:
         require_digest(args.deployment_sha256, "deployment digest")
+    if hasattr(args, "outcome_sha256"):
+        require_digest(args.outcome_sha256, "outcome digest")
+    if hasattr(args, "outcome_dir"):
+        args.outcome_dir = canonical_path(args.outcome_dir, "signer outcome directory")
+    if hasattr(args, "decision_sha256"):
+        require_digest(args.decision_sha256, "decision digest")
+        require_identity(args.outcome_principal, "outcome principal")
     if hasattr(args, "validation_boundary_sha256"):
         require_digest(args.validation_boundary_sha256, "validation boundary digest")
         require_identity(args.remote_validator, "remote validator")

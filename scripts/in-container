@@ -12,6 +12,7 @@ repo_parent="$(dirname "$repo_root")"
 private_root="${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_parent/platform-private}"
 secret_root="${PLATFORM_CONFIG_SECRET_ROOT:-$HOME/.config/platform-infrastructure}"
 exchange_root="${PLATFORM_CONFIG_PKI_EXCHANGE_ROOT:-}"
+outcome_dir="${PLATFORM_CONFIG_PKI_OUTCOME_DIR:-}"
 tmp_home="$(mktemp -d "${TMPDIR:-/tmp}/platform-config-home.XXXXXXXX")"
 tmp_ansible=""
 podman_pid=""
@@ -86,6 +87,40 @@ validate_exchange_root() {
   exchange_root="$canonical"
 }
 
+validate_outcome_dir() {
+  local canonical denied denied_canonical metadata requested
+
+  requested="${outcome_dir%/}"
+  if [[ -z $requested || $requested != /* || $requested == *:* || $requested =~ [[:cntrl:]] ]]; then
+    printf 'PLATFORM_CONFIG_PKI_OUTCOME_DIR must be a canonical absolute path without control characters or colons\n' >&2
+    exit 2
+  fi
+  canonical="$(realpath -e -- "$requested")" || {
+    printf 'PLATFORM_CONFIG_PKI_OUTCOME_DIR must identify an existing directory\n' >&2
+    exit 2
+  }
+  if [[ $requested != "$canonical" || ! -d $canonical || -L $requested ]]; then
+    printf 'PLATFORM_CONFIG_PKI_OUTCOME_DIR must be a canonical non-symlink directory\n' >&2
+    exit 2
+  fi
+  metadata="$(stat -Lc '%u:%a:%F' -- "$canonical")"
+  if [[ $metadata != "$(id -u):700:directory" ]]; then
+    printf 'PLATFORM_CONFIG_PKI_OUTCOME_DIR must be current-user-owned with mode 0700\n' >&2
+    exit 2
+  fi
+  for denied in "$repo_root" "$private_root"; do
+    denied_canonical="$(realpath -e -- "$denied" 2>/dev/null || true)"
+    if [[ -n $denied_canonical ]] && {
+      [[ "$canonical/" == "$denied_canonical/"* ]] \
+        || [[ "$denied_canonical/" == "$canonical/"* ]];
+    }; then
+      printf 'PLATFORM_CONFIG_PKI_OUTCOME_DIR must be outside public and private repositories\n' >&2
+      exit 2
+    fi
+  done
+  outcome_dir="$canonical"
+}
+
 run_managed() {
   local status
 
@@ -140,6 +175,9 @@ esac
 if [[ $profile == development && -n $exchange_root ]]; then
   validate_exchange_root
 fi
+if [[ $profile == development && -n $outcome_dir ]]; then
+  validate_outcome_dir
+fi
 
 if [[ $# -eq 0 ]]; then
   set -- bash
@@ -192,6 +230,11 @@ else
   if [[ -n $exchange_root ]]; then
     podman_args+=(--env PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/platform-pki-exchange)
     podman_args+=(--volume "$exchange_root:/platform-pki-exchange:rw,Z")
+  fi
+
+  if [[ -n $outcome_dir ]]; then
+    podman_args+=(--env PLATFORM_CONFIG_PKI_OUTCOME_DIR=/platform-pki-outcome)
+    podman_args+=(--volume "$outcome_dir:/platform-pki-outcome:ro,Z")
   fi
 
   if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then

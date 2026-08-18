@@ -24,13 +24,15 @@ REQUEST_SHA256 ?=
 REQUEST_TTL_SECONDS ?= 3600
 ARTIFACT_SHA256 ?=
 DEPLOYMENT_SHA256 ?=
+OUTCOME_DIR ?=
+OUTCOME_SHA256 ?=
 RESPONSE_DIR ?=
 RUNNER_LIMIT ?=
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 sh_quote = '$(subst ','"'"',$(1))'
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky test-pki-host-local-zot-one-runner registry-pki-validation-material registry-pki-request registry-pki-abandon-expired-request registry-pki-cancel-request registry-pki-status registry-pki-response-check registry-pki-activate registry-pki-recover registry-pki-publish-rolled-back-evidence registry-pki-evidence-export registry-pki-decision-preflight storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-request-sha256 _guard-pki-request-ttl _guard-pki-artifact _guard-pki-deployment _guard-pki-response-dir _guard-pki-runner _guard-pki-status-coordinates
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky test-pki-host-local-zot-one-runner registry-pki-validation-material registry-pki-request registry-pki-abandon-expired-request registry-pki-cancel-request registry-pki-status registry-pki-response-check registry-pki-activate registry-pki-recover registry-pki-publish-rolled-back-evidence registry-pki-evidence-export registry-pki-decision-preflight registry-pki-outcome-import storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-request-sha256 _guard-pki-request-ttl _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome-dir _guard-pki-outcome _guard-pki-response-dir _guard-pki-runner _guard-pki-status-coordinates
 
 ## Show available commands
 help:
@@ -60,6 +62,8 @@ help:
 	@printf '  %-24s %s\n' 'REQUEST_TTL_SECONDS' 'Per-request PKI lifetime, default: 3600, maximum: 604800'
 	@printf '  %-24s %s\n' 'ARTIFACT_SHA256' 'Exact host-local PKI artifact digest'
 	@printf '  %-24s %s\n' 'DEPLOYMENT_SHA256' 'Exact host-local PKI deployment digest'
+	@printf '  %-24s %s\n' 'OUTCOME_DIR' 'Exact protected six-file signer-outcome directory'
+	@printf '  %-24s %s\n' 'OUTCOME_SHA256' 'Exact host-local PKI signer-outcome manifest digest'
 	@printf '  %-24s %s\n' 'RESPONSE_DIR' 'Exact protected six-file response directory'
 	@printf '  %-24s %s\n' 'RUNNER_LIMIT' 'Exact separate read-only validation runner host'
 	@printf '\n%s\n' 'Examples:'
@@ -271,6 +275,10 @@ registry-pki-evidence-export: _guard-pki-env _guard-pki-limit _guard-pki-request
 registry-pki-decision-preflight: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-runner
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-decision-preflight.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
+## Import one exact authenticated terminal signer outcome
+registry-pki-outcome-import: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome-dir _guard-pki-outcome
+	@PLATFORM_CONFIG_PKI_OUTCOME_DIR=$(call sh_quote,$(OUTCOME_DIR)) $(MAKE) apply PLAYBOOK=playbooks/registry-pki-outcome-import.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_outcome_source_dir=/platform-pki-outcome -e pki_host_local_certificate_outcome_sha256=$(OUTCOME_SHA256))
+
 ## Run read-only pristine storage fixture checks
 storage-test-preflight: _guard-storage-test
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" "$(IN_CONTAINER)" ./scripts/storage-volume-test preflight --env-file "$(ENV_FILE)" --inventory "$(INVENTORY)" --limit "$(LIMIT)"
@@ -403,6 +411,12 @@ _guard-pki-artifact:
 
 _guard-pki-deployment:
 	@value=$(call sh_quote,$(DEPLOYMENT_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'DEPLOYMENT_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
+
+_guard-pki-outcome-dir:
+	@value=$(call sh_quote,$(OUTCOME_DIR)); case "$$value" in /|*/|*//*|*/./*|*/../*|*/.|*/..|*[!A-Za-z0-9_./-]*) printf '%s\n' 'OUTCOME_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; /*) ;; *) printf '%s\n' 'OUTCOME_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; esac
+
+_guard-pki-outcome:
+	@value=$(call sh_quote,$(OUTCOME_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'OUTCOME_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
 
 _guard-pki-response-dir:
 	@value=$(call sh_quote,$(RESPONSE_DIR)); case "$$value" in /*) ;; *) printf '%s\n' 'RESPONSE_DIR must be one exact absolute protected directory.' >&2; exit 1 ;; esac; case "$$value" in *[!A-Za-z0-9_./-]*) printf '%s\n' 'RESPONSE_DIR contains unsupported shell-unsafe characters.' >&2; exit 1 ;; esac

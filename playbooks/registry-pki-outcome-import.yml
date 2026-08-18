@@ -1,0 +1,10 @@
+---
+- name: Import one authenticated host-local registry signer outcome
+  hosts: registry
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run structurally fixed registry signer-outcome import boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: outcome_import

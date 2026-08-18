@@ -36,6 +36,9 @@ Use only these structural playbooks:
   evidence attempt into the controller exchange.
 - `registry-pki-decision-preflight.yml` binds controller-exported evidence to
   current target status and a fresh read-only runner observation.
+- `registry-pki-outcome-import.yml` authenticates one exact six-file terminal
+  signer package on the controller and target, then publishes immutable target
+  history and its accepted pointer.
 
 Trust, request, expired-request abandonment, activation, and recovery remain
 explicit operator actions. Request lifetime defaults to 3600 seconds and may be
@@ -46,8 +49,7 @@ Migration requests bind the canonical first leaf certificate from the current
 Zot certificate file. Zot may serve a concatenated fullchain, but the digest in
 `current_cert_sha256` remains the signer-managed leaf certificate digest used
 by CSR history and candidate finalization.
-Signer outcome import, completion, renewal, archive handling, and live inventory
-enablement are intentionally outside this role.
+Renewal, archive cleanup, and live inventory enablement remain outside this role.
 
 ## Fixed Helpers
 
@@ -111,6 +113,56 @@ authenticates that exact controller evidence publication with
 `platform_pki_evidence_status`; only verified final/activated evidence permits
 the controller-exported flag to reach target status. Status does not contact
 controller evidence when the deployment digest is empty.
+
+Outcome import reuses the installed lifecycle helper, response principal,
+controller-frozen response/deployer trust, and target-frozen trust. It accepts no
+key or new trust input. The source is one absolute mode-`0700` current-user
+directory containing exactly the six upstream files at mode `0600` with one link
+each. In normal mode the action transfers only those bytes through a randomized
+root-owned mode-`0700` stage, marks the byte-bearing task `no_log`, and requires
+exact cleanup before returning. Check mode completes controller authentication
+and rechecks first, then invokes only the read-only scalar target preflight
+through Ansible's safely quoted, become-aware low-level connection path. It does
+not execute an Ansible module and creates no AnsiballZ payload, stage, or Ansible
+temporary transfer path.
+
+The importer never stats, opens, reads, hashes, stages, or transfers a candidate,
+version, or restored managed private-key file. Managed rollback validation parses
+the restored Zot config's canonical TLS path object but accesses only its selected
+public certificate chain. Scalar preflight authenticates active state through
+named public version files, retained signed request material when available,
+the signed response, artifact and certificate chain, and matching signed target
+evidence. It never enumerates the version directory or accesses its private key.
+Other target binding comes from signed public outcome/deployment records and
+authenticated rollback records.
+
+The target stores immutable packages under
+`STATE_ROOT/outcomes/REQUEST_ID/OUTCOME_SHA256/` and publishes
+`STATE_ROOT/accepted-outcome` only after target reauthentication. Exact reruns
+are no-ops and conflicts fail. Status remains `evidence-exported` while the
+pointer is absent, becomes `complete` only for a finalized outcome matching the
+current active identity, and reports `signer-outcome-abandoned` for authenticated
+abandonment with no predecessor, or authenticated managed-migration rollback,
+without claiming that candidate active.
+Finalized managed predecessors are bound exactly to rollback certificate/SPKI
+records and require all unavailable managed history fields to be `none`.
+Host-local predecessor outcomes fail closed because rollback records do not yet
+carry authenticated predecessor intermediate, response, deployment, and decision
+digests. Managed-migration rollback is the supported exception: signed rollback
+evidence and the restored Zot-selected public certificate chain prove its managed
+predecessor. Other abandonment with a non-empty predecessor fails closed because
+its candidate rollback record is no longer present after terminal abandonment.
+Historical outcomes never
+replace target active state as live authority. `renewal_eligible` remains
+`false`; authenticated renewal completion is not implemented by this workflow.
+An interruption may leave validated history without the pointer; status then
+fails closed and an exact rerun with the same coordinates completes no-clobber
+pointer publication. A protected remote stage is removed before the action
+returns. If identity or cleanup verification prevents safe removal, the action
+fails, reports the retained canonical stage, and leaves it as evidence for
+explicit operator inspection rather than deleting an unattributable path. A
+retained `.accepted-outcome-stage-*` blocks further imports as ambiguous state
+until exact-path operator recovery.
 
 ## Activation Boundary
 

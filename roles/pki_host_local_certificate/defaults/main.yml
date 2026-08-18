@@ -19,6 +19,7 @@ pki_host_local_certificate_request_signing_key_path: /etc/ssh/ssh_host_ed25519_k
 pki_host_local_certificate_request_namespace: platform-pki-csr-request-v1
 pki_host_local_certificate_deployment_signing_key_path: /etc/ssh/ssh_host_ed25519_key
 pki_host_local_certificate_deployment_namespace: platform-pki-csr-deployment-v1
+pki_host_local_certificate_outcome_namespace: platform-pki-csr-outcome-v1
 
 pki_host_local_certificate_trust_paths: {}
 pki_host_local_certificate_trust_sha256: {}
@@ -45,6 +46,8 @@ pki_host_local_certificate_validator_helper_path: /usr/local/libexec/platform-pk
 pki_host_local_certificate_helper_read_only: false
 
 pki_host_local_certificate_response_source_dir: ""
+pki_host_local_certificate_outcome_source_dir: ""
+pki_host_local_certificate_outcome_sha256: ""
 pki_host_local_certificate_validation_boundary_target_path: ""
 pki_host_local_certificate_validation_boundary_runner_path: ""
 pki_host_local_certificate_reviewed_ca_target_path: ""

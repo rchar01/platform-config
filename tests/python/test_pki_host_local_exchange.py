@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ipaddress
+import errno
 import json
 import os
 import posixpath
+import shlex
 import shutil
 import stat
 import subprocess
@@ -25,10 +27,15 @@ from plugins.action import platform_pki_evidence_collection as evidence_action
 from plugins.action import platform_pki_evidence_status as evidence_status_action
 from plugins.action import platform_pki_response_ingress as ingress_action
 from plugins.action import platform_pki_response_intake as response_action
+from plugins.action import platform_pki_outcome_import as outcome_action
+from plugins.module_utils import platform_pki_exchange as exchange_module
 from plugins.module_utils.platform_pki_exchange import (
     ARTIFACT_FIELDS,
     DEPLOYMENT_FIELDS,
     EVIDENCE_NAMES,
+    DECISION_FIELDS,
+    OUTCOME_FIELDS,
+    OUTCOME_NAMES,
     POLICY_FIELDS,
     RECEIPT_FIELDS,
     REQUEST_FIELDS,
@@ -40,6 +47,7 @@ from plugins.module_utils.platform_pki_exchange import (
     VALIDATION_BOUNDARY_FIELDS,
     VALIDATION_RESULT_FIELDS,
     ExchangeError,
+    DescriptorCleanupError,
     PinnedDirectory,
     PinnedTree,
     collection_receipt,
@@ -52,6 +60,7 @@ from plugins.module_utils.platform_pki_exchange import (
     sha256,
     validate_collection_receipt,
     validate_evidence_snapshot,
+    validate_outcome_snapshot,
     validate_request_payload,
     validate_response_snapshot,
 )
@@ -681,6 +690,83 @@ def _publish_evidence_material(
         parent.close()
 
 
+def _outcome_material(
+    root: Path,
+) -> tuple[Path, Path, dict[str, object]]:
+    evidence_source, exchange, args, signing_key = _evidence_material(root)
+    evidence = _publish_evidence_material(
+        evidence_source, exchange, str(args["deployment_sha256"])
+    )
+    workspace = exchange / SERVICE / REQUEST_ID
+    deployment = parse_record(
+        evidence.joinpath("deployment").read_bytes(), DEPLOYMENT_FIELDS, "deployment"
+    )
+    decision_values = {
+        "schema": "1",
+        "action": "finalize",
+        "state": "finalized",
+        "service": SERVICE,
+        "target": TARGET,
+        "request_id": REQUEST_ID,
+        "operation": deployment["operation"],
+        "request_sha256": deployment["request_sha256"],
+        "response_sha256": deployment["response_sha256"],
+        "response_signature_sha256": deployment["response_signature_sha256"],
+        "candidate_sha256": deployment["candidate_sha256"],
+        "artifact_manifest_sha256": deployment["artifact_manifest_sha256"],
+        "certificate_sha256": deployment["certificate_sha256"],
+        "certificate_spki_sha256": deployment["certificate_spki_sha256"],
+        "chain_sha256": deployment["chain_sha256"],
+        "fullchain_sha256": deployment["fullchain_sha256"],
+        "deployment_sha256": str(args["deployment_sha256"]),
+        "deployment_signature_sha256": sha256(evidence.joinpath("deployment.sig").read_bytes()),
+        "deployers_sha256": sha256(
+            workspace.joinpath("trust/deployers.allowed_signers").read_bytes()
+        ),
+        "predecessor_kind": "managed",
+        "predecessor_request_id": "none",
+        "predecessor_certificate_sha256": "1" * 64,
+        "predecessor_certificate_spki_sha256": "2" * 64,
+        "predecessor_intermediate_sha256": "3" * 64,
+        "predecessor_response_sha256": "none",
+        "predecessor_artifact_manifest_sha256": "none",
+        "predecessor_deployment_sha256": "none",
+        "predecessor_decision_sha256": "none",
+        "resulting_active_request_id": REQUEST_ID,
+        "created_epoch": deployment["created_epoch"],
+    }
+    decision = serialize_record(DECISION_FIELDS, decision_values, "decision")
+    outcome_values = {
+        name: decision_values[name] for name in OUTCOME_FIELDS if name in decision_values
+    }
+    outcome_values.update(
+        kind="csr-signer-outcome",
+        decision_sha256=sha256(decision),
+        outcome_principal=RESPONSE_PRINCIPAL,
+    )
+    outcome = serialize_record(OUTCOME_FIELDS, outcome_values, "outcome")
+    package = _private_dir(root / "outcome-package")
+    for name, data in (
+        ("outcome", outcome),
+        ("deployment", evidence.joinpath("deployment").read_bytes()),
+        ("deployment.sig", evidence.joinpath("deployment.sig").read_bytes()),
+        (
+            "deployers.allowed_signers",
+            workspace.joinpath("trust/deployers.allowed_signers").read_bytes(),
+        ),
+        ("decision", decision),
+    ):
+        _private_file(package / name, data)
+    _ssh_sign(package / "outcome", signing_key, "platform-pki-csr-outcome-v1")
+    args.update(
+        outcome_dir=os.fspath(package),
+        outcome_sha256=sha256(outcome),
+        response_principal=RESPONSE_PRINCIPAL,
+        zot_config_path="/etc/zot/config.json",
+    )
+    return package, exchange, args
+
+
 def _workspace_snapshot(path: Path) -> tuple[tuple[object, ...], ...]:
     snapshot: list[tuple[object, ...]] = []
     for item in sorted((path, *path.rglob("*"))):
@@ -710,89 +796,50 @@ def test_fixed_file_and_action_argument_allowlists_exclude_private_keys() -> Non
         "request.sig",
         "collection-receipt",
     }
+    assert OUTCOME_NAMES == (
+        "outcome", "outcome.sig", "deployment", "deployment.sig",
+        "deployers.allowed_signers", "decision",
+    )
+    assert "tls.key" not in OUTCOME_NAMES
     assert set(RESPONSE_NAMES) == {
-        "artifact",
-        "tls.crt",
-        "ca-chain.crt",
-        "fullchain.crt",
-        "response",
-        "response.sig",
+        "artifact", "tls.crt", "ca-chain.crt", "fullchain.crt", "response", "response.sig",
     }
     assert all("key" not in name for name in (*REQUEST_REMOTE_NAMES, *RESPONSE_NAMES))
     assert collection_action.ACTION_ARGUMENTS == {
-        "lifecycle_helper_path",
-        "state_root",
-        "pending_root",
-        "versions_root",
-        "trust_id",
-        "request_id",
-        "exchange_root",
-        "service",
-        "target",
-        "transport",
-        "transport_host_key_sha256",
-        "inventory_sha256",
-        "profile",
-        "requester_principal",
-        "response_principal",
-        "common_name",
-        "dns_sans",
-        "ip_sans",
-        "trust_paths",
-        "trust_sha256",
-        "expected_request_sha256",
-        "expected_csr_sha256",
-        "expected_csr_spki_sha256",
+        "lifecycle_helper_path", "state_root", "pending_root", "versions_root",
+        "trust_id", "request_id", "exchange_root", "service", "target",
+        "transport", "transport_host_key_sha256", "inventory_sha256", "profile",
+        "requester_principal", "response_principal", "common_name", "dns_sans",
+        "ip_sans", "trust_paths", "trust_sha256", "expected_request_sha256",
+        "expected_csr_sha256", "expected_csr_spki_sha256",
     }
     assert response_action.ACTION_ARGUMENTS == {
-        "response_dir",
-        "exchange_root",
-        "service",
-        "target",
-        "request_id",
-        "inventory_sha256",
-        "expected_artifact_sha256",
-        "response_principal",
-        "trust_paths",
-        "trust_sha256",
-        "common_name",
-        "dns_sans",
-        "ip_sans",
+        "response_dir", "exchange_root", "service", "target", "request_id",
+        "inventory_sha256", "expected_artifact_sha256", "response_principal",
+        "trust_paths", "trust_sha256", "common_name", "dns_sans", "ip_sans",
         "minimum_remaining_lifetime_seconds",
     }
     assert ingress_action.ACTION_ARGUMENTS == {
-        "exchange_root",
-        "service",
-        "request_id",
-        "ingress_root",
-        "artifact_sha256",
+        "exchange_root", "service", "request_id", "ingress_root", "artifact_sha256",
     }
     assert evidence_action.ACTION_ARGUMENTS == {
-        "lifecycle_helper_path",
-        "state_root",
-        "pending_root",
-        "versions_root",
-        "trust_id",
-        "exchange_root",
-        "service",
-        "target",
-        "request_id",
-        "artifact_sha256",
-        "deployment_sha256",
+        "lifecycle_helper_path", "state_root", "pending_root", "versions_root",
+        "trust_id", "exchange_root", "service", "target", "request_id",
+        "artifact_sha256", "deployment_sha256",
     }
     assert evidence_status_action.ACTION_ARGUMENTS == {
-        "exchange_root",
-        "service",
-        "target",
-        "request_id",
-        "artifact_sha256",
+        "exchange_root", "service", "target", "request_id", "artifact_sha256",
         "deployment_sha256",
     }
+    assert outcome_action.ACTION_ARGUMENTS == {
+        "lifecycle_helper_path", "state_root", "pending_root", "versions_root",
+        "zot_config_path",
+        "trust_id", "exchange_root", "outcome_dir", "service", "target",
+        "request_id", "artifact_sha256", "deployment_sha256", "outcome_sha256",
+        "response_principal",
+    }
     assert EVIDENCE_NAMES == (
-        "deployment",
-        "deployment.sig",
-        "validation-boundary",
-        "validation-result",
+        "deployment", "deployment.sig", "validation-boundary", "validation-result",
         "validation-result.sig",
     )
     assert all("key" not in name for name in EVIDENCE_NAMES)
@@ -809,6 +856,881 @@ def test_fixed_file_and_action_argument_allowlists_exclude_private_keys() -> Non
         collection_action._remote_path("/var/lib/pending/" + REQUEST_ID, "tls.key")
 
 
+def _validate_outcome_fixture(
+    package_path: Path, exchange: Path, args: dict[str, object]
+) -> dict[str, str]:
+    workspace = exchange / SERVICE / REQUEST_ID
+    package = PinnedTree.open(package_path, OUTCOME_NAMES, "test outcome package")
+    request = PinnedTree.open(
+        workspace / "request", REQUEST_PUBLICATION_NAMES, "test request"
+    )
+    response = PinnedTree.open(
+        workspace / "response", RESPONSE_NAMES, "test response"
+    )
+    trust = PinnedTree.open(workspace / "trust", TRUST_NAMES, "test trust")
+    evidence = PinnedTree.open(
+        workspace / "evidence" / str(args["deployment_sha256"]),
+        EVIDENCE_NAMES,
+        "test evidence",
+    )
+    try:
+        return validate_outcome_snapshot(
+            package, evidence, request, response, trust, args, now=int(time.time())
+        )
+    finally:
+        evidence.close()
+        trust.close()
+        response.close()
+        request.close()
+        package.close()
+
+
+def _rewrite_signed_outcome_decision(
+    package: Path,
+    signing_key: Path,
+    updates: dict[str, str],
+) -> None:
+    decision = parse_record(
+        (package / "decision").read_bytes(), DECISION_FIELDS, "fixture decision"
+    )
+    decision.update(updates)
+    decision_bytes = serialize_record(DECISION_FIELDS, decision, "fixture decision")
+    _private_file(package / "decision", decision_bytes)
+    outcome = parse_record(
+        (package / "outcome").read_bytes(), OUTCOME_FIELDS, "fixture outcome"
+    )
+    for name, value in updates.items():
+        if name in OUTCOME_FIELDS:
+            outcome[name] = value
+    outcome["decision_sha256"] = sha256(decision_bytes)
+    _private_file(
+        package / "outcome",
+        serialize_record(OUTCOME_FIELDS, outcome, "fixture outcome"),
+    )
+    (package / "outcome.sig").unlink()
+    _ssh_sign(package / "outcome", signing_key, "platform-pki-csr-outcome-v1")
+
+
+def test_outcome_snapshot_authenticates_exact_package_and_cross_bindings(
+    isolated_test_dir: Path,
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    assert metadata["action"] == "finalize"
+    assert metadata["state"] == "finalized"
+    assert metadata["resulting_active_request_id"] == REQUEST_ID
+    assert metadata["outcome_sha256"] == args["outcome_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("service", "other-service"),
+        ("target", "other-target"),
+        ("request_id", "f" * 32),
+        ("operation", "renew"),
+        ("request_sha256", "0" * 64),
+        ("response_sha256", "0" * 64),
+        ("response_signature_sha256", "0" * 64),
+        ("candidate_sha256", "0" * 64),
+        ("artifact_manifest_sha256", "0" * 64),
+        ("certificate_sha256", "0" * 64),
+        ("certificate_spki_sha256", "0" * 64),
+        ("chain_sha256", "0" * 64),
+        ("fullchain_sha256", "0" * 64),
+        ("deployment_sha256", "0" * 64),
+        ("deployment_signature_sha256", "0" * 64),
+        ("deployers_sha256", "0" * 64),
+        ("action", "abandon"),
+        ("created_epoch", "1"),
+    ),
+)
+def test_outcome_snapshot_rejects_each_signed_decision_deployment_mismatch(
+    isolated_test_dir: Path,
+    field: str,
+    value: str,
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    updates = {field: value}
+    if field == "action":
+        updates.update(state="abandoned", resulting_active_request_id="none")
+    _rewrite_signed_outcome_decision(
+        package, isolated_test_dir / "signing-key", updates
+    )
+    args["outcome_sha256"] = sha256((package / "outcome").read_bytes())
+    with pytest.raises(ExchangeError, match="cross-binding"):
+        _validate_outcome_fixture(package, exchange, args)
+
+
+@pytest.mark.parametrize(
+    "alteration",
+    ("namespace", "principal", "decision-order", "extra", "deployment", "trust"),
+)
+def test_outcome_snapshot_rejects_signature_record_and_package_mismatch(
+    isolated_test_dir: Path,
+    alteration: str,
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    if alteration == "namespace":
+        package.joinpath("outcome.sig").unlink()
+        _ssh_sign(
+            package / "outcome",
+            isolated_test_dir / "signing-key",
+            "wrong-outcome-namespace",
+        )
+    elif alteration == "principal":
+        args["response_principal"] = "wrong-response"
+    elif alteration == "decision-order":
+        lines = package.joinpath("decision").read_text(encoding="ascii").splitlines()
+        lines[0], lines[1] = lines[1], lines[0]
+        _private_file(package / "decision", "\n".join(lines) + "\n")
+    elif alteration == "extra":
+        _private_file(package / "unexpected", b"extra\n")
+    elif alteration == "deployment":
+        _private_file(package / "deployment", b"replacement\n")
+    else:
+        _private_file(package / "deployers.allowed_signers", b"other ssh-ed25519 AAAA\n")
+    with pytest.raises((ExchangeError, OSError)):
+        _validate_outcome_fixture(package, exchange, args)
+
+
+@pytest.mark.parametrize("unsafe", ("mode", "hardlink", "symlink"))
+def test_outcome_source_rejects_unsafe_file_metadata(
+    isolated_test_dir: Path,
+    unsafe: str,
+) -> None:
+    package, _exchange, _args = _outcome_material(isolated_test_dir)
+    outcome = package / "outcome"
+    if unsafe == "mode":
+        outcome.chmod(0o640)
+    elif unsafe == "hardlink":
+        os.link(outcome, package.parent / "outcome-link")
+    else:
+        outcome.unlink()
+        outcome.symlink_to(package / "decision")
+    with pytest.raises((ExchangeError, OSError)):
+        PinnedTree.open(package, OUTCOME_NAMES, "unsafe outcome package")
+
+
+def test_outcome_remote_metadata_validation_rejects_unsafe_stage_objects() -> None:
+    directory = {
+        "exists": True,
+        "isdir": True,
+        "islnk": False,
+        "uid": 0,
+        "gid": 0,
+        "mode": "0700",
+        "rusr": True,
+        "wusr": True,
+        "xusr": True,
+        "rgrp": False,
+        "wgrp": False,
+        "xgrp": False,
+        "roth": False,
+        "woth": False,
+        "xoth": False,
+        "dev": 1,
+        "inode": 2,
+    }
+    file_metadata = {
+        **directory,
+        "isdir": False,
+        "isreg": True,
+        "mode": "0600",
+        "nlink": 1,
+        "size": 16,
+        "xusr": False,
+        "mtime": 1.0,
+        "ctime": 1.0,
+        "checksum": "a" * 64,
+    }
+    assert outcome_action._directory_identity(directory)
+    assert outcome_action._file_identity(
+        file_metadata, "outcome", "a" * 64
+    )
+    for unsafe in (
+        {**directory, "mode": "0755"},
+        {**directory, "uid": 1000},
+        {**directory, "islnk": True},
+    ):
+        with pytest.raises(ExchangeError):
+            outcome_action._directory_identity(unsafe)
+    for unsafe in (
+        {**file_metadata, "mode": "0640"},
+        {**file_metadata, "nlink": 2},
+        {**file_metadata, "checksum": "b" * 64},
+        {**file_metadata, "islnk": True},
+    ):
+        with pytest.raises(ExchangeError):
+            outcome_action._file_identity(unsafe, "outcome", "a" * 64)
+
+
+def _inject_early_close_failure(
+    monkeypatch: pytest.MonkeyPatch, failed_descriptor: int
+) -> tuple[list[int], Any]:
+    real_close = exchange_module.os.close
+    attempted: list[int] = []
+    failed = False
+
+    def close(descriptor: int) -> None:
+        nonlocal failed
+        attempted.append(descriptor)
+        if descriptor == failed_descriptor and not failed:
+            failed = True
+            raise OSError("injected descriptor close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(exchange_module.os, "close", close)
+    return attempted, real_close
+
+
+def test_pinned_directory_close_attempts_all_ancestors_and_retains_failure(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _private_dir(isolated_test_dir / "close-directory/a/b")
+    pinned = PinnedDirectory.open(path, "close directory")
+    expected = list(reversed(pinned.descriptors))
+    failed_descriptor = expected[0]
+    attempted, real_close = _inject_early_close_failure(
+        monkeypatch, failed_descriptor
+    )
+    with pytest.raises(DescriptorCleanupError) as failure:
+        pinned.close()
+    monkeypatch.setattr(exchange_module.os, "close", real_close)
+    assert attempted == expected
+    assert pinned.descriptors == [failed_descriptor]
+    assert failure.value.failed_descriptors == [failed_descriptor]
+    pinned.close()
+    assert pinned.descriptors == []
+
+
+def test_pinned_file_close_attempts_file_and_all_parent_descriptors(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _private_file(
+        _private_dir(isolated_test_dir / "close-file") / "outcome", b"outcome\n"
+    )
+    pinned = exchange_module.PinnedFile.open(path, "close file")
+    failed_descriptor = pinned.descriptor
+    expected = [failed_descriptor, *reversed(pinned.parent.descriptors)]
+    attempted, real_close = _inject_early_close_failure(
+        monkeypatch, failed_descriptor
+    )
+    with pytest.raises(DescriptorCleanupError) as failure:
+        pinned.close()
+    monkeypatch.setattr(exchange_module.os, "close", real_close)
+    assert attempted == expected
+    assert pinned.descriptor == failed_descriptor
+    assert pinned.parent.descriptors == []
+    assert failure.value.failed_descriptors == [failed_descriptor]
+    pinned.close()
+    assert pinned.descriptor == -1
+
+
+def test_pinned_tree_close_attempts_every_file_and_directory_descriptor(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _private_dir(isolated_test_dir / "close-tree")
+    for name in OUTCOME_NAMES:
+        _private_file(path / name, f"{name}\n")
+    pinned = PinnedTree.open(path, OUTCOME_NAMES, "close tree")
+    file_descriptors = [source.descriptor for source in pinned.files.values()]
+    directory_descriptors = list(reversed(pinned.directory.descriptors))
+    failed_descriptor = file_descriptors[0]
+    attempted, real_close = _inject_early_close_failure(
+        monkeypatch, failed_descriptor
+    )
+    with pytest.raises(DescriptorCleanupError) as failure:
+        pinned.close()
+    monkeypatch.setattr(exchange_module.os, "close", real_close)
+    assert attempted == [*file_descriptors, *directory_descriptors]
+    assert list(pinned.files) == [OUTCOME_NAMES[0]]
+    assert pinned.files[OUTCOME_NAMES[0]].descriptor == failed_descriptor
+    assert pinned.directory.descriptors == []
+    assert failure.value.failed_descriptors == [failed_descriptor]
+    pinned.close()
+    assert not pinned.files
+
+
+def test_pinned_tree_construction_cleanup_attempts_all_and_supports_retry(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _private_dir(isolated_test_dir / "failed-tree-construction")
+    for name in OUTCOME_NAMES:
+        _private_file(path / name, f"{name}\n")
+    (path / OUTCOME_NAMES[0]).chmod(0o640)
+    real_close = exchange_module.os.close
+    attempted: list[int] = []
+    first = True
+
+    def close(descriptor: int) -> None:
+        nonlocal first
+        attempted.append(descriptor)
+        if first:
+            first = False
+            raise OSError("injected construction cleanup failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(exchange_module.os, "close", close)
+    with pytest.raises(DescriptorCleanupError) as failure:
+        PinnedTree.open(path, OUTCOME_NAMES, "failed tree construction")
+    monkeypatch.setattr(exchange_module.os, "close", real_close)
+    assert len(attempted) > 1
+    assert len(failure.value.failed_descriptors) == 1
+    failure.value.retry_close()
+    assert failure.value.failed_descriptors == []
+
+
+def test_outcome_action_retries_constructor_cleanup_without_masking_primary(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    package.joinpath(OUTCOME_NAMES[0]).chmod(0o640)
+    remote = _OutcomeRemote(package, args, metadata)
+    real_close = exchange_module.os.close
+    attempted: list[int] = []
+    failed_descriptor: list[int] = []
+
+    def close(descriptor: int) -> None:
+        attempted.append(descriptor)
+        if not failed_descriptor:
+            failed_descriptor.append(descriptor)
+            raise OSError("injected constructor close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(exchange_module.os, "close", close)
+    try:
+        with pytest.raises(AnsibleActionFail) as failure:
+            _run_outcome_action(monkeypatch, args, remote)
+    finally:
+        monkeypatch.setattr(exchange_module.os, "close", real_close)
+    message = str(failure.value)
+    assert "reviewed signer-outcome package file has unsafe metadata" in message
+    assert "construction descriptor closure failed" in message
+    assert "unexpected signer-outcome import failure" not in message
+    assert attempted.count(failed_descriptor[0]) == 2
+    with pytest.raises(OSError) as closed:
+        os.fstat(failed_descriptor[0])
+    assert closed.value.errno == errno.EBADF
+    assert remote.stage_exists is False
+
+
+class _OutcomeRemote:
+    def __init__(
+        self,
+        package: Path,
+        args: dict[str, object],
+        metadata: dict[str, str],
+        *,
+        check_mode: bool = False,
+        copy_failure_index: int | None = None,
+        helper_failure: bool = False,
+        stage_mode: str = "0700",
+        stage_uid: int = 0,
+        create_failure: bool = False,
+    ) -> None:
+        self.package = package
+        self.args = args
+        self.metadata = metadata
+        self.check_mode = check_mode
+        self.copy_failure_index = copy_failure_index
+        self.helper_failure = helper_failure
+        self.stage_mode = stage_mode
+        self.stage_uid = stage_uid
+        self.create_failure = create_failure
+        self.stage = "/remote-stage/.platform-pki-outcome-fixed"
+        self.remote_tmp = "/remote/ansible/tmp"
+        self.stage_exists = False
+        self.files: dict[str, bytes] = {}
+        self.transfers: dict[str, bytes] = {}
+        self.helper_argv: list[list[object]] = []
+        self.module_paths: list[str] = []
+        self.made_tmp: list[str] = []
+        self.removed_tmp: list[str] = []
+        self.command_check_modes: list[bool] = []
+        self.low_level_commands: list[str] = []
+        self.low_level_sudoable: list[bool] = []
+        self.current_check_mode = lambda: self.check_mode
+
+    @staticmethod
+    def _permissions(*, directory: bool) -> dict[str, object]:
+        return {
+            "rusr": True,
+            "wusr": True,
+            "xusr": directory,
+            "rgrp": False,
+            "wgrp": False,
+            "xgrp": False,
+            "roth": False,
+            "woth": False,
+            "xoth": False,
+        }
+
+    def _directory_metadata(self) -> dict[str, object]:
+        return {
+            "exists": True,
+            "isdir": True,
+            "isreg": False,
+            "islnk": False,
+            "uid": self.stage_uid,
+            "gid": 0,
+            "mode": self.stage_mode,
+            "dev": 1,
+            "inode": 2,
+            **self._permissions(directory=True),
+        }
+
+    def _file_metadata(self, name: str, *, checksum: bool) -> dict[str, object]:
+        data = self.files[name]
+        metadata: dict[str, object] = {
+            "exists": True,
+            "isdir": False,
+            "isreg": True,
+            "islnk": False,
+            "uid": 0,
+            "gid": 0,
+            "mode": "0600",
+            "nlink": 1,
+            "size": len(data),
+            "dev": 1,
+            "inode": 100 + OUTCOME_NAMES.index(name),
+            "mtime": 1.0,
+            "ctime": 1.0,
+            **self._permissions(directory=False),
+        }
+        if checksum:
+            metadata["checksum"] = sha256(data)
+        return metadata
+
+    def transfer(self, path: str, data: bytes) -> None:
+        self.transfers[path] = data
+
+    def remove_tmp(self, path: str) -> None:
+        self.removed_tmp.append(path)
+
+    def make_tmp(self) -> str:
+        self.made_tmp.append(self.remote_tmp)
+        return self.remote_tmp
+
+    def execute_module(
+        self, *, module_name: str, module_args: dict[str, object], task_vars: object
+    ) -> dict[str, object]:
+        assert not self.check_mode, "check mode must not execute an Ansible module"
+        del task_vars
+        path = module_args.get("path")
+        if isinstance(path, str):
+            self.module_paths.append(path)
+        if module_name == "ansible.legacy.stat":
+            assert isinstance(path, str)
+            checksum = module_args["get_checksum"] is True
+            if path == self.stage:
+                return {
+                    "stat": self._directory_metadata()
+                    if self.stage_exists
+                    else {"exists": False}
+                }
+            prefix = self.stage + "/"
+            assert path.startswith(prefix)
+            name = path.removeprefix(prefix)
+            return {
+                "stat": self._file_metadata(name, checksum=checksum)
+                if self.stage_exists and name in self.files
+                else {"exists": False}
+            }
+        if module_name == "ansible.legacy.file":
+            if module_args.get("state") == "directory":
+                assert path == self.stage
+                assert not self.stage_exists
+                self.stage_exists = True
+                if self.create_failure:
+                    return {"failed": True}
+                return {"changed": True}
+            assert module_args.get("state") == "absent"
+            assert isinstance(path, str) and path.startswith(self.stage + "/")
+            self.files.pop(path.rsplit("/", 1)[1], None)
+            return {"changed": True}
+        if module_name == "ansible.legacy.copy":
+            assert isinstance(path, str) or path is None
+            destination = module_args["dest"]
+            assert isinstance(destination, str)
+            name = destination.rsplit("/", 1)[1]
+            source = module_args["src"]
+            assert isinstance(source, str)
+            self.files[name] = self.transfers[source]
+            if self.copy_failure_index == OUTCOME_NAMES.index(name):
+                return {"failed": True}
+            return {"changed": True}
+        assert module_name == "ansible.legacy.command"
+        self.command_check_modes.append(self.current_check_mode())
+        argv = module_args["argv"]
+        assert isinstance(argv, list)
+        if argv[:2] == ["rmdir", "--"]:
+            if self.files:
+                return {"failed": True, "rc": 1}
+            self.stage_exists = False
+            return {"rc": 0}
+        self.helper_argv.append(argv)
+        return self._helper_result()
+
+    def _helper_result(self) -> dict[str, object]:
+        if self.helper_failure:
+            return {"failed": True, "rc": 1, "stdout": "", "stderr": "failed"}
+        result = {
+            "status": "would-import" if self.check_mode else "imported",
+            "request_id": REQUEST_ID,
+            "artifact_sha256": str(self.args["artifact_sha256"]),
+            "deployment_sha256": str(self.args["deployment_sha256"]),
+            "outcome_sha256": str(self.args["outcome_sha256"]),
+            "action": self.metadata["action"],
+            "result": self.metadata["result"],
+            "state": self.metadata["state"],
+            "resulting_active_request_id": self.metadata["resulting_active_request_id"],
+            "history_path": (
+                f"{self.args['state_root']}/outcomes/{REQUEST_ID}/"
+                f"{self.args['outcome_sha256']}"
+            ),
+        }
+        return {
+            "rc": 0,
+            "stdout": json.dumps(result, sort_keys=True, separators=(",", ":")),
+            "stderr": "",
+        }
+
+    def low_level_execute_command(
+        self, command: str, *, sudoable: bool
+    ) -> dict[str, object]:
+        self.low_level_commands.append(command)
+        self.low_level_sudoable.append(sudoable)
+        parsed: list[object] = list(shlex.split(command))
+        self.helper_argv.append(parsed)
+        result = self._helper_result()
+        stderr = result["stderr"] or "Shared connection to 192.0.2.10 closed.\r\n"
+        return {
+            "rc": result["rc"],
+            "stdout": result["stdout"],
+            "stdout_lines": str(result["stdout"]).splitlines(),
+            "stderr": stderr,
+            "stderr_lines": str(stderr).splitlines(),
+        }
+
+
+def _run_outcome_action(
+    monkeypatch: pytest.MonkeyPatch,
+    args: dict[str, object],
+    remote: _OutcomeRemote,
+) -> dict[str, object]:
+    monkeypatch.setattr(outcome_action.ActionBase, "run", lambda self, **kwargs: {})
+    monkeypatch.setattr(outcome_action, "_REMOTE_STAGE_ROOT", "/remote-stage")
+    monkeypatch.setattr(outcome_action.secrets, "token_hex", lambda _length: "fixed")
+    action = object.__new__(outcome_action.ActionModule)
+    action._task = SimpleNamespace(args=args, check_mode=remote.check_mode)
+    action._connection = SimpleNamespace(_shell=SimpleNamespace(join_path=posixpath.join))
+    action._make_tmp_path = remote.make_tmp
+    action._remove_tmp_path = remote.remove_tmp
+    action._transfer_data = remote.transfer
+    action._execute_module = remote.execute_module
+    action._low_level_execute_command = remote.low_level_execute_command
+    remote.current_check_mode = lambda: action._task.check_mode
+    return action.run(task_vars={})
+
+
+def test_outcome_action_check_mode_does_not_allocate_framework_tmp() -> None:
+    action = object.__new__(outcome_action.ActionModule)
+    action._task = SimpleNamespace(args={}, check_mode=True, async_val=0)
+    action._connection = SimpleNamespace(_shell=SimpleNamespace(tmpdir=None))
+    action._make_tmp_path = lambda: pytest.fail(
+        "check mode allocated an Ansible transfer workspace"
+    )
+
+    with pytest.raises(
+        AnsibleActionFail,
+        match="requires its exact structured argument set",
+    ):
+        action.run(task_vars={})
+
+
+@pytest.mark.parametrize("check_mode", (False, True))
+def test_outcome_action_transfers_exact_package_invokes_helper_and_cleans(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    check_mode: bool,
+) -> None:
+    assert outcome_action.ActionModule.TRANSFERS_FILES is False
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, check_mode=check_mode)
+    result = _run_outcome_action(monkeypatch, args, remote)
+
+    assert remote.current_check_mode() is check_mode
+    assert result == {
+        "changed": True,
+        "status": "would-import" if check_mode else "imported",
+        "request_id": REQUEST_ID,
+        "artifact_sha256": args["artifact_sha256"],
+        "deployment_sha256": args["deployment_sha256"],
+        "outcome_sha256": args["outcome_sha256"],
+        "action": "finalize",
+        "result": "activated",
+        "state": "finalized",
+        "resulting_active_request_id": REQUEST_ID,
+        "history_path": (
+            f"{args['state_root']}/outcomes/{REQUEST_ID}/{args['outcome_sha256']}"
+        ),
+    }
+    common_argv = [
+        "--state-root", args["state_root"],
+        "--pending-root", args["pending_root"],
+        "--versions-root", args["versions_root"],
+        "--zot-config", args["zot_config_path"],
+        "--service", SERVICE,
+        "--target", TARGET,
+        "--trust-id", args["trust_id"],
+        "--request-id", REQUEST_ID,
+        "--artifact-sha256", args["artifact_sha256"],
+        "--deployment-sha256", args["deployment_sha256"],
+        "--outcome-sha256", args["outcome_sha256"],
+    ]
+    if check_mode:
+        decision = parse_record(
+            package.joinpath("decision").read_bytes(),
+            DECISION_FIELDS,
+            "expected preflight decision",
+        )
+        outcome = parse_record(
+            package.joinpath("outcome").read_bytes(),
+            OUTCOME_FIELDS,
+            "expected preflight outcome",
+        )
+        expected_argv = [
+            args["lifecycle_helper_path"], "outcome-preflight", *common_argv,
+            "--decision-sha256", sha256(package.joinpath("decision").read_bytes()),
+            "--outcome-principal", outcome["outcome_principal"],
+        ]
+        for field in DECISION_FIELDS:
+            if field != "schema":
+                expected_argv.extend((
+                    f"--decision-{field.replace('_', '-')}", decision[field]
+                ))
+    else:
+        expected_argv = [
+            args["lifecycle_helper_path"], "outcome-import", *common_argv,
+            "--outcome-dir", remote.stage,
+        ]
+    assert remote.helper_argv == [expected_argv]
+    if check_mode:
+        assert remote.low_level_commands == [
+            " ".join(shlex.quote(str(value)) for value in expected_argv)
+        ]
+        assert remote.low_level_sudoable == [True]
+        assert remote.command_check_modes == []
+        assert remote.transfers == {}
+        assert remote.module_paths == []
+        assert remote.made_tmp == []
+        assert remote.removed_tmp == []
+    else:
+        assert remote.low_level_commands == []
+        assert remote.command_check_modes[-1] is False
+        assert remote.made_tmp == [remote.remote_tmp]
+        assert tuple(Path(path).name for path in remote.transfers) == tuple(
+            f".platform-pki-outcome-{name}" for name in OUTCOME_NAMES
+        )
+        assert remote.removed_tmp == [remote.remote_tmp]
+    assert not any("tls.key" in path for path in (*remote.transfers, *remote.module_paths))
+    assert not remote.files
+    assert remote.stage_exists is False
+
+
+def test_outcome_preflight_shell_command_quotes_every_argument() -> None:
+    argv = [
+        "/fixed/helper",
+        "plain",
+        "argument with spaces",
+        "value;touch /tmp/not-created",
+        "$(not-executed)",
+        "single'quote",
+    ]
+    command = outcome_action._shell_command(argv)
+
+    assert command == (
+        "/fixed/helper plain 'argument with spaces' "
+        "'value;touch /tmp/not-created' '$(not-executed)' "
+        "'single'\"'\"'quote'"
+    )
+    assert shlex.split(command) == argv
+
+
+def test_outcome_action_check_mode_rejects_unbound_low_level_result(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, check_mode=True)
+    remote.metadata = {**metadata, "result": "rolled-back"}
+
+    with pytest.raises(AnsibleActionFail, match="differs from reviewed package"):
+        _run_outcome_action(monkeypatch, args, remote)
+
+    assert remote.low_level_sudoable == [True]
+    assert remote.module_paths == []
+    assert remote.transfers == {}
+    assert remote.made_tmp == []
+    assert remote.removed_tmp == []
+
+
+def test_outcome_action_rejects_stage_metadata_and_removes_created_directory(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, stage_mode="0755")
+    with pytest.raises(AnsibleActionFail, match="unsafe metadata"):
+        _run_outcome_action(monkeypatch, args, remote)
+    assert remote.stage_exists is False
+    assert not remote.files
+
+
+def test_outcome_action_cleans_directory_created_by_failed_create_module(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, create_failure=True)
+    with pytest.raises(AnsibleActionFail, match="cannot create"):
+        _run_outcome_action(monkeypatch, args, remote)
+    assert remote.stage_exists is False
+    assert not remote.files
+
+
+def test_outcome_action_reports_stage_retained_when_identity_is_unattributable(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, stage_uid=1000)
+    with pytest.raises(AnsibleActionFail) as failure:
+        _run_outcome_action(monkeypatch, args, remote)
+    assert "safe identity unavailable" in str(failure.value)
+    assert remote.stage in str(failure.value)
+    assert remote.stage_exists is True
+
+
+@pytest.mark.parametrize("failure_index", range(len(OUTCOME_NAMES)))
+def test_outcome_action_cleans_partial_destination_after_each_copy_failure(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_index: int,
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(
+        package, args, metadata, copy_failure_index=failure_index
+    )
+    with pytest.raises(AnsibleActionFail, match="cannot stage"):
+        _run_outcome_action(monkeypatch, args, remote)
+    assert len(remote.transfers) == failure_index + 1
+    assert remote.stage_exists is False
+    assert not remote.files
+    assert remote.removed_tmp == [remote.remote_tmp]
+
+
+def test_outcome_action_cleans_after_helper_failure(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, helper_failure=True)
+    with pytest.raises(AnsibleActionFail, match="target signer-outcome import failed"):
+        _run_outcome_action(monkeypatch, args, remote)
+    assert remote.stage_exists is False
+    assert not remote.files
+    assert remote.removed_tmp == [remote.remote_tmp]
+
+
+def test_outcome_action_cleanup_attempts_are_independent_and_preserve_failure(
+    isolated_test_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    remote = _OutcomeRemote(package, args, metadata, helper_failure=True)
+    original_tree_close = outcome_action.PinnedTree.close
+    real_close = exchange_module.os.close
+    attempted: list[int] = []
+    expected_evidence_attempts: list[int] = []
+    failed_descriptor: list[int] = []
+    closed_trees = 0
+    injected = False
+    failed_once = False
+
+    def tree_close(tree: PinnedTree) -> None:
+        nonlocal closed_trees, injected
+        closed_trees += 1
+        if not injected:
+            injected = True
+            failed_descriptor.append(next(iter(tree.files.values())).descriptor)
+            expected_evidence_attempts.extend(
+                source.descriptor for source in tree.files.values()
+            )
+            expected_evidence_attempts.extend(reversed(tree.directory.descriptors))
+
+            def close(descriptor: int) -> None:
+                nonlocal failed_once
+                attempted.append(descriptor)
+                if descriptor == failed_descriptor[0] and not failed_once:
+                    failed_once = True
+                    raise OSError("injected close failure")
+                real_close(descriptor)
+
+            exchange_module.os.close = close
+        original_tree_close(tree)
+
+    def fail_tmp(path: str) -> None:
+        remote.removed_tmp.append(path)
+        raise OSError("injected tmp cleanup failure")
+
+    remote.remove_tmp = fail_tmp
+    monkeypatch.setattr(outcome_action.PinnedTree, "close", tree_close)
+    try:
+        with pytest.raises(AnsibleActionFail) as failure:
+            _run_outcome_action(monkeypatch, args, remote)
+    finally:
+        exchange_module.os.close = real_close
+    message = str(failure.value)
+    assert "target signer-outcome import failed" in message
+    assert "temporary Ansible workspace cleanup failed" in message
+    assert "controller evidence descriptor closure failed" in message
+    assert remote.stage_exists is False
+    assert not remote.files
+    assert attempted[:len(expected_evidence_attempts)] == expected_evidence_attempts
+    assert attempted.count(failed_descriptor[0]) == 2
+    assert closed_trees == 6
+
+
+def test_outcome_action_rejects_controller_source_replacement_and_cleans_stage(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package, exchange, args = _outcome_material(isolated_test_dir)
+    metadata = _validate_outcome_fixture(package, exchange, args)
+    original = {name: (package / name).read_bytes() for name in OUTCOME_NAMES}
+    remote = _OutcomeRemote(package, args, metadata)
+
+    def replace_source(path: str, data: bytes) -> None:
+        del path, data
+        package.rename(package.with_name("outcome-package-original"))
+        _private_dir(package)
+        for name, data in original.items():
+            _private_file(package / name, data)
+
+    remote.transfer = replace_source
+    with pytest.raises(AnsibleActionFail, match="changed"):
+        _run_outcome_action(monkeypatch, args, remote)
+    assert remote.stage_exists is False
+    assert not remote.files
+    assert remote.removed_tmp == [remote.remote_tmp]
+
+
 def test_actions_reject_unknown_argument_sets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(collection_action.ActionBase, "run", lambda self, **kwargs: {})
     monkeypatch.setattr(response_action.ActionBase, "run", lambda self, **kwargs: {})
@@ -823,6 +1745,7 @@ def test_actions_reject_unknown_argument_sets(monkeypatch: pytest.MonkeyPatch) -
         ingress_action.ActionModule,
         evidence_action.ActionModule,
         evidence_status_action.ActionModule,
+        outcome_action.ActionModule,
     ):
         action = object.__new__(action_class)
         action._task = SimpleNamespace(args={"unexpected": "value"}, check_mode=False)

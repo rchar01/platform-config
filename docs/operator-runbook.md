@@ -534,14 +534,51 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
+make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256> \
+  OUTCOME_SHA256=<outcome-manifest-sha256> \
+  OUTCOME_DIR=/outside-git/export/csr-outcomes/v1/artifacts/registry-dev/<request-id>
 ```
 
 Only after an active version authenticates successfully, change the target's
 private Zot inventory to `zot_registry_tls_custody: host-local`, set
 `zot_registry_tls_host_local_target` to the exact inventory hostname, and run
-normal registry convergence. Signing, response retrieval from external media,
-signer-outcome import, completion, renewal, and live enablement remain separate
-operations and are not automated here.
+normal registry convergence. Signing, response and outcome retrieval from
+external media, renewal, and live enablement remain separate operations. Outcome
+import is the explicit command above; never select a latest package or infer its
+coordinates. Require status `complete` and `signer_outcome_state=finalized` for
+a finalized active candidate. An authenticated abandoned outcome is terminal
+history but never authority for selecting the abandoned candidate as active;
+current import supports that terminal status for no predecessor and authenticated
+managed-migration rollback. Finalized managed predecessors must exactly match
+rollback certificate/SPKI/public-chain state and use `none` for unavailable
+managed history fields. Managed rollback abandonment must also match signed
+served identity evidence to the restored Zot-selected public chain. Host-local
+predecessors remain unsupported until target history records all required
+predecessor evidence.
+The current workflow always reports `renewal_eligible=false`; authenticated
+renewal completion remains unsupported.
+
+Outcome import never stats, opens, reads, hashes, stages, or transfers a
+candidate/version/restored-managed private-key file. Managed rollback validation
+parses the restored Zot TLS path object but accesses only its public certificate
+chain. In Ansible check mode the controller still authenticates the complete
+six-file package, but only canonical scalar coordinates reach the target's
+read-only preflight over Ansible's safely quoted, become-aware low-level
+connection path; no module payload, target stage, temporary transfer, or package
+copy is created. The target authenticates active state from public version,
+signed request/response, artifact/certificate, and available signed evidence
+without enumerating or accessing the version private key. If an interruption
+leaves immutable outcome
+history without `accepted-outcome`, status fails closed; rerun the same command
+with the same exact pins to complete no-clobber pointer publication. If the
+action reports a retained `/var/tmp/.platform-pki-outcome-*` stage, preserve it
+as failure evidence, verify no import remains active, and inspect it through the
+approved host-local PKI recovery procedure. Remove only the exact reported
+canonical path after attribution; never use wildcard cleanup. A retained
+`.accepted-outcome-stage-*` under the lifecycle state root also blocks import as
+ambiguous state and requires the same exact-path review before recovery.
 
 ## Make Targets
 
@@ -568,6 +605,8 @@ EXTRA_ARGS Extra flags passed to Ansible
 REQUEST_ID Exact 32-character host-local PKI request ID
 ARTIFACT_SHA256 Exact host-local PKI artifact digest
 DEPLOYMENT_SHA256 Exact host-local PKI deployment digest
+OUTCOME_DIR Exact protected six-file signer-outcome directory
+OUTCOME_SHA256 Exact host-local PKI outcome manifest digest
 RESPONSE_DIR Exact protected six-file response directory
 RUNNER_LIMIT Exact separate read-only validation runner host
 ```

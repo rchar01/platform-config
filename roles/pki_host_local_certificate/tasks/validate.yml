@@ -28,6 +28,7 @@
       - pki_host_local_certificate_request_namespace == 'platform-pki-csr-request-v1'
       - pki_host_local_certificate_deployment_signing_key_path == '/etc/ssh/ssh_host_ed25519_key'
       - pki_host_local_certificate_deployment_namespace == 'platform-pki-csr-deployment-v1'
+      - pki_host_local_certificate_outcome_namespace == 'platform-pki-csr-outcome-v1'
       - pki_host_local_certificate_trust_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
       - pki_host_local_certificate_trust_id not in ['latest', 'current']
       - pki_host_local_certificate_trust_paths.keys() | list | sort == pki_host_local_certificate_required_trust_names
@@ -73,6 +74,9 @@
       - pki_host_local_certificate_validator_helper_path == '/usr/local/libexec/platform-pki-zot-read-only-validate'
       - pki_host_local_certificate_helper_read_only is boolean
       - pki_host_local_certificate_response_source_dir | type_debug == 'str'
+      - pki_host_local_certificate_outcome_source_dir | type_debug == 'str'
+      - pki_host_local_certificate_outcome_sha256 | type_debug == 'str'
+      - pki_host_local_certificate_outcome_sha256 | length == 0 or pki_host_local_certificate_outcome_sha256 is match('^[0-9a-f]{64}$')
       - pki_host_local_certificate_validation_boundary_target_path | type_debug == 'str'
       - pki_host_local_certificate_validation_boundary_runner_path | type_debug == 'str'
       - pki_host_local_certificate_reviewed_ca_target_path | type_debug == 'str'
@@ -152,6 +156,8 @@
   loop:
     - name: response_source_dir
       value: "{{ pki_host_local_certificate_response_source_dir }}"
+    - name: outcome_source_dir
+      value: "{{ pki_host_local_certificate_outcome_source_dir }}"
     - name: validation_boundary_target_path
       value: "{{ pki_host_local_certificate_validation_boundary_target_path }}"
     - name: validation_boundary_runner_path

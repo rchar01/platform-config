@@ -6,9 +6,10 @@ This file gives a short, release-oriented view of what changed between versions.
 
 - Add target-local Zot certificate request collection, authenticated response
   intake, interactive activation and recovery, separate-runner validation,
-  deployment evidence export, and authenticated host-local Zot TLS custody.
-  External signing and transport, signer-outcome import, completion, renewal,
-  GitLab runtime qualification, and live enablement remain separate gates.
+  deployment evidence export, authenticated terminal signer-outcome import,
+  completion status, and authenticated host-local Zot TLS custody. External
+  signing and transport, renewal, GitLab runtime qualification, and live
+  enablement remain separate gates.
 - Add a protected GitLab Generic Package publisher for validated host-local PKI
   request packages.
 
