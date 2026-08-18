@@ -1,13 +1,20 @@
 ---
-# This slice validates the locked frontend and private backend-port contracts. It
-# intentionally does not install HAProxy, render configuration, manage
-# firewalld, or touch services.
+# The role remains inert until both enabled and contract-ready are explicit.
 monitoring_haproxy_contract_ready: false
 monitoring_haproxy_enabled: false
 monitoring_haproxy_service_enabled: false
 monitoring_haproxy_service_state: stopped
 
+monitoring_haproxy_package_name: haproxy
 monitoring_haproxy_package_nevra: ""
+monitoring_haproxy_versionlock_package: python3-dnf-plugin-versionlock
+monitoring_haproxy_versionlock_path: /etc/dnf/plugins/versionlock.list
+monitoring_haproxy_binary_path: /usr/sbin/haproxy
+monitoring_haproxy_service_name: haproxy.service
+monitoring_haproxy_bundle_root: /etc/haproxy/monitoring-bundles
+monitoring_haproxy_current_link: /etc/haproxy/monitoring-current
+monitoring_haproxy_config_path: /etc/haproxy/haproxy.cfg
+monitoring_haproxy_bundle_config_path: "{{ monitoring_haproxy_current_link }}/haproxy.cfg"
 monitoring_haproxy_user: haproxy
 monitoring_haproxy_group: haproxy
 monitoring_haproxy_maxconn: 4096
@@ -25,12 +32,18 @@ monitoring_haproxy_metrics_port: 0
 monitoring_haproxy_metrics_path: /metrics
 
 monitoring_haproxy_frontend_bind_address: "*"
-monitoring_haproxy_frontend_pem_path: /etc/haproxy/tls/monitoring-frontend.pem
-monitoring_haproxy_client_ca_path: /etc/haproxy/tls/monitoring-client-ca.crt
-monitoring_haproxy_client_crl_path: /etc/haproxy/tls/monitoring-client-ca.crl
-monitoring_haproxy_backend_ca_path: /etc/haproxy/tls/monitoring-backend-ca.crt
-monitoring_haproxy_backend_client_pem_path: /etc/haproxy/tls/monitoring-backend-client.pem
-monitoring_haproxy_identity_map_path: /etc/haproxy/maps/monitoring-roles.map
+monitoring_haproxy_frontend_pem_path: "{{ monitoring_haproxy_current_link }}/frontend.pem"
+monitoring_haproxy_client_ca_path: "{{ monitoring_haproxy_current_link }}/client-ca.crt"
+monitoring_haproxy_client_crl_path: "{{ monitoring_haproxy_current_link }}/client-ca.crl"
+monitoring_haproxy_backend_ca_path: "{{ monitoring_haproxy_current_link }}/backend-ca.crt"
+monitoring_haproxy_backend_client_pem_path: "{{ monitoring_haproxy_current_link }}/backend-client.pem"
+monitoring_haproxy_identity_map_path: "{{ monitoring_haproxy_current_link }}/roles.map"
+monitoring_haproxy_render_frontend_pem_path: "{{ monitoring_haproxy_frontend_pem_path }}"
+monitoring_haproxy_render_client_ca_path: "{{ monitoring_haproxy_client_ca_path }}"
+monitoring_haproxy_render_client_crl_path: "{{ monitoring_haproxy_client_crl_path }}"
+monitoring_haproxy_render_backend_ca_path: "{{ monitoring_haproxy_backend_ca_path }}"
+monitoring_haproxy_render_backend_client_pem_path: "{{ monitoring_haproxy_backend_client_pem_path }}"
+monitoring_haproxy_render_identity_map_path: "{{ monitoring_haproxy_identity_map_path }}"
 
 monitoring_haproxy_grafana_dns: ""
 monitoring_haproxy_loki_dns: ""
@@ -79,6 +92,15 @@ monitoring_haproxy_postgresql_allowed_sources: []
 monitoring_haproxy_metrics_allowed_sources: []
 monitoring_haproxy_operator_allowed_sources: []
 
-# Backend topology values remain private. Health wiring and operational
-# lifecycle remain Phase 2 blockers; this validation contract has no defaults.
+monitoring_haproxy_firewalld_manage: true
+monitoring_haproxy_firewalld_zone: public
+monitoring_haproxy_state_dir: /var/lib/platform-config
+monitoring_haproxy_firewalld_manifest_path: >-
+  {{ monitoring_haproxy_state_dir }}/monitoring-haproxy-firewalld.yml
+
+monitoring_haproxy_selinux_manage: true
+monitoring_haproxy_selinux_package: policycoreutils-python-utils
+monitoring_haproxy_selinux_port_type: http_port_t
+
+# Backend topology values remain private and have no public defaults.
 monitoring_haproxy_backends: {}

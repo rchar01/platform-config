@@ -21,7 +21,7 @@ class Rejection:
 
 
 SCALAR = "requires an explicitly ready contract"
-LIFECYCLE = "Service activation remains unavailable"
+LIFECYCLE = "requires boolean ownership and a coherent stopped or active service lifecycle"
 IDENTITY = "an escape-free canonical RFC2253 subject DN"
 SOURCE = "network-normalized IPv4 CIDR no broader than /24"
 BACKENDS = "requires exactly Grafana, Loki, Mimir"
@@ -515,38 +515,59 @@ def test_monitoring_haproxy_defaults_remain_inactive(repo_root: Path) -> None:
         assert re.search(rf"^{re.escape(line)}$", defaults, re.MULTILINE)
 
 
-def test_monitoring_haproxy_tasks_remain_validation_only(repo_root: Path) -> None:
+def test_monitoring_haproxy_operational_task_boundary(repo_root: Path) -> None:
     role = repo_root / "roles/monitoring_haproxy"
-    allowed_actions = {
-        "ansible.builtin.assert",
-        "ansible.builtin.include_tasks",
-        "ansible.builtin.set_fact",
+    main_tasks = yaml.safe_load(
+        (role / "tasks/main.yml").read_text(encoding="utf-8")
+    )
+    included_tasks = {
+        task["ansible.builtin.include_tasks"]
+        for task in main_tasks[1]["block"]
+        if "ansible.builtin.include_tasks" in task
     }
-    task_keywords = {
-        "changed_when",
-        "check_mode",
-        "failed_when",
-        "loop",
-        "loop_control",
-        "name",
-        "register",
-        "tags",
-        "vars",
-        "when",
+    assert included_tasks == {
+        "validate.yml",
+        "validate_operational.yml",
+        "package.yml",
+        "bundle.yml",
+        "selinux.yml",
+        "firewalld.yml",
     }
-    observed_actions: set[str] = set()
-    for path in sorted((role / "tasks").rglob("*.yml")):
-        tasks = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert isinstance(tasks, list)
-        for task in tasks:
-            assert isinstance(task, dict)
-            action_keys = set(task) - task_keywords
-            assert len(action_keys) == 1, (path, task.get("name"), action_keys)
-            action = action_keys.pop()
-            assert action in allowed_actions, (path, task.get("name"), action)
-            observed_actions.add(action)
-    assert observed_actions == allowed_actions
-    assert not (role / "handlers").exists()
+    handlers = yaml.safe_load(
+        (role / "handlers/main.yml").read_text(encoding="utf-8")
+    )
+    assert handlers[0]["name"] == "Reload monitoring HAProxy"
+    assert handlers[0]["ansible.builtin.systemd_service"] == {
+        "name": "{{ monitoring_haproxy_service_name }}",
+        "state": "reloaded",
+    }
+    assert "monitoring_haproxy_service_enabled | bool" in handlers[0]["when"]
+
+
+def test_monitoring_haproxy_bundle_revision_covers_template_inputs(
+    repo_root: Path,
+) -> None:
+    role = repo_root / "roles/monitoring_haproxy"
+    template_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (role / "templates").glob("*.j2")
+    )
+    template_inputs = set(re.findall(r"monitoring_haproxy_[a-z0-9_]+", template_text))
+    rendered_bundle_paths = {
+        "monitoring_haproxy_render_frontend_pem_path",
+        "monitoring_haproxy_render_client_ca_path",
+        "monitoring_haproxy_render_client_crl_path",
+        "monitoring_haproxy_render_backend_ca_path",
+        "monitoring_haproxy_render_backend_client_pem_path",
+        "monitoring_haproxy_render_identity_map_path",
+    }
+    bundle_tasks = (role / "tasks/bundle.yml").read_text(encoding="utf-8")
+    revision_contract = bundle_tasks.split(
+        "- name: Derive monitoring HAProxy bundle paths", maxsplit=1
+    )[0]
+    assert template_inputs - rendered_bundle_paths <= set(
+        re.findall(r"monitoring_haproxy_[a-z0-9_]+", revision_contract)
+    )
 
 
 def test_monitoring_haproxy_default_fixture_is_valid(

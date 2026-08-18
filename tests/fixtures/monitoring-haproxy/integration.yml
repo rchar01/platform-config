@@ -1,0 +1,45 @@
+---
+- name: Exercise monitoring HAProxy host lifecycle
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars_files:
+    - contract.yml
+  tasks:
+    - name: Configure monitoring HAProxy lifecycle fixture
+      ansible.builtin.set_fact:
+        monitoring_haproxy_service_enabled: >-
+          {{ monitoring_haproxy_test_active | default(false) | bool }}
+        monitoring_haproxy_service_state: >-
+          {{
+            'started'
+            if monitoring_haproxy_test_active | default(false) | bool
+            else 'stopped'
+          }}
+        monitoring_haproxy_frontend_pem_src: /etc/monitoring-haproxy-test/frontend.pem
+        monitoring_haproxy_client_ca_src: /etc/monitoring-haproxy-test/client-ca/ca.crt
+        monitoring_haproxy_client_crl_src: /etc/monitoring-haproxy-test/client-ca/ca.crl
+        monitoring_haproxy_backend_ca_src: /etc/monitoring-haproxy-test/server-ca.crt
+        monitoring_haproxy_backend_client_pem_src: /etc/monitoring-haproxy-test/backend-client.pem
+        monitoring_haproxy_frontend_pem_path: /etc/haproxy/monitoring-current/frontend.pem
+        monitoring_haproxy_client_ca_path: /etc/haproxy/monitoring-current/client-ca.crt
+        monitoring_haproxy_client_crl_path: /etc/haproxy/monitoring-current/client-ca.crl
+        monitoring_haproxy_backend_ca_path: /etc/haproxy/monitoring-current/backend-ca.crt
+        monitoring_haproxy_backend_client_pem_path: /etc/haproxy/monitoring-current/backend-client.pem
+        monitoring_haproxy_identity_map_path: /etc/haproxy/monitoring-current/roles.map
+        monitoring_haproxy_firewalld_manage: true
+        monitoring_haproxy_selinux_manage: true
+        firewalld_dependencies_ready: >-
+          {{
+            monitoring_haproxy_test_firewalld_ready
+            | default(true) | bool
+          }}
+        firewalld_service_state: >-
+          {{
+            monitoring_haproxy_test_firewalld_state
+            | default('stopped')
+          }}
+
+    - name: Apply monitoring HAProxy lifecycle fixture
+      ansible.builtin.include_role:
+        name: monitoring_haproxy

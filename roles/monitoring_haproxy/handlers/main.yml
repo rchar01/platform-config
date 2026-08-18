@@ -1,0 +1,9 @@
+---
+- name: Reload monitoring HAProxy
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_haproxy_service_name }}"
+    state: reloaded
+  when:
+    - monitoring_haproxy_service_enabled | bool
+    - monitoring_haproxy_service_state == 'started'
+    - not ansible_check_mode

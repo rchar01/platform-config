@@ -1,0 +1,48 @@
+---
+- name: Assert monitoring HAProxy operational inputs
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_package_name == 'haproxy'
+      - monitoring_haproxy_versionlock_package == 'python3-dnf-plugin-versionlock'
+      - monitoring_haproxy_versionlock_path == '/etc/dnf/plugins/versionlock.list'
+      - monitoring_haproxy_binary_path == '/usr/sbin/haproxy'
+      - monitoring_haproxy_service_name == 'haproxy.service'
+      - monitoring_haproxy_bundle_root == '/etc/haproxy/monitoring-bundles'
+      - monitoring_haproxy_current_link == '/etc/haproxy/monitoring-current'
+      - monitoring_haproxy_config_path == '/etc/haproxy/haproxy.cfg'
+      - >-
+        monitoring_haproxy_bundle_config_path
+        == monitoring_haproxy_current_link ~ '/haproxy.cfg'
+      - monitoring_haproxy_firewalld_manage is boolean
+      - monitoring_haproxy_firewalld_zone is string
+      - >-
+        monitoring_haproxy_firewalld_zone
+        is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - >-
+        monitoring_haproxy_firewalld_manifest_path
+        == monitoring_haproxy_state_dir ~ '/monitoring-haproxy-firewalld.yml'
+      - monitoring_haproxy_state_dir == '/var/lib/platform-config'
+      - monitoring_haproxy_selinux_manage is boolean
+      - monitoring_haproxy_selinux_package == 'policycoreutils-python-utils'
+      - monitoring_haproxy_selinux_port_type == 'http_port_t'
+      - >-
+        monitoring_haproxy_service_state != 'started'
+        or monitoring_haproxy_firewalld_manage
+      - not haproxy_workload_lb_enabled | default(false) | bool
+      - not openbao_haproxy_enabled | default(false) | bool
+    fail_msg: >-
+      Monitoring HAProxy operational paths, package ownership, lifecycle,
+      firewall, and SELinux policy must match the locked host-native contract.
+
+- name: Assert monitoring HAProxy installed bundle paths
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_frontend_pem_path == monitoring_haproxy_current_link ~ '/frontend.pem'
+      - monitoring_haproxy_client_ca_path == monitoring_haproxy_current_link ~ '/client-ca.crt'
+      - monitoring_haproxy_client_crl_path == monitoring_haproxy_current_link ~ '/client-ca.crl'
+      - monitoring_haproxy_backend_ca_path == monitoring_haproxy_current_link ~ '/backend-ca.crt'
+      - monitoring_haproxy_backend_client_pem_path == monitoring_haproxy_current_link ~ '/backend-client.pem'
+      - monitoring_haproxy_identity_map_path == monitoring_haproxy_current_link ~ '/roles.map'
+    fail_msg: >-
+      Monitoring HAProxy installed policy and PKI paths must resolve through the
+      role-owned current bundle.

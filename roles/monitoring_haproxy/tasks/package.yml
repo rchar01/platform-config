@@ -1,0 +1,263 @@
+---
+- name: Install monitoring HAProxy versionlock provider
+  ansible.builtin.dnf:
+    name: "{{ monitoring_haproxy_versionlock_package }}"
+    state: present
+  register: monitoring_haproxy_versionlock_package_result
+
+- name: Track monitoring HAProxy versionlock readiness
+  ansible.builtin.set_fact:
+    monitoring_haproxy_versionlock_ready: >-
+      {{ not (
+        ansible_check_mode
+        and monitoring_haproxy_versionlock_package_result is changed
+      ) }}
+
+- name: Inspect shared monitoring HAProxy versionlock list
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_versionlock_path }}"
+    follow: false
+  register: monitoring_haproxy_versionlock_stat
+  check_mode: false
+  when: monitoring_haproxy_versionlock_ready | bool
+
+- name: Reject unsafe monitoring HAProxy versionlock path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_haproxy_versionlock_stat.stat.exists
+        or (
+          monitoring_haproxy_versionlock_stat.stat.isreg
+          and not monitoring_haproxy_versionlock_stat.stat.islnk
+        )
+    fail_msg: The shared DNF versionlock list is not a safe regular file.
+  when: monitoring_haproxy_versionlock_ready | bool
+
+- name: Create absent monitoring HAProxy versionlock list
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ monitoring_haproxy_versionlock_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+  when:
+    - monitoring_haproxy_versionlock_ready | bool
+    - not monitoring_haproxy_versionlock_stat.stat.exists
+
+- name: Refresh monitoring HAProxy versionlock metadata
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_versionlock_path }}"
+    follow: false
+  register: monitoring_haproxy_versionlock_stat
+  check_mode: false
+  when: monitoring_haproxy_versionlock_ready | bool
+
+- name: Track monitoring HAProxy versionlock-list readiness
+  ansible.builtin.set_fact:
+    monitoring_haproxy_versionlock_list_ready: >-
+      {{
+        monitoring_haproxy_versionlock_ready | bool
+        and (monitoring_haproxy_versionlock_stat.stat | default({})).get(
+          'exists', false
+        )
+        and (monitoring_haproxy_versionlock_stat.stat | default({})).get(
+          'isreg', false
+        )
+        and not (monitoring_haproxy_versionlock_stat.stat | default({})).get(
+          'islnk', false
+        )
+      }}
+
+- name: Require safe monitoring HAProxy versionlock metadata
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          ansible_check_mode
+          and not monitoring_haproxy_versionlock_stat.stat.exists
+        )
+        or (
+          monitoring_haproxy_versionlock_list_ready | bool
+          and monitoring_haproxy_versionlock_stat.stat.pw_name == 'root'
+          and monitoring_haproxy_versionlock_stat.stat.gr_name == 'root'
+          and monitoring_haproxy_versionlock_stat.stat.mode[-2:]
+              is not search('[2367]')
+        )
+    fail_msg: The shared DNF versionlock list is not a safe root-owned file.
+  when: monitoring_haproxy_versionlock_ready | bool
+
+- name: Read shared monitoring HAProxy versionlock list
+  ansible.builtin.slurp:
+    src: "{{ monitoring_haproxy_versionlock_path }}"
+  register: monitoring_haproxy_versionlock_data
+  check_mode: false
+  when: monitoring_haproxy_versionlock_list_ready | bool
+
+- name: Build exact monitoring HAProxy versionlock content
+  ansible.builtin.set_fact:
+    monitoring_haproxy_versionlock_content: >-
+      {{
+        (
+          (monitoring_haproxy_versionlock_data.content | b64decode).splitlines()
+          | reject('match', '^[ \t]*!?haproxy(?:$|-[0-9]+:)')
+          | list
+          + [monitoring_haproxy_package_nevra]
+        ) | join(monitoring_haproxy_versionlock_newline)
+          ~ monitoring_haproxy_versionlock_newline
+      }}
+  vars:
+    monitoring_haproxy_versionlock_newline: "\n"
+  when: monitoring_haproxy_versionlock_list_ready | bool
+
+- name: Converge exact monitoring HAProxy versionlock atomically
+  ansible.builtin.copy:
+    content: "{{ monitoring_haproxy_versionlock_content }}"
+    dest: "{{ monitoring_haproxy_versionlock_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_haproxy_versionlock_result
+  when: monitoring_haproxy_versionlock_list_ready | bool
+
+- name: Track exact monitoring HAProxy versionlock convergence
+  ansible.builtin.set_fact:
+    monitoring_haproxy_versionlock_converged: >-
+      {{
+        monitoring_haproxy_versionlock_list_ready | bool
+        and not (
+          ansible_check_mode
+          and monitoring_haproxy_versionlock_result is changed
+        )
+      }}
+
+- name: Read converged monitoring HAProxy versionlock list
+  ansible.builtin.slurp:
+    src: "{{ monitoring_haproxy_versionlock_path }}"
+  register: monitoring_haproxy_versionlock_converged_data
+  check_mode: false
+  when: monitoring_haproxy_versionlock_converged | bool
+
+- name: Require one persisted exact monitoring HAProxy versionlock
+  ansible.builtin.assert:
+    that:
+      - >-
+        (monitoring_haproxy_versionlock_converged_data.content | b64decode)
+        .splitlines()
+        | select('match', '^!?haproxy(?:$|-[0-9]+:)')
+        | list | length == 1
+      - >-
+        monitoring_haproxy_package_nevra in
+        (monitoring_haproxy_versionlock_converged_data.content | b64decode)
+        .splitlines()
+    fail_msg: The persisted HAProxy versionlock is not the exact approved NEVRA.
+  when: monitoring_haproxy_versionlock_converged | bool
+
+- name: Install exact monitoring HAProxy package
+  ansible.builtin.dnf:
+    name: "{{ monitoring_haproxy_package_nevra }}"
+    state: present
+    allow_downgrade: true
+  register: monitoring_haproxy_package_result
+  notify: Reload monitoring HAProxy
+  when: monitoring_haproxy_versionlock_converged | bool
+
+- name: Track exact monitoring HAProxy binary readiness
+  ansible.builtin.set_fact:
+    monitoring_haproxy_binary_ready: >-
+      {{
+        monitoring_haproxy_versionlock_converged | bool
+        and not (
+          ansible_check_mode
+          and monitoring_haproxy_package_result is changed
+        )
+      }}
+
+- name: Query installed monitoring HAProxy package identity
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - --qf
+      - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+      - "{{ monitoring_haproxy_package_name }}"
+  register: monitoring_haproxy_installed_nevra
+  changed_when: false
+  check_mode: false
+  when: monitoring_haproxy_binary_ready | bool
+
+- name: Require exact installed monitoring HAProxy identity
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_installed_nevra.stdout == monitoring_haproxy_package_nevra
+    fail_msg: >-
+      Installed HAProxy package {{ monitoring_haproxy_installed_nevra.stdout }}
+      does not match required {{ monitoring_haproxy_package_nevra }}.
+  when: monitoring_haproxy_binary_ready | bool
+
+- name: Query effective monitoring HAProxy versionlocks
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - -q
+      - versionlock
+      - list
+  register: monitoring_haproxy_effective_versionlocks
+  changed_when: false
+  check_mode: false
+  when: monitoring_haproxy_versionlock_converged | bool
+
+- name: Require one effective exact monitoring HAProxy versionlock
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_haproxy_effective_versionlocks.stdout_lines
+        | select('match', '^!?haproxy(?:$|-[0-9]+:)')
+        | list | length == 1
+      - >-
+        monitoring_haproxy_package_nevra
+        in monitoring_haproxy_effective_versionlocks.stdout_lines
+    fail_msg: >-
+      DNF does not expose exactly one effective approved HAProxy versionlock.
+  when: monitoring_haproxy_versionlock_converged | bool
+
+- name: Inspect monitoring HAProxy build features
+  ansible.builtin.command:
+    argv:
+      - "{{ monitoring_haproxy_binary_path }}"
+      - -vv
+  register: monitoring_haproxy_build_features
+  changed_when: false
+  check_mode: false
+  when: monitoring_haproxy_binary_ready | bool
+
+- name: Require monitoring HAProxy TLS and Prometheus support
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_build_features.stdout is search('Built with OpenSSL version')
+      - >-
+        monitoring_haproxy_build_features.stdout
+        is search('Built with the Prometheus exporter as a service')
+    fail_msg: >-
+      Monitoring HAProxy requires OpenSSL and the Prometheus exporter service.
+  when: monitoring_haproxy_binary_ready | bool
+
+- name: Inspect existing monitoring HAProxy configuration
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_config_path }}"
+    follow: true
+  register: monitoring_haproxy_existing_config_stat
+  when: monitoring_haproxy_binary_ready | bool
+
+- name: Validate existing configuration after HAProxy package replacement
+  ansible.builtin.command:
+    argv:
+      - "{{ monitoring_haproxy_binary_path }}"
+      - -c
+      - -f
+      - "{{ monitoring_haproxy_config_path }}"
+  changed_when: false
+  when:
+    - monitoring_haproxy_binary_ready | bool
+    - monitoring_haproxy_package_result is changed
+    - monitoring_haproxy_existing_config_stat.stat.exists

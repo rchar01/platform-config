@@ -1,0 +1,496 @@
+---
+- name: Inspect monitoring HAProxy controller PKI inputs
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_bundle_source }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ monitoring_haproxy_frontend_pem_src }}"
+    - "{{ monitoring_haproxy_client_ca_src }}"
+    - "{{ monitoring_haproxy_client_crl_src }}"
+    - "{{ monitoring_haproxy_backend_ca_src }}"
+    - "{{ monitoring_haproxy_backend_client_pem_src }}"
+  loop_control:
+    loop_var: monitoring_haproxy_bundle_source
+    label: pki-input
+  register: monitoring_haproxy_bundle_source_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  no_log: true
+
+- name: Require safe monitoring HAProxy controller PKI inputs
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_bundle_source_stat.stat.exists
+      - monitoring_haproxy_bundle_source_stat.stat.isreg
+      - not monitoring_haproxy_bundle_source_stat.stat.islnk
+      - >-
+        monitoring_haproxy_bundle_source_stat.stat.checksum
+        is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      Monitoring HAProxy requires regular non-symlink controller PKI inputs.
+  loop: "{{ monitoring_haproxy_bundle_source_stats.results }}"
+  loop_control:
+    loop_var: monitoring_haproxy_bundle_source_stat
+    label: pki-input
+  no_log: true
+
+- name: Inspect monitoring HAProxy template inputs
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_template_source }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ role_path }}/templates/haproxy.cfg.j2"
+    - "{{ role_path }}/templates/monitoring-roles.map.j2"
+  loop_control:
+    loop_var: monitoring_haproxy_template_source
+  register: monitoring_haproxy_template_source_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+
+- name: Build monitoring HAProxy bundle contract
+  ansible.builtin.set_fact:
+    monitoring_haproxy_bundle_contract:
+      package: "{{ monitoring_haproxy_package_nevra }}"
+      process:
+        user: "{{ monitoring_haproxy_user }}"
+        group: "{{ monitoring_haproxy_group }}"
+        maxconn: "{{ monitoring_haproxy_maxconn }}"
+        timeout_connect: "{{ monitoring_haproxy_timeout_connect }}"
+        timeout_client: "{{ monitoring_haproxy_timeout_client }}"
+        timeout_server: "{{ monitoring_haproxy_timeout_server }}"
+        timeout_check: "{{ monitoring_haproxy_timeout_check }}"
+        check_interval: "{{ monitoring_haproxy_check_interval }}"
+        check_rise: "{{ monitoring_haproxy_check_rise }}"
+        check_fall: "{{ monitoring_haproxy_check_fall }}"
+      listeners:
+        bind_address: "{{ monitoring_haproxy_frontend_bind_address }}"
+        https: "{{ monitoring_haproxy_https_port }}"
+        postgresql: "{{ monitoring_haproxy_postgresql_frontend_port }}"
+        metrics_address: "{{ monitoring_haproxy_metrics_bind_address }}"
+        metrics_port: "{{ monitoring_haproxy_metrics_port }}"
+        metrics_path: "{{ monitoring_haproxy_metrics_path }}"
+      dns:
+        grafana: "{{ monitoring_haproxy_grafana_dns }}"
+        loki: "{{ monitoring_haproxy_loki_dns }}"
+        mimir: "{{ monitoring_haproxy_mimir_dns }}"
+        alertmanager: "{{ monitoring_haproxy_alertmanager_dns }}"
+        s3: "{{ monitoring_haproxy_s3_dns }}"
+        postgresql: "{{ monitoring_haproxy_postgresql_dns }}"
+      tenant: "{{ monitoring_haproxy_tenant }}"
+      identities: "{{ monitoring_haproxy_identity_roles }}"
+      routes:
+        loki_writer: "{{ monitoring_haproxy_loki_writer_routes }}"
+        loki_query: "{{ monitoring_haproxy_loki_query_routes }}"
+        mimir_writer: "{{ monitoring_haproxy_mimir_writer_routes }}"
+        mimir_query: "{{ monitoring_haproxy_mimir_query_routes }}"
+        alertmanager: "{{ monitoring_haproxy_alertmanager_routes }}"
+        operator: "{{ monitoring_haproxy_operator_routes }}"
+        grafana_probe: "{{ monitoring_haproxy_grafana_probe_routes }}"
+        loki_probe: "{{ monitoring_haproxy_loki_probe_routes }}"
+        mimir_probe: "{{ monitoring_haproxy_mimir_probe_routes }}"
+        s3_methods: "{{ monitoring_haproxy_s3_methods }}"
+        s3_probe_methods: "{{ monitoring_haproxy_s3_probe_methods }}"
+      sources:
+        https: "{{ monitoring_haproxy_https_allowed_sources }}"
+        postgresql: "{{ monitoring_haproxy_postgresql_allowed_sources }}"
+        metrics: "{{ monitoring_haproxy_metrics_allowed_sources }}"
+        operator: "{{ monitoring_haproxy_operator_allowed_sources }}"
+      backends: "{{ monitoring_haproxy_backends }}"
+      health_policies: "{{ monitoring_haproxy_health_policies }}"
+      pki_checksums: >-
+        {{ monitoring_haproxy_bundle_source_stats.results
+           | map(attribute='stat.checksum') | list }}
+      template_checksums: >-
+        {{ monitoring_haproxy_template_source_stats.results
+           | map(attribute='stat.checksum') | list }}
+
+- name: Derive monitoring HAProxy bundle paths
+  ansible.builtin.set_fact:
+    monitoring_haproxy_bundle_revision: >-
+      {{ monitoring_haproxy_bundle_contract | to_json | hash('sha256') }}
+    monitoring_haproxy_bundle_path: >-
+      {{ monitoring_haproxy_bundle_root }}/{{
+        monitoring_haproxy_bundle_contract | to_json | hash('sha256')
+      }}
+    monitoring_haproxy_candidate_bundle_path: >-
+      {{ monitoring_haproxy_bundle_root }}/.{{
+        monitoring_haproxy_bundle_contract | to_json | hash('sha256')
+      }}.candidate
+
+- name: Ensure monitoring HAProxy bundle root exists
+  ansible.builtin.file:
+    path: "{{ monitoring_haproxy_bundle_root }}"
+    state: directory
+    owner: root
+    group: "{{ monitoring_haproxy_group }}"
+    mode: "0750"
+
+- name: Inspect final monitoring HAProxy bundle
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_bundle_path }}"
+    follow: false
+  register: monitoring_haproxy_final_bundle_stat
+  check_mode: false
+
+- name: Reject unsafe final monitoring HAProxy bundle
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_haproxy_final_bundle_stat.stat.exists
+        or (
+          monitoring_haproxy_final_bundle_stat.stat.isdir
+          and not monitoring_haproxy_final_bundle_stat.stat.islnk
+          and monitoring_haproxy_final_bundle_stat.stat.pw_name == 'root'
+          and monitoring_haproxy_final_bundle_stat.stat.gr_name
+              == monitoring_haproxy_group
+        )
+    fail_msg: >-
+      The content-addressed monitoring HAProxy bundle path is unsafe.
+
+- name: Track monitoring HAProxy bundle publication
+  ansible.builtin.set_fact:
+    monitoring_haproxy_bundle_published: false
+
+- name: Stage absent monitoring HAProxy bundle
+  when:
+    - not monitoring_haproxy_final_bundle_stat.stat.exists
+    - not ansible_check_mode
+  block:
+    - name: Remove stale monitoring HAProxy candidate bundle
+      ansible.builtin.file:
+        path: "{{ monitoring_haproxy_candidate_bundle_path }}"
+        state: absent
+
+    - name: Create monitoring HAProxy candidate bundle
+      ansible.builtin.file:
+        path: "{{ monitoring_haproxy_candidate_bundle_path }}"
+        state: directory
+        owner: root
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0750"
+
+    - name: Copy monitoring HAProxy candidate PKI
+      ansible.builtin.copy:
+        src: "{{ monitoring_haproxy_candidate_pki.src }}"
+        dest: >-
+          {{ monitoring_haproxy_candidate_bundle_path }}/{{
+            monitoring_haproxy_candidate_pki.dest
+          }}
+        owner: root
+        group: "{{ monitoring_haproxy_candidate_pki.group }}"
+        mode: "{{ monitoring_haproxy_candidate_pki.mode }}"
+      loop:
+        - src: "{{ monitoring_haproxy_frontend_pem_src }}"
+          dest: frontend.pem
+          group: "{{ monitoring_haproxy_group }}"
+          mode: "0640"
+        - src: "{{ monitoring_haproxy_client_ca_src }}"
+          dest: client-ca.crt
+          group: root
+          mode: "0644"
+        - src: "{{ monitoring_haproxy_client_crl_src }}"
+          dest: client-ca.crl
+          group: root
+          mode: "0644"
+        - src: "{{ monitoring_haproxy_backend_ca_src }}"
+          dest: backend-ca.crt
+          group: root
+          mode: "0644"
+        - src: "{{ monitoring_haproxy_backend_client_pem_src }}"
+          dest: backend-client.pem
+          group: "{{ monitoring_haproxy_group }}"
+          mode: "0640"
+      loop_control:
+        loop_var: monitoring_haproxy_candidate_pki
+        label: "{{ monitoring_haproxy_candidate_pki.dest }}"
+      no_log: true
+
+    - name: Render monitoring HAProxy candidate identity map
+      ansible.builtin.template:
+        src: monitoring-roles.map.j2
+        dest: "{{ monitoring_haproxy_candidate_bundle_path }}/roles.map"
+        owner: root
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+
+    - name: Render monitoring HAProxy candidate configuration
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: "{{ monitoring_haproxy_candidate_bundle_path }}/haproxy.cfg"
+        owner: root
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+      vars:
+        monitoring_haproxy_render_frontend_pem_path: "{{ monitoring_haproxy_candidate_bundle_path }}/frontend.pem"
+        monitoring_haproxy_render_client_ca_path: "{{ monitoring_haproxy_candidate_bundle_path }}/client-ca.crt"
+        monitoring_haproxy_render_client_crl_path: "{{ monitoring_haproxy_candidate_bundle_path }}/client-ca.crl"
+        monitoring_haproxy_render_backend_ca_path: "{{ monitoring_haproxy_candidate_bundle_path }}/backend-ca.crt"
+        monitoring_haproxy_render_backend_client_pem_path: "{{ monitoring_haproxy_candidate_bundle_path }}/backend-client.pem"
+        monitoring_haproxy_render_identity_map_path: "{{ monitoring_haproxy_candidate_bundle_path }}/roles.map"
+
+    - name: Validate complete monitoring HAProxy candidate bundle
+      ansible.builtin.command:
+        argv:
+          - "{{ monitoring_haproxy_binary_path }}"
+          - -c
+          - -f
+          - "{{ monitoring_haproxy_candidate_bundle_path }}/haproxy.cfg"
+      changed_when: false
+
+    - name: Render monitoring HAProxy published configuration
+      ansible.builtin.template:
+        src: haproxy.cfg.j2
+        dest: "{{ monitoring_haproxy_candidate_bundle_path }}/haproxy.cfg"
+        owner: root
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+      vars:
+        monitoring_haproxy_render_frontend_pem_path: "{{ monitoring_haproxy_bundle_path }}/frontend.pem"
+        monitoring_haproxy_render_client_ca_path: "{{ monitoring_haproxy_bundle_path }}/client-ca.crt"
+        monitoring_haproxy_render_client_crl_path: "{{ monitoring_haproxy_bundle_path }}/client-ca.crl"
+        monitoring_haproxy_render_backend_ca_path: "{{ monitoring_haproxy_bundle_path }}/backend-ca.crt"
+        monitoring_haproxy_render_backend_client_pem_path: "{{ monitoring_haproxy_bundle_path }}/backend-client.pem"
+        monitoring_haproxy_render_identity_map_path: "{{ monitoring_haproxy_bundle_path }}/roles.map"
+
+    - name: Publish immutable monitoring HAProxy bundle
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ monitoring_haproxy_candidate_bundle_path }}"
+          - "{{ monitoring_haproxy_bundle_path }}"
+      changed_when: true
+
+    - name: Track published monitoring HAProxy bundle
+      ansible.builtin.set_fact:
+        monitoring_haproxy_bundle_published: true
+  rescue:
+    - name: Remove failed monitoring HAProxy candidate bundle
+      ansible.builtin.file:
+        path: "{{ monitoring_haproxy_candidate_bundle_path }}"
+        state: absent
+
+    - name: Reject failed monitoring HAProxy candidate bundle
+      ansible.builtin.fail:
+        msg: >-
+          Monitoring HAProxy rejected the complete candidate bundle; the current
+          bundle pointer was not changed.
+
+- name: Validate immutable monitoring HAProxy bundle
+  when:
+    - >-
+      monitoring_haproxy_final_bundle_stat.stat.exists
+      or not ansible_check_mode
+  block:
+    - name: Validate published monitoring HAProxy configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ monitoring_haproxy_binary_path }}"
+          - -c
+          - -f
+          - "{{ monitoring_haproxy_bundle_path }}/haproxy.cfg"
+      changed_when: false
+      check_mode: false
+  rescue:
+    - name: Remove newly published invalid monitoring HAProxy bundle
+      ansible.builtin.file:
+        path: "{{ monitoring_haproxy_bundle_path }}"
+        state: absent
+      when: monitoring_haproxy_bundle_published | bool
+
+    - name: Reject invalid immutable monitoring HAProxy bundle
+      ansible.builtin.fail:
+        msg: >-
+          Monitoring HAProxy rejected the published immutable bundle; the
+          current bundle pointer was not changed.
+
+- name: Restore immutable monitoring HAProxy bundle SELinux contexts
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RF
+      - "{{ monitoring_haproxy_bundle_path }}"
+  register: monitoring_haproxy_restorecon
+  changed_when: monitoring_haproxy_restorecon.stdout | length > 0
+  when:
+    - monitoring_haproxy_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+    - >-
+      monitoring_haproxy_final_bundle_stat.stat.exists
+      or not ansible_check_mode
+    - not ansible_check_mode
+
+- name: Inspect monitoring HAProxy current bundle pointer
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_current_link }}"
+    follow: false
+  register: monitoring_haproxy_current_link_stat
+  check_mode: false
+
+- name: Reject unsafe monitoring HAProxy current pointer
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_haproxy_current_link_stat.stat.exists
+        or (
+          monitoring_haproxy_current_link_stat.stat.islnk
+          and monitoring_haproxy_current_link_stat.stat.lnk_source
+              is match(
+                '^' ~ (monitoring_haproxy_bundle_root | regex_escape)
+                ~ '/[0-9a-f]{64}$'
+              )
+        )
+    fail_msg: >-
+      Monitoring HAProxy current bundle pointer is not a safe managed symlink.
+
+- name: Track monitoring HAProxy bundle readiness
+  ansible.builtin.set_fact:
+    monitoring_haproxy_bundle_ready: >-
+      {{
+        monitoring_haproxy_final_bundle_stat.stat.exists
+        or not ansible_check_mode
+      }}
+
+- name: Switch monitoring HAProxy bundle with reload rollback
+  when:
+    - monitoring_haproxy_bundle_ready | bool
+    - >-
+      not monitoring_haproxy_current_link_stat.stat.exists
+      or monitoring_haproxy_current_link_stat.stat.lnk_source
+         != monitoring_haproxy_bundle_path
+  block:
+    - name: Inspect monitoring HAProxy next-bundle pointer
+      ansible.builtin.stat:
+        path: "{{ monitoring_haproxy_current_link }}.next"
+        follow: false
+      register: monitoring_haproxy_next_link_stat
+      check_mode: false
+
+    - name: Reject unsafe monitoring HAProxy next-bundle pointer
+      ansible.builtin.assert:
+        that:
+          - >-
+            not monitoring_haproxy_next_link_stat.stat.exists
+            or monitoring_haproxy_next_link_stat.stat.islnk
+        fail_msg: >-
+          Monitoring HAProxy next-bundle pointer is not a managed symlink.
+
+    - name: Create monitoring HAProxy next-bundle pointer
+      ansible.builtin.file:
+        src: "{{ monitoring_haproxy_bundle_path }}"
+        dest: "{{ monitoring_haproxy_current_link }}.next"
+        state: link
+        owner: root
+        group: "{{ monitoring_haproxy_group }}"
+        force: true
+
+    - name: Switch monitoring HAProxy bundle atomically
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - --force
+          - "{{ monitoring_haproxy_current_link }}.next"
+          - "{{ monitoring_haproxy_current_link }}"
+      changed_when: true
+
+    - name: Reload monitoring HAProxy after bundle switch
+      ansible.builtin.systemd_service:
+        name: "{{ monitoring_haproxy_service_name }}"
+        state: reloaded
+      when:
+        - monitoring_haproxy_service_enabled | bool
+        - monitoring_haproxy_service_state == 'started'
+        - monitoring_haproxy_current_link_stat.stat.exists
+        - not ansible_check_mode
+  rescue:
+    - name: Restore previous monitoring HAProxy bundle pointer
+      when: monitoring_haproxy_current_link_stat.stat.exists
+      block:
+        - name: Create monitoring HAProxy rollback pointer
+          ansible.builtin.file:
+            src: "{{ monitoring_haproxy_current_link_stat.stat.lnk_source }}"
+            dest: "{{ monitoring_haproxy_current_link }}.next"
+            state: link
+            owner: root
+            group: "{{ monitoring_haproxy_group }}"
+            force: true
+
+        - name: Switch monitoring HAProxy pointer back atomically
+          ansible.builtin.command:
+            argv:
+              - mv
+              - --no-target-directory
+              - --force
+              - "{{ monitoring_haproxy_current_link }}.next"
+              - "{{ monitoring_haproxy_current_link }}"
+          changed_when: true
+
+        - name: Attempt monitoring HAProxy rollback reload
+          ansible.builtin.systemd_service:
+            name: "{{ monitoring_haproxy_service_name }}"
+            state: reloaded
+          failed_when: false
+          when:
+            - monitoring_haproxy_service_enabled | bool
+            - monitoring_haproxy_service_state == 'started'
+            - not ansible_check_mode
+
+    - name: Reject failed monitoring HAProxy bundle activation
+      ansible.builtin.fail:
+        msg: >-
+          Monitoring HAProxy could not activate the validated bundle; the
+          previous bundle pointer was restored when one existed.
+
+- name: Inspect monitoring HAProxy service configuration path
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_config_path }}"
+    follow: false
+  register: monitoring_haproxy_service_config_stat
+  check_mode: false
+
+- name: Reject unsafe monitoring HAProxy service configuration path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_haproxy_service_config_stat.stat.exists
+        or (
+          monitoring_haproxy_service_config_stat.stat.isreg
+          and not monitoring_haproxy_service_config_stat.stat.islnk
+          and monitoring_haproxy_service_config_stat.stat.pw_name == 'root'
+          and monitoring_haproxy_service_config_stat.stat.gr_name == 'root'
+          and monitoring_haproxy_service_config_stat.stat.mode[-2:]
+              is not search('[2367]')
+        )
+        or (
+          monitoring_haproxy_service_config_stat.stat.islnk
+          and monitoring_haproxy_service_config_stat.stat.lnk_target
+              == monitoring_haproxy_bundle_config_path
+        )
+    fail_msg: >-
+      Monitoring HAProxy service configuration is not a safe package file or
+      role-owned bundle symlink.
+
+- name: Remove replaced monitoring HAProxy package configuration
+  ansible.builtin.file:
+    path: "{{ monitoring_haproxy_config_path }}"
+    state: absent
+  when:
+    - monitoring_haproxy_bundle_ready | bool
+    - monitoring_haproxy_service_config_stat.stat.exists
+    - not monitoring_haproxy_service_config_stat.stat.islnk
+
+- name: Link monitoring HAProxy service configuration to current bundle
+  ansible.builtin.file:
+    src: "{{ monitoring_haproxy_bundle_config_path }}"
+    dest: "{{ monitoring_haproxy_config_path }}"
+    state: link
+    owner: root
+    group: "{{ monitoring_haproxy_group }}"
+  notify: Reload monitoring HAProxy
+  when: monitoring_haproxy_bundle_ready | bool

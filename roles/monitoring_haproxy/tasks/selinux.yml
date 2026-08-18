@@ -1,0 +1,31 @@
+---
+- name: Install monitoring HAProxy SELinux management package
+  ansible.builtin.dnf:
+    name: "{{ monitoring_haproxy_selinux_package }}"
+    state: present
+  register: monitoring_haproxy_selinux_package_result
+  when:
+    - monitoring_haproxy_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+
+- name: Label monitoring HAProxy listener ports for SELinux
+  community.general.seport:
+    ports: "{{ monitoring_haproxy_selinux_listener_port | string }}"
+    proto: tcp
+    setype: "{{ monitoring_haproxy_selinux_port_type }}"
+    state: present
+  loop:
+    - "{{ monitoring_haproxy_https_port }}"
+    - "{{ monitoring_haproxy_postgresql_frontend_port }}"
+    - "{{ monitoring_haproxy_metrics_port }}"
+  loop_control:
+    loop_var: monitoring_haproxy_selinux_listener_port
+  notify: Reload monitoring HAProxy
+  when:
+    - monitoring_haproxy_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+    - >-
+      not (
+        ansible_check_mode
+        and monitoring_haproxy_selinux_package_result is changed
+      )

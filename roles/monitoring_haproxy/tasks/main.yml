@@ -1,17 +1,98 @@
 ---
-- name: Preserve validation-only monitoring HAProxy contract boundary
+- name: Assert monitoring HAProxy lifecycle selectors
   ansible.builtin.assert:
     that:
       - monitoring_haproxy_enabled is boolean
       - monitoring_haproxy_service_enabled is boolean
-      - not monitoring_haproxy_service_enabled
-      - monitoring_haproxy_service_state == 'stopped'
+      - monitoring_haproxy_service_state in ['started', 'stopped']
+      - >-
+        monitoring_haproxy_service_enabled
+        == (monitoring_haproxy_service_state == 'started')
     fail_msg: >-
-      The monitoring HAProxy role currently validates its frontend and backend
-      topology contracts only. Service activation remains unavailable until
-      package, health, firewall, SELinux, rendering, and lifecycle implementation
-      is complete.
+      Monitoring HAProxy requires boolean ownership and a coherent stopped or
+      active service lifecycle.
 
-- name: Validate staged monitoring HAProxy frontend and backend contract
-  ansible.builtin.include_tasks: validate.yml
+- name: Configure monitoring HAProxy
   when: monitoring_haproxy_enabled
+  block:
+    - name: Validate monitoring HAProxy policy contract
+      ansible.builtin.include_tasks: validate.yml
+
+    - name: Validate monitoring HAProxy operational contract
+      ansible.builtin.include_tasks: validate_operational.yml
+
+    - name: Converge monitoring HAProxy package
+      ansible.builtin.include_tasks: package.yml
+
+    - name: Converge monitoring HAProxy SELinux policy
+      ansible.builtin.include_tasks: selinux.yml
+
+    - name: Query live firewalld before monitoring HAProxy bundle changes
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --state
+      register: monitoring_haproxy_firewalld_runtime
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - monitoring_haproxy_service_state == 'started'
+        - monitoring_haproxy_firewalld_manage | bool
+
+    - name: Assert monitoring HAProxy pre-bundle activation dependencies
+      ansible.builtin.assert:
+        that:
+          - firewalld_dependencies_ready | default(false) | bool
+          - >-
+            firewalld_service_state | default('stopped')
+            in ['started', 'restarted', 'reloaded']
+          - monitoring_haproxy_firewalld_runtime.rc == 0
+          - monitoring_haproxy_firewalld_runtime.stdout == 'running'
+        fail_msg: >-
+          Active monitoring HAProxy requires managed firewalld dependencies and
+          live enforcement before wildcard listeners can start.
+      when:
+        - monitoring_haproxy_service_state == 'started'
+        - monitoring_haproxy_firewalld_manage | bool
+
+    - name: Converge monitoring HAProxy bundle
+      ansible.builtin.include_tasks: bundle.yml
+      when: monitoring_haproxy_binary_ready | bool
+
+    - name: Converge monitoring HAProxy firewalld policy
+      ansible.builtin.include_tasks: firewalld.yml
+
+    - name: Query live firewalld before monitoring HAProxy service management
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - --state
+      register: monitoring_haproxy_firewalld_runtime_final
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - monitoring_haproxy_service_state == 'started'
+        - monitoring_haproxy_firewalld_manage | bool
+
+    - name: Assert final monitoring HAProxy activation dependencies
+      ansible.builtin.assert:
+        that:
+          - monitoring_haproxy_firewalld_runtime_final.rc == 0
+          - monitoring_haproxy_firewalld_runtime_final.stdout == 'running'
+        fail_msg: >-
+          Active monitoring HAProxy requires live firewalld enforcement
+          immediately before service management.
+      when:
+        - monitoring_haproxy_service_state == 'started'
+        - monitoring_haproxy_firewalld_manage | bool
+
+    - name: Manage monitoring HAProxy service
+      ansible.builtin.systemd_service:
+        name: "{{ monitoring_haproxy_service_name }}"
+        enabled: "{{ monitoring_haproxy_service_enabled }}"
+        state: "{{ monitoring_haproxy_service_state }}"
+      when:
+        - monitoring_haproxy_binary_ready | bool
+        - monitoring_haproxy_bundle_ready | bool

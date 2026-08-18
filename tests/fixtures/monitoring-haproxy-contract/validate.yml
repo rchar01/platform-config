@@ -113,5 +113,8 @@
         's3': {'port': 13004, 'health_port': 13006, 'targets': monitoring_haproxy_fixture_s3_targets},
         'postgresql': {'port': 13005, 'health_port': 13007, 'targets': monitoring_haproxy_fixture_targets}
       }) }}
-  roles:
-    - role: monitoring_haproxy
+  tasks:
+    - name: Validate monitoring HAProxy contract
+      ansible.builtin.include_role:
+        name: monitoring_haproxy
+        tasks_from: validate

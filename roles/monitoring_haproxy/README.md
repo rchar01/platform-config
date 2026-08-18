@@ -1,14 +1,23 @@
 # Monitoring HAProxy
 
-Validation and offline-rendering foundation for the replacement monitoring
-HAProxy policy.
+Host-native lifecycle and policy enforcement for the replacement monitoring
+HAProxy tier.
 
-The role is disabled by default. In this slice, setting
-`monitoring_haproxy_enabled: true` validates the locked frontend contract but
-does not install packages, write rendered files, manage SELinux or firewalld, or
-touch a service. Reviewable HAProxy and identity-map templates are exercised
-only by isolated test fixtures. `monitoring_haproxy_service_enabled` must remain `false` and
-`monitoring_haproxy_service_state` must remain `stopped`.
+The role is disabled by default. When explicitly enabled and contract-ready, it
+installs the exact approved HAProxy NEVRA, preserves unrelated entries in the
+shared DNF versionlock list, copies outside-Git PKI, renders the policy, and
+validates the complete candidate with HAProxy before publication. Configuration,
+the identity map, and PKI are published as one content-addressed generation
+under `/etc/haproxy/monitoring-bundles`; an atomic
+`/etc/haproxy/monitoring-current` pointer selects the generation used by the
+package-standard `/etc/haproxy/haproxy.cfg` symlink. A failed active reload
+restores the prior generation pointer.
+
+The role also adds required SELinux HTTP port labels and reconciles only its own
+manifest-backed firewalld rich rules. Activation requires coherent `started` and
+enabled service selectors plus live managed-firewall readiness. The default
+`stopped` and disabled selectors support offline staging without starting
+HAProxy.
 
 Validated inputs include:
 
@@ -39,14 +48,17 @@ Validated inputs include:
   sources contained by the outer HTTPS policy; and
 - an explicit contract-readiness gate.
 
-Package repository immutability, target-side TLS installation, configuration
-deployment, lifecycle management, and target activation remain blocked. Backend
-service/health ports, addresses, names, and TLS identities have no public
-defaults and must come from private inventory. Real PKI stays outside Git and is
-produced through `platform-tools`; the role never generates production
-certificates.
+Backend service/health ports, addresses, names, and TLS identities have no
+public defaults and must come from private inventory. Real PKI stays outside Git
+and is produced through `platform-tools`; the role never generates production
+certificates. Enabling the role in a playbook and authorizing managed-host
+activation remain separate rollout decisions.
 
 Subject DNs must be unique. Multiple explicitly listed identities may map to the
 same least-privilege role, including individual collectors, browser users, and
 operators. Membership is an exact identity allowlist; role-name uniqueness is
 not an authorization boundary.
+
+Run `make test-monitoring-haproxy-capabilities` for rendered policy behavior and
+`make test-monitoring-haproxy-rocky` for package, bundle, rollback, firewall,
+service, check-mode, and idempotency coverage in disposable Rocky systemd.

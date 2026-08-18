@@ -1,4 +1,17 @@
 ---
+- name: Assert monitoring HAProxy lifecycle contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_enabled is boolean
+      - monitoring_haproxy_service_enabled is boolean
+      - monitoring_haproxy_service_state in ['started', 'stopped']
+      - >-
+        monitoring_haproxy_service_enabled
+        == (monitoring_haproxy_service_state == 'started')
+    fail_msg: >-
+      Monitoring HAProxy requires boolean ownership and a coherent stopped or
+      active service lifecycle.
+
 - name: Assert monitoring HAProxy scalar contract
   ansible.builtin.assert:
     that:

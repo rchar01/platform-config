@@ -1,0 +1,183 @@
+---
+- name: Ensure monitoring HAProxy managed state directory exists
+  ansible.builtin.file:
+    path: "{{ monitoring_haproxy_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Build current monitoring HAProxy firewalld policy
+  ansible.builtin.set_fact:
+    monitoring_haproxy_current_firewalld_rules: []
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Add monitoring HAProxy HTTPS firewalld policy
+  ansible.builtin.set_fact:
+    monitoring_haproxy_current_firewalld_rules: >-
+      {{
+        monitoring_haproxy_current_firewalld_rules
+        + [
+          'rule family="ipv4" source address="' ~ monitoring_haproxy_source
+          ~ '" port port="' ~ (monitoring_haproxy_https_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: "{{ monitoring_haproxy_https_allowed_sources | sort }}"
+  loop_control:
+    loop_var: monitoring_haproxy_source
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Add monitoring HAProxy PostgreSQL firewalld policy
+  ansible.builtin.set_fact:
+    monitoring_haproxy_current_firewalld_rules: >-
+      {{
+        monitoring_haproxy_current_firewalld_rules
+        + [
+          'rule family="ipv4" source address="' ~ monitoring_haproxy_source
+          ~ '" port port="'
+          ~ (monitoring_haproxy_postgresql_frontend_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: "{{ monitoring_haproxy_postgresql_allowed_sources | sort }}"
+  loop_control:
+    loop_var: monitoring_haproxy_source
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Add monitoring HAProxy metrics firewalld policy
+  ansible.builtin.set_fact:
+    monitoring_haproxy_current_firewalld_rules: >-
+      {{
+        monitoring_haproxy_current_firewalld_rules
+        + [
+          'rule family="ipv4" source address="' ~ monitoring_haproxy_source
+          ~ '" port port="' ~ (monitoring_haproxy_metrics_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: "{{ monitoring_haproxy_metrics_allowed_sources | sort }}"
+  loop_control:
+    loop_var: monitoring_haproxy_source
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Inspect previous monitoring HAProxy firewalld manifest
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_firewalld_manifest_path }}"
+    follow: false
+  register: monitoring_haproxy_firewalld_manifest_stat
+  check_mode: false
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Reject unsafe monitoring HAProxy firewalld manifest
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_haproxy_firewalld_manifest_stat.stat.exists
+        or (
+          monitoring_haproxy_firewalld_manifest_stat.stat.isreg
+          and not monitoring_haproxy_firewalld_manifest_stat.stat.islnk
+          and monitoring_haproxy_firewalld_manifest_stat.stat.pw_name == 'root'
+          and monitoring_haproxy_firewalld_manifest_stat.stat.gr_name == 'root'
+          and monitoring_haproxy_firewalld_manifest_stat.stat.mode[-2:]
+              is not search('[2367]')
+        )
+    fail_msg: >-
+      Monitoring HAProxy firewalld state must be a safe root-owned regular file.
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Read previous monitoring HAProxy firewalld manifest
+  ansible.builtin.slurp:
+    path: "{{ monitoring_haproxy_firewalld_manifest_path }}"
+  register: monitoring_haproxy_firewalld_manifest_data
+  check_mode: false
+  when:
+    - monitoring_haproxy_firewalld_manage | bool
+    - monitoring_haproxy_firewalld_manifest_stat.stat.exists
+
+- name: Track previous monitoring HAProxy firewalld policy
+  ansible.builtin.set_fact:
+    monitoring_haproxy_previous_firewalld_manifest: >-
+      {{
+        (monitoring_haproxy_firewalld_manifest_data.content | b64decode | from_yaml)
+        if monitoring_haproxy_firewalld_manifest_stat.stat.exists
+        else {'zone': monitoring_haproxy_firewalld_zone, 'rich_rules': []}
+      }}
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Validate previous monitoring HAProxy firewalld policy
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_previous_firewalld_manifest is mapping
+      - >-
+        monitoring_haproxy_previous_firewalld_manifest.keys() | sort
+        == ['rich_rules', 'zone']
+      - >-
+        monitoring_haproxy_previous_firewalld_manifest.zone
+        == monitoring_haproxy_firewalld_zone
+      - monitoring_haproxy_previous_firewalld_manifest.rich_rules is sequence
+      - monitoring_haproxy_previous_firewalld_manifest.rich_rules is not string
+    fail_msg: >-
+      Monitoring HAProxy firewalld state has an invalid schema or zone.
+  when: monitoring_haproxy_firewalld_manage | bool
+
+- name: Enable current monitoring HAProxy firewalld policy
+  ansible.posix.firewalld:
+    zone: "{{ monitoring_haproxy_firewalld_zone }}"
+    rich_rule: "{{ monitoring_haproxy_firewalld_rule }}"
+    permanent: true
+    immediate: >-
+      {{
+        firewalld_service_state | default('stopped')
+        in ['started', 'restarted', 'reloaded']
+      }}
+    offline: true
+    state: enabled
+  loop: "{{ monitoring_haproxy_current_firewalld_rules | unique | sort }}"
+  loop_control:
+    loop_var: monitoring_haproxy_firewalld_rule
+  when:
+    - monitoring_haproxy_firewalld_manage | bool
+    - firewalld_dependencies_ready | default(true) | bool
+
+- name: Disable stale monitoring HAProxy firewalld policy
+  ansible.posix.firewalld:
+    zone: "{{ monitoring_haproxy_firewalld_zone }}"
+    rich_rule: "{{ monitoring_haproxy_firewalld_rule }}"
+    permanent: true
+    immediate: >-
+      {{
+        firewalld_service_state | default('stopped')
+        in ['started', 'restarted', 'reloaded']
+      }}
+    offline: true
+    state: disabled
+  loop: >-
+    {{
+      monitoring_haproxy_previous_firewalld_manifest.rich_rules
+      | difference(monitoring_haproxy_current_firewalld_rules)
+    }}
+  loop_control:
+    loop_var: monitoring_haproxy_firewalld_rule
+  when:
+    - monitoring_haproxy_firewalld_manage | bool
+    - firewalld_dependencies_ready | default(true) | bool
+
+- name: Write monitoring HAProxy firewalld manifest
+  ansible.builtin.copy:
+    dest: "{{ monitoring_haproxy_firewalld_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{
+        {
+          'zone': monitoring_haproxy_firewalld_zone,
+          'rich_rules': monitoring_haproxy_current_firewalld_rules
+                        | unique | sort
+        } | to_nice_yaml
+      }}
+  when:
+    - monitoring_haproxy_firewalld_manage | bool
+    - firewalld_dependencies_ready | default(true) | bool

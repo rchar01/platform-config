@@ -13,14 +13,14 @@ defaults
   timeout check {{ monitoring_haproxy_timeout_check }}
 
 frontend monitoring_https
-  bind {{ monitoring_haproxy_frontend_bind_address }}:{{ monitoring_haproxy_https_port }} ssl crt {{ monitoring_haproxy_frontend_pem_path }} ca-file {{ monitoring_haproxy_client_ca_path }} crl-file {{ monitoring_haproxy_client_crl_path }} verify required strict-sni alpn http/1.1
+  bind {{ monitoring_haproxy_frontend_bind_address }}:{{ monitoring_haproxy_https_port }} ssl crt {{ monitoring_haproxy_render_frontend_pem_path }} ca-file {{ monitoring_haproxy_render_client_ca_path }} crl-file {{ monitoring_haproxy_render_client_crl_path }} verify required strict-sni alpn http/1.1
   mode http
   option httplog
   acl monitoring_https_source src {{ monitoring_haproxy_https_allowed_sources | join(' ') }}
   acl monitoring_operator_source src {{ monitoring_haproxy_operator_allowed_sources | join(' ') }}
   tcp-request connection reject unless monitoring_https_source
   http-request del-header X-Scope-OrgID
-  http-request set-var(txn.role) ssl_c_s_dn(,0,rfc2253),map_str({{ monitoring_haproxy_identity_map_path }},__denied__)
+  http-request set-var(txn.role) ssl_c_s_dn(,0,rfc2253),map_str({{ monitoring_haproxy_render_identity_map_path }},__denied__)
 {% for service, dns in {
   'grafana': monitoring_haproxy_grafana_dns,
   'loki': monitoring_haproxy_loki_dns,
@@ -131,7 +131,7 @@ backend {{ service }}_backend
   http-check send meth {{ monitoring_haproxy_health_policies[service].method }} uri {{ monitoring_haproxy_health_policies[service].path }} ver HTTP/1.1 hdr Host {{ dns }}
   http-check expect status 200
 {% for target in monitoring_haproxy_backends[service].targets %}
-  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends[service].port }} ssl check verify required ca-file {{ monitoring_haproxy_backend_ca_path }} crt {{ monitoring_haproxy_backend_client_pem_path }} sni str({{ target.tls_server_name }}) check-sni {{ target.tls_server_name }} verifyhost {{ target.tls_server_name }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
+  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends[service].port }} ssl check verify required ca-file {{ monitoring_haproxy_render_backend_ca_path }} crt {{ monitoring_haproxy_render_backend_client_pem_path }} sni str({{ target.tls_server_name }}) check-sni {{ target.tls_server_name }} verifyhost {{ target.tls_server_name }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
 {% endfor %}
 {%- endmacro %}
 {{ tls_http_backend('grafana', monitoring_haproxy_grafana_dns) }}
@@ -153,5 +153,5 @@ backend postgresql_primary
   http-check send meth HEAD uri /primary ver HTTP/1.1 hdr Host {{ monitoring_haproxy_postgresql_dns }}
   http-check expect status 200
 {% for target in monitoring_haproxy_backends.postgresql.targets %}
-  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends.postgresql.port }} check port {{ monitoring_haproxy_backends.postgresql.health_port }} check-ssl check-sni {{ target.tls_server_name }} verify required ca-file {{ monitoring_haproxy_backend_ca_path }} crt {{ monitoring_haproxy_backend_client_pem_path }} verifyhost {{ target.tls_server_name }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
+  server {{ target.name }} {{ target.address }}:{{ monitoring_haproxy_backends.postgresql.port }} check port {{ monitoring_haproxy_backends.postgresql.health_port }} check-ssl check-sni {{ target.tls_server_name }} verify required ca-file {{ monitoring_haproxy_render_backend_ca_path }} crt {{ monitoring_haproxy_render_backend_client_pem_path }} verifyhost {{ target.tls_server_name }} inter {{ monitoring_haproxy_check_interval }} fall {{ monitoring_haproxy_check_fall }} rise {{ monitoring_haproxy_check_rise }}
 {% endfor %}

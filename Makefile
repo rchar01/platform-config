@@ -163,6 +163,11 @@ test-openbao-haproxy-rocky:
 test-monitoring-haproxy-capabilities:
 	@bash tests/integration/test-monitoring-haproxy-capabilities.sh
 
+## Run the opt-in monitoring HAProxy role lifecycle check
+.PHONY: test-monitoring-haproxy-rocky
+test-monitoring-haproxy-rocky:
+	@bash tests/integration/test-monitoring-haproxy-rocky.sh
+
 ## Resolve and qualify exact monitoring component image identities
 test-monitoring-artifact-identities:
 	@bash tests/integration/test-monitoring-artifact-identities.sh
