@@ -1,0 +1,47 @@
+---
+- name: Find monitoring etcd bundle directories
+  ansible.builtin.find:
+    paths:
+      - "{{ monitoring_etcd_bundle_root }}"
+    file_type: directory
+    recurse: false
+    hidden: false
+    use_regex: true
+    patterns:
+      - '^[0-9a-f]{64}$'
+  register: monitoring_etcd_bundle_directories
+  changed_when: false
+
+- name: Reject unsafe obsolete monitoring etcd bundles
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_obsolete_bundle.path is match(
+          '^' ~ (monitoring_etcd_bundle_root | regex_escape) ~ '/[0-9a-f]{64}$'
+        )
+      - monitoring_etcd_obsolete_bundle.uid == 0
+      - monitoring_etcd_obsolete_bundle.gid == monitoring_etcd_runtime_gid | int
+      - monitoring_etcd_obsolete_bundle.mode == '0750'
+    fail_msg: Monitoring etcd refuses to prune an unsafe obsolete bundle.
+  loop: >-
+    {{
+      monitoring_etcd_bundle_directories.files
+      | rejectattr('path', 'equalto', monitoring_etcd_bundle_path)
+      | list
+    }}
+  loop_control:
+    loop_var: monitoring_etcd_obsolete_bundle
+    label: "{{ monitoring_etcd_obsolete_bundle.path }}"
+
+- name: Remove obsolete monitoring etcd bundles after successful staging
+  ansible.builtin.file:
+    path: "{{ monitoring_etcd_obsolete_bundle.path }}"
+    state: absent
+  loop: >-
+    {{
+      monitoring_etcd_bundle_directories.files
+      | rejectattr('path', 'equalto', monitoring_etcd_bundle_path)
+      | list
+    }}
+  loop_control:
+    loop_var: monitoring_etcd_obsolete_bundle
+    label: "{{ monitoring_etcd_obsolete_bundle.path }}"

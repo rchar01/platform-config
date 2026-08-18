@@ -1,0 +1,31 @@
+---
+- name: Parse previous monitoring etcd firewalld rule source
+  ansible.builtin.set_fact:
+    monitoring_etcd_previous_firewalld_source: >-
+      {{
+        monitoring_etcd_previous_firewalld_rule
+        | regex_replace(
+            '^rule family="ipv4" source address="([^/]+)/.*$',
+            '\1'
+          )
+      }}
+
+- name: Assert previous monitoring etcd firewalld rule ownership
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_previous_firewalld_rule is string
+      - >-
+        monitoring_etcd_previous_firewalld_rule is match(
+          '^rule family="ipv4" source address="'
+          ~ '(0|[1-9][0-9]{0,2})([.](0|[1-9][0-9]{0,2})){3}'
+          ~ '/(3[0-2]|[12]?[0-9])" port port="('
+          ~ (monitoring_etcd_client_port | string)
+          ~ '|' ~ (monitoring_etcd_peer_port | string)
+          ~ ')" protocol="tcp" accept$'
+        )
+      - >-
+        monitoring_etcd_previous_firewalld_source.split('.')
+        | map('int') | select('gt', 255) | list | length == 0
+    fail_msg: >-
+      Monitoring etcd refuses to remove a previous firewalld rule outside its
+      exact source-scoped client and peer port grammar.

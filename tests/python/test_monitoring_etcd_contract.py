@@ -121,27 +121,24 @@ def test_monitoring_etcd_rejects_invalid_contract(
     assert_failed_with(result, case.message)
 
 
-def test_monitoring_etcd_role_remains_validation_only(repo_root: Path) -> None:
+def test_monitoring_etcd_convergence_remains_fail_closed(repo_root: Path) -> None:
     role = repo_root / "roles/monitoring_etcd"
-    allowed_actions = {
-        "ansible.builtin.assert",
-        "ansible.builtin.include_tasks",
-        "ansible.builtin.set_fact",
-    }
-    task_keywords = {
-        "name",
-        "loop",
-        "loop_control",
-        "no_log",
-        "when",
-    }
-    for path in sorted((role / "tasks").glob("*.yml")):
-        tasks = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert isinstance(tasks, list)
-        for task in tasks:
-            actions = set(task) - task_keywords
-            assert len(actions) == 1, (path, task.get("name"), actions)
-            assert actions.pop() in allowed_actions
+    task_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((role / "tasks").glob("*.yml"))
+    )
+    for task_name in (
+        "Verify monitoring etcd data path is a separate mount",
+        "Inspect monitoring etcd controller PKI inputs",
+        "Pull exact monitoring etcd image",
+        "Stage absent monitoring etcd bundle",
+        "Configure monitoring etcd SELinux file contexts",
+        "Enable current monitoring etcd firewalld policy",
+        "Manage staged monitoring etcd service",
+    ):
+        assert task_name in task_text
+    assert "rm -rf" not in task_text
+    assert "monitoring_etcd_data_dir }}\n        state: absent" not in task_text
     assert not (role / "handlers").exists()
 
 
@@ -153,12 +150,20 @@ def test_monitoring_etcd_defaults_are_inactive(repo_root: Path) -> None:
     )
     assert defaults["monitoring_etcd_enabled"] is False
     assert defaults["monitoring_etcd_contract_ready"] is False
+    assert defaults["monitoring_etcd_converge"] is False
     assert defaults["monitoring_etcd_service_enabled"] is False
     assert defaults["monitoring_etcd_service_state"] == "stopped"
     assert defaults["monitoring_etcd_cluster_members"] == []
     assert defaults["monitoring_etcd_tls_ca_src"] == ""
     assert defaults["monitoring_etcd_tls_cert_src"] == ""
     assert defaults["monitoring_etcd_tls_key_src"] == ""
+    assert defaults["monitoring_etcd_bundle_root"] == "/etc/monitoring/etcd/bundles"
+    assert defaults["monitoring_etcd_current_link"] == "/etc/monitoring/etcd/current"
+    assert defaults["monitoring_etcd_config_path"] == (
+        "{{ monitoring_etcd_current_link }}/etcd.yml"
+    )
+    assert defaults["monitoring_etcd_firewalld_manage"] is True
+    assert defaults["monitoring_etcd_selinux_manage"] is True
 
 
 def test_monitoring_etcd_rendered_contract(
@@ -209,7 +214,6 @@ def test_monitoring_etcd_rendered_contract(
     for line in (
         "Image=gcr.io/etcd-development/etcd@sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6",
         "User=10001:10001",
-        "UserNS=keep-id:uid=10001,gid=10001",
         "Network=host",
         "ReadOnly=true",
         "NoNewPrivileges=true",
@@ -218,6 +222,7 @@ def test_monitoring_etcd_rendered_contract(
         "MemorySwapMax=0",
     ):
         assert line in quadlet
+    assert "UserNS=" not in quadlet
     assert "[Install]" not in quadlet
 
 

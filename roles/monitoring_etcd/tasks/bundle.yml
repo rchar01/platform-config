@@ -1,0 +1,430 @@
+---
+- name: Inspect monitoring etcd template inputs
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_template_source }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ role_path }}/templates/etcd.yml.j2"
+    - "{{ role_path }}/templates/monitoring-etcd.container.j2"
+    - "{{ role_path }}/templates/validate-config.sh.j2"
+  loop_control:
+    loop_var: monitoring_etcd_template_source
+  register: monitoring_etcd_template_source_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+
+- name: Build monitoring etcd bundle contract
+  ansible.builtin.set_fact:
+    monitoring_etcd_bundle_contract:
+      image:
+        reference: "{{ monitoring_etcd_image }}"
+        manifest_digest: "{{ monitoring_etcd_image_manifest_digest }}"
+        architecture: "{{ monitoring_etcd_image_architecture }}"
+        runtime_uid: "{{ monitoring_etcd_runtime_uid }}"
+        runtime_gid: "{{ monitoring_etcd_runtime_gid }}"
+      member:
+        name: "{{ monitoring_etcd_node_name }}"
+        address: "{{ monitoring_etcd_node_address }}"
+        dns: "{{ monitoring_etcd_node_dns }}"
+      cluster:
+        members: "{{ monitoring_etcd_cluster_members }}"
+        token: "{{ monitoring_etcd_initial_cluster_token }}"
+        state: "{{ monitoring_etcd_initial_cluster_state }}"
+      ports:
+        client: "{{ monitoring_etcd_client_port }}"
+        peer: "{{ monitoring_etcd_peer_port }}"
+      logging:
+        logger: "{{ monitoring_etcd_logger }}"
+        level: "{{ monitoring_etcd_log_level }}"
+      pki_checksums: >-
+        {{
+          monitoring_etcd_pki_source_stats.results
+          | map(attribute='stat.checksum')
+          | list
+        }}
+      template_checksums: >-
+        {{
+          monitoring_etcd_template_source_stats.results
+          | map(attribute='stat.checksum')
+          | list
+        }}
+
+- name: Derive monitoring etcd bundle paths
+  ansible.builtin.set_fact:
+    monitoring_etcd_bundle_revision: >-
+      {{ monitoring_etcd_bundle_contract | to_json | hash('sha256') }}
+    monitoring_etcd_bundle_path: >-
+      {{
+        monitoring_etcd_bundle_root ~ '/'
+        ~ (monitoring_etcd_bundle_contract | to_json | hash('sha256'))
+      }}
+
+- name: Derive monitoring etcd generated-file checksums
+  ansible.builtin.set_fact:
+    monitoring_etcd_bundle_contract_content: >-
+      {{ monitoring_etcd_bundle_contract | to_json }}
+    monitoring_etcd_expected_config_checksum: >-
+      {{
+        lookup(
+          'ansible.builtin.template',
+          role_path ~ '/templates/etcd.yml.j2',
+          rstrip=false
+        )
+        | hash('sha256')
+      }}
+
+- name: Derive monitoring etcd bundle-contract checksum
+  ansible.builtin.set_fact:
+    monitoring_etcd_expected_contract_checksum: >-
+      {{ monitoring_etcd_bundle_contract_content | hash('sha256') }}
+    monitoring_etcd_candidate_bundle_path: >-
+      {{
+        monitoring_etcd_bundle_root ~ '/.'
+        ~ (monitoring_etcd_bundle_contract | to_json | hash('sha256'))
+        ~ '.candidate'
+      }}
+
+- name: Inspect final monitoring etcd bundle
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bundle_path }}"
+    follow: false
+  register: monitoring_etcd_final_bundle_stat
+  check_mode: false
+
+- name: Reject unsafe final monitoring etcd bundle
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_etcd_final_bundle_stat.stat.exists
+        or (
+          monitoring_etcd_final_bundle_stat.stat.isdir
+          and not monitoring_etcd_final_bundle_stat.stat.islnk
+          and monitoring_etcd_final_bundle_stat.stat.pw_name == 'root'
+          and monitoring_etcd_final_bundle_stat.stat.gid
+              == monitoring_etcd_runtime_gid | int
+          and monitoring_etcd_final_bundle_stat.stat.mode == '0750'
+        )
+    fail_msg: The content-addressed monitoring etcd bundle path is unsafe.
+
+- name: Find interrupted monitoring etcd candidate bundles
+  ansible.builtin.find:
+    paths:
+      - "{{ monitoring_etcd_bundle_root }}"
+    file_type: any
+    recurse: false
+    hidden: true
+    use_regex: true
+    patterns:
+      - '^[.][0-9a-f]{64}[.]candidate$'
+  register: monitoring_etcd_interrupted_candidates
+  changed_when: false
+  check_mode: false
+
+- name: Reject unsafe interrupted monitoring etcd candidates
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_interrupted_candidate.path is match(
+          '^' ~ (monitoring_etcd_bundle_root | regex_escape)
+          ~ '/[.][0-9a-f]{64}[.]candidate$'
+        )
+      - monitoring_etcd_interrupted_candidate.isdir
+      - not monitoring_etcd_interrupted_candidate.islnk
+      - monitoring_etcd_interrupted_candidate.uid == 0
+      - >-
+        monitoring_etcd_interrupted_candidate.gid
+        == monitoring_etcd_runtime_gid | int
+      - monitoring_etcd_interrupted_candidate.mode == '0750'
+    fail_msg: Monitoring etcd refuses to remove an unsafe interrupted candidate.
+  loop: "{{ monitoring_etcd_interrupted_candidates.files }}"
+  loop_control:
+    loop_var: monitoring_etcd_interrupted_candidate
+    label: "{{ monitoring_etcd_interrupted_candidate.path }}"
+
+- name: Remove stale monitoring etcd candidate bundles
+  ansible.builtin.file:
+    path: "{{ monitoring_etcd_interrupted_candidate.path }}"
+    state: absent
+  loop: "{{ monitoring_etcd_interrupted_candidates.files }}"
+  loop_control:
+    loop_var: monitoring_etcd_interrupted_candidate
+    label: "{{ monitoring_etcd_interrupted_candidate.path }}"
+  when: not ansible_check_mode
+
+- name: Stage absent monitoring etcd bundle
+  when:
+    - not monitoring_etcd_final_bundle_stat.stat.exists
+    - not ansible_check_mode
+  block:
+    - name: Remove stale monitoring etcd candidate bundle
+      ansible.builtin.file:
+        path: "{{ monitoring_etcd_candidate_bundle_path }}"
+        state: absent
+
+    - name: Create monitoring etcd candidate bundle directories
+      ansible.builtin.file:
+        path: "{{ monitoring_etcd_candidate_directory.path }}"
+        state: directory
+        owner: root
+        group: "{{ monitoring_etcd_runtime_gid }}"
+        mode: "{{ monitoring_etcd_candidate_directory.mode }}"
+      loop:
+        - path: "{{ monitoring_etcd_candidate_bundle_path }}"
+          mode: "0750"
+        - path: "{{ monitoring_etcd_candidate_bundle_path }}/pki"
+          mode: "0750"
+      loop_control:
+        loop_var: monitoring_etcd_candidate_directory
+        label: "{{ monitoring_etcd_candidate_directory.path }}"
+
+    - name: Copy monitoring etcd candidate PKI
+      ansible.builtin.copy:
+        src: "{{ monitoring_etcd_candidate_pki.src }}"
+        dest: >-
+          {{
+            monitoring_etcd_candidate_bundle_path ~ '/pki/'
+            ~ monitoring_etcd_candidate_pki.dest
+          }}
+        owner: root
+        group: "{{ monitoring_etcd_candidate_pki.group }}"
+        mode: "{{ monitoring_etcd_candidate_pki.mode }}"
+      loop:
+        - src: "{{ monitoring_etcd_tls_ca_src }}"
+          dest: ca.crt
+          group: root
+          mode: "0644"
+        - src: "{{ monitoring_etcd_tls_cert_src }}"
+          dest: tls.crt
+          group: root
+          mode: "0644"
+        - src: "{{ monitoring_etcd_tls_key_src }}"
+          dest: tls.key
+          group: "{{ monitoring_etcd_runtime_gid }}"
+          mode: "0640"
+      loop_control:
+        loop_var: monitoring_etcd_candidate_pki
+        label: "{{ monitoring_etcd_candidate_pki.dest }}"
+      no_log: true
+
+    - name: Render monitoring etcd validation configuration
+      ansible.builtin.template:
+        src: etcd.yml.j2
+        dest: "{{ monitoring_etcd_candidate_bundle_path }}/etcd.yml"
+        owner: root
+        group: "{{ monitoring_etcd_runtime_gid }}"
+        mode: "0640"
+      vars:
+        monitoring_etcd_template_node_address: 0.0.0.0
+        monitoring_etcd_template_log_level: info
+
+    - name: Validate complete monitoring etcd candidate bundle
+      ansible.builtin.command:
+        argv:
+          - "{{ monitoring_etcd_validator_path }}"
+          - "{{ monitoring_etcd_candidate_bundle_path }}"
+      changed_when: false
+
+    - name: Render published monitoring etcd configuration
+      ansible.builtin.template:
+        src: etcd.yml.j2
+        dest: "{{ monitoring_etcd_candidate_bundle_path }}/etcd.yml"
+        owner: root
+        group: "{{ monitoring_etcd_runtime_gid }}"
+        mode: "0640"
+
+    - name: Write monitoring etcd bundle contract
+      ansible.builtin.copy:
+        dest: "{{ monitoring_etcd_candidate_bundle_path }}/bundle-contract.json"
+        owner: root
+        group: "{{ monitoring_etcd_runtime_gid }}"
+        mode: "0640"
+        content: "{{ monitoring_etcd_bundle_contract_content }}"
+
+    - name: Publish immutable monitoring etcd bundle
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ monitoring_etcd_candidate_bundle_path }}"
+          - "{{ monitoring_etcd_bundle_path }}"
+      changed_when: true
+  rescue:
+    - name: Remove failed monitoring etcd candidate bundle
+      ansible.builtin.file:
+        path: "{{ monitoring_etcd_candidate_bundle_path }}"
+        state: absent
+
+    - name: Reject failed monitoring etcd candidate bundle
+      ansible.builtin.fail:
+        msg: >-
+          Monitoring etcd rejected the complete candidate bundle; the current
+          bundle pointer was not changed.
+
+- name: Inspect immutable monitoring etcd bundle files
+  ansible.builtin.stat:
+    path: >-
+      {{
+        monitoring_etcd_bundle_path ~ '/'
+        ~ monitoring_etcd_bundle_file.path
+      }}
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - path: etcd.yml
+      gid: "{{ monitoring_etcd_runtime_gid }}"
+      mode: "0640"
+      checksum: "{{ monitoring_etcd_expected_config_checksum }}"
+    - path: pki/ca.crt
+      gid: "0"
+      mode: "0644"
+      checksum: "{{ monitoring_etcd_pki_source_stats.results[0].stat.checksum }}"
+    - path: pki/tls.crt
+      gid: "0"
+      mode: "0644"
+      checksum: "{{ monitoring_etcd_pki_source_stats.results[1].stat.checksum }}"
+    - path: pki/tls.key
+      gid: "{{ monitoring_etcd_runtime_gid }}"
+      mode: "0640"
+      checksum: "{{ monitoring_etcd_pki_source_stats.results[2].stat.checksum }}"
+    - path: bundle-contract.json
+      gid: "{{ monitoring_etcd_runtime_gid }}"
+      mode: "0640"
+      checksum: "{{ monitoring_etcd_expected_contract_checksum }}"
+  loop_control:
+    loop_var: monitoring_etcd_bundle_file
+  register: monitoring_etcd_bundle_file_stats
+  check_mode: false
+  when:
+    - monitoring_etcd_final_bundle_stat.stat.exists or not ansible_check_mode
+
+- name: Require safe immutable monitoring etcd bundle files
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bundle_file_stat.stat.exists
+      - monitoring_etcd_bundle_file_stat.stat.isreg
+      - not monitoring_etcd_bundle_file_stat.stat.islnk
+      - monitoring_etcd_bundle_file_stat.stat.pw_name == 'root'
+      - >-
+        monitoring_etcd_bundle_file_stat.stat.gid
+        == monitoring_etcd_bundle_file_stat.monitoring_etcd_bundle_file.gid | int
+      - >-
+        monitoring_etcd_bundle_file_stat.stat.mode
+        == monitoring_etcd_bundle_file_stat.monitoring_etcd_bundle_file.mode
+      - >-
+        monitoring_etcd_bundle_file_stat.monitoring_etcd_bundle_file.checksum
+        | length == 0
+        or monitoring_etcd_bundle_file_stat.stat.checksum
+           == monitoring_etcd_bundle_file_stat.monitoring_etcd_bundle_file.checksum
+    fail_msg: Monitoring etcd immutable bundle content is unsafe or incomplete.
+  loop: "{{ monitoring_etcd_bundle_file_stats.results | default([]) }}"
+  loop_control:
+    loop_var: monitoring_etcd_bundle_file_stat
+    label: "{{ monitoring_etcd_bundle_file_stat.monitoring_etcd_bundle_file.path }}"
+
+- name: Inspect immutable monitoring etcd PKI directory
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bundle_path }}/pki"
+    follow: false
+  register: monitoring_etcd_bundle_pki_stat
+  check_mode: false
+  when:
+    - monitoring_etcd_final_bundle_stat.stat.exists or not ansible_check_mode
+
+- name: Require safe immutable monitoring etcd PKI directory
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bundle_pki_stat.stat.exists
+      - monitoring_etcd_bundle_pki_stat.stat.isdir
+      - not monitoring_etcd_bundle_pki_stat.stat.islnk
+      - monitoring_etcd_bundle_pki_stat.stat.pw_name == 'root'
+      - monitoring_etcd_bundle_pki_stat.stat.gid == monitoring_etcd_runtime_gid | int
+      - monitoring_etcd_bundle_pki_stat.stat.mode == '0750'
+    fail_msg: Monitoring etcd immutable PKI directory is unsafe.
+  when: monitoring_etcd_bundle_pki_stat is not skipped
+
+- name: Restore monitoring etcd bundle SELinux contexts
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RF
+      - "{{ monitoring_etcd_bundle_path }}"
+  register: monitoring_etcd_bundle_restorecon
+  changed_when: monitoring_etcd_bundle_restorecon.stdout | length > 0
+  when:
+    - monitoring_etcd_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+    - monitoring_etcd_final_bundle_stat.stat.exists or not ansible_check_mode
+    - not ansible_check_mode
+
+- name: Inspect monitoring etcd current bundle pointer
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_current_link }}"
+    follow: false
+  register: monitoring_etcd_current_link_stat
+  check_mode: false
+
+- name: Reject unsafe monitoring etcd current pointer
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_etcd_current_link_stat.stat.exists
+        or (
+          monitoring_etcd_current_link_stat.stat.islnk
+          and monitoring_etcd_current_link_stat.stat.lnk_source
+              is match(
+                '^' ~ (monitoring_etcd_bundle_root | regex_escape)
+                ~ '/[0-9a-f]{64}$'
+              )
+        )
+    fail_msg: Monitoring etcd current pointer is not a safe managed symlink.
+
+- name: Track monitoring etcd bundle readiness
+  ansible.builtin.set_fact:
+    monitoring_etcd_bundle_ready: >-
+      {{ monitoring_etcd_final_bundle_stat.stat.exists or not ansible_check_mode }}
+
+- name: Switch monitoring etcd current bundle
+  when:
+    - monitoring_etcd_bundle_ready | bool
+    - >-
+      not monitoring_etcd_current_link_stat.stat.exists
+      or monitoring_etcd_current_link_stat.stat.lnk_source
+         != monitoring_etcd_bundle_path
+  block:
+    - name: Inspect monitoring etcd next-bundle pointer
+      ansible.builtin.stat:
+        path: "{{ monitoring_etcd_current_link }}.next"
+        follow: false
+      register: monitoring_etcd_next_link_stat
+      check_mode: false
+
+    - name: Reject unsafe monitoring etcd next-bundle pointer
+      ansible.builtin.assert:
+        that:
+          - >-
+            not monitoring_etcd_next_link_stat.stat.exists
+            or monitoring_etcd_next_link_stat.stat.islnk
+        fail_msg: Monitoring etcd next pointer is not a managed symlink.
+
+    - name: Create monitoring etcd next-bundle pointer
+      ansible.builtin.file:
+        src: "{{ monitoring_etcd_bundle_path }}"
+        dest: "{{ monitoring_etcd_current_link }}.next"
+        state: link
+        owner: root
+        group: "{{ monitoring_etcd_runtime_gid }}"
+        force: true
+
+    - name: Switch monitoring etcd bundle atomically
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - --force
+          - "{{ monitoring_etcd_current_link }}.next"
+          - "{{ monitoring_etcd_current_link }}"
+      changed_when: true
+      when: not ansible_check_mode

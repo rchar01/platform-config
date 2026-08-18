@@ -2,6 +2,7 @@
 monitoring_etcd_version: 3.6.14
 monitoring_etcd_image_repository: gcr.io/etcd-development/etcd
 monitoring_etcd_image_digest: sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6
+monitoring_etcd_image_manifest_digest: sha256:6efdcd9a81c9063554d107d0c163523e8bc1984d1245d914b56065f614d4d67b
 monitoring_etcd_image: "{{ monitoring_etcd_image_repository }}@{{ monitoring_etcd_image_digest }}"
 monitoring_etcd_image_architecture: amd64
 monitoring_etcd_image_declared_user: "0"

@@ -5,9 +5,13 @@
       - monitoring_etcd_enabled is boolean
       - monitoring_etcd_contract_ready is boolean
       - monitoring_etcd_contract_ready
+      - monitoring_etcd_converge is boolean
       - monitoring_etcd_service_enabled is boolean
       - not monitoring_etcd_service_enabled
       - monitoring_etcd_service_state == 'stopped'
+      - monitoring_etcd_container_name == 'monitoring-etcd'
+      - monitoring_etcd_quadlet_name == 'monitoring-etcd.container'
+      - monitoring_etcd_service_name == 'monitoring-etcd.service'
       - monitoring_etcd_version == '3.6.14'
       - monitoring_etcd_image_repository == 'gcr.io/etcd-development/etcd'
       - >-
@@ -17,6 +21,9 @@
         monitoring_etcd_image
         == monitoring_etcd_image_repository ~ '@' ~ monitoring_etcd_image_digest
       - monitoring_etcd_image_architecture == 'amd64'
+      - >-
+        monitoring_etcd_image_manifest_digest
+        == 'sha256:6efdcd9a81c9063554d107d0c163523e8bc1984d1245d914b56065f614d4d67b'
       - monitoring_etcd_image_declared_user == '0'
       - monitoring_etcd_runtime_uid == '10001'
       - monitoring_etcd_runtime_gid == '10001'
@@ -26,6 +33,16 @@
       - monitoring_etcd_initial_cluster_state == 'new'
       - monitoring_etcd_logger == 'zap'
       - monitoring_etcd_log_level in ['error', 'warn', 'info']
+      - monitoring_etcd_validation_timeout == 5
+      - monitoring_etcd_quadlet_restart_policy == 'on-failure'
+      - monitoring_etcd_quadlet_restart_sec == '5s'
+      - monitoring_etcd_quadlet_timeout_start_sec == '90s'
+      - monitoring_etcd_quadlet_memory_swap_max == '0'
+      - monitoring_etcd_firewalld_manage is boolean
+      - monitoring_etcd_selinux_manage is boolean
+      - >-
+        not monitoring_etcd_converge
+        or (monitoring_etcd_firewalld_manage and monitoring_etcd_selinux_manage)
       - >-
         monitoring_etcd_initial_cluster_token
         is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
@@ -37,12 +54,22 @@
   ansible.builtin.assert:
     that:
       - monitoring_etcd_config_dir == '/etc/monitoring/etcd'
-      - monitoring_etcd_config_path == '/etc/monitoring/etcd/etcd.yml'
-      - monitoring_etcd_tls_dir == '/etc/monitoring/etcd/pki'
-      - monitoring_etcd_tls_ca_path == '/etc/monitoring/etcd/pki/ca.crt'
-      - monitoring_etcd_tls_cert_path == '/etc/monitoring/etcd/pki/tls.crt'
-      - monitoring_etcd_tls_key_path == '/etc/monitoring/etcd/pki/tls.key'
+      - monitoring_etcd_bundle_root == '/etc/monitoring/etcd/bundles'
+      - monitoring_etcd_current_link == '/etc/monitoring/etcd/current'
+      - monitoring_etcd_config_path == '/etc/monitoring/etcd/current/etcd.yml'
+      - monitoring_etcd_tls_dir == '/etc/monitoring/etcd/current/pki'
+      - monitoring_etcd_tls_ca_path == '/etc/monitoring/etcd/current/pki/ca.crt'
+      - monitoring_etcd_tls_cert_path == '/etc/monitoring/etcd/current/pki/tls.crt'
+      - monitoring_etcd_tls_key_path == '/etc/monitoring/etcd/current/pki/tls.key'
       - monitoring_etcd_data_dir == '/srv/monitoring/etcd'
+      - monitoring_etcd_validator_dir == '/usr/local/libexec/platform'
+      - >-
+        monitoring_etcd_validator_path
+        == '/usr/local/libexec/platform/monitoring-etcd-validate-config'
+      - monitoring_etcd_state_dir == '/var/lib/platform-config'
+      - >-
+        monitoring_etcd_firewalld_manifest_path
+        == '/var/lib/platform-config/monitoring-etcd-firewalld.yml'
       - monitoring_etcd_container_config_dir == '/etc/etcd'
       - monitoring_etcd_container_config_path == '/etc/etcd/etcd.yml'
       - monitoring_etcd_container_tls_dir == '/etc/etcd/pki'
@@ -52,6 +79,26 @@
         monitoring_etcd_quadlet_path
         == monitoring_etcd_quadlet_dir ~ '/monitoring-etcd.container'
     fail_msg: Monitoring etcd paths must match the role-owned fixed layout.
+
+- name: Assert monitoring etcd security policy contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_firewalld_zone is string
+      - monitoring_etcd_firewalld_zone is match('^[A-Za-z0-9_-]{1,32}$')
+      - monitoring_etcd_client_allowed_sources is sequence
+      - monitoring_etcd_client_allowed_sources is not string
+      - monitoring_etcd_selinux_package == 'policycoreutils-python-utils'
+      - monitoring_etcd_selinux_file_type == 'container_file_t'
+    fail_msg: >-
+      Monitoring etcd requires fixed SELinux ownership and a valid source-scoped
+      firewalld policy.
+
+- name: Validate additional monitoring etcd client sources
+  ansible.builtin.include_tasks: validate_source.yml
+  loop: "{{ monitoring_etcd_client_allowed_sources }}"
+  loop_control:
+    loop_var: monitoring_etcd_allowed_source
+    label: client-source
 
 - name: Assert monitoring etcd controller TLS source contract
   ansible.builtin.assert:

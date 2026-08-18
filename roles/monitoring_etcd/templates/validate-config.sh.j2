@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+
+candidate_bundle="${1:?candidate bundle path is required}"
+container_name="monitoring-etcd-validator-$$"
+data_dir="$(mktemp -d /var/tmp/monitoring-etcd-validation.XXXXXX)"
+chown {{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }} "$data_dir"
+chmod 0700 "$data_dir"
+
+cleanup() {
+  /usr/bin/podman rm -f "$container_name" >/dev/null 2>&1 || true
+  rm -r -- "$data_dir"
+}
+trap cleanup EXIT INT TERM
+
+status=0
+output="$(timeout {{ monitoring_etcd_validation_timeout }} /usr/bin/podman run --rm \
+  --name "$container_name" \
+  --network none \
+  --pull never \
+  --read-only \
+  --user {{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }} \
+  --cap-drop all \
+  --security-opt no-new-privileges \
+  --volume "${data_dir}:{{ monitoring_etcd_container_data_dir }}:Z" \
+  --volume "${candidate_bundle}:{{ monitoring_etcd_container_config_dir }}:ro,Z" \
+  --entrypoint /usr/local/bin/etcd \
+  {{ monitoring_etcd_image | quote }} \
+  --config-file {{ monitoring_etcd_container_config_path | quote }} 2>&1)" || status=$?
+
+if [[ "$status" != 124 ]]; then
+  printf 'Monitoring etcd candidate exited %s: %s\n' "$status" "$output" >&2
+  exit 1
+fi
+
+if ! grep -Fq '"msg":"serving peer traffic"' <<< "$output"; then
+  printf 'Monitoring etcd candidate did not initialize peer TLS: %s\n' "$output" >&2
+  exit 1
+fi

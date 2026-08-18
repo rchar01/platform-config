@@ -184,6 +184,11 @@ test-monitoring-etcd-image:
 test-monitoring-etcd-cluster:
 	@bash tests/integration/test-monitoring-etcd-cluster.sh
 
+.PHONY: test-monitoring-etcd-rocky
+## Exercise inactive monitoring etcd role convergence on disposable Rocky
+test-monitoring-etcd-rocky:
+	@bash tests/integration/test-monitoring-etcd-rocky.sh
+
 ## Exercise disposable Garage RF=3 quorum and signed S3 behavior
 test-monitoring-garage-cluster:
 	@bash tests/integration/test-monitoring-garage-cluster.sh

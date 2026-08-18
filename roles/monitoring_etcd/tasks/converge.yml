@@ -1,0 +1,436 @@
+---
+- name: Inspect monitoring etcd controller PKI inputs
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_pki_source }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ monitoring_etcd_tls_ca_src }}"
+    - "{{ monitoring_etcd_tls_cert_src }}"
+    - "{{ monitoring_etcd_tls_key_src }}"
+  loop_control:
+    loop_var: monitoring_etcd_pki_source
+    label: pki-input
+  register: monitoring_etcd_pki_source_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  no_log: true
+
+- name: Require safe monitoring etcd controller PKI inputs
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_pki_source_stat.stat.exists
+      - monitoring_etcd_pki_source_stat.stat.isreg
+      - not monitoring_etcd_pki_source_stat.stat.islnk
+      - monitoring_etcd_pki_source_stat.stat.checksum is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      Monitoring etcd requires regular non-symlink controller PKI inputs.
+  loop: "{{ monitoring_etcd_pki_source_stats.results }}"
+  loop_control:
+    loop_var: monitoring_etcd_pki_source_stat
+    label: pki-input
+  no_log: true
+
+- name: Inspect monitoring etcd data path
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_data_dir }}"
+    follow: false
+  register: monitoring_etcd_data_path_stat
+  check_mode: false
+
+- name: Require pre-existing monitoring etcd data path
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_data_path_stat.stat.exists
+      - monitoring_etcd_data_path_stat.stat.isdir
+      - not monitoring_etcd_data_path_stat.stat.islnk
+    fail_msg: >-
+      Monitoring etcd requires its pre-existing dedicated data directory; this
+      role never creates or initializes the storage mount.
+
+- name: Verify monitoring etcd data path is a separate mount
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --mountpoint
+      - "{{ monitoring_etcd_data_dir }}"
+  changed_when: false
+  check_mode: false
+
+- name: Read local IPv4 addresses for monitoring etcd binding
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -o
+      - -4
+      - address
+      - show
+  register: monitoring_etcd_local_ipv4_addresses
+  changed_when: false
+  check_mode: false
+
+- name: Require local monitoring etcd bind address
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_local_ipv4_addresses.stdout
+        is search(' inet ' ~ (monitoring_etcd_node_address | regex_escape) ~ '/')
+    fail_msg: >-
+      Monitoring etcd node address {{ monitoring_etcd_node_address }} is not
+      assigned to this host and cannot be used with host networking.
+
+- name: Inspect monitoring etcd Podman executable
+  ansible.builtin.stat:
+    path: /usr/bin/podman
+  register: monitoring_etcd_podman_stat
+  check_mode: false
+
+- name: Require monitoring etcd Podman executable
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_podman_stat.stat.exists
+      - monitoring_etcd_podman_stat.stat.isreg
+      - monitoring_etcd_podman_stat.stat.executable
+    fail_msg: >-
+      Monitoring etcd convergence requires the podman_host role to install the
+      approved Podman runtime first.
+
+- name: Check exact monitoring etcd image availability
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - image
+      - exists
+      - "{{ monitoring_etcd_image }}"
+  register: monitoring_etcd_image_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Pull exact monitoring etcd image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - pull
+      - --platform
+      - linux/amd64
+      - "{{ monitoring_etcd_image }}"
+  register: monitoring_etcd_image_pull_result
+  changed_when: true
+  when:
+    - monitoring_etcd_image_exists.rc != 0
+    - not ansible_check_mode
+
+- name: Track monitoring etcd image readiness
+  ansible.builtin.set_fact:
+    monitoring_etcd_image_ready: >-
+      {{
+        monitoring_etcd_image_exists.rc == 0
+        or (
+          monitoring_etcd_image_pull_result is defined
+          and monitoring_etcd_image_pull_result is changed
+        )
+      }}
+
+- name: Inspect exact monitoring etcd image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - image
+      - inspect
+      - "{{ monitoring_etcd_image }}"
+  register: monitoring_etcd_image_inspect
+  changed_when: false
+  check_mode: false
+  when: monitoring_etcd_image_ready | bool
+
+- name: Parse exact monitoring etcd image metadata
+  ansible.builtin.set_fact:
+    monitoring_etcd_image_metadata: >-
+      {{ monitoring_etcd_image_inspect.stdout | from_json | first }}
+  when: monitoring_etcd_image_ready | bool
+
+- name: Require exact monitoring etcd image identity
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_image_metadata.Digest == monitoring_etcd_image_digest
+      - monitoring_etcd_image_metadata.Os == 'linux'
+      - >-
+        monitoring_etcd_image_metadata.Architecture
+        == monitoring_etcd_image_architecture
+      - >-
+        monitoring_etcd_image_metadata.Config.User
+        == monitoring_etcd_image_declared_user
+    fail_msg: >-
+      Pulled monitoring etcd image metadata does not match the approved index,
+      platform, and declared-user contract.
+  when: monitoring_etcd_image_ready | bool
+
+- name: Read exact monitoring etcd runtime version
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - run
+      - --rm
+      - --network
+      - none
+      - --pull
+      - never
+      - --read-only
+      - --user
+      - "{{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }}"
+      - --cap-drop
+      - all
+      - --security-opt
+      - no-new-privileges
+      - "{{ monitoring_etcd_image }}"
+      - /usr/local/bin/etcd
+      - --version
+  register: monitoring_etcd_runtime_version
+  changed_when: false
+  check_mode: false
+  when: monitoring_etcd_image_ready | bool
+
+- name: Require exact monitoring etcd runtime version
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_runtime_version.stdout
+        is search('(?m)^etcd Version: 3[.]6[.]14$')
+      - >-
+        monitoring_etcd_runtime_version.stdout
+        is search('(?m)^Go OS/Arch: linux/amd64$')
+    fail_msg: Monitoring etcd runtime version or platform does not match the lock.
+  when: monitoring_etcd_image_ready | bool
+
+- name: Inspect existing monitoring etcd service
+  ansible.builtin.service_facts:
+
+- name: Disable existing monitoring etcd service before staging
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - disable
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_service_disable
+  changed_when: >-
+    'Removed ' in monitoring_etcd_service_disable.stdout
+    or 'Removed ' in monitoring_etcd_service_disable.stderr
+  when:
+    - monitoring_etcd_service_name in (ansible_facts.services | default({}))
+    - not ansible_check_mode
+
+- name: Stop existing monitoring etcd service before staging
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_etcd_service_name }}"
+    state: stopped
+  when:
+    - monitoring_etcd_service_name in (ansible_facts.services | default({}))
+    - not ansible_check_mode
+
+- name: Remove persistent monitoring etcd service enablement
+  ansible.builtin.file:
+    path: "/etc/systemd/system/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+    state: absent
+
+- name: Inspect monitoring etcd role-owned directories
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_owned_directory }}"
+    follow: false
+  loop:
+    - "{{ monitoring_etcd_config_dir }}"
+    - "{{ monitoring_etcd_bundle_root }}"
+    - "{{ monitoring_etcd_validator_dir }}"
+    - "{{ monitoring_etcd_quadlet_dir }}"
+    - "{{ monitoring_etcd_state_dir }}"
+  loop_control:
+    loop_var: monitoring_etcd_owned_directory
+  register: monitoring_etcd_owned_directory_stats
+  check_mode: false
+
+- name: Reject unsafe monitoring etcd role-owned directories
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_etcd_owned_directory_stat.stat.exists
+        or (
+          monitoring_etcd_owned_directory_stat.stat.isdir
+          and not monitoring_etcd_owned_directory_stat.stat.islnk
+          and monitoring_etcd_owned_directory_stat.stat.pw_name == 'root'
+        )
+    fail_msg: Monitoring etcd role-owned directories must be safe root-owned paths.
+  loop: "{{ monitoring_etcd_owned_directory_stats.results }}"
+  loop_control:
+    loop_var: monitoring_etcd_owned_directory_stat
+    label: "{{ monitoring_etcd_owned_directory_stat.monitoring_etcd_owned_directory }}"
+
+- name: Inspect monitoring etcd managed files
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_managed_file }}"
+    follow: false
+  loop:
+    - "{{ monitoring_etcd_validator_path }}"
+    - "{{ monitoring_etcd_quadlet_path }}"
+  loop_control:
+    loop_var: monitoring_etcd_managed_file
+  register: monitoring_etcd_managed_file_stats
+  check_mode: false
+
+- name: Reject unsafe monitoring etcd managed files
+  ansible.builtin.assert:
+    that:
+      - >-
+        not monitoring_etcd_managed_file_stat.stat.exists
+        or (
+          monitoring_etcd_managed_file_stat.stat.isreg
+          and not monitoring_etcd_managed_file_stat.stat.islnk
+          and monitoring_etcd_managed_file_stat.stat.pw_name == 'root'
+          and monitoring_etcd_managed_file_stat.stat.gr_name == 'root'
+          and monitoring_etcd_managed_file_stat.stat.mode[-2:]
+              is not search('[2367]')
+        )
+    fail_msg: Monitoring etcd managed files must be safe root-owned regular files.
+  loop: "{{ monitoring_etcd_managed_file_stats.results }}"
+  loop_control:
+    loop_var: monitoring_etcd_managed_file_stat
+    label: "{{ monitoring_etcd_managed_file_stat.monitoring_etcd_managed_file }}"
+
+- name: Ensure monitoring etcd role-owned directories exist
+  ansible.builtin.file:
+    path: "{{ monitoring_etcd_directory.path }}"
+    state: directory
+    owner: root
+    group: "{{ monitoring_etcd_directory.group }}"
+    mode: "{{ monitoring_etcd_directory.mode }}"
+  loop:
+    - path: "{{ monitoring_etcd_config_dir }}"
+      group: "{{ monitoring_etcd_runtime_gid }}"
+      mode: "0750"
+    - path: "{{ monitoring_etcd_bundle_root }}"
+      group: "{{ monitoring_etcd_runtime_gid }}"
+      mode: "0750"
+    - path: "{{ monitoring_etcd_validator_dir }}"
+      group: root
+      mode: "0755"
+    - path: "{{ monitoring_etcd_quadlet_dir }}"
+      group: root
+      mode: "0755"
+    - path: "{{ monitoring_etcd_state_dir }}"
+      group: root
+      mode: "0755"
+  loop_control:
+    loop_var: monitoring_etcd_directory
+    label: "{{ monitoring_etcd_directory.path }}"
+
+- name: Set monitoring etcd data path ownership
+  ansible.builtin.file:
+    path: "{{ monitoring_etcd_data_dir }}"
+    state: directory
+    owner: "{{ monitoring_etcd_runtime_uid }}"
+    group: "{{ monitoring_etcd_runtime_gid }}"
+    mode: "0700"
+
+- name: Write monitoring etcd candidate validator
+  ansible.builtin.template:
+    src: validate-config.sh.j2
+    dest: "{{ monitoring_etcd_validator_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /bin/bash -n %s
+
+- name: Configure monitoring etcd SELinux ownership
+  ansible.builtin.include_tasks: selinux.yml
+
+- name: Publish monitoring etcd configuration bundle
+  ansible.builtin.include_tasks: bundle.yml
+  when: monitoring_etcd_image_ready | bool
+
+- name: Configure monitoring etcd firewalld ownership
+  ansible.builtin.include_tasks: firewalld.yml
+
+- name: Write monitoring etcd Quadlet unit
+  ansible.builtin.template:
+    src: monitoring-etcd.container.j2
+    dest: "{{ monitoring_etcd_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_etcd_quadlet_result
+  when: monitoring_etcd_bundle_ready | default(false) | bool
+
+- name: Reload systemd manager for monitoring etcd Quadlet
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  changed_when: false
+  when:
+    - monitoring_etcd_quadlet_result is changed
+    - not ansible_check_mode
+
+- name: Inspect generated monitoring etcd service fragment
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property
+      - FragmentPath
+      - --value
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_service_fragment
+  changed_when: false
+  check_mode: false
+  when:
+    - monitoring_etcd_bundle_ready | default(false) | bool
+    - not (ansible_check_mode and monitoring_etcd_quadlet_result is changed)
+
+- name: Require generated monitoring etcd service fragment
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_service_fragment.stdout
+        is match('^/run/systemd/generator(?:[.](?:early|late))?/'
+                 ~ (monitoring_etcd_service_name | regex_escape) ~ '$')
+    fail_msg: The monitoring etcd Quadlet did not generate the expected service.
+  when:
+    - monitoring_etcd_service_fragment is not skipped
+
+- name: Manage staged monitoring etcd service
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_etcd_service_name }}"
+    state: stopped
+  when:
+    - monitoring_etcd_bundle_ready | default(false) | bool
+    - not (ansible_check_mode and monitoring_etcd_quadlet_result is changed)
+
+- name: Inspect monitoring etcd service enablement
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_service_enablement
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - monitoring_etcd_bundle_ready | default(false) | bool
+    - not (ansible_check_mode and monitoring_etcd_quadlet_result is changed)
+
+- name: Require inactive monitoring etcd service enablement
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_service_enablement.stdout
+        in ['disabled', 'static', 'indirect', 'generated']
+    fail_msg: >-
+      Monitoring etcd service has non-inactive enablement state
+      {{ monitoring_etcd_service_enablement.stdout | default('unknown') }}.
+  when: monitoring_etcd_service_enablement is not skipped
+
+- name: Remove obsolete monitoring etcd bundles
+  ansible.builtin.include_tasks: prune_bundles.yml
+  when:
+    - monitoring_etcd_bundle_ready | default(false) | bool
+    - not ansible_check_mode

@@ -22,6 +22,6 @@ peer-transport-security:
   auto-tls: false
 enable-v2: false
 logger: {{ monitoring_etcd_logger | to_json }}
-log-level: {{ monitoring_etcd_log_level | to_json }}
+log-level: {{ monitoring_etcd_template_log_level | default(monitoring_etcd_log_level) | to_json }}
 log-outputs:
   - "stderr"

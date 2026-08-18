@@ -51,6 +51,7 @@ make test-monitoring-haproxy-capabilities
 make test-monitoring-artifact-identities
 make test-monitoring-etcd-image
 make test-monitoring-etcd-cluster
+make test-monitoring-etcd-rocky
 make test-monitoring-garage-cluster
 make test-monitoring-garage-loki
 make test-monitoring-garage-loki-cluster
@@ -324,6 +325,15 @@ up acknowledged data, and requires that no write is acknowledged while two
 members are stopped. A timed-out proposal may still commit after quorum returns.
 The check does not qualify snapshots, member replacement, real PKI, target
 networking, or Patroni behavior.
+
+`make test-monitoring-etcd-rocky` converges the inactive role in a privileged
+disposable Rocky systemd container. It requires the dedicated data mount,
+verifies check-mode non-mutation, pulls and inspects the exact image, natively
+probes the complete mTLS candidate, publishes an immutable bundle, generates a
+disabled Quadlet, reconciles offline firewalld policy, preserves pre-existing
+data, rejects an invalid certificate without moving the current pointer, and
+requires second-run idempotency. It does not initialize or start etcd, exercise
+target SELinux enforcement, or replace private three-node staging evidence.
 
 `make verify` also exercises synthetic strict OpenBao health and Raft status
 predicates. The fixtures require one active node, two standbys, three voters,

@@ -1,6 +1,7 @@
 ---
 monitoring_etcd_enabled: false
 monitoring_etcd_contract_ready: false
+monitoring_etcd_converge: false
 monitoring_etcd_service_enabled: false
 monitoring_etcd_service_state: stopped
 
@@ -11,12 +12,18 @@ monitoring_etcd_quadlet_dir: "{{ podman_host_quadlet_dir | default('/etc/contain
 monitoring_etcd_quadlet_path: "{{ monitoring_etcd_quadlet_dir }}/{{ monitoring_etcd_quadlet_name }}"
 
 monitoring_etcd_config_dir: /etc/monitoring/etcd
-monitoring_etcd_config_path: "{{ monitoring_etcd_config_dir }}/etcd.yml"
-monitoring_etcd_tls_dir: "{{ monitoring_etcd_config_dir }}/pki"
+monitoring_etcd_bundle_root: /etc/monitoring/etcd/bundles
+monitoring_etcd_current_link: /etc/monitoring/etcd/current
+monitoring_etcd_config_path: "{{ monitoring_etcd_current_link }}/etcd.yml"
+monitoring_etcd_tls_dir: "{{ monitoring_etcd_current_link }}/pki"
 monitoring_etcd_tls_ca_path: "{{ monitoring_etcd_tls_dir }}/ca.crt"
 monitoring_etcd_tls_cert_path: "{{ monitoring_etcd_tls_dir }}/tls.crt"
 monitoring_etcd_tls_key_path: "{{ monitoring_etcd_tls_dir }}/tls.key"
 monitoring_etcd_data_dir: /srv/monitoring/etcd
+monitoring_etcd_validator_dir: /usr/local/libexec/platform
+monitoring_etcd_validator_path: "{{ monitoring_etcd_validator_dir }}/monitoring-etcd-validate-config"
+monitoring_etcd_state_dir: /var/lib/platform-config
+monitoring_etcd_firewalld_manifest_path: "{{ monitoring_etcd_state_dir }}/monitoring-etcd-firewalld.yml"
 
 monitoring_etcd_container_config_dir: /etc/etcd
 monitoring_etcd_container_config_path: "{{ monitoring_etcd_container_config_dir }}/etcd.yml"
@@ -33,8 +40,16 @@ monitoring_etcd_tls_ca_src: ""
 monitoring_etcd_tls_cert_src: ""
 monitoring_etcd_tls_key_src: ""
 
+monitoring_etcd_firewalld_manage: true
+monitoring_etcd_firewalld_zone: public
+monitoring_etcd_client_allowed_sources: []
+monitoring_etcd_selinux_manage: true
+monitoring_etcd_selinux_package: policycoreutils-python-utils
+monitoring_etcd_selinux_file_type: container_file_t
+
 monitoring_etcd_logger: zap
 monitoring_etcd_log_level: warn
+monitoring_etcd_validation_timeout: 5
 monitoring_etcd_quadlet_restart_policy: on-failure
 monitoring_etcd_quadlet_restart_sec: 5s
 monitoring_etcd_quadlet_timeout_start_sec: 90s

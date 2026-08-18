@@ -1,0 +1,42 @@
+---
+- name: Install monitoring etcd SELinux management package
+  ansible.builtin.dnf:
+    name: "{{ monitoring_etcd_selinux_package }}"
+    state: present
+  register: monitoring_etcd_selinux_package_result
+  when:
+    - monitoring_etcd_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+
+- name: Configure monitoring etcd SELinux file contexts
+  community.general.sefcontext:
+    target: "{{ monitoring_etcd_selinux_target }}"
+    setype: "{{ monitoring_etcd_selinux_file_type }}"
+    state: present
+  loop:
+    - "{{ monitoring_etcd_config_dir }}(/.*)?"
+    - "{{ monitoring_etcd_data_dir }}(/.*)?"
+  loop_control:
+    loop_var: monitoring_etcd_selinux_target
+  when:
+    - monitoring_etcd_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+    - >-
+      not (
+        ansible_check_mode
+        and monitoring_etcd_selinux_package_result is changed
+      )
+
+- name: Restore monitoring etcd persistent SELinux contexts
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RF
+      - "{{ monitoring_etcd_config_dir }}"
+      - "{{ monitoring_etcd_data_dir }}"
+  register: monitoring_etcd_restorecon
+  changed_when: monitoring_etcd_restorecon.stdout | length > 0
+  when:
+    - monitoring_etcd_selinux_manage | bool
+    - ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+    - not ansible_check_mode
