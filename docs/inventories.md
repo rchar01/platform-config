@@ -75,6 +75,14 @@ firewalld, and SELinux input is complete; the staging contract requires HAProxy
 to remain disabled and stopped. This does not unblock combined monitoring
 convergence or authorize VIP activation.
 
+The focused `playbooks/monitoring-etcd.yml` lane similarly requires all three
+monitoring nodes and applies firewalld, Podman, and the dedicated Patroni etcd
+foundation in that order. Keep `monitoring_etcd_orchestration_ready` false until
+the dedicated mounts, exact runtime package, member map, source-scoped firewall,
+SELinux policy, and outside-Git node PKI inputs are complete. Staging keeps every
+member disabled and stopped; it does not authorize bootstrap, restore, member
+replacement, Patroni use, or combined monitoring convergence.
+
 The focused OpenBao staging playbook owns Podman installation directly, so
 OpenBao nodes do not require `container_hosts` membership. Storage remains a
 separate destructive boundary: add real nodes to `storage_volume_hosts` only

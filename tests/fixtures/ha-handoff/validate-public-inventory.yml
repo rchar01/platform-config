@@ -151,6 +151,29 @@
           - not monitoring_group_example.monitoring_haproxy_enabled | bool
           - not monitoring_group_example.monitoring_haproxy_service_enabled | bool
           - monitoring_group_example.monitoring_haproxy_service_state == 'stopped'
+          - not monitoring_group_example.monitoring_etcd_orchestration_ready | bool
+          - not monitoring_group_example.monitoring_etcd_contract_ready | bool
+          - not monitoring_group_example.monitoring_etcd_enabled | bool
+          - not monitoring_group_example.monitoring_etcd_converge | bool
+          - not monitoring_group_example.monitoring_etcd_service_enabled | bool
+          - monitoring_group_example.monitoring_etcd_service_state == 'stopped'
+          - monitoring_group_example.monitoring_etcd_firewalld_manage | bool
+          - monitoring_group_example.monitoring_etcd_selinux_manage | bool
+          - monitoring_group_example.monitoring_etcd_initial_cluster_token | length == 0
+          - monitoring_group_example.monitoring_etcd_tls_ca_src | length == 0
+          - monitoring_group_example.monitoring_etcd_tls_cert_src | length == 0
+          - monitoring_group_example.monitoring_etcd_tls_key_src | length == 0
+          - monitoring_group_example.monitoring_etcd_client_allowed_sources | length == 0
+          - monitoring_group_example.monitoring_etcd_cluster_members | length == 3
+          - monitoring_group_example.monitoring_etcd_cluster_members | map(attribute='name') | unique | length == 3
+          - monitoring_group_example.monitoring_etcd_cluster_members | map(attribute='address') | unique | length == 3
+          - monitoring_group_example.monitoring_etcd_cluster_members | map(attribute='dns') | unique | length == 3
+          - >-
+            monitoring_group_example.monitoring_etcd_cluster_members
+            | map(attribute='name') | list | sort
+            == monitoring_host_examples.results
+               | map(attribute='ansible_facts.monitoring_host_example.monitoring_etcd_node_name')
+               | list | sort
           - not monitoring_group_example.monitoring_keepalived_enabled | bool
           - not monitoring_group_example.keepalived_vip_enabled | bool
           - not monitoring_group_example.keepalived_vip_service_enabled | bool
@@ -178,6 +201,33 @@
           - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].peers | length == 2
           - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].source_address not in item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].peers
           - item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].vip == '192.0.2.201/24'
+          - >-
+            item.ansible_facts.monitoring_host_example.monitoring_etcd_node_name
+            == item.ansible_facts.monitoring_host_example.monitoring_node_name
+          - >-
+            item.ansible_facts.monitoring_host_example.monitoring_etcd_node_address
+            == item.ansible_facts.monitoring_host_example.monitoring_node_address
+          - >-
+            item.ansible_facts.monitoring_host_example.monitoring_etcd_node_dns
+            == item.ansible_facts.monitoring_host_example.monitoring_node_dns
+          - >-
+            monitoring_group_example.monitoring_etcd_cluster_members
+            | selectattr(
+                'name',
+                'equalto',
+                item.ansible_facts.monitoring_host_example.monitoring_etcd_node_name
+              )
+            | selectattr(
+                'address',
+                'equalto',
+                item.ansible_facts.monitoring_host_example.monitoring_etcd_node_address
+              )
+            | selectattr(
+                'dns',
+                'equalto',
+                item.ansible_facts.monitoring_host_example.monitoring_etcd_node_dns
+              )
+            | list | length == 1
           - >-
             item.ansible_facts.monitoring_host_example.keepalived_vip_instances[0].priority
             == (

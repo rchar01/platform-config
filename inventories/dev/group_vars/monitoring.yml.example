@@ -42,6 +42,31 @@ monitoring_haproxy_contract_ready: false
 monitoring_haproxy_enabled: false
 monitoring_haproxy_service_enabled: false
 monitoring_haproxy_service_state: stopped
+# Dedicated Patroni etcd staging remains inert until private inventory supplies
+# reviewed topology, PKI source paths, and an explicit orchestration approval.
+monitoring_etcd_orchestration_ready: false
+monitoring_etcd_contract_ready: false
+monitoring_etcd_enabled: false
+monitoring_etcd_converge: false
+monitoring_etcd_service_enabled: false
+monitoring_etcd_service_state: stopped
+monitoring_etcd_firewalld_manage: true
+monitoring_etcd_selinux_manage: true
+monitoring_etcd_initial_cluster_token: ""
+monitoring_etcd_tls_ca_src: ""
+monitoring_etcd_tls_cert_src: ""
+monitoring_etcd_tls_key_src: ""
+monitoring_etcd_client_allowed_sources: []
+monitoring_etcd_cluster_members:
+  - name: monitoring-1
+    address: 192.0.2.64
+    dns: monitoring-1.internal.invalid
+  - name: monitoring-2
+    address: 192.0.2.75
+    dns: monitoring-2.internal.invalid
+  - name: monitoring-3
+    address: 192.0.2.76
+    dns: monitoring-3.internal.invalid
 # Private inventory must provide exact service and health ports. TLS backends use
 # three named canonical-IPv4 targets with lowercase FQDN TLS identities;
 # node-local Garage S3 uses one 127.0.0.1 target without a TLS identity and a

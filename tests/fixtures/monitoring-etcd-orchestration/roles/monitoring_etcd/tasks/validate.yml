@@ -1,0 +1,8 @@
+---
+- name: Validate mocked monitoring etcd contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_test_invalid_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked monitoring etcd contract is invalid.

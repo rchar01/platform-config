@@ -3,6 +3,9 @@ platform_host_description: Example monitoring HA node 3
 monitoring_node_name: monitoring-3
 monitoring_node_address: 192.0.2.76
 monitoring_node_dns: monitoring-3.internal.invalid
+monitoring_etcd_node_name: monitoring-3
+monitoring_etcd_node_address: 192.0.2.76
+monitoring_etcd_node_dns: monitoring-3.internal.invalid
 keepalived_vip_instances:
   - name: MONITORING
     interface: eth0

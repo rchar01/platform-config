@@ -1,0 +1,8 @@
+---
+all:
+  hosts:
+    localhost:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    platform_environment: dev

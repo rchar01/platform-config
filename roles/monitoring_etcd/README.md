@@ -23,6 +23,12 @@ The role does not initialize, erase, restore, compact, defragment, replace, or
 start an etcd member. Cluster bootstrap and every destructive or active
 operation remain separate cluster-wide maintenance gates.
 
+`playbooks/monitoring-etcd.yml` is the focused staging lane. It requires all
+three monitoring hosts, validates every inactive contract and controller PKI
+input before quiescing, then applies `firewalld`, `podman_host`, and this role in
+order. `monitoring_etcd_orchestration_ready` authorizes only stopped foundation
+staging; it does not authorize bootstrap or activation.
+
 Real member addresses, DNS names, the cluster token, and TLS source paths belong
 in private inventory or an outside-Git secret store. Normal convergence must
 never reset an existing data directory or silently form a replacement cluster.

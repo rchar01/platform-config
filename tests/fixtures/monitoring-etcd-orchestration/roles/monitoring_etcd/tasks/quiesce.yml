@@ -1,0 +1,8 @@
+---
+- name: Record entry into mocked monitoring etcd quiescing
+  ansible.builtin.copy:
+    dest: "{{ monitoring_etcd_test_quiesce_marker_path }}"
+    content: quiesced
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]

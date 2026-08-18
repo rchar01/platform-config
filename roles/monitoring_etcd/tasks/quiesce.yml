@@ -1,0 +1,43 @@
+---
+- name: Inspect existing monitoring etcd service
+  ansible.builtin.service_facts:
+
+- name: Disable existing monitoring etcd service before staging
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - disable
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_service_disable
+  changed_when: >-
+    'Removed ' in monitoring_etcd_service_disable.stdout
+    or 'Removed ' in monitoring_etcd_service_disable.stderr
+  when:
+    - monitoring_etcd_service_name in (ansible_facts.services | default({}))
+    - not ansible_check_mode
+
+- name: Stop existing monitoring etcd service before staging
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_etcd_service_name }}"
+    state: stopped
+  when:
+    - monitoring_etcd_service_name in (ansible_facts.services | default({}))
+    - not ansible_check_mode
+
+- name: Remove persistent and generated monitoring etcd enablement
+  ansible.builtin.file:
+    path: "{{ monitoring_etcd_enablement_path }}"
+    state: absent
+  loop:
+    - >-
+      {{
+        '/etc/systemd/system/multi-user.target.wants/'
+        ~ monitoring_etcd_service_name
+      }}
+    - >-
+      {{
+        '/run/systemd/generator/multi-user.target.wants/'
+        ~ monitoring_etcd_service_name
+      }}
+  loop_control:
+    loop_var: monitoring_etcd_enablement_path

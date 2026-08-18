@@ -1,0 +1,46 @@
+---
+all:
+  hosts:
+    localhost:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    platform_environment: dev
+    monitoring_etcd_orchestration_ready: true
+    monitoring_etcd_contract_ready: true
+    monitoring_etcd_enabled: true
+    monitoring_etcd_converge: true
+    monitoring_etcd_service_enabled: >-
+      {{ inventory_hostname == (monitoring_etcd_test_active_host | default('')) }}
+    monitoring_etcd_service_state: >-
+      {{ 'started' if monitoring_etcd_service_enabled else 'stopped' }}
+    monitoring_etcd_firewalld_manage: true
+    monitoring_etcd_selinux_manage: true
+    monitoring_etcd_initial_cluster_token: synthetic-staging-cluster
+    monitoring_etcd_tls_ca_src: "{{ inventory_dir }}/pki-input.txt"
+    monitoring_etcd_tls_cert_src: "{{ inventory_dir }}/pki-input.txt"
+    monitoring_etcd_tls_key_src: "{{ inventory_dir }}/pki-input.txt"
+    monitoring_etcd_node_name: "{{ inventory_hostname }}"
+    monitoring_etcd_node_address: >-
+      {{ monitoring_etcd_test_addresses[inventory_hostname] }}
+    monitoring_etcd_node_dns: "{{ inventory_hostname }}.internal.invalid"
+    monitoring_etcd_test_addresses:
+      monitoring-stage-1: 192.0.2.61
+      monitoring-stage-2: 192.0.2.62
+      monitoring-stage-3: 192.0.2.63
+    monitoring_etcd_cluster_members:
+      - {name: monitoring-stage-1, address: 192.0.2.61, dns: monitoring-stage-1.internal.invalid}
+      - {name: monitoring-stage-2, address: 192.0.2.62, dns: monitoring-stage-2.internal.invalid}
+      - {name: monitoring-stage-3, address: 192.0.2.63, dns: monitoring-stage-3.internal.invalid}
+    firewalld_enabled: true
+    firewalld_service_enabled: true
+    firewalld_service_state: started
+  children:
+    monitoring:
+      hosts:
+        monitoring-stage-1:
+        monitoring-stage-2:
+        monitoring-stage-3:
+    unrelated:
+      hosts:
+        unrelated-stage:

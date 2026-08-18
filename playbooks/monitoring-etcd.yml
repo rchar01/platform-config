@@ -1,0 +1,171 @@
+---
+- name: Require the canonical monitoring etcd staging inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    monitoring_etcd_selected_hosts: >-
+      {{
+        query(
+          'ansible.builtin.inventory_hostnames',
+          'monitoring:&' ~ (ansible_limit | default('all'))
+        )
+      }}
+  tasks:
+    - name: Require exactly three monitoring inventory members
+      ansible.builtin.assert:
+        that:
+          - groups.get('monitoring', []) | length == 3
+        fail_msg: >-
+          Monitoring etcd staging requires exactly three monitoring inventory
+          members. An absent or partial group is not successful convergence.
+
+    - name: Require all three monitoring inventory hosts
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_selected_hosts | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd staging requires all three monitoring inventory hosts.
+          A partial limit is not successful convergence.
+
+- name: Validate the monitoring etcd staging contract
+  hosts: monitoring
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit full-cluster monitoring etcd staging
+      ansible.builtin.assert:
+        that:
+          - groups.get('monitoring', []) | length == 3
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd staging requires all three monitoring inventory hosts
+          without a partial limit.
+      run_once: true # noqa run-once[task]
+
+    - name: Require ready inactive monitoring etcd ownership
+      ansible.builtin.assert:
+        that:
+          - (monitoring_etcd_orchestration_ready | default(false)) is boolean
+          - monitoring_etcd_orchestration_ready | default(false)
+          - (monitoring_etcd_contract_ready | default(false)) is boolean
+          - monitoring_etcd_contract_ready | default(false)
+          - (monitoring_etcd_enabled | default(false)) is boolean
+          - monitoring_etcd_enabled | default(false)
+          - (monitoring_etcd_converge | default(false)) is boolean
+          - monitoring_etcd_converge | default(false)
+          - (monitoring_etcd_service_enabled | default(false)) is boolean
+          - not (monitoring_etcd_service_enabled | default(false))
+          - monitoring_etcd_service_state | default('stopped') == 'stopped'
+        fail_msg: >-
+          Monitoring etcd staging requires explicit ready inactive ownership on
+          every node, with convergence enabled and the service stopped/disabled.
+
+    - name: Require monitoring etcd security ownership
+      ansible.builtin.assert:
+        that:
+          - (monitoring_etcd_firewalld_manage | default(true)) is boolean
+          - monitoring_etcd_firewalld_manage | default(true)
+          - (monitoring_etcd_selinux_manage | default(true)) is boolean
+          - monitoring_etcd_selinux_manage | default(true)
+          - (firewalld_enabled | default(false)) is boolean
+          - firewalld_enabled | default(false)
+          - (firewalld_service_enabled | default(false)) is boolean
+          - firewalld_service_enabled | default(false)
+          - firewalld_service_state | default('stopped') == 'started'
+        fail_msg: >-
+          Monitoring etcd staging requires managed firewalld and SELinux with
+          the declared firewalld service enabled and started on every node.
+
+    - name: Validate monitoring etcd contract before staging
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate.yml
+
+    - name: Inspect monitoring etcd controller PKI inputs before staging
+      ansible.builtin.stat:
+        path: "{{ monitoring_etcd_preflight_pki_source }}"
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      loop:
+        - "{{ monitoring_etcd_tls_ca_src }}"
+        - "{{ monitoring_etcd_tls_cert_src }}"
+        - "{{ monitoring_etcd_tls_key_src }}"
+      loop_control:
+        loop_var: monitoring_etcd_preflight_pki_source
+        label: pki-input
+      register: monitoring_etcd_preflight_pki_stats
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      no_log: true
+
+    - name: Require safe monitoring etcd controller PKI inputs
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_preflight_pki_stat.stat.exists
+          - monitoring_etcd_preflight_pki_stat.stat.isreg
+          - not monitoring_etcd_preflight_pki_stat.stat.islnk
+          - >-
+            monitoring_etcd_preflight_pki_stat.stat.checksum
+            is match('^[0-9a-f]{64}$')
+        fail_msg: >-
+          Monitoring etcd staging requires every controller PKI input to be a
+          regular non-symlink file before service quiescing.
+      loop: "{{ monitoring_etcd_preflight_pki_stats.results }}"
+      loop_control:
+        loop_var: monitoring_etcd_preflight_pki_stat
+        label: pki-input
+      no_log: true
+
+- name: Quiesce the validated monitoring etcd cluster
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require full-cluster monitoring etcd quiescing
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd quiescing requires all three validated monitoring
+          inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Disable and stop validated monitoring etcd services
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: quiesce.yml
+
+- name: Stage the inactive monitoring etcd foundation
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - firewalld
+    - podman_host
+    - monitoring_etcd
+
+- name: Reject limits that exclude monitoring etcd staging
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require a selected monitoring host before reporting convergence
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('monitoring', []))
+            | length > 0
+        fail_msg: >-
+          Monitoring etcd staging did not select the monitoring service group. A
+          limit that excludes monitoring is not successful convergence.
+      run_once: true # noqa run-once[task]

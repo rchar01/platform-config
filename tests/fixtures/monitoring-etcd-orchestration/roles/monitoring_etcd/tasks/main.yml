@@ -1,0 +1,13 @@
+---
+- name: Require mocked monitoring etcd role order
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_test_role_order == ['firewalld', 'podman_host']
+
+- name: Complete mocked monitoring etcd convergence
+  ansible.builtin.copy:
+    dest: "{{ monitoring_etcd_test_marker_path }}"
+    content: complete
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]

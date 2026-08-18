@@ -205,35 +205,8 @@
     fail_msg: Monitoring etcd runtime version or platform does not match the lock.
   when: monitoring_etcd_image_ready | bool
 
-- name: Inspect existing monitoring etcd service
-  ansible.builtin.service_facts:
-
-- name: Disable existing monitoring etcd service before staging
-  ansible.builtin.command:
-    argv:
-      - systemctl
-      - disable
-      - "{{ monitoring_etcd_service_name }}"
-  register: monitoring_etcd_service_disable
-  changed_when: >-
-    'Removed ' in monitoring_etcd_service_disable.stdout
-    or 'Removed ' in monitoring_etcd_service_disable.stderr
-  when:
-    - monitoring_etcd_service_name in (ansible_facts.services | default({}))
-    - not ansible_check_mode
-
-- name: Stop existing monitoring etcd service before staging
-  ansible.builtin.systemd_service:
-    name: "{{ monitoring_etcd_service_name }}"
-    state: stopped
-  when:
-    - monitoring_etcd_service_name in (ansible_facts.services | default({}))
-    - not ansible_check_mode
-
-- name: Remove persistent monitoring etcd service enablement
-  ansible.builtin.file:
-    path: "/etc/systemd/system/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
-    state: absent
+- name: Quiesce monitoring etcd before foundation staging
+  ansible.builtin.include_tasks: quiesce.yml
 
 - name: Inspect monitoring etcd role-owned directories
   ansible.builtin.stat:

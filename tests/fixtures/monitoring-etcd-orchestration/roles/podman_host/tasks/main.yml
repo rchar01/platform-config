@@ -1,0 +1,10 @@
+---
+- name: Require mocked monitoring etcd Podman role order
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_test_role_order == ['firewalld']
+
+- name: Record mocked monitoring etcd Podman role order
+  ansible.builtin.set_fact:
+    monitoring_etcd_test_role_order: >-
+      {{ monitoring_etcd_test_role_order + ['podman_host'] }}
