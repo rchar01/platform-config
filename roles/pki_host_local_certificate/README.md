@@ -70,6 +70,13 @@ controller-only action plugins with no target connection and no Ansible file
 transfer. Compatibility behavior is selected only by a documented
 `*-controller-local` Make target or an explicit mode variable.
 
+Persistent target SSH authorization is owned separately by
+`pki_host_local_exchange_access`. That role installs the locked account,
+root-controlled forced key, account-wide SSH policy, unprivileged dispatcher,
+root broker, and narrow broker-only sudo policy; this lifecycle role continues
+to own only the target facade, config, spool, and PKI operations. A mutable
+direct request installs the facade before access can be enabled.
+
 ## Fixed Helpers
 
 The target lifecycle helper is installed only as

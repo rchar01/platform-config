@@ -1,0 +1,7 @@
+---
+- name: Converge restricted registry PKI exchange access
+  hosts: registry
+  gather_facts: false
+  become: true
+  roles:
+    - pki_host_local_exchange_access

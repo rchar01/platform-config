@@ -235,11 +235,17 @@ test-openbao-rocky:
 test-pki-host-local-zot-one-runner:
 	@bash tests/integration/test-pki-host-local-zot-one-runner.sh
 
+.PHONY: registry-pki-exchange-access
+
 ## Run all local static checks
 verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test
 
 ## Run local static checks with supplemental parallel pytest
 verify-parallel: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test-parallel
+
+## Converge restricted host-local PKI exchange SSH access
+registry-pki-exchange-access: _guard-pki-env _guard-pki-limit
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-exchange-access.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS))
 
 ## Create or resume one exact direct host-local PKI request
 registry-pki-request: _guard-pki-env _guard-pki-limit _guard-pki-request-ttl

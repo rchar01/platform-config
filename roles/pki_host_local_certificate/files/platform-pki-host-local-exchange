@@ -616,7 +616,11 @@ def stage_response(config: Config, request_id: str, artifact_sha256: str, data: 
     coordinates = {"request_id": request_id, "artifact_sha256": artifact_sha256}
     files = decode_frame(data, "response", coordinates, config)
     validate_response_payload(files, config, request_id, artifact_sha256)
-    prepared = run_lifecycle(config, "response-prepare", ["--request-id", request_id])
+    prepared = run_lifecycle(
+        config,
+        "response-prepare",
+        ["--trust-id", config.trust_id, "--request-id", request_id],
+    )
     if prepared.get("status") not in {"prepared", "existing", "installed"} or prepared.get("request_id") != request_id:
         fail("lifecycle response preparation returned invalid metadata")
     state, lock = state_lock(config)
@@ -700,17 +704,84 @@ def validate_outcome_payload(files: Mapping[str, bytes], config: Config, coordin
         fail("outcome deployment differs from the artifact coordinate")
 
 
+def require_published_outcome_evidence(
+    files: Mapping[str, bytes], config: Config, coordinates: Mapping[str, str]
+) -> None:
+    try:
+        evidence, evidence_files, _identities = open_exact_tree(
+            os.path.join(
+                config.state_root,
+                "evidence",
+                coordinates["request_id"],
+                coordinates["deployment_sha256"],
+            ),
+            EVIDENCE_NAMES,
+            "published deployment evidence",
+        )
+    except OSError:
+        fail("outcome requires exact published deployment evidence")
+    evidence.close()
+    if (
+        evidence_files["deployment"] != files["deployment"]
+        or sha256(evidence_files["deployment"]) != coordinates["deployment_sha256"]
+    ):
+        fail("outcome does not bind published deployment evidence")
+
+
+def recover_outcome_stage(request: PinnedDirectory, name: str) -> None:
+    stage = PinnedDirectory.open(
+        os.path.join(request.path, name), "interrupted outcome publication stage"
+    )
+    try:
+        entries = scan(stage, "interrupted outcome publication stage")
+        if not set(entries).issubset(OUTCOME_NAMES):
+            fail("interrupted outcome stage contains unexpected entries")
+        identities: dict[str, tuple[int, ...]] = {}
+        for child, metadata in entries.items():
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != ROOT_UID
+                or metadata.st_gid != ROOT_GID
+                or metadata.st_nlink != 1
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+            ):
+                fail("interrupted outcome stage has unsafe metadata")
+            identities[child] = file_identity(metadata)
+        for child, identity in identities.items():
+            require_snapshot(
+                stage, child, identity, f"interrupted outcome stage file {child}"
+            )
+            os.unlink(child, dir_fd=stage.fd)
+        os.fsync(stage.fd)
+        expected = dir_identity(os.fstat(stage.fd))
+        if dir_identity(os.stat(name, dir_fd=request.fd, follow_symlinks=False)) != expected:
+            fail("interrupted outcome stage path binding changed")
+        os.rmdir(name, dir_fd=request.fd)
+        os.fsync(request.fd)
+    finally:
+        stage.close()
+
+
 def publish_outcome(config: Config, coordinates: Mapping[str, str], data: bytes) -> dict[str, object]:
     files = decode_frame(data, "outcome", coordinates, config)
     validate_outcome_payload(files, config, coordinates)
-    spool = PinnedDirectory.open(config.spool_root, "exchange spool")
+    state, lock = state_lock(config)
+    spool = None
     outcomes = request = stage = None
-    stage_name = f".stage-{secrets.token_hex(16)}"
     try:
+        require_published_outcome_evidence(files, config, coordinates)
+        spool = PinnedDirectory.open(config.spool_root, "exchange spool")
         outcomes = create_child(spool, "outcomes", "outcome spool root")
         request = create_child(outcomes, coordinates["request_id"], "outcome request spool")
         destination = coordinates["outcome_sha256"]
-        if destination in scan(request, "outcome request spool"):
+        stage_name = f".stage-{destination}"
+        request_entries = scan(request, "outcome request spool")
+        if stage_name in request_entries:
+            recover_outcome_stage(request, stage_name)
+            request_entries = scan(request, "outcome request spool")
+        if set(request_entries) - {destination}:
+            fail("a different outcome is already staged for this request")
+        if destination in request_entries:
             existing, existing_files, _ = open_exact_tree(
                 os.path.join(request.path, destination), OUTCOME_NAMES, "existing outcome stage"
             )
@@ -749,7 +820,10 @@ def publish_outcome(config: Config, coordinates: Mapping[str, str], data: bytes)
             request.close()
         if outcomes is not None:
             outcomes.close()
-        spool.close()
+        if spool is not None:
+            spool.close()
+        os.close(lock)
+        state.close()
 
 
 def accepted_outcome(

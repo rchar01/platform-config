@@ -1,0 +1,107 @@
+#!/usr/bin/python3 -I
+"""Reauthorize and execute the fixed root host-local PKI exchange facade."""
+
+from __future__ import annotations
+
+import os
+import pwd
+import re
+import stat
+import sys
+from collections.abc import Sequence
+
+
+EXCHANGE_USER = "exchange-operator"
+HELPER_PATH = "/usr/local/libexec/platform-pki-host-local-exchange"
+PYTHON_PATH = "/usr/bin/python3"
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+COMMAND_COORDINATES = {
+    "export-request": (REQUEST_ID_RE,),
+    "export-evidence": (REQUEST_ID_RE, DIGEST_RE, DIGEST_RE),
+    "stage-response": (REQUEST_ID_RE, DIGEST_RE),
+    "stage-outcome": (REQUEST_ID_RE, DIGEST_RE, DIGEST_RE, DIGEST_RE),
+}
+PROTECTED_DIRECTORIES = ("/", "/usr", "/usr/local", "/usr/local/libexec")
+
+
+class DispatchError(Exception):
+    """The invocation is outside the fixed root exchange surface."""
+
+
+def parse_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
+    if not arguments or arguments[0] not in COMMAND_COORDINATES:
+        raise DispatchError
+    patterns = COMMAND_COORDINATES[arguments[0]]
+    coordinates = arguments[1:]
+    if len(coordinates) != len(patterns):
+        raise DispatchError
+    if any(
+        pattern.fullmatch(value) is None
+        for pattern, value in zip(patterns, coordinates, strict=True)
+    ):
+        raise DispatchError
+    return (arguments[0], *coordinates)
+
+
+def require_sudo_provenance(environment: dict[str, str]) -> None:
+    if os.geteuid() != 0 or os.getegid() != 0:
+        raise DispatchError
+    if environment.get("SUDO_USER") != EXCHANGE_USER:
+        raise DispatchError
+    try:
+        sudo_uid = int(environment.get("SUDO_UID", ""), 10)
+    except ValueError:
+        raise DispatchError from None
+    if sudo_uid == 0 or pwd.getpwuid(sudo_uid).pw_name != EXCHANGE_USER:
+        raise DispatchError
+
+
+def open_protected_helper() -> int:
+    for path in PROTECTED_DIRECTORIES:
+        metadata = os.lstat(path)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise DispatchError
+    descriptor = os.open(HELPER_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != 0o755
+    ):
+        os.close(descriptor)
+        raise DispatchError
+    os.set_inheritable(descriptor, True)
+    return descriptor
+
+
+def main() -> None:
+    descriptor = -1
+    try:
+        require_sudo_provenance(os.environ)
+        arguments = parse_arguments(sys.argv[1:])
+        descriptor = open_protected_helper()
+    except (DispatchError, KeyError, OSError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        print("host-local PKI root exchange command rejected", file=sys.stderr)
+        raise SystemExit(126) from None
+    environment = {
+        "HOME": "/root",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+    }
+    helper = f"/proc/self/fd/{descriptor}"
+    os.execve(PYTHON_PATH, (PYTHON_PATH, "-I", helper, *arguments), environment)
+
+
+if __name__ == "__main__":
+    main()

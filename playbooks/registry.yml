@@ -2,10 +2,20 @@
 - name: Configure OCI registry hosts
   hosts: registry
   become: true
+  pre_tasks:
+    - name: Revoke disabled host-local PKI exchange access before service convergence
+      ansible.builtin.include_role:
+        name: pki_host_local_exchange_access
+      when: pki_host_local_exchange_access_state | default('absent') == 'absent'
   roles:
     - firewalld
     - podman_host
     - zot_registry
+  post_tasks:
+    - name: Converge enabled host-local PKI exchange access after service convergence
+      ansible.builtin.include_role:
+        name: pki_host_local_exchange_access
+      when: pki_host_local_exchange_access_state | default('absent') == 'present'
 
 - name: Configure OCI registry client hosts
   hosts: registry_clients

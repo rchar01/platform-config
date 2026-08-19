@@ -1,0 +1,77 @@
+#!/usr/bin/python3 -I
+"""Authorize the fixed host-local PKI exchange command surface."""
+
+from __future__ import annotations
+
+import os
+import pwd
+import re
+import sys
+from collections.abc import Sequence
+
+
+EXCHANGE_USER = "exchange-operator"
+HELPER_PATH = "/usr/local/libexec/platform-pki-host-local-exchange"
+ROOT_DISPATCH_PATH = "/usr/local/libexec/platform-pki-host-local-exchange-root-dispatch"
+SUDO_PATH = "/usr/bin/sudo"
+PREFIX = ("sudo", "-n", "--", HELPER_PATH)
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+COMMAND_COORDINATES = {
+    "export-request": (REQUEST_ID_RE,),
+    "export-evidence": (REQUEST_ID_RE, DIGEST_RE, DIGEST_RE),
+    "stage-response": (REQUEST_ID_RE, DIGEST_RE),
+    "stage-outcome": (REQUEST_ID_RE, DIGEST_RE, DIGEST_RE, DIGEST_RE),
+}
+
+
+class DispatchError(Exception):
+    """A remote command is outside the fixed exchange surface."""
+
+
+def parse_original_command(command: str) -> tuple[str, ...]:
+    if not command or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in command
+    ):
+        raise DispatchError
+    tokens = command.split(" ")
+    if " ".join(tokens) != command or tuple(tokens[: len(PREFIX)]) != PREFIX:
+        raise DispatchError
+    arguments = tokens[len(PREFIX) :]
+    if not arguments or arguments[0] not in COMMAND_COORDINATES:
+        raise DispatchError
+    patterns = COMMAND_COORDINATES[arguments[0]]
+    coordinates = arguments[1:]
+    if len(coordinates) != len(patterns):
+        raise DispatchError
+    if any(
+        pattern.fullmatch(value) is None
+        for pattern, value in zip(patterns, coordinates, strict=True)
+    ):
+        raise DispatchError
+    return (arguments[0], *coordinates)
+
+
+def dispatch_argv(arguments: Sequence[str]) -> tuple[str, ...]:
+    return (SUDO_PATH, "-n", "--", ROOT_DISPATCH_PATH, *arguments)
+
+
+def main() -> None:
+    try:
+        if pwd.getpwuid(os.geteuid()).pw_name != EXCHANGE_USER:
+            raise DispatchError
+        arguments = parse_original_command(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+    except (DispatchError, KeyError):
+        print("host-local PKI exchange command rejected", file=sys.stderr)
+        raise SystemExit(126) from None
+    environment = {
+        "HOME": "/var/lib/platform-config/pki-exchange-operator",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+    }
+    os.execve(SUDO_PATH, dispatch_argv(arguments), environment)
+
+
+if __name__ == "__main__":
+    main()

@@ -564,7 +564,7 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
 scripts/platform-pki-direct-exchange outcome-push \
   /outside-git/pki-endpoints/registry-example.json <request-id> \
   <artifact-sha256> <deployment-sha256> <outcome-sha256> \
-  /outside-git/protected-outcome
+  /outside-git/pki-exchange/intake/outcome-<outcome-sha256>
 make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256> \

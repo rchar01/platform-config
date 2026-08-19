@@ -1987,6 +1987,19 @@ def response_prepare(args) -> None:
             validate_version(os.path.join(args.versions_root, request_id), request_id)[0].close()
             json_output({"status": "installed", "request_id": request_id, "ingress_dir": "none"})
             return
+        trust, _policy = load_trust(state, args.trust_id, args.target)
+        pending = validate_pending(
+            os.path.join(args.pending_root, request_id),
+            trust,
+            expected_request_id=request_id,
+        )
+        if pending["expired"]:
+            fail("expired pending request cannot receive a response")
+        if (
+            pending["record"]["service"] != args.service
+            or pending["record"]["target"] != args.target
+        ):
+            fail("pending request differs from response preparation bindings")
         if ingress_name not in entries:
             if args.check:
                 json_output({"status": "would-prepare", "request_id": request_id, "ingress_dir": os.path.join(args.versions_root, ingress_name)})
@@ -5864,6 +5877,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare = commands.add_parser("response-prepare", help="create or reuse one protected hidden response ingress")
     add_common(prepare)
+    prepare.add_argument("--trust-id", required=True)
     prepare.add_argument("--request-id", required=True)
     prepare.add_argument("--check", action="store_true")
     prepare.set_defaults(function=response_prepare)

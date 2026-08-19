@@ -8,9 +8,14 @@ Use [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) as
 the canonical step-by-step operator procedure. This page defines the detailed
 role boundaries, status semantics, and registry behavior behind that runbook.
 
-The `playbooks/registry-pki-*.yml` playbooks are operator-only host-local
-certificate entry points. They are not imported by `site.yml` or normal
-registry convergence. The implemented workflow imports one explicit
+The certificate lifecycle `playbooks/registry-pki-*.yml` playbooks are
+operator-only entry points and are not imported by `site.yml`. The persistent
+`pki_host_local_exchange_access` role is an exception: normal registry
+convergence revokes disabled access before service roles and manages enabled
+access after them so revocation cannot be skipped by an unrelated service
+failure. The focused `registry-pki-exchange-access.yml` setup entry point
+requires the lifecycle-owned facade installed by a prior direct request. The
+implemented workflow imports one explicit
 digest-pinned authenticated signer outcome after deployment evidence export. It
 does not automate signing, controlled-media transport, or renewal.
 
@@ -115,7 +120,7 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
 scripts/platform-pki-direct-exchange outcome-push \
   /outside-git/pki-endpoints/registry-example.json <request-id> \
   <artifact-sha256> <deployment-sha256> <outcome-sha256> \
-  /outside-git/protected-outcome
+  /outside-git/pki-exchange/intake/outcome-<outcome-sha256>
 make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256> \

@@ -178,7 +178,15 @@ class LifecycleCase:
         return self.runner.run(argv, environment=self.environment(environment), timeout=timeout)
 
     def prepare_response(self) -> Path:
-        result = self.run([*self.common("response-prepare"), "--request-id", REQUEST_ID]).assert_success()
+        result = self.run(
+            [
+                *self.common("response-prepare"),
+                "--trust-id",
+                "reviewed-v1",
+                "--request-id",
+                REQUEST_ID,
+            ]
+        ).assert_success()
         ingress = Path(json.loads(result.stdout)["ingress_dir"])
         source = self.root / "response-source"
         for name in self.module.RESPONSE_NAMES:
@@ -1861,8 +1869,8 @@ def test_expired_request_abandonment_recovers_partial_journal_stage(
 def test_expired_request_abandonment_refuses_response_state(
     lifecycle_case: LifecycleCase,
 ) -> None:
-    lifecycle_case.expire_request()
     lifecycle_case.prepare_response()
+    lifecycle_case.expire_request()
 
     assert_failure(lifecycle_case.abandon_expired())
     assert lifecycle_case.pending.is_dir()
@@ -1878,6 +1886,8 @@ def test_response_preparation_cannot_interrupt_abandonment_recovery(
         lifecycle_case.run(
             [
                 *lifecycle_case.common("response-prepare"),
+                "--trust-id",
+                "reviewed-v1",
                 "--request-id",
                 REQUEST_ID,
             ]
@@ -1887,9 +1897,29 @@ def test_response_preparation_cannot_interrupt_abandonment_recovery(
     assert result_json(lifecycle_case.abandon_expired())["status"] == "abandoned"
 
 
+def test_response_preparation_requires_exact_pending_request(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    shutil.rmtree(lifecycle_case.pending)
+
+    assert_failure(
+        lifecycle_case.run(
+            [
+                *lifecycle_case.common("response-prepare"),
+                "--trust-id",
+                "reviewed-v1",
+                "--request-id",
+                REQUEST_ID,
+            ]
+        )
+    )
+    assert not (lifecycle_case.versions_root / f".ingress-{REQUEST_ID}").exists()
+
+
 def test_expired_request_cannot_be_collected_or_consume_response(
     lifecycle_case: LifecycleCase,
 ) -> None:
+    lifecycle_case.prepare_response()
     lifecycle_case.expire_request()
     output = private_dir(lifecycle_case.root / "expired-collection")
     collection = [
@@ -1906,7 +1936,6 @@ def test_expired_request_cannot_be_collected_or_consume_response(
 
     assert_failure(lifecycle_case.run(collection))
     assert not any(output.iterdir())
-    lifecycle_case.prepare_response()
     assert_failure(lifecycle_case.install_response())
     assert lifecycle_case.pending.is_dir()
 

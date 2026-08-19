@@ -1,0 +1,187 @@
+---
+- name: Inspect host-local PKI exchange ownership marker for revocation
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_exchange_access_marker_path }}"
+    follow: false
+  register: pki_host_local_exchange_access_absent_marker
+
+- name: Validate host-local PKI exchange ownership marker metadata for revocation
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_exchange_access_absent_marker.stat.isreg
+      - not pki_host_local_exchange_access_absent_marker.stat.islnk
+      - pki_host_local_exchange_access_absent_marker.stat.uid == 0
+      - pki_host_local_exchange_access_absent_marker.stat.gid == 0
+      - pki_host_local_exchange_access_absent_marker.stat.mode == '0600'
+    fail_msg: Refusing to read an unsafe host-local PKI exchange ownership marker.
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+
+- name: Read host-local PKI exchange ownership marker for revocation
+  ansible.builtin.slurp:
+    path: "{{ pki_host_local_exchange_access_marker_path }}"
+  register: pki_host_local_exchange_access_absent_marker_content
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+
+- name: Decode host-local PKI exchange ownership marker for revocation
+  ansible.builtin.set_fact:
+    pki_host_local_exchange_access_absent_marker_text: >-
+      {{ pki_host_local_exchange_access_absent_marker_content.content | b64decode }}
+    pki_host_local_exchange_access_absent_marker_record: >-
+      {{ pki_host_local_exchange_access_absent_marker_content.content | b64decode | from_json }}
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+
+- name: Inspect marked host-local PKI exchange account for revocation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - passwd
+      - "{{ pki_host_local_exchange_access_user }}"
+  register: pki_host_local_exchange_access_absent_user
+  changed_when: false
+  failed_when: pki_host_local_exchange_access_absent_user.rc not in [0, 2]
+  check_mode: false
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+
+- name: Inspect marked host-local PKI exchange group for revocation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - group
+      - "{{ pki_host_local_exchange_access_group }}"
+  register: pki_host_local_exchange_access_absent_group
+  changed_when: false
+  failed_when: pki_host_local_exchange_access_absent_group.rc not in [0, 2]
+  check_mode: false
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+
+- name: Validate exact managed identity ownership before revocation
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_exchange_access_absent_marker.stat.isreg
+      - not pki_host_local_exchange_access_absent_marker.stat.islnk
+      - pki_host_local_exchange_access_absent_marker.stat.uid == 0
+      - pki_host_local_exchange_access_absent_marker.stat.gid == 0
+      - pki_host_local_exchange_access_absent_marker.stat.mode == '0600'
+      - >-
+        pki_host_local_exchange_access_absent_marker_record.state
+        in ['reserved', 'managed']
+      - >-
+        (
+          pki_host_local_exchange_access_absent_marker_record.state == 'reserved'
+          and pki_host_local_exchange_access_absent_marker_record.keys() | list | sort
+              == ['group', 'home', 'schema', 'shell', 'state', 'user']
+        )
+        or (
+          pki_host_local_exchange_access_absent_marker_record.state == 'managed'
+          and pki_host_local_exchange_access_absent_marker_record.keys() | list | sort
+              == ['gid', 'group', 'home', 'schema', 'shell', 'state', 'uid', 'user']
+        )
+      - pki_host_local_exchange_access_absent_marker_record.schema == 1
+      - >-
+        pki_host_local_exchange_access_absent_marker_record.user
+        == pki_host_local_exchange_access_user
+      - >-
+        pki_host_local_exchange_access_absent_marker_record.group
+        == pki_host_local_exchange_access_group
+      - >-
+        pki_host_local_exchange_access_absent_marker_record.home
+        == pki_host_local_exchange_access_home
+      - >-
+        pki_host_local_exchange_access_absent_marker_record.shell
+        == pki_host_local_exchange_access_shell
+      - >-
+        pki_host_local_exchange_access_absent_marker_text
+        == (
+          pki_host_local_exchange_access_absent_marker_record
+          | to_json(sort_keys=true, separators=[',', ':'])
+        ) ~ '\n'
+      - >-
+        pki_host_local_exchange_access_absent_user.rc != 0
+        or (
+          pki_host_local_exchange_access_absent_user.stdout.split(':') | length == 7
+          and pki_host_local_exchange_access_absent_user.stdout.split(':')[0]
+              == pki_host_local_exchange_access_user
+          and pki_host_local_exchange_access_absent_user.stdout.split(':')[2] | int < 1000
+          and pki_host_local_exchange_access_absent_user.stdout.split(':')[5]
+              == pki_host_local_exchange_access_home
+          and pki_host_local_exchange_access_absent_user.stdout.split(':')[6]
+              == pki_host_local_exchange_access_shell
+        )
+      - >-
+        pki_host_local_exchange_access_absent_group.rc != 0
+        or (
+          pki_host_local_exchange_access_absent_group.stdout.split(':') | length == 4
+          and pki_host_local_exchange_access_absent_group.stdout.split(':')[0]
+              == pki_host_local_exchange_access_group
+          and pki_host_local_exchange_access_absent_group.stdout.split(':')[2] | int < 1000
+          and pki_host_local_exchange_access_absent_group.stdout.split(':')[3] == ''
+        )
+      - >-
+        pki_host_local_exchange_access_absent_user.rc != 0
+        or pki_host_local_exchange_access_absent_group.rc != 0
+        or pki_host_local_exchange_access_absent_user.stdout.split(':')[3]
+            == pki_host_local_exchange_access_absent_group.stdout.split(':')[2]
+      - >-
+        pki_host_local_exchange_access_absent_marker_record.state == 'reserved'
+        or (
+          pki_host_local_exchange_access_absent_user.rc == 0
+          and pki_host_local_exchange_access_absent_group.rc == 0
+          and pki_host_local_exchange_access_absent_marker_record.uid
+              == pki_host_local_exchange_access_absent_user.stdout.split(':')[2] | int
+          and pki_host_local_exchange_access_absent_marker_record.gid
+              == pki_host_local_exchange_access_absent_group.stdout.split(':')[2] | int
+        )
+    fail_msg: Refusing to revoke an identity that no longer matches the exact managed ownership record.
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+
+- name: Revoke managed host-local PKI exchange access
+  when: pki_host_local_exchange_access_absent_marker.stat.exists
+  block:
+    - name: Remove host-local PKI exchange sudo policy first
+      ansible.builtin.file:
+        path: "{{ pki_host_local_exchange_access_sudoers_path }}"
+        state: absent
+
+    - name: Remove exchange authorized key
+      ansible.builtin.file:
+        path: "{{ pki_host_local_exchange_access_home }}/.ssh/authorized_keys"
+        state: absent
+
+    - name: Remove account-wide host-local PKI exchange SSH policy
+      ansible.builtin.file:
+        path: "{{ pki_host_local_exchange_access_sshd_path }}"
+        state: absent
+      notify: Reload host-local PKI exchange sshd
+
+    - name: Remove host-local PKI exchange account
+      ansible.builtin.user:
+        name: "{{ pki_host_local_exchange_access_user }}"
+        state: absent
+        remove: false
+      when: pki_host_local_exchange_access_absent_user.rc == 0
+
+    - name: Remove host-local PKI exchange account home
+      ansible.builtin.file:
+        path: "{{ pki_host_local_exchange_access_home }}"
+        state: absent
+      when: pki_host_local_exchange_access_absent_marker_record.state == 'managed'
+
+    - name: Remove host-local PKI exchange group
+      ansible.builtin.group:
+        name: "{{ pki_host_local_exchange_access_group }}"
+        state: absent
+      when: pki_host_local_exchange_access_absent_group.rc == 0
+
+    - name: Remove host-local PKI exchange dispatchers and validator
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ pki_host_local_exchange_access_dispatch_path }}"
+        - "{{ pki_host_local_exchange_access_root_dispatch_path }}"
+        - "{{ pki_host_local_exchange_access_sshd_validate_path }}"
+
+    - name: Release host-local PKI exchange account ownership
+      ansible.builtin.file:
+        path: "{{ pki_host_local_exchange_access_marker_path }}"
+        state: absent

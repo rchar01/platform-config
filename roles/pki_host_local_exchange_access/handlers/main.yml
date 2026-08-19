@@ -1,0 +1,5 @@
+---
+- name: Reload host-local PKI exchange sshd
+  ansible.builtin.service:
+    name: "{{ pki_host_local_exchange_access_ssh_service }}"
+    state: reloaded

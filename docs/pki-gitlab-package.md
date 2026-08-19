@@ -9,6 +9,10 @@ The canonical package contract is
 `platform-tools/docs/pki-gitlab-package-exchange.md`. Stop if that contract and
 this implementation disagree.
 
+Complete [PKI Exchange Setup](pki-exchange-setup.md) before using this helper.
+That guide owns transfer-station paths, project controls, credential separation,
+target SSH preparation, offline storage, and optional runner setup.
+
 ## Package Families
 
 Every package name is `pki-exchange-<stage>-<service>`. The caller supplies the
@@ -83,6 +87,20 @@ token header types for generic operations; the compatibility publisher supports
 mode-`0600` file and never enter argv, URLs, payloads, or output. The reviewed CA
 bundle is also descriptor-pinned.
 
+Every operation first authenticates `GET /api/v4/projects/:id`. GitLab 18.11's
+Generic Packages documentation explicitly supports a project access token with
+`api` scope and Developer role. Use that documented configuration for the
+default external reader (`--token-type private`) unless the complete helper has
+qualified a narrower token against the exact target version. This credential is
+not inherently read-only. The helper itself permits only GET requests in reader
+operations, but the credential can be used outside the helper to call broader
+APIs. Role-based package protection cannot deny publication to this Developer
+reader while allowing a Developer publisher; it may still impose a higher
+deletion threshold. Treat this as a qualification blocker unless the narrower
+`read_api` scope passes complete exact-version runtime tests or the credential
+design changes. A deploy token with only `read_package_registry` cannot
+authenticate the Projects API.
+
 The helper does not inspect or configure package protection, duplicate policy,
 cleanup, membership, token scopes, or project settings. Independently require
 self-managed GitLab CE `18.11.3-ce.0`, one private exchange project, disabled
@@ -102,8 +120,8 @@ scripts/platform-pki-gitlab-package publish \
   --package-version 0123456789abcdef0123456789abcdef-<approval-sha256> \
   --source-dir /outside-git/pki-exchange/approval-attempt \
   --project-record /outside-git/config/pki-exchange-project \
-  --token-type job \
-  --token-file /outside-git/secrets/pki-exchange-job.token \
+  --token-type private \
+  --token-file /outside-git/secrets/pki-exchange-publisher.token \
   --ca-file /outside-git/trust/gitlab-ca.crt
 ```
 
@@ -141,7 +159,7 @@ scripts/platform-pki-gitlab-package download \
   --package-version 0123456789abcdef0123456789abcdef \
   --destination-dir /outside-git/pki-exchange/downloaded-response \
   --project-record /outside-git/config/pki-exchange-project \
-  --token-type deploy \
+  --token-type private \
   --token-file /outside-git/secrets/pki-exchange-read.token \
   --ca-file /outside-git/trust/gitlab-ca.crt
 ```

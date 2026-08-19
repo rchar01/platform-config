@@ -139,6 +139,27 @@ def outcome_files(module: ModuleType) -> tuple[dict[str, bytes], dict[str, str]]
     return files, coordinates
 
 
+def publish_evidence(
+    module: ModuleType,
+    config: Any,
+    files: dict[str, bytes],
+    coordinates: dict[str, str],
+) -> None:
+    evidence = private_dir(Path(config.state_root) / "evidence")
+    request = private_dir(evidence / coordinates["request_id"])
+    deployment = private_dir(request / coordinates["deployment_sha256"])
+    evidence_files = {
+        "deployment": files["deployment"],
+        "deployment.sig": files["deployment.sig"],
+        "validation-boundary": b"validation boundary\n",
+        "validation-result": b"validation result\n",
+        "validation-result.sig": b"validation signature\n",
+    }
+    assert tuple(evidence_files) == module.EVIDENCE_NAMES
+    for name, data in evidence_files.items():
+        private_file(deployment / name, data)
+
+
 def test_facade_command_grammar_is_exact(facade: ModuleType) -> None:
     parser = facade.build_parser()
     assert parser.parse_args(["export-request", REQUEST_ID]).command == "export-request"
@@ -229,7 +250,12 @@ def test_response_stage_is_idempotent_and_conflict_safe(
 
     def prepare(_config: object, command: str, arguments: list[str]) -> dict[str, object]:
         assert command == "response-prepare"
-        assert arguments == ["--request-id", REQUEST_ID]
+        assert arguments == [
+            "--trust-id",
+            "reviewed-v1",
+            "--request-id",
+            REQUEST_ID,
+        ]
         ingress = Path(config.versions_root) / f".ingress-{REQUEST_ID}"
         if not ingress.exists():
             private_dir(ingress)
@@ -274,6 +300,7 @@ def test_outcome_stage_is_logical_idempotent_and_no_clobber(
     config = target_config(facade, tmp_path)
     files, values = outcome_files(facade)
     frame = facade.encode_frame("outcome", files, values, config)
+    publish_evidence(facade, config, files, values)
     first = facade.publish_outcome(config, values, frame)
     assert first["status"] == "staged"
     assert first["stage_id"] == facade.outcome_stage_id(**values)
@@ -286,12 +313,60 @@ def test_outcome_stage_is_logical_idempotent_and_no_clobber(
         facade.publish_outcome(config, values, frame)
 
 
+def test_outcome_stage_requires_published_evidence(
+    facade: ModuleType, tmp_path: Path
+) -> None:
+    config = target_config(facade, tmp_path)
+    files, values = outcome_files(facade)
+    frame = facade.encode_frame("outcome", files, values, config)
+
+    with pytest.raises(facade.ExchangeError):
+        facade.publish_outcome(config, values, frame)
+    assert not (Path(config.spool_root) / "outcomes").exists()
+
+
+def test_outcome_stage_allows_only_one_candidate_per_request(
+    facade: ModuleType, tmp_path: Path
+) -> None:
+    config = target_config(facade, tmp_path)
+    files, values = outcome_files(facade)
+    publish_evidence(facade, config, files, values)
+    first_frame = facade.encode_frame("outcome", files, values, config)
+    facade.publish_outcome(config, values, first_frame)
+
+    second_files = dict(files)
+    second_files["outcome"] = files["outcome"] + b"note=second\n"
+    second_values = dict(values)
+    second_values["outcome_sha256"] = facade.sha256(second_files["outcome"])
+    second_frame = facade.encode_frame("outcome", second_files, second_values, config)
+    with pytest.raises(facade.ExchangeError, match="different outcome"):
+        facade.publish_outcome(config, second_values, second_frame)
+
+
+def test_outcome_stage_recovers_exact_interrupted_private_stage(
+    facade: ModuleType, tmp_path: Path
+) -> None:
+    config = target_config(facade, tmp_path)
+    files, values = outcome_files(facade)
+    publish_evidence(facade, config, files, values)
+    outcomes = private_dir(Path(config.spool_root) / "outcomes")
+    request = private_dir(outcomes / REQUEST_ID)
+    interrupted = private_dir(request / f".stage-{values['outcome_sha256']}")
+    private_file(interrupted / "outcome", files["outcome"])
+    frame = facade.encode_frame("outcome", files, values, config)
+
+    assert facade.publish_outcome(config, values, frame)["status"] == "staged"
+    assert not interrupted.exists()
+    assert (request / values["outcome_sha256"]).is_dir()
+
+
 def test_outcome_cleanup_requires_accepted_matching_history(
     facade: ModuleType, tmp_path: Path
 ) -> None:
     config = target_config(facade, tmp_path)
     files, values = outcome_files(facade)
     frame = facade.encode_frame("outcome", files, values, config)
+    publish_evidence(facade, config, files, values)
     facade.publish_outcome(config, values, frame)
     history = private_dir(
         Path(config.state_root) / "outcomes" / REQUEST_ID / values["outcome_sha256"]

@@ -44,11 +44,14 @@ and other secrets belong outside Git.
 - [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
   end-to-end request, offline signing, activation, evidence, terminal outcome,
   recovery, backup, and local-verification procedure.
+- [PKI Exchange Setup](pki-exchange-setup.md): Prepare protected transfer-station
+  storage, the GitLab project and credentials, pinned target SSH, offline
+  workspaces, and optional CI publication.
 - [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.
-- [GitLab PKI Package Exchange](pki-gitlab-package.md): Protected request-package
-  publication, GitLab controls, and remaining external transport gates.
+- [GitLab PKI Package Exchange](pki-gitlab-package.md): Exact five-family package
+  publication and download behavior, validation, and remaining runtime gates.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
   access configuration, installation, issuer staging validation, smoke tests,
   and reconciliation.

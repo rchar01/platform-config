@@ -1,0 +1,110 @@
+#!/usr/bin/python3 -I
+"""Validate the candidate in its complete effective sshd configuration."""
+
+from __future__ import annotations
+
+import glob
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+
+
+MAIN_CONFIG = "/etc/ssh/sshd_config"
+DROPIN_PATTERN = "/etc/ssh/sshd_config.d/*.conf"
+MANAGED_DROPIN = "/etc/ssh/sshd_config.d/00-platform-pki-host-local-exchange.conf"
+SSHD = "/usr/sbin/sshd"
+EXPECTED = {
+    "authenticationmethods publickey",
+    "pubkeyauthentication yes",
+    "authorizedkeysfile /var/lib/platform-config/pki-exchange-operator/.ssh/authorized_keys",
+    "authorizedkeyscommand none",
+    "passwordauthentication no",
+    "kbdinteractiveauthentication no",
+    "permitemptypasswords no",
+    "forcecommand /usr/local/libexec/platform-pki-host-local-exchange-ssh-dispatch",
+    "disableforwarding yes",
+    "permittty no",
+    "x11forwarding no",
+}
+
+
+def build_wrapper(candidate: str) -> str:
+    with open(MAIN_CONFIG, encoding="utf-8") as source:
+        lines = source.readlines()
+    rendered: list[str] = []
+    replaced = False
+    for line in lines:
+        tokens = shlex.split(line, comments=True)
+        if tokens and tokens[0].lower() == "include" and DROPIN_PATTERN in tokens[1:]:
+            includes = [candidate]
+            includes.extend(
+                path
+                for path in sorted(glob.glob(DROPIN_PATTERN))
+                if os.path.normpath(path) != MANAGED_DROPIN
+            )
+            includes.extend(token for token in tokens[1:] if token != DROPIN_PATTERN)
+            rendered.extend(f"Include {shlex.quote(path)}\n" for path in includes)
+            replaced = True
+        else:
+            rendered.append(line)
+    if not replaced:
+        raise ValueError("main sshd configuration does not include the managed drop-in path")
+    path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="platform-pki-sshd-",
+            delete=False,
+        ) as output:
+            path = output.name
+            os.fchmod(output.fileno(), 0o600)
+            output.writelines(rendered)
+    except BaseException:
+        if path is not None:
+            os.unlink(path)
+        raise
+    assert path is not None
+    return path
+
+
+def run_sshd(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [SSHD, *arguments],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+    )
+
+
+def main() -> None:
+    if len(sys.argv) != 2 or not os.path.isfile(sys.argv[1]):
+        raise SystemExit(2)
+    wrapper = build_wrapper(sys.argv[1])
+    try:
+        syntax = run_sshd(["-t", "-f", wrapper])
+        if syntax.returncode != 0:
+            raise SystemExit(1)
+        effective = run_sshd(
+            [
+                "-T",
+                "-f",
+                wrapper,
+                "-C",
+                "user=exchange-operator,host=localhost,addr=127.0.0.1",
+            ]
+        )
+        if effective.returncode != 0 or not EXPECTED.issubset(set(effective.stdout.splitlines())):
+            raise SystemExit(1)
+    finally:
+        os.unlink(wrapper)
+
+
+if __name__ == "__main__":
+    main()

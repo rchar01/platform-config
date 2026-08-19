@@ -1,0 +1,15 @@
+---
+pki_host_local_exchange_access_state: absent
+pki_host_local_exchange_access_user: exchange-operator
+pki_host_local_exchange_access_group: exchange-operator
+pki_host_local_exchange_access_home: /var/lib/platform-config/pki-exchange-operator
+pki_host_local_exchange_access_shell: /bin/bash
+pki_host_local_exchange_access_authorized_key: ""
+pki_host_local_exchange_access_marker_path: /var/lib/platform-config/pki-exchange-operator.managed
+pki_host_local_exchange_access_dispatch_path: /usr/local/libexec/platform-pki-host-local-exchange-ssh-dispatch
+pki_host_local_exchange_access_root_dispatch_path: /usr/local/libexec/platform-pki-host-local-exchange-root-dispatch
+pki_host_local_exchange_access_helper_path: /usr/local/libexec/platform-pki-host-local-exchange
+pki_host_local_exchange_access_sudoers_path: /etc/sudoers.d/platform-pki-host-local-exchange
+pki_host_local_exchange_access_sshd_path: /etc/ssh/sshd_config.d/00-platform-pki-host-local-exchange.conf
+pki_host_local_exchange_access_sshd_validate_path: /usr/local/libexec/platform-pki-host-local-exchange-sshd-validate
+pki_host_local_exchange_access_ssh_service: sshd

@@ -1,5 +1,9 @@
 # Host-Local Registry PKI Workflow
 
+Complete [PKI Exchange Setup](pki-exchange-setup.md) before this workflow. It
+prepares the transfer-station namespace, GitLab project and credentials, pinned
+target endpoint, restricted SSH identity, and offline workspace.
+
 This runbook covers the complete implemented workflow for moving one Zot
 registry from a managed certificate to a certificate whose leaf private key
 never leaves the registry host. It joins the target/controller operations in
@@ -105,8 +109,12 @@ It has exactly this schema, with keys serialized in sorted order:
 The identity and endpoint files must be mode `0600`. The known-hosts file must
 be mode `0600` and contain exactly one unhashed record for the endpoint token.
 The endpoint account must have only reviewed noninteractive sudo access to the
-fixed facade. The helper enforces `StrictHostKeyChecking=yes`, no agent, X11,
-proxy, or shell, and the reviewed OpenSSH `SHA256:` host-key fingerprint.
+fixed root broker, never the facade directly. The account-wide SSH policy and
+forced-key policy both select the unprivileged dispatcher; the broker
+independently revalidates the four allowed operations, pins the protected facade
+by descriptor, and excludes cleanup. The client enforces
+`StrictHostKeyChecking=yes`, no agent, X11, proxy, or shell, and the reviewed
+OpenSSH `SHA256:` host-key fingerprint.
 
 `request-pull` also emits `transport_host_key_sha256`, the lowercase hexadecimal
 SHA-256 of the same SSH key blob. Carry that exact value into request intake; it
@@ -149,17 +157,17 @@ reviewed request inventory, trust, and host-key coordinate:
 scripts/platform-pki-gitlab-package download \
   --stage request --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
-  --destination-dir /secure/gitlab-request/"$REQUEST_ID" \
+  --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/request/$REQUEST_ID" \
   --project-record /outside-git/gitlab/project-record \
-  --token-type deploy --token-file /run/secrets/gitlab-package-token \
+  --token-type private --token-file /run/secrets/gitlab-package-token \
   --ca-file /outside-git/gitlab/ca.pem \
   --inventory-record /outside-git/pki/request-inventory \
-  --trust-dir /outside-git/pki/reviewed-trust \
+  --trust-dir "$EXCHANGE_ROOT/$SERVICE/$REQUEST_ID/trust" \
   --transport-host-key-sha256 "$TRANSPORT_HOST_KEY_SHA256"
 install -d -m 0700 /secure/reviewed-request/"$REQUEST_ID"
 for name in tls.csr request request.sig; do
   install -m 0600 -- \
-    /secure/gitlab-request/"$REQUEST_ID"/"$name" \
+    "$EXCHANGE_ROOT/gitlab-downloads/request/$REQUEST_ID/$name" \
     /secure/reviewed-request/"$REQUEST_ID"/"$name"
 done
 ```
@@ -193,13 +201,13 @@ scripts/platform-pki-gitlab-package download \
   --stage approval --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$APPROVAL_SHA256" \
-  --destination-dir /secure/gitlab-approval/"$APPROVAL_SHA256" \
+  --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/approval/$REQUEST_ID-$APPROVAL_SHA256" \
   --project-record /outside-git/gitlab/project-record \
-  --token-type deploy --token-file /run/secrets/gitlab-package-token \
+  --token-type private --token-file /run/secrets/gitlab-package-token \
   --ca-file /outside-git/gitlab/ca.pem
 for name in approval approval.sig; do
   install -m 0600 -- \
-    /secure/gitlab-approval/"$APPROVAL_SHA256"/"$name" \
+    "$EXCHANGE_ROOT/gitlab-downloads/approval/$REQUEST_ID-$APPROVAL_SHA256/$name" \
     /secure/reviewed-request/"$REQUEST_ID"/"$name"
 done
 ```
@@ -230,14 +238,14 @@ deep response validation or direct push:
 scripts/platform-pki-gitlab-package download \
   --stage response --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
-  --destination-dir /outside-git/gitlab-response/"$REQUEST_ID" \
+  --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/response/$REQUEST_ID" \
   --project-record /outside-git/gitlab/project-record \
-  --token-type deploy --token-file /run/secrets/gitlab-package-token \
+  --token-type private --token-file /run/secrets/gitlab-package-token \
   --ca-file /outside-git/gitlab/ca.pem
 install -d -m 0700 "$EXCHANGE_ROOT/intake/response-$REQUEST_ID"
 for name in artifact tls.crt ca-chain.crt fullchain.crt response response.sig; do
   install -m 0600 -- \
-    /outside-git/gitlab-response/"$REQUEST_ID"/"$name" \
+    "$EXCHANGE_ROOT/gitlab-downloads/response/$REQUEST_ID/$name" \
     "$EXCHANGE_ROOT/intake/response-$REQUEST_ID/$name"
 done
 ```
@@ -264,9 +272,9 @@ scripts/platform-pki-gitlab-package download \
   --stage evidence --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$DEPLOYMENT_SHA256" \
-  --destination-dir /secure/gitlab-evidence/"$DEPLOYMENT_SHA256" \
+  --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/evidence/$REQUEST_ID-$DEPLOYMENT_SHA256" \
   --project-record /outside-git/gitlab/project-record \
-  --token-type deploy --token-file /run/secrets/gitlab-package-token \
+  --token-type private --token-file /run/secrets/gitlab-package-token \
   --ca-file /outside-git/gitlab/ca.pem
 ```
 
@@ -293,15 +301,15 @@ scripts/platform-pki-gitlab-package download \
   --stage outcome --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$OUTCOME_SHA256" \
-  --destination-dir /outside-git/gitlab-outcome/"$REQUEST_ID" \
+  --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
   --project-record /outside-git/gitlab/project-record \
-  --token-type deploy --token-file /run/secrets/gitlab-package-token \
+  --token-type private --token-file /run/secrets/gitlab-package-token \
   --ca-file /outside-git/gitlab/ca.pem
-install -d -m 0700 /outside-git/protected-outcome/"$REQUEST_ID"
+install -d -m 0700 "$EXCHANGE_ROOT/intake/outcome-$OUTCOME_SHA256"
 for name in outcome outcome.sig deployment deployment.sig deployers.allowed_signers decision; do
   install -m 0600 -- \
-    /outside-git/gitlab-outcome/"$REQUEST_ID"/"$name" \
-    /outside-git/protected-outcome/"$REQUEST_ID"/"$name"
+    "$EXCHANGE_ROOT/gitlab-downloads/outcome/$REQUEST_ID-$OUTCOME_SHA256/$name" \
+    "$EXCHANGE_ROOT/intake/outcome-$OUTCOME_SHA256/$name"
 done
 ```
 
@@ -530,6 +538,9 @@ scripts/platform-pki-direct-exchange response-push \
 Require `status=staged` or `status=existing`. Activation accepts only an already
 existing/staged ingress or an already installed version. It rejects a fresh
 `prepared`/`would-prepare` result, unexpected files, and incomplete ingress.
+The target facade creates response ingress only for the exact authenticated,
+unexpired pending request, so arbitrary request IDs cannot allocate target
+state.
 
 Activate the exact response and validate it from the distinct reviewed runner:
 
@@ -708,11 +719,15 @@ Push the exact outcome into the fixed target spool:
 scripts/platform-pki-direct-exchange outcome-push \
   "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
   "$DEPLOYMENT_SHA256" "$OUTCOME_SHA256" \
-  /outside-git/protected-outcome/"$REQUEST_ID"
+  "$EXCHANGE_ROOT/intake/outcome-$OUTCOME_SHA256"
 ```
 
-Require `status=staged` or `status=existing`. Run the complete non-mutating
-target-spool importer check first:
+Require `status=staged` or `status=existing`. The target accepts an outcome only
+when its deployment bytes match exact already-published target evidence and
+allows at most one staged outcome candidate for the request. An incorrect first
+candidate therefore requires administrator review and removal; the restricted
+SSH identity cannot invoke cleanup. Run the complete non-mutating target-spool
+importer check first:
 
 ```bash
 make registry-pki-outcome-import \

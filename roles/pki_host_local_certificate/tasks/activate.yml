@@ -79,6 +79,7 @@
           '--versions-root', pki_host_local_certificate_versions_root,
           '--service', pki_host_local_certificate_service,
           '--target', pki_host_local_certificate_target,
+          '--trust-id', pki_host_local_certificate_trust_id,
           '--request-id', pki_host_local_certificate_request_id
         ]
         + (['--check'] if ansible_check_mode or pki_host_local_certificate_exchange_mode == 'direct' else [])
