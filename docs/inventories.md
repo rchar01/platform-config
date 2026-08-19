@@ -83,6 +83,14 @@ SELinux policy, and outside-Git node PKI inputs are complete. Staging keeps ever
 member disabled and stopped; it does not authorize bootstrap, restore, member
 replacement, Patroni use, or combined monitoring convergence.
 
+After stopped staging, set `monitoring_etcd_bootstrap_preflight_ready` only for
+the separate read-only bootstrap preflight. Private inventory must also provide
+the exact active `monitoring_etcd_data_mount_source`; the public example leaves
+it empty deliberately. The preflight accepts only a pristine XFS mount, an
+absent bootstrap marker, exact staged bundle and PKI evidence, no etcd runtime
+activity, and one consistent contract across all three hosts. Passing preflight
+still does not authorize initialization or service startup.
+
 The focused OpenBao staging playbook owns Podman installation directly, so
 OpenBao nodes do not require `container_hosts` membership. Storage remains a
 separate destructive boundary: add real nodes to `storage_volume_hosts` only

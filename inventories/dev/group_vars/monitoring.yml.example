@@ -45,11 +45,15 @@ monitoring_haproxy_service_state: stopped
 # Dedicated Patroni etcd staging remains inert until private inventory supplies
 # reviewed topology, PKI source paths, and an explicit orchestration approval.
 monitoring_etcd_orchestration_ready: false
+monitoring_etcd_bootstrap_preflight_ready: false
 monitoring_etcd_contract_ready: false
 monitoring_etcd_enabled: false
 monitoring_etcd_converge: false
 monitoring_etcd_service_enabled: false
 monitoring_etcd_service_state: stopped
+monitoring_etcd_data_fstype: xfs
+monitoring_etcd_data_mount_source: ""
+monitoring_etcd_bootstrap_require_selinux_enforcing: true
 monitoring_etcd_firewalld_manage: true
 monitoring_etcd_selinux_manage: true
 monitoring_etcd_initial_cluster_token: ""

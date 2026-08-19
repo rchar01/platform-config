@@ -1,0 +1,744 @@
+---
+- name: Inspect monitoring etcd bootstrap data path
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_data_dir }}"
+    follow: false
+  register: monitoring_etcd_bootstrap_data_stat
+  check_mode: false
+
+- name: Require safe monitoring etcd bootstrap data path
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_data_stat.stat.exists
+      - monitoring_etcd_bootstrap_data_stat.stat.isdir
+      - not monitoring_etcd_bootstrap_data_stat.stat.islnk
+      - monitoring_etcd_bootstrap_data_stat.stat.uid == monitoring_etcd_runtime_uid | int
+      - monitoring_etcd_bootstrap_data_stat.stat.gid == monitoring_etcd_runtime_gid | int
+      - monitoring_etcd_bootstrap_data_stat.stat.mode == '0700'
+    fail_msg: Monitoring etcd bootstrap requires its safe dedicated data path.
+
+- name: Inspect monitoring etcd bootstrap mount
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --json
+      - --output
+      - TARGET,SOURCE,FSTYPE,OPTIONS
+      - --mountpoint
+      - "{{ monitoring_etcd_data_dir }}"
+  register: monitoring_etcd_bootstrap_mount_command
+  changed_when: false
+  check_mode: false
+
+- name: Parse monitoring etcd bootstrap mount
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_mount: >-
+      {{
+        (monitoring_etcd_bootstrap_mount_command.stdout | from_json).filesystems
+        | first
+      }}
+
+- name: Require exact monitoring etcd bootstrap mount
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_mount.target == monitoring_etcd_data_dir
+      - monitoring_etcd_bootstrap_mount.source is match('^/dev/')
+        or monitoring_etcd_bootstrap_mount.fstype == 'tmpfs'
+      - >-
+        monitoring_etcd_data_mount_source | length == 0
+        or monitoring_etcd_bootstrap_mount.source
+           == monitoring_etcd_data_mount_source
+      - monitoring_etcd_bootstrap_mount.fstype == monitoring_etcd_data_fstype
+      - >-
+        monitoring_etcd_data_required_mount_options
+        | difference(monitoring_etcd_bootstrap_mount.options.split(','))
+        | length == 0
+    fail_msg: >-
+      Monitoring etcd bootstrap requires the exact dedicated filesystem and
+      mandatory mount options.
+
+- name: Inspect monitoring etcd bootstrap role-owned directories
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_directory.path }}"
+    follow: false
+  loop:
+    - path: "{{ monitoring_etcd_config_dir }}"
+      mode: "0750"
+    - path: "{{ monitoring_etcd_bundle_root }}"
+      mode: "0750"
+    - path: "{{ monitoring_etcd_state_dir }}"
+      mode: "0755"
+    - path: "{{ monitoring_etcd_quadlet_dir }}"
+      mode: "0755"
+  loop_control:
+    loop_var: monitoring_etcd_bootstrap_directory
+    label: "{{ monitoring_etcd_bootstrap_directory.path }}"
+  register: monitoring_etcd_bootstrap_directory_stats
+  check_mode: false
+
+- name: Require safe monitoring etcd bootstrap role-owned directories
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_directory_stat.stat.exists
+      - monitoring_etcd_bootstrap_directory_stat.stat.isdir
+      - not monitoring_etcd_bootstrap_directory_stat.stat.islnk
+      - monitoring_etcd_bootstrap_directory_stat.stat.uid == 0
+      - >-
+        monitoring_etcd_bootstrap_directory_stat.stat.mode
+        == monitoring_etcd_bootstrap_directory_stat.monitoring_etcd_bootstrap_directory.mode
+    fail_msg: Monitoring etcd bootstrap role-owned directory is unsafe.
+  loop: "{{ monitoring_etcd_bootstrap_directory_stats.results }}"
+  loop_control:
+    loop_var: monitoring_etcd_bootstrap_directory_stat
+    label: >-
+      {{ monitoring_etcd_bootstrap_directory_stat.monitoring_etcd_bootstrap_directory.path }}
+
+- name: Inspect monitoring etcd bootstrap data entries
+  ansible.builtin.find:
+    paths:
+      - "{{ monitoring_etcd_data_dir }}"
+    file_type: any
+    recurse: false
+    hidden: true
+  register: monitoring_etcd_bootstrap_data_entries
+  changed_when: false
+  check_mode: false
+
+- name: Require pristine monitoring etcd bootstrap data
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_data_entries.files
+        | map(attribute='path')
+        | difference([monitoring_etcd_data_dir ~ '/lost+found'])
+        | length == 0
+      - >-
+        monitoring_etcd_bootstrap_data_entries.files
+        | selectattr('path', 'equalto', monitoring_etcd_data_dir ~ '/lost+found')
+        | rejectattr('isdir')
+        | list | length == 0
+      - >-
+        monitoring_etcd_bootstrap_data_entries.files
+        | selectattr('path', 'equalto', monitoring_etcd_data_dir ~ '/lost+found')
+        | selectattr('islnk')
+        | list | length == 0
+    fail_msg: >-
+      Monitoring etcd bootstrap requires pristine data containing at most one
+      real lost+found directory.
+
+- name: Inspect monitoring etcd bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_marker_path }}"
+    follow: false
+  register: monitoring_etcd_bootstrap_marker_stat
+  check_mode: false
+
+- name: Require absent monitoring etcd bootstrap marker
+  ansible.builtin.assert:
+    that:
+      - not monitoring_etcd_bootstrap_marker_stat.stat.exists
+    fail_msg: >-
+      Monitoring etcd bootstrap marker already exists; greenfield bootstrap
+      preflight cannot be repeated.
+
+- name: Inspect monitoring etcd current bundle pointer
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_current_link }}"
+    follow: false
+  register: monitoring_etcd_bootstrap_current_link
+  check_mode: false
+
+- name: Require safe monitoring etcd current bundle pointer
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_current_link.stat.exists
+      - monitoring_etcd_bootstrap_current_link.stat.islnk
+      - >-
+        monitoring_etcd_bootstrap_current_link.stat.lnk_source
+        is match(
+          '^' ~ (monitoring_etcd_bundle_root | regex_escape)
+          ~ '/[0-9a-f]{64}$'
+        )
+    fail_msg: Monitoring etcd bootstrap requires one safe staged bundle pointer.
+
+- name: Inspect monitoring etcd current bundle target
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_current_link.stat.lnk_source }}"
+    follow: false
+  register: monitoring_etcd_bootstrap_bundle_stat
+  check_mode: false
+
+- name: Require safe monitoring etcd current bundle target
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_bundle_stat.stat.exists
+      - monitoring_etcd_bootstrap_bundle_stat.stat.isdir
+      - not monitoring_etcd_bootstrap_bundle_stat.stat.islnk
+      - monitoring_etcd_bootstrap_bundle_stat.stat.uid == 0
+      - monitoring_etcd_bootstrap_bundle_stat.stat.gid == monitoring_etcd_runtime_gid | int
+      - monitoring_etcd_bootstrap_bundle_stat.stat.mode == '0750'
+    fail_msg: Monitoring etcd bootstrap current bundle target is unsafe.
+
+- name: Inspect monitoring etcd bootstrap PKI directory
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_current_link }}/pki"
+    follow: false
+  register: monitoring_etcd_bootstrap_pki_directory_stat
+  check_mode: false
+
+- name: Require safe monitoring etcd bootstrap PKI directory
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_pki_directory_stat.stat.exists
+      - monitoring_etcd_bootstrap_pki_directory_stat.stat.isdir
+      - not monitoring_etcd_bootstrap_pki_directory_stat.stat.islnk
+      - monitoring_etcd_bootstrap_pki_directory_stat.stat.uid == 0
+      - >-
+        monitoring_etcd_bootstrap_pki_directory_stat.stat.gid
+        == monitoring_etcd_runtime_gid | int
+      - monitoring_etcd_bootstrap_pki_directory_stat.stat.mode == '0750'
+    fail_msg: Monitoring etcd bootstrap PKI directory is unsafe.
+
+- name: Enumerate monitoring etcd bootstrap bundle tree
+  ansible.builtin.find:
+    paths:
+      - "{{ monitoring_etcd_bootstrap_current_link.stat.lnk_source }}"
+    file_type: any
+    recurse: true
+    hidden: true
+  register: monitoring_etcd_bootstrap_bundle_tree
+  changed_when: false
+  check_mode: false
+
+- name: Require exact monitoring etcd bootstrap bundle tree
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_bundle_tree.files
+        | map(attribute='path') | list | sort
+        == [
+             monitoring_etcd_bootstrap_current_link.stat.lnk_source
+             ~ '/bundle-contract.json',
+             monitoring_etcd_bootstrap_current_link.stat.lnk_source
+             ~ '/etcd.yml',
+             monitoring_etcd_bootstrap_current_link.stat.lnk_source ~ '/pki',
+             monitoring_etcd_bootstrap_current_link.stat.lnk_source
+             ~ '/pki/ca.crt',
+             monitoring_etcd_bootstrap_current_link.stat.lnk_source
+             ~ '/pki/tls.crt',
+             monitoring_etcd_bootstrap_current_link.stat.lnk_source
+             ~ '/pki/tls.key'
+           ] | sort
+    fail_msg: Monitoring etcd bootstrap bundle contains an unexpected tree shape.
+
+- name: Derive expected monitoring etcd staged checksums
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_expected_config_checksum: >-
+      {{
+        lookup(
+          'ansible.builtin.template',
+          role_path ~ '/templates/etcd.yml.j2',
+          rstrip=false
+        )
+        | hash('sha256')
+      }}
+    monitoring_etcd_bootstrap_expected_quadlet_checksum: >-
+      {{
+        lookup(
+          'ansible.builtin.template',
+          role_path ~ '/templates/monitoring-etcd.container.j2',
+          rstrip=false
+        )
+        | hash('sha256')
+      }}
+
+- name: Inspect monitoring etcd bootstrap template sources
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_template_source }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ role_path }}/templates/etcd.yml.j2"
+    - "{{ role_path }}/templates/monitoring-etcd.container.j2"
+    - "{{ role_path }}/templates/validate-config.sh.j2"
+  loop_control:
+    loop_var: monitoring_etcd_bootstrap_template_source
+  register: monitoring_etcd_bootstrap_template_source_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+
+- name: Inspect monitoring etcd staged files
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_file.path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - path: "{{ monitoring_etcd_config_path }}"
+      mode: "0640"
+      gid: "{{ monitoring_etcd_runtime_gid }}"
+      checksum: "{{ monitoring_etcd_bootstrap_expected_config_checksum }}"
+    - path: "{{ monitoring_etcd_quadlet_path }}"
+      mode: "0644"
+      gid: "0"
+      checksum: "{{ monitoring_etcd_bootstrap_expected_quadlet_checksum }}"
+    - path: "{{ monitoring_etcd_firewalld_manifest_path }}"
+      mode: "0644"
+      gid: "0"
+      checksum: ""
+    - path: "{{ monitoring_etcd_current_link }}/bundle-contract.json"
+      mode: "0640"
+      gid: "{{ monitoring_etcd_runtime_gid }}"
+      checksum: ""
+    - path: "{{ monitoring_etcd_tls_ca_path }}"
+      mode: "0644"
+      gid: "0"
+      checksum: ""
+    - path: "{{ monitoring_etcd_tls_cert_path }}"
+      mode: "0644"
+      gid: "0"
+      checksum: ""
+    - path: "{{ monitoring_etcd_tls_key_path }}"
+      mode: "0640"
+      gid: "{{ monitoring_etcd_runtime_gid }}"
+      checksum: ""
+  loop_control:
+    loop_var: monitoring_etcd_bootstrap_file
+    label: "{{ monitoring_etcd_bootstrap_file.path }}"
+  register: monitoring_etcd_bootstrap_file_stats
+  check_mode: false
+
+- name: Require safe exact monitoring etcd staged files
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_file_stat.stat.exists
+      - monitoring_etcd_bootstrap_file_stat.stat.isreg
+      - not monitoring_etcd_bootstrap_file_stat.stat.islnk
+      - monitoring_etcd_bootstrap_file_stat.stat.pw_name == 'root'
+      - >-
+        monitoring_etcd_bootstrap_file_stat.stat.gid
+        == monitoring_etcd_bootstrap_file_stat.monitoring_etcd_bootstrap_file.gid
+           | int
+      - monitoring_etcd_bootstrap_file_stat.stat.mode
+        == monitoring_etcd_bootstrap_file_stat.monitoring_etcd_bootstrap_file.mode
+      - >-
+        monitoring_etcd_bootstrap_file_stat.monitoring_etcd_bootstrap_file.checksum
+        | length == 0
+        or monitoring_etcd_bootstrap_file_stat.stat.checksum
+           == monitoring_etcd_bootstrap_file_stat.monitoring_etcd_bootstrap_file.checksum
+    fail_msg: Monitoring etcd bootstrap staged file is unsafe or stale.
+  loop: "{{ monitoring_etcd_bootstrap_file_stats.results }}"
+  loop_control:
+    loop_var: monitoring_etcd_bootstrap_file_stat
+    label: "{{ monitoring_etcd_bootstrap_file_stat.monitoring_etcd_bootstrap_file.path }}"
+
+- name: Read monitoring etcd staged bundle contract
+  ansible.builtin.slurp:
+    path: "{{ monitoring_etcd_current_link }}/bundle-contract.json"
+  register: monitoring_etcd_bootstrap_bundle_contract_data
+  check_mode: false
+  no_log: true
+
+- name: Parse monitoring etcd staged bundle contract
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_bundle_contract: >-
+      {{
+        monitoring_etcd_bootstrap_bundle_contract_data.content
+        | b64decode | from_json
+      }}
+  no_log: true
+
+- name: Build expected monitoring etcd staged bundle contract
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_expected_bundle_contract:
+      image:
+        reference: "{{ monitoring_etcd_image }}"
+        manifest_digest: "{{ monitoring_etcd_image_manifest_digest }}"
+        architecture: "{{ monitoring_etcd_image_architecture }}"
+        runtime_uid: "{{ monitoring_etcd_runtime_uid }}"
+        runtime_gid: "{{ monitoring_etcd_runtime_gid }}"
+      member:
+        name: "{{ monitoring_etcd_node_name }}"
+        address: "{{ monitoring_etcd_node_address }}"
+        dns: "{{ monitoring_etcd_node_dns }}"
+      cluster:
+        members: "{{ monitoring_etcd_cluster_members }}"
+        token: "{{ monitoring_etcd_initial_cluster_token }}"
+        state: "{{ monitoring_etcd_initial_cluster_state }}"
+      ports:
+        client: "{{ monitoring_etcd_client_port }}"
+        peer: "{{ monitoring_etcd_peer_port }}"
+      logging:
+        logger: "{{ monitoring_etcd_logger }}"
+        level: "{{ monitoring_etcd_log_level }}"
+      pki_checksums:
+        - "{{ monitoring_etcd_bootstrap_file_stats.results[4].stat.checksum }}"
+        - "{{ monitoring_etcd_bootstrap_file_stats.results[5].stat.checksum }}"
+        - "{{ monitoring_etcd_bootstrap_file_stats.results[6].stat.checksum }}"
+      template_checksums: >-
+        {{
+          monitoring_etcd_bootstrap_template_source_stats.results
+          | map(attribute='stat.checksum')
+          | list
+        }}
+  no_log: true
+
+- name: Require exact monitoring etcd staged bundle contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_bundle_contract
+        == monitoring_etcd_bootstrap_expected_bundle_contract
+      - >-
+        monitoring_etcd_bootstrap_bundle_contract | to_json | hash('sha256')
+        == monitoring_etcd_bootstrap_current_link.stat.lnk_source | basename
+    fail_msg: Monitoring etcd bootstrap staged bundle contract is inconsistent.
+  no_log: true
+
+- name: Read monitoring etcd staged configuration
+  ansible.builtin.slurp:
+    path: "{{ monitoring_etcd_config_path }}"
+  register: monitoring_etcd_bootstrap_config_data
+  check_mode: false
+  no_log: true
+
+- name: Parse monitoring etcd staged configuration
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_config: >-
+      {{ monitoring_etcd_bootstrap_config_data.content | b64decode | from_yaml }}
+    monitoring_etcd_bootstrap_expected_peers: []
+  no_log: true
+
+- name: Build expected monitoring etcd bootstrap peer map
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_expected_peers: >-
+      {{
+        monitoring_etcd_bootstrap_expected_peers
+        + [
+          monitoring_etcd_bootstrap_member.name
+          ~ '=https://' ~ monitoring_etcd_bootstrap_member.dns
+          ~ ':' ~ (monitoring_etcd_peer_port | string)
+        ]
+      }}
+  loop: "{{ monitoring_etcd_cluster_members }}"
+  loop_control:
+    loop_var: monitoring_etcd_bootstrap_member
+    label: "{{ monitoring_etcd_bootstrap_member.name }}"
+  no_log: true
+
+- name: Require exact monitoring etcd staged configuration
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_config.name == monitoring_etcd_node_name
+      - >-
+        monitoring_etcd_bootstrap_config['data-dir']
+        == monitoring_etcd_container_data_dir
+      - >-
+        monitoring_etcd_bootstrap_config['initial-cluster'].split(',') | sort
+        == monitoring_etcd_bootstrap_expected_peers | sort
+      - >-
+        monitoring_etcd_bootstrap_config['initial-cluster-token']
+        == monitoring_etcd_initial_cluster_token
+      - monitoring_etcd_bootstrap_config['initial-cluster-state'] == 'new'
+      - >-
+        monitoring_etcd_bootstrap_config['client-transport-security']['client-cert-auth']
+      - >-
+        monitoring_etcd_bootstrap_config['peer-transport-security']['client-cert-auth']
+    fail_msg: Monitoring etcd bootstrap staged configuration is not canonical.
+  no_log: true
+
+- name: Inspect monitoring etcd service fragment
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property
+      - FragmentPath
+      - --value
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_bootstrap_fragment
+  changed_when: false
+  check_mode: false
+
+- name: Inspect monitoring etcd service active state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_bootstrap_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Inspect monitoring etcd service enablement
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_bootstrap_enablement
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require inactive generated monitoring etcd service
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_fragment.stdout
+        is match('^/run/systemd/generator(?:[.](?:early|late))?/'
+                 ~ (monitoring_etcd_service_name | regex_escape) ~ '$')
+      - monitoring_etcd_bootstrap_active.stdout == 'inactive'
+      - monitoring_etcd_bootstrap_enablement.stdout
+        in ['disabled', 'static', 'indirect', 'generated']
+    fail_msg: >-
+      Monitoring etcd bootstrap requires a generated service that is inactive
+      and not enabled.
+
+- name: Inspect monitoring etcd managed container absence
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - container
+      - exists
+      - "{{ monitoring_etcd_container_name }}"
+  register: monitoring_etcd_bootstrap_container_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Inspect monitoring etcd listener absence
+  ansible.builtin.command:
+    argv:
+      - ss
+      - -H
+      - -ltn
+  register: monitoring_etcd_bootstrap_listeners
+  changed_when: false
+  check_mode: false
+
+- name: Require absent monitoring etcd runtime activity
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_container_exists.rc == 1
+      - >-
+        monitoring_etcd_bootstrap_listeners.stdout
+        is not search('(?m)^LISTEN.*:' ~ (monitoring_etcd_client_port | string) ~ '\\s')
+      - >-
+        monitoring_etcd_bootstrap_listeners.stdout
+        is not search('(?m)^LISTEN.*:' ~ (monitoring_etcd_peer_port | string) ~ '\\s')
+    fail_msg: Monitoring etcd bootstrap requires no container or bound etcd ports.
+
+- name: Inspect exact monitoring etcd bootstrap image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - image
+      - inspect
+      - "{{ monitoring_etcd_image }}"
+  register: monitoring_etcd_bootstrap_image_inspect
+  changed_when: false
+  check_mode: false
+
+- name: Parse exact monitoring etcd bootstrap image
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_image_metadata: >-
+      {{ monitoring_etcd_bootstrap_image_inspect.stdout | from_json | first }}
+
+- name: Require exact monitoring etcd bootstrap image
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_image_metadata.Digest
+        == monitoring_etcd_image_digest
+      - monitoring_etcd_bootstrap_image_metadata.Os == 'linux'
+      - >-
+        monitoring_etcd_bootstrap_image_metadata.Architecture
+        == monitoring_etcd_image_architecture
+      - >-
+        monitoring_etcd_bootstrap_image_metadata.Config.User
+        == monitoring_etcd_image_declared_user
+    fail_msg: Monitoring etcd bootstrap requires the exact staged image identity.
+
+- name: Read monitoring etcd firewalld manifest
+  ansible.builtin.slurp:
+    path: "{{ monitoring_etcd_firewalld_manifest_path }}"
+  register: monitoring_etcd_bootstrap_firewalld_data
+  check_mode: false
+
+- name: Parse monitoring etcd firewalld manifest
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_firewalld_manifest: >-
+      {{ monitoring_etcd_bootstrap_firewalld_data.content | b64decode | from_yaml }}
+    monitoring_etcd_bootstrap_expected_firewalld_rules: []
+
+- name: Build expected monitoring etcd bootstrap client firewall rules
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_expected_firewalld_rules: >-
+      {{
+        monitoring_etcd_bootstrap_expected_firewalld_rules
+        + [
+          'rule family="ipv4" source address="' ~ monitoring_etcd_source
+          ~ '" port port="' ~ (monitoring_etcd_client_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: >-
+    {{
+      (
+        monitoring_etcd_cluster_members
+        | map(attribute='address')
+        | map('regex_replace', '$', '/32')
+        | list
+        + monitoring_etcd_client_allowed_sources
+      )
+      | unique
+      | sort
+    }}
+  loop_control:
+    loop_var: monitoring_etcd_source
+
+- name: Build expected monitoring etcd bootstrap peer firewall rules
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_expected_firewalld_rules: >-
+      {{
+        monitoring_etcd_bootstrap_expected_firewalld_rules
+        + [
+          'rule family="ipv4" source address="' ~ monitoring_etcd_member.address
+          ~ '/32" port port="' ~ (monitoring_etcd_peer_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: >-
+    {{
+      monitoring_etcd_cluster_members
+      | rejectattr('name', 'equalto', monitoring_etcd_node_name)
+      | list
+    }}
+  loop_control:
+    loop_var: monitoring_etcd_member
+    label: "{{ monitoring_etcd_member.name }}"
+
+- name: Require monitoring etcd firewalld manifest ownership
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_firewalld_manifest is mapping
+      - monitoring_etcd_bootstrap_firewalld_manifest.keys() | sort
+        == ['rich_rules', 'zone']
+      - >-
+        monitoring_etcd_bootstrap_firewalld_manifest.zone
+        == monitoring_etcd_firewalld_zone
+      - monitoring_etcd_bootstrap_firewalld_manifest.rich_rules is sequence
+      - >-
+        monitoring_etcd_bootstrap_firewalld_manifest.rich_rules | sort
+        == monitoring_etcd_bootstrap_expected_firewalld_rules | unique | sort
+    fail_msg: Monitoring etcd bootstrap requires a staged firewalld manifest.
+
+- name: Validate monitoring etcd bootstrap firewalld rule grammar
+  ansible.builtin.include_tasks: validate_firewalld_rule.yml
+  loop: "{{ monitoring_etcd_bootstrap_firewalld_manifest.rich_rules }}"
+  loop_control:
+    loop_var: monitoring_etcd_previous_firewalld_rule
+    label: bootstrap-rule
+
+- name: Inspect monitoring etcd firewalld service state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/firewall-cmd
+      - --state
+  register: monitoring_etcd_bootstrap_firewalld_state
+  changed_when: false
+  check_mode: false
+
+- name: Inspect permanent monitoring etcd firewalld rules
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/firewall-cmd
+      - --permanent
+      - "--zone={{ monitoring_etcd_firewalld_zone }}"
+      - --list-rich-rules
+  register: monitoring_etcd_bootstrap_permanent_firewalld_rules
+  changed_when: false
+  check_mode: false
+
+- name: Inspect active monitoring etcd firewalld rules
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/firewall-cmd
+      - "--zone={{ monitoring_etcd_firewalld_zone }}"
+      - --list-rich-rules
+  register: monitoring_etcd_bootstrap_active_firewalld_rules
+  changed_when: false
+  check_mode: false
+
+- name: Require effective monitoring etcd firewalld policy
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_firewalld_state.stdout == 'running'
+      - >-
+        monitoring_etcd_bootstrap_expected_firewalld_rules
+        | difference(monitoring_etcd_bootstrap_permanent_firewalld_rules.stdout_lines)
+        | length == 0
+      - >-
+        monitoring_etcd_bootstrap_expected_firewalld_rules
+        | difference(monitoring_etcd_bootstrap_active_firewalld_rules.stdout_lines)
+        | length == 0
+    fail_msg: >-
+      Monitoring etcd bootstrap requires exact permanent and active firewalld
+      rules in the managed zone.
+
+- name: Require monitoring etcd bootstrap SELinux enforcement
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (monitoring_etcd_bootstrap_require_selinux_enforcing | bool)
+        or (
+          ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+          and ansible_facts.get('selinux', {}).get('mode', 'disabled')
+              == 'enforcing'
+        )
+    fail_msg: >-
+      Monitoring etcd bootstrap requires enforcing SELinux on every target host.
+
+- name: Verify monitoring etcd SELinux contexts
+  ansible.builtin.command:
+    argv:
+      - matchpathcon
+      - -V
+      - "{{ monitoring_etcd_selinux_path }}"
+  loop:
+    - "{{ monitoring_etcd_config_dir }}"
+    - "{{ monitoring_etcd_data_dir }}"
+  loop_control:
+    loop_var: monitoring_etcd_selinux_path
+  register: monitoring_etcd_bootstrap_selinux_contexts
+  changed_when: false
+  check_mode: false
+  when: ansible_facts.get('selinux', {}).get('status', 'disabled') == 'enabled'
+
+- name: Publish monitoring etcd bootstrap observation
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_observation:
+      cluster_signature: >-
+        {{
+          {
+            'members': monitoring_etcd_cluster_members,
+            'token_hash': monitoring_etcd_initial_cluster_token | hash('sha256'),
+            'client_port': monitoring_etcd_client_port,
+            'peer_port': monitoring_etcd_peer_port,
+            'image': monitoring_etcd_image,
+            'logger': monitoring_etcd_logger,
+            'log_level': monitoring_etcd_log_level
+          }
+          | to_json | hash('sha256')
+        }}
+      node_name: "{{ monitoring_etcd_node_name }}"
+      node_address: "{{ monitoring_etcd_node_address }}"
+      node_dns: "{{ monitoring_etcd_node_dns }}"
+      config_checksum: "{{ monitoring_etcd_bootstrap_expected_config_checksum }}"
+      bundle_revision: >-
+        {{ monitoring_etcd_bootstrap_current_link.stat.lnk_source | basename }}
+      image_digest: "{{ monitoring_etcd_bootstrap_image_metadata.Digest }}"
+      ca_checksum: "{{ monitoring_etcd_bootstrap_file_stats.results[4].stat.checksum }}"

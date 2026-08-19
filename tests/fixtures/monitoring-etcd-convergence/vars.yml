@@ -1,0 +1,26 @@
+---
+firewalld_enabled: false
+monitoring_etcd_enabled: true
+monitoring_etcd_contract_ready: true
+monitoring_etcd_converge: true
+monitoring_etcd_service_enabled: false
+monitoring_etcd_service_state: stopped
+monitoring_etcd_node_name: etcd-test-1
+monitoring_etcd_node_address: 127.0.0.1
+monitoring_etcd_node_dns: etcd-test-1.internal.invalid
+monitoring_etcd_initial_cluster_token: synthetic-convergence-cluster
+monitoring_etcd_tls_ca_src: /tmp/monitoring-etcd-test/ca.crt
+monitoring_etcd_tls_cert_src: /tmp/monitoring-etcd-test/tls.crt
+monitoring_etcd_tls_key_src: /tmp/monitoring-etcd-test/tls.key
+monitoring_etcd_client_allowed_sources:
+  - "{{ monitoring_etcd_test_client_source | default('198.51.100.10/32') }}"
+monitoring_etcd_cluster_members:
+  - name: etcd-test-1
+    address: 127.0.0.1
+    dns: etcd-test-1.internal.invalid
+  - name: etcd-test-2
+    address: 127.0.0.2
+    dns: etcd-test-2.internal.invalid
+  - name: etcd-test-3
+    address: 127.0.0.3
+    dns: etcd-test-3.internal.invalid

@@ -1,0 +1,12 @@
+---
+- name: Exercise monitoring etcd bootstrap preflight on disposable Rocky
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars_files:
+    - vars.yml
+  tasks:
+    - name: Run monitoring etcd bootstrap preflight fixture
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_preflight.yml

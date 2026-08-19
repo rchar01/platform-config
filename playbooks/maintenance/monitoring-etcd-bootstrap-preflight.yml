@@ -1,0 +1,154 @@
+---
+- name: Require canonical monitoring etcd bootstrap-preflight inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    monitoring_etcd_bootstrap_selected_hosts: >-
+      {{
+        query(
+          'ansible.builtin.inventory_hostnames',
+          'monitoring:&' ~ (ansible_limit | default('all'))
+        )
+      }}
+  tasks:
+    - name: Require exactly three monitoring etcd bootstrap members
+      ansible.builtin.assert:
+        that:
+          - groups.get('monitoring', []) | length == 3
+        fail_msg: >-
+          Monitoring etcd bootstrap preflight requires exactly three monitoring
+          inventory members.
+
+    - name: Require all monitoring etcd bootstrap members
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_bootstrap_selected_hosts | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap preflight requires all three monitoring
+          inventory hosts without a partial limit.
+
+- name: Inspect every monitoring etcd bootstrap member
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require full-cluster monitoring etcd bootstrap inspection
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap preflight requires all three monitoring
+          inventory hosts without a partial limit.
+      run_once: true # noqa run-once[task]
+
+    - name: Require explicit monitoring etcd bootstrap-preflight readiness
+      ansible.builtin.assert:
+        that:
+          - >-
+            (monitoring_etcd_bootstrap_preflight_ready | default(false))
+            is boolean
+          - monitoring_etcd_bootstrap_preflight_ready | default(false)
+          - monitoring_etcd_orchestration_ready | default(false)
+          - monitoring_etcd_enabled | default(false)
+          - monitoring_etcd_contract_ready | default(false)
+          - monitoring_etcd_converge | default(false)
+          - not (monitoring_etcd_service_enabled | default(false))
+          - monitoring_etcd_service_state | default('stopped') == 'stopped'
+          - monitoring_etcd_data_fstype == 'xfs'
+          - monitoring_etcd_bootstrap_require_selinux_enforcing | bool
+          - >-
+            monitoring_etcd_data_mount_source
+            is match('^/dev/[A-Za-z0-9_+./-]+$')
+        fail_msg: >-
+          Monitoring etcd bootstrap preflight requires explicit readiness and a
+          fully staged inactive XFS contract on every member.
+
+    - name: Validate declared monitoring etcd bootstrap contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate.yml
+
+    - name: Inspect observed monitoring etcd bootstrap contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_preflight.yml
+
+- name: Compare monitoring etcd bootstrap observations
+  hosts: monitoring
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Build complete monitoring etcd bootstrap observation set
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'monitoring_etcd_bootstrap_observation')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require consistent monitoring etcd bootstrap observations
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+          - monitoring_etcd_bootstrap_observations | length == 3
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='image_digest') | unique | length == 1
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='ca_checksum') | unique | length == 1
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='node_name') | unique | length == 3
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='node_address') | unique | length == 3
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='node_dns') | unique | length == 3
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='node_name') | list | sort
+            == monitoring_etcd_cluster_members
+               | map(attribute='name') | list | sort
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='node_address') | list | sort
+            == monitoring_etcd_cluster_members
+               | map(attribute='address') | list | sort
+          - >-
+            monitoring_etcd_bootstrap_observations
+            | map(attribute='node_dns') | list | sort
+            == monitoring_etcd_cluster_members
+               | map(attribute='dns') | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap preflight requires one consistent cluster
+          contract and three exact unique local identities.
+      run_once: true # noqa run-once[task]
+
+- name: Reject bootstrap preflight limits outside monitoring
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require selected monitoring host for bootstrap preflight
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('monitoring', []))
+            | length > 0
+        fail_msg: >-
+          Monitoring etcd bootstrap preflight did not select the monitoring
+          service group.
+      run_once: true # noqa run-once[task]

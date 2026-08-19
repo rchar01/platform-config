@@ -34,6 +34,16 @@
       - monitoring_etcd_logger == 'zap'
       - monitoring_etcd_log_level in ['error', 'warn', 'info']
       - monitoring_etcd_validation_timeout == 5
+      - monitoring_etcd_data_fstype is string
+      - monitoring_etcd_data_fstype is match('^[a-z0-9]+$')
+      - monitoring_etcd_data_mount_source is string
+      - >-
+        monitoring_etcd_data_mount_source | length == 0
+        or monitoring_etcd_data_mount_source is match('^/dev/[A-Za-z0-9_+./-]+$')
+      - monitoring_etcd_data_required_mount_options is sequence
+      - monitoring_etcd_data_required_mount_options is not string
+      - monitoring_etcd_data_required_mount_options | length > 0
+      - monitoring_etcd_bootstrap_require_selinux_enforcing is boolean
       - monitoring_etcd_quadlet_restart_policy == 'on-failure'
       - monitoring_etcd_quadlet_restart_sec == '5s'
       - monitoring_etcd_quadlet_timeout_start_sec == '90s'
@@ -70,6 +80,9 @@
       - >-
         monitoring_etcd_firewalld_manifest_path
         == '/var/lib/platform-config/monitoring-etcd-firewalld.yml'
+      - >-
+        monitoring_etcd_bootstrap_marker_path
+        == '/var/lib/platform-config/monitoring-etcd-bootstrap.json'
       - monitoring_etcd_container_config_dir == '/etc/etcd'
       - monitoring_etcd_container_config_path == '/etc/etcd/etcd.yml'
       - monitoring_etcd_container_tls_dir == '/etc/etcd/pki'

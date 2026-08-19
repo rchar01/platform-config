@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/integration.yml
+BOOTSTRAP_PREFLIGHT_FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/bootstrap-preflight.yml
 ROCKY_IMAGE="${MONITORING_ETCD_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
+IMAGE='gcr.io/etcd-development/etcd@sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6'
 CONTAINER="platform-config-monitoring-etcd-role-test-$$"
 DATA_DIR=/srv/monitoring/etcd
 CURRENT_LINK=/etc/monitoring/etcd/current
@@ -28,6 +30,18 @@ run_playbook() {
     --workdir /workspace \
     "$CONTAINER" \
     ansible-playbook -i "localhost," -c local "$FIXTURE" "$@"
+}
+
+run_bootstrap_preflight() {
+  podman exec \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections:/workspace/.ansible/collections \
+    --env ANSIBLE_ROLES_PATH=/workspace/roles \
+    --workdir /workspace \
+    "$CONTAINER" \
+    ansible-playbook -i "localhost," -c local "$BOOTSTRAP_PREFLIGHT_FIXTURE" \
+    --extra-vars monitoring_etcd_data_fstype=tmpfs \
+    --extra-vars monitoring_etcd_bootstrap_require_selinux_enforcing=false \
+    "$@"
 }
 
 podman run \
@@ -218,6 +232,8 @@ if run_playbook >/dev/null 2>&1; then
 fi
 podman exec "$CONTAINER" mv \
   /tmp/monitoring-etcd-test/etcd.yml.valid "${CURRENT_LINK}/etcd.yml"
+podman exec "$CONTAINER" chown 0:10001 "${CURRENT_LINK}/etcd.yml"
+podman exec "$CONTAINER" chmod 0640 "${CURRENT_LINK}/etcd.yml"
 
 podman exec "$CONTAINER" chmod 0770 "$new_bundle"
 if run_playbook >/dev/null 2>&1; then
@@ -233,6 +249,122 @@ if run_playbook >/dev/null 2>&1; then
 fi
 podman exec "$CONTAINER" mv \
   /tmp/monitoring-etcd-test/firewalld.yml.valid "$MANIFEST"
+
+podman exec "$CONTAINER" rm "${DATA_DIR}/sentinel"
+run_playbook \
+  --extra-vars firewalld_enabled=true \
+  --extra-vars firewalld_service_enabled=true \
+  --extra-vars firewalld_service_state=started >/dev/null
+unrelated_bootstrap_rule='rule family="ipv4" source address="203.0.113.10/32" port port="9999" protocol="tcp" accept'
+podman exec "$CONTAINER" firewall-cmd --permanent --zone=public \
+  "--add-rich-rule=${unrelated_bootstrap_rule}" >/dev/null
+podman exec "$CONTAINER" firewall-cmd --zone=public \
+  "--add-rich-rule=${unrelated_bootstrap_rule}" >/dev/null
+bootstrap_preflight_output=""
+if ! bootstrap_preflight_output="$(run_bootstrap_preflight 2>&1)"; then
+  printf '%s\n' "$bootstrap_preflight_output" >&2
+  fail 'Monitoring etcd pristine bootstrap preflight failed'
+fi
+
+preflight_link_before="$(podman exec "$CONTAINER" readlink "$CURRENT_LINK")"
+preflight_contract_before="$(podman exec "$CONTAINER" sha256sum "${CURRENT_LINK}/bundle-contract.json")"
+preflight_manifest_before="$(podman exec "$CONTAINER" sha256sum "$MANIFEST")"
+preflight_rules_before="$(podman exec "$CONTAINER" firewall-cmd --zone=public --list-rich-rules)"
+run_bootstrap_preflight --check >/dev/null
+[[ "$(podman exec "$CONTAINER" readlink "$CURRENT_LINK")" == "$preflight_link_before" ]] \
+  || fail 'Monitoring etcd bootstrap preflight changed its bundle pointer in check mode'
+[[ "$(podman exec "$CONTAINER" sha256sum "${CURRENT_LINK}/bundle-contract.json")" == "$preflight_contract_before" ]] \
+  || fail 'Monitoring etcd bootstrap preflight changed its contract in check mode'
+[[ "$(podman exec "$CONTAINER" sha256sum "$MANIFEST")" == "$preflight_manifest_before" ]] \
+  || fail 'Monitoring etcd bootstrap preflight changed its manifest in check mode'
+[[ "$(podman exec "$CONTAINER" firewall-cmd --zone=public --list-rich-rules)" == "$preflight_rules_before" ]] \
+  || fail 'Monitoring etcd bootstrap preflight changed live firewall policy in check mode'
+
+podman exec "$CONTAINER" podman create --name monitoring-etcd \
+  "$IMAGE" --version >/dev/null
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted an existing managed container'
+fi
+podman exec "$CONTAINER" podman rm monitoring-etcd >/dev/null
+
+podman exec "$CONTAINER" systemd-run --unit=monitoring-etcd-port-fixture \
+  python3 -m http.server 2379 --bind 127.0.0.1 >/dev/null
+port_fixture_ready=false
+for _ in {1..20}; do
+  if podman exec "$CONTAINER" ss -H -ltn | grep -q ':2379 '; then
+    port_fixture_ready=true
+    break
+  fi
+  sleep 0.25
+done
+[[ "$port_fixture_ready" == true ]] \
+  || fail 'Monitoring etcd bootstrap port fixture did not bind'
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted a bound client port'
+fi
+podman exec "$CONTAINER" systemctl stop monitoring-etcd-port-fixture.service
+podman exec "$CONTAINER" systemctl reset-failed \
+  monitoring-etcd-port-fixture.service >/dev/null 2>&1 || true
+
+podman exec "$CONTAINER" mkdir "${DATA_DIR}/member"
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted existing member data'
+fi
+podman exec "$CONTAINER" rmdir "${DATA_DIR}/member"
+podman exec "$CONTAINER" bash -c \
+  "printf '%s\n' '{}' > /var/lib/platform-config/monitoring-etcd-bootstrap.json"
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted an existing marker'
+fi
+podman exec "$CONTAINER" rm /var/lib/platform-config/monitoring-etcd-bootstrap.json
+
+podman exec "$CONTAINER" cp -a \
+  "${CURRENT_LINK}/bundle-contract.json" /tmp/monitoring-etcd-test/bundle-contract.json.valid
+podman exec "$CONTAINER" python3 -c \
+  'import json,sys; path=sys.argv[1]; data=json.load(open(path)); data["logging"]["level"]="info"; open(path,"w").write(json.dumps(data, separators=(",", ":")))' \
+  "${CURRENT_LINK}/bundle-contract.json"
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted a non-content-addressed bundle'
+fi
+podman exec "$CONTAINER" mv \
+  /tmp/monitoring-etcd-test/bundle-contract.json.valid \
+  "${CURRENT_LINK}/bundle-contract.json"
+
+podman exec "$CONTAINER" touch "${CURRENT_LINK}/unexpected"
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted an unexpected bundle file'
+fi
+podman exec "$CONTAINER" rm "${CURRENT_LINK}/unexpected"
+
+podman exec "$CONTAINER" mv "${CURRENT_LINK}/pki" "${CURRENT_LINK}/pki.valid"
+podman exec "$CONTAINER" ln -s pki.valid "${CURRENT_LINK}/pki"
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted a symlinked PKI directory'
+fi
+podman exec "$CONTAINER" rm "${CURRENT_LINK}/pki"
+podman exec "$CONTAINER" mv "${CURRENT_LINK}/pki.valid" "${CURRENT_LINK}/pki"
+
+mapfile -t bootstrap_firewall_rules < <(
+  podman exec "$CONTAINER" firewall-cmd --permanent --zone=public --list-rich-rules
+)
+((${#bootstrap_firewall_rules[@]} > 0)) \
+  || fail 'Monitoring etcd bootstrap firewall fixture has no rich rules'
+removed_bootstrap_rule=${bootstrap_firewall_rules[0]}
+podman exec "$CONTAINER" firewall-cmd --permanent --zone=public \
+  "--remove-rich-rule=${removed_bootstrap_rule}" >/dev/null
+podman exec "$CONTAINER" firewall-cmd --zone=public \
+  "--remove-rich-rule=${removed_bootstrap_rule}" >/dev/null
+if run_bootstrap_preflight >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap preflight accepted missing effective firewall policy'
+fi
+podman exec "$CONTAINER" firewall-cmd --permanent --zone=public \
+  "--add-rich-rule=${removed_bootstrap_rule}" >/dev/null
+podman exec "$CONTAINER" firewall-cmd --zone=public \
+  "--add-rich-rule=${removed_bootstrap_rule}" >/dev/null
+podman exec "$CONTAINER" firewall-cmd --permanent --zone=public \
+  "--remove-rich-rule=${unrelated_bootstrap_rule}" >/dev/null
+podman exec "$CONTAINER" firewall-cmd --zone=public \
+  "--remove-rich-rule=${unrelated_bootstrap_rule}" >/dev/null
 
 podman exec "$CONTAINER" umount "$DATA_DIR"
 if run_playbook >/dev/null 2>&1; then

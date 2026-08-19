@@ -1,0 +1,33 @@
+---
+- name: Reject mocked monitoring etcd bootstrap-preflight host failure
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_test_invalid_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked monitoring etcd bootstrap host observation is invalid.
+
+- name: Publish mocked monitoring etcd bootstrap observation
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_observation:
+      cluster_signature: >-
+        {{
+          'drifted'
+          if monitoring_etcd_bootstrap_test_drift_host | default('')
+             == inventory_hostname
+          else 'consistent'
+        }}
+      node_name: "{{ monitoring_etcd_node_name }}"
+      node_address: "{{ monitoring_etcd_node_address }}"
+      node_dns: "{{ monitoring_etcd_node_dns }}"
+      config_checksum: "{{ inventory_hostname | hash('sha256') }}"
+      bundle_revision: "{{ inventory_hostname | hash('sha256') }}"
+      image_digest: >-
+        sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6
+      ca_checksum: >-
+        {{
+          'drifted-ca'
+          if monitoring_etcd_bootstrap_test_ca_drift_host | default('')
+             == inventory_hostname
+          else 'consistent-ca'
+        }}

@@ -29,6 +29,12 @@ input before quiescing, then applies `firewalld`, `podman_host`, and this role i
 order. `monitoring_etcd_orchestration_ready` authorizes only stopped foundation
 staging; it does not authorize bootstrap or activation.
 
+`playbooks/maintenance/monitoring-etcd-bootstrap-preflight.yml` is read-only. It
+requires all three staged hosts, pristine dedicated XFS mounts, absent bootstrap
+markers, exact rendered files and image identity, inactive generated services,
+and one consistent cross-host cluster contract. Its readiness gate does not
+authorize starting or initializing etcd.
+
 Real member addresses, DNS names, the cluster token, and TLS source paths belong
 in private inventory or an outside-Git secret store. Normal convergence must
 never reset an existing data directory or silently form a replacement cluster.

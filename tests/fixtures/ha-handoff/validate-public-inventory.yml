@@ -152,11 +152,17 @@
           - not monitoring_group_example.monitoring_haproxy_service_enabled | bool
           - monitoring_group_example.monitoring_haproxy_service_state == 'stopped'
           - not monitoring_group_example.monitoring_etcd_orchestration_ready | bool
+          - not monitoring_group_example.monitoring_etcd_bootstrap_preflight_ready | bool
           - not monitoring_group_example.monitoring_etcd_contract_ready | bool
           - not monitoring_group_example.monitoring_etcd_enabled | bool
           - not monitoring_group_example.monitoring_etcd_converge | bool
           - not monitoring_group_example.monitoring_etcd_service_enabled | bool
           - monitoring_group_example.monitoring_etcd_service_state == 'stopped'
+          - monitoring_group_example.monitoring_etcd_data_fstype == 'xfs'
+          - monitoring_group_example.monitoring_etcd_data_mount_source | length == 0
+          - >-
+            monitoring_group_example.monitoring_etcd_bootstrap_require_selinux_enforcing
+            | bool
           - monitoring_group_example.monitoring_etcd_firewalld_manage | bool
           - monitoring_group_example.monitoring_etcd_selinux_manage | bool
           - monitoring_group_example.monitoring_etcd_initial_cluster_token | length == 0
