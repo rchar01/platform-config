@@ -169,14 +169,23 @@
 - name: Require a protected root-owned exchange facade
   ansible.builtin.assert:
     that:
-      - item.stat.exists
-      - not item.stat.islnk
-      - item.stat.uid == 0
-      - item.stat.gid == 0
       - >-
-        (item.item.kind == 'directory' and item.stat.isdir)
-        or (item.item.kind == 'file' and item.stat.isreg and item.stat.mode == '0755')
-      - item.stat.mode is match('^[0-7][0-7][0145][0145]$')
+        (
+          ansible_check_mode
+          and item.item.kind == 'file'
+          and not item.stat.exists
+        )
+        or (
+          item.stat.exists
+          and not item.stat.islnk
+          and item.stat.uid == 0
+          and item.stat.gid == 0
+          and (
+            (item.item.kind == 'directory' and item.stat.isdir)
+            or (item.item.kind == 'file' and item.stat.isreg and item.stat.mode == '0755')
+          )
+          and item.stat.mode is match('^[0-7][0-7][0145][0145]$')
+        )
     fail_msg: Exchange access requires an installed root-owned facade beneath non-writable root-owned directories.
   loop: "{{ pki_host_local_exchange_access_helper_chain.results }}"
   loop_control:

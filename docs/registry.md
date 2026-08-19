@@ -14,7 +14,8 @@ operator-only entry points and are not imported by `site.yml`. The persistent
 convergence revokes disabled access before service roles and manages enabled
 access after them so revocation cannot be skipped by an unrelated service
 failure. The focused `registry-pki-exchange-access.yml` setup entry point
-requires the lifecycle-owned facade installed by a prior direct request. The
+installs the lifecycle-owned helper, facade, config, and spool without creating
+a request or changing certificate state before it converges access. The
 implemented workflow imports one explicit
 digest-pinned authenticated signer outcome after deployment evidence export. It
 does not automate signing, controlled-media transport, or renewal.

@@ -74,8 +74,9 @@ Persistent target SSH authorization is owned separately by
 `pki_host_local_exchange_access`. That role installs the locked account,
 root-controlled forced key, account-wide SSH policy, unprivileged dispatcher,
 root broker, and narrow broker-only sudo policy; this lifecycle role continues
-to own only the target facade, config, spool, and PKI operations. A mutable
-direct request installs the facade before access can be enabled.
+to own only the target facade, config, spool, and PKI operations. Focused and
+normal access convergence install the lifecycle helper and exchange endpoint
+through this role without creating a request or changing certificate state.
 
 ## Fixed Helpers
 

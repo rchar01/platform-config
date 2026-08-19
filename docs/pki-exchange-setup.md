@@ -341,15 +341,17 @@ The role defaults to `absent` and is part of normal registry convergence so
 revocation and policy drift remain managed. Disabled access is revoked before
 service roles; enabled access converges afterward.
 
-The access role intentionally does not install the lifecycle-owned facade. Keep
-access absent during first registry configuration and trust bootstrap, then run
-one mutable direct request phase. That phase installs the facade, fixed config,
-and target spool through the administrative Ansible identity. Only then enable
-the access role in private inventory. Present-state convergence rejects a
-missing, symlinked, writable, or incorrectly owned facade or ancestor.
+The access role intentionally does not own the lifecycle facade. The focused
+playbook and normal enabled registry convergence first call the certificate
+role's fixed lifecycle-helper and exchange-endpoint task files through the
+administrative Ansible identity. This installs or updates only the helper,
+facade, fixed config, and target spool; it does not create a request or change
+certificate state. The access role then rejects a missing, symlinked, writable,
+or incorrectly owned facade or ancestor during apply.
 
-Use the focused entry point after request preparation. Its first apply creates
-the account hierarchy; use check mode afterward to verify idempotency:
+Use the focused entry point for initial setup or upgrades. Check mode predicts a
+missing endpoint and account hierarchy without enabling access; apply installs
+them, and a second check verifies idempotency:
 
 ```bash
 make syntax ENV=dev PLAYBOOK=playbooks/registry-pki-exchange-access.yml
@@ -359,10 +361,10 @@ make check ENV=dev PLAYBOOK=playbooks/registry-pki-exchange-access.yml \
 ```
 
 The normal Ansible administrative identity remains separate. The public
-host-local certificate role installs the facade, fixed configuration, and target
-spool during lifecycle phases; the access role never receives the private
-exchange identity. Do not substitute a broad Ansible administrator key for the
-restricted exchange identity.
+host-local certificate role owns installation of the facade, fixed
+configuration, and target spool during lifecycle or access-endpoint preparation;
+the access role never receives the private exchange identity. Do not substitute
+a broad Ansible administrator key for the restricted exchange identity.
 
 ## Offline Layout
 
@@ -420,8 +422,8 @@ Before a production exchange:
 3. Confirm the project record against GitLab project metadata and exact version.
 4. Confirm project protection, duplicate, deletion, cleanup, token, and runner
    settings through the GitLab administrative interface.
-5. Prepare one direct request, then provision and review the restricted target
-   account, SSH policy, broker, and sudo policy.
+5. Provision and review the fixed exchange endpoint, restricted target account,
+   SSH policy, broker, and sudo policy.
 6. Test SSH authentication with a nonexistent request ID; reaching the facade and
    receiving `request not found` demonstrates authentication without target
    mutation.

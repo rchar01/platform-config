@@ -334,13 +334,29 @@ def test_registry_playbooks_order_exchange_access(repo_root: Path) -> None:
     play = registry[0]
     assert play["pre_tasks"][0]["when"].endswith("== 'absent'")
     assert play["roles"] == ["firewalld", "podman_host", "zot_registry"]
-    assert play["post_tasks"][0]["when"].endswith("== 'present'")
+    post_names = [task["name"] for task in play["post_tasks"]]
+    assert post_names == [
+        "Install host-local PKI lifecycle helper for enabled exchange access",
+        "Install host-local PKI exchange endpoint for enabled access",
+        "Converge enabled host-local PKI exchange access after service convergence",
+    ]
+    assert all(task["when"].endswith("== 'present'") for task in play["post_tasks"])
     focused = yaml.safe_load(
         (repo_root / "playbooks/registry-pki-exchange-access.yml").read_text(
             encoding="utf-8"
         )
     )
-    assert focused[0]["roles"] == ["pki_host_local_exchange_access"]
+    tasks = focused[0]["tasks"]
+    assert [task["name"] for task in tasks] == [
+        "Install host-local PKI lifecycle helper for enabled exchange access",
+        "Install host-local PKI exchange endpoint for enabled access",
+        "Converge restricted host-local PKI exchange access",
+    ]
+    assert tasks[0]["ansible.builtin.include_role"]["tasks_from"] == "lifecycle_helper"
+    assert tasks[1]["ansible.builtin.include_role"]["tasks_from"] == "exchange_helper"
+    assert tasks[2]["ansible.builtin.include_role"]["name"] == (
+        "pki_host_local_exchange_access"
+    )
 
 
 def test_dispatchers_use_no_shell_or_subprocess(repo_root: Path) -> None:

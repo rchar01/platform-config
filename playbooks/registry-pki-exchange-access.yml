@@ -3,5 +3,19 @@
   hosts: registry
   gather_facts: false
   become: true
-  roles:
-    - pki_host_local_exchange_access
+  tasks:
+    - name: Install host-local PKI lifecycle helper for enabled exchange access
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: lifecycle_helper
+      when: pki_host_local_exchange_access_state | default('absent') == 'present'
+
+    - name: Install host-local PKI exchange endpoint for enabled access
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: exchange_helper
+      when: pki_host_local_exchange_access_state | default('absent') == 'present'
+
+    - name: Converge restricted host-local PKI exchange access
+      ansible.builtin.include_role:
+        name: pki_host_local_exchange_access

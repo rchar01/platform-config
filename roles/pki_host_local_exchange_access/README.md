@@ -38,7 +38,8 @@ pki_host_local_exchange_access_authorized_key: >-
 ```
 
 The private identity never enters Ansible inventory or a managed-host payload.
-The target facade itself remains owned by `pki_host_local_certificate`. Run a
-mutable direct request phase before first enabling access so the facade, config,
-and spool exist. Present-state convergence fails closed when that prerequisite
-is absent or unsafe.
+The target facade itself remains owned by `pki_host_local_certificate`. The
+focused access playbook and normal enabled registry convergence call that role's
+fixed lifecycle-helper and exchange-endpoint task files before enabling access;
+they do not create a request or change certificate state. Direct use of this
+access role still fails closed when the facade is absent or unsafe.
