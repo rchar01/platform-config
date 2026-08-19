@@ -73,6 +73,24 @@ Examples:
 Stateful restore procedures belong in service runbooks or explicit maintenance
 playbooks, not inside normal desired-state roles.
 
+### Host-Local PKI Service Generations
+
+Keep the PKI service name stable for normal certificate renewal and key
+rotation. A clean target replacement may use `<service>-gN` only when the old
+target-local key and lifecycle state are intentionally unavailable, finalized
+signer history for the old service remains, and the implemented workflow cannot
+replace that active history in place. Treat the unsuffixed service as generation
+1, retain its inventory and history, never reuse a generation number, and derive
+the next number from reviewed retained inventory. The public hostname, IP, and
+certificate names do not change.
+
+Do not use a suffix in a truly fresh PKI namespace that contains no signer state
+for the service. Use the normal unsuffixed service name and treat recovery of the
+CA hierarchy and trust as a new PKI epoch. A root private key alone is not a
+complete signer backup; preserve or deliberately regenerate the root
+certificate, intermediate authority, CA database, inventory, trust, and
+transaction state.
+
 ## Generic Rebuild Flow
 
 1. Prepare private inputs.

@@ -55,6 +55,26 @@ The protocol and signer command details are documented in
 The lower-level package and signature contract is documented in
 [Host-Local PKI CSR Handoff](https://codeberg.org/rch/platform-tools/src/branch/main/docs/handoffs/pki-host-local-csr-handoff.md).
 
+## Service Identity During A Clean Reset
+
+Keep `SERVICE` stable during ordinary certificate renewal or key rotation. The
+request ID, certificate serial, digests, candidate, and immutable history
+already identify each certificate generation.
+
+If a target-local key and lifecycle state are intentionally destroyed while the
+signer retains finalized history and same-service replacement is unavailable,
+use an exceptional internal service generation such as `registry-dev-g2`. The
+unsuffixed service is implicitly generation 1. Preserve the old service entry
+and signer history, never reuse a suffix, and choose the next number from the
+reviewed retained inventory. The new generation keeps the same target, common
+name, DNS names, and IP addresses, while request records, controller paths, and
+all five GitLab package names use the exact new service value.
+
+In a truly fresh PKI namespace with no existing signer state for the service,
+use the unsuffixed `registry-dev` name. That is a new PKI epoch rather than a
+retained-history reset; rebuild the CA hierarchy and trust explicitly instead of
+adding `-g2` solely because the VM is new.
+
 ## Coordinate Worksheet
 
 Create an outside-Git operator record before starting. Fill each value only from
