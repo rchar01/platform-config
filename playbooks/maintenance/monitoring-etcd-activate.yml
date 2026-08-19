@@ -1,0 +1,560 @@
+---
+- name: Inspect monitoring etcd activation candidates
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact monitoring etcd activation selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('monitoring', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames',
+                  ansible_limit | default('all')) | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd activation requires an explicit limit selecting exactly
+          all three monitoring hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Require explicit inactive monitoring etcd activation contract
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_activation_ready | default(false) | bool
+          - not ansible_check_mode
+          - monitoring_etcd_orchestration_ready | default(false) | bool
+          - monitoring_etcd_contract_ready | default(false) | bool
+          - monitoring_etcd_enabled | default(false) | bool
+          - monitoring_etcd_converge | default(false) | bool
+          - not monitoring_etcd_service_enabled | bool
+          - monitoring_etcd_service_state == 'stopped'
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd activation requires explicit readiness, normal apply
+          mode, and the complete inactive staging contract.
+
+    - name: Validate declared monitoring etcd activation contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate.yml
+
+    - name: Inspect local monitoring etcd activation evidence
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_preflight.yml
+
+    - name: Build monitoring etcd activation observation set
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'monitoring_etcd_activation_observation')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one consistent inactive monitoring etcd activation
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_activation_observations | length == 3
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='operation_id') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='leader_member_id') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='members') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='endpoints') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='image_digest') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='ca_checksum') | unique | length == 1
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='inventory_host') | list | sort
+            == groups.get('monitoring', []) | list | sort
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='node_name') | list | sort
+            == monitoring_etcd_cluster_members | map(attribute='name') | list | sort
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='member_id') | unique | length == 3
+          - >-
+            monitoring_etcd_activation_observations
+            | map(attribute='lifecycle') | unique | list == ['inactive']
+        fail_msg: >-
+          Monitoring etcd activation requires three consistent bootstrap markers
+          and a uniformly inactive staged lifecycle.
+      run_once: true # noqa run-once[task]
+
+    - name: Derive exact monitoring etcd activation approval
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_expected_approval: >-
+          activate-monitoring-etcd|{{ groups.get('monitoring', []) | sort | join(',') }}|{{
+            monitoring_etcd_activation_observations[0].operation_id
+          }}|{{ monitoring_etcd_activation_observations[0].cluster_id }}|{{
+            monitoring_etcd_activation_observations[0].cluster_signature
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Preserve approved monitoring etcd activation observations
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_approved_observations: >-
+          {{ monitoring_etcd_activation_observations | sort(attribute='inventory_host') }}
+        monitoring_etcd_activation_approved_runtime_observation:
+          cluster_id: "{{ monitoring_etcd_activation_observations[0].cluster_id }}"
+          members: "{{ monitoring_etcd_activation_observations[0].members }}"
+          endpoints: "{{ monitoring_etcd_activation_observations[0].endpoints }}"
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Prompt for exact monitoring etcd activation approval
+      ansible.builtin.pause:
+        prompt: >-
+          Type exactly {{ monitoring_etcd_activation_expected_approval }}
+      register: monitoring_etcd_activation_approval
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Require exact monitoring etcd activation approval
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_activation_approval.user_input
+            == monitoring_etcd_activation_expected_approval
+        fail_msg: Exact monitoring etcd activation approval did not match.
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+- name: Revalidate monitoring etcd immediately before activation
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Revalidate local monitoring etcd activation evidence
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_preflight.yml
+
+    - name: Build revalidated monitoring etcd activation observations
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_revalidated_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'monitoring_etcd_activation_observation')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require unchanged monitoring etcd activation evidence
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_activation_revalidated_observations | length == 3
+          - >-
+            monitoring_etcd_activation_revalidated_observations
+            | sort(attribute='inventory_host')
+            == hostvars['localhost'].monitoring_etcd_activation_approved_observations
+        fail_msg: Monitoring etcd activation evidence changed after approval.
+      run_once: true # noqa run-once[task]
+
+    - name: Admit revalidated monitoring etcd activation members
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: monitoring_etcd_activation_start
+      loop: "{{ ansible_play_hosts_all }}"
+      run_once: true # noqa run-once[task]
+
+- name: Temporarily start monitoring etcd activation members
+  hosts: monitoring_etcd_activation_start
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Reset local monitoring etcd activation-start result
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_local_start_failed: false
+        monitoring_etcd_activation_local_start_complete: false
+        monitoring_etcd_activation_member_rolled_back: false
+
+    - name: Start monitoring etcd member for activation
+      block:
+        - name: Temporarily start monitoring etcd member
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: bootstrap_start.yml
+      rescue:
+        - name: Record monitoring etcd activation-start failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_local_start_failed: true
+
+    - name: Record completed monitoring etcd activation start
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_local_start_complete: true
+      when: not monitoring_etcd_activation_local_start_failed | bool
+
+    - name: Reactivate unreachable monitoring etcd activation members for rollback
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Reset monitoring etcd activation-start failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_start_failed_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect monitoring etcd activation-start failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_start_failed_hosts: >-
+          {{
+            hostvars['localhost'].monitoring_etcd_activation_start_failed_hosts
+            + [item]
+          }}
+      loop: "{{ ansible_play_hosts_all }}"
+      when: >-
+        hostvars[item].monitoring_etcd_activation_local_start_failed | default(true) | bool
+        or not (hostvars[item].monitoring_etcd_activation_local_start_complete
+                | default(false) | bool)
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Roll back every member after activation-start failure
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_rollback.yml
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_activation_start_failed_hosts
+          | length > 0
+
+    - name: Require complete monitoring etcd activation start
+      ansible.builtin.assert:
+        that:
+          - >-
+            hostvars['localhost'].monitoring_etcd_activation_start_failed_hosts
+            | length == 0
+        fail_msg: >-
+          Monitoring etcd activation failed to start every member and rolled back
+          all reachable members.
+      run_once: true # noqa run-once[task]
+
+    - name: Admit monitoring etcd initial activation health control
+      ansible.builtin.add_host:
+        name: "{{ groups.get('monitoring', []) | sort | first }}"
+        groups: monitoring_etcd_activation_initial_health
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_activation_start_failed_hosts
+          | length == 0
+      run_once: true # noqa run-once[task]
+
+    - name: Default initial monitoring etcd activation health to failed
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_initial_health_failed: true
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_activation_start_failed_hosts
+          | length == 0
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Qualify temporarily started monitoring etcd activation
+  hosts: monitoring_etcd_activation_initial_health
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  ignore_unreachable: true
+  vars:
+    monitoring_etcd_runtime_control_host: >-
+      {{ groups.get('monitoring', []) | sort | first }}
+  tasks:
+    - name: Establish stable initial monitoring etcd activation health
+      block:
+        - name: Collect first initial monitoring etcd activation status
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: runtime_status.yml
+
+        - name: Preserve first initial monitoring etcd activation status
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_first_runtime_status: >-
+              {{ monitoring_etcd_runtime_status_observation }}
+
+        - name: Wait before confirming initial monitoring etcd activation health
+          ansible.builtin.pause:
+            seconds: "{{ monitoring_etcd_status_stability_delay }}"
+
+        - name: Collect second initial monitoring etcd activation status
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: runtime_status.yml
+
+        - name: Require stable initial monitoring etcd activation health
+          ansible.builtin.assert:
+            that:
+              - >-
+                monitoring_etcd_runtime_status_observation
+                == monitoring_etcd_activation_first_runtime_status
+              - >-
+                monitoring_etcd_runtime_status_observation.cluster_id
+                == hostvars['localhost'].monitoring_etcd_activation_approved_runtime_observation.cluster_id
+              - >-
+                monitoring_etcd_runtime_status_observation.members
+                == hostvars['localhost'].monitoring_etcd_activation_approved_runtime_observation.members
+              - >-
+                monitoring_etcd_runtime_status_observation.endpoints
+                == hostvars['localhost'].monitoring_etcd_activation_approved_runtime_observation.endpoints
+            fail_msg: >-
+              Initial monitoring etcd activation health is unstable or does not
+              match the approved bootstrap identity.
+        - name: Record successful initial monitoring etcd activation health
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_initial_health_failed: false
+          delegate_to: localhost
+          delegate_facts: true
+      rescue:
+        - name: Record initial monitoring etcd activation health failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_initial_health_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+
+    - name: Admit monitoring etcd members for persistent activation
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: monitoring_etcd_activation_enable
+      loop: "{{ groups.get('monitoring', []) }}"
+      when:
+        - >-
+          not hostvars['localhost'].monitoring_etcd_activation_initial_health_failed
+          | bool
+
+- name: Roll back failed initial monitoring etcd activation health
+  hosts: monitoring
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Reactivate unreachable members for initial-health rollback
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Roll back member after initial activation health failure
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_rollback.yml
+      when:
+        - hostvars['localhost'].monitoring_etcd_activation_initial_health_failed | default(false) | bool
+
+    - name: Stop after initial monitoring etcd activation health failure
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (hostvars['localhost'].monitoring_etcd_activation_initial_health_failed
+                 | default(false) | bool)
+        fail_msg: >-
+          Monitoring etcd activation health failed and all reachable members were
+          returned to inactive staging.
+      run_once: true # noqa run-once[task]
+
+- name: Persist monitoring etcd activation
+  hosts: monitoring_etcd_activation_enable
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Reset local monitoring etcd persistent-activation failure
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_local_enable_failed: false
+        monitoring_etcd_activation_local_enable_complete: false
+
+    - name: Enable persistent monitoring etcd member
+      block:
+        - name: Persist active monitoring etcd Quadlet
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: activation_enable.yml
+      rescue:
+        - name: Record monitoring etcd persistent-activation failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_local_enable_failed: true
+
+    - name: Record completed persistent monitoring etcd activation
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_local_enable_complete: true
+      when: not monitoring_etcd_activation_local_enable_failed | bool
+
+    - name: Reactivate unreachable persistent activation members for rollback
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Reset monitoring etcd persistent-activation failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_enable_failed_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect monitoring etcd persistent-activation failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_enable_failed_hosts: >-
+          {{
+            hostvars['localhost'].monitoring_etcd_activation_enable_failed_hosts
+            + [item]
+          }}
+      loop: "{{ ansible_play_hosts_all }}"
+      when: >-
+        hostvars[item].monitoring_etcd_activation_local_enable_failed | default(true) | bool
+        or not (hostvars[item].monitoring_etcd_activation_local_enable_complete
+                | default(false) | bool)
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Roll back every member after persistent-activation failure
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_rollback.yml
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_activation_enable_failed_hosts
+          | length > 0
+
+    - name: Require complete persistent monitoring etcd activation
+      ansible.builtin.assert:
+        that:
+          - >-
+            hostvars['localhost'].monitoring_etcd_activation_enable_failed_hosts
+            | length == 0
+        fail_msg: >-
+          Monitoring etcd persistent activation failed and rolled back all
+          reachable members.
+      run_once: true # noqa run-once[task]
+
+    - name: Admit monitoring etcd final activation health control
+      ansible.builtin.add_host:
+        name: "{{ groups.get('monitoring', []) | sort | first }}"
+        groups: monitoring_etcd_activation_final_health
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_activation_enable_failed_hosts
+          | length == 0
+      run_once: true # noqa run-once[task]
+
+    - name: Default final monitoring etcd activation health to failed
+      ansible.builtin.set_fact:
+        monitoring_etcd_activation_final_health_failed: true
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_activation_enable_failed_hosts
+          | length == 0
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Qualify persistent monitoring etcd activation
+  hosts: monitoring_etcd_activation_final_health
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  ignore_unreachable: true
+  vars:
+    monitoring_etcd_runtime_control_host: >-
+      {{ groups.get('monitoring', []) | sort | first }}
+  tasks:
+    - name: Establish stable final monitoring etcd activation health
+      block:
+        - name: Collect first final monitoring etcd activation status
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: runtime_status.yml
+
+        - name: Preserve first final monitoring etcd activation status
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_first_final_status: >-
+              {{ monitoring_etcd_runtime_status_observation }}
+
+        - name: Wait before confirming final monitoring etcd activation health
+          ansible.builtin.pause:
+            seconds: "{{ monitoring_etcd_status_stability_delay }}"
+
+        - name: Collect second final monitoring etcd activation status
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: runtime_status.yml
+
+        - name: Require stable final monitoring etcd activation health
+          ansible.builtin.assert:
+            that:
+              - >-
+                monitoring_etcd_runtime_status_observation
+                == monitoring_etcd_activation_first_final_status
+              - >-
+                monitoring_etcd_runtime_status_observation.cluster_id
+                == hostvars['localhost'].monitoring_etcd_activation_approved_runtime_observation.cluster_id
+              - >-
+                monitoring_etcd_runtime_status_observation.members
+                == hostvars['localhost'].monitoring_etcd_activation_approved_runtime_observation.members
+              - >-
+                monitoring_etcd_runtime_status_observation.endpoints
+                == hostvars['localhost'].monitoring_etcd_activation_approved_runtime_observation.endpoints
+            fail_msg: >-
+              Final monitoring etcd activation health is unstable or does not
+              match the approved bootstrap identity.
+        - name: Record successful final monitoring etcd activation health
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_final_health_failed: false
+          delegate_to: localhost
+          delegate_facts: true
+      rescue:
+        - name: Record final monitoring etcd activation health failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_activation_final_health_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+
+- name: Roll back failed final monitoring etcd activation health
+  hosts: monitoring
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Reactivate unreachable members for final-health rollback
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Roll back member after final activation health failure
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_rollback.yml
+      when:
+        - hostvars['localhost'].monitoring_etcd_activation_final_health_failed | default(false) | bool
+
+    - name: Require successful final monitoring etcd activation health
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (hostvars['localhost'].monitoring_etcd_activation_final_health_failed
+                 | default(false) | bool)
+        fail_msg: >-
+          Final monitoring etcd activation health failed and all reachable
+          members were returned to inactive staging.
+      run_once: true # noqa run-once[task]

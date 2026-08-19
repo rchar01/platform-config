@@ -1,0 +1,6 @@
+---
+- name: Record mocked monitoring etcd activation rollback
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_member_rolled_back: true
+    monitoring_etcd_activation_member_enabled: false
+    monitoring_etcd_bootstrap_test_stopped: true

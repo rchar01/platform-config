@@ -98,6 +98,13 @@ forms and qualifies the three-voter cluster, stops every member again, and write
 root-only completion markers; it does not enable etcd or authorize Patroni.
 Failure preserves data and requires diagnosis before any recovery action.
 
+Set `monitoring_etcd_activation_ready` only after all three bootstrap markers are
+present and reviewed. Persistent activation requires an exact TTY approval and
+renders boot enablement only after the initialized cluster reaches stable direct
+mTLS health. The separate status workflow never consumes this gate. Ordinary
+staging remains an explicit deactivation path and must not be used as routine
+convergence for an active cluster.
+
 The focused OpenBao staging playbook owns Podman installation directly, so
 OpenBao nodes do not require `container_hosts` membership. Storage remains a
 separate destructive boundary: add real nodes to `storage_volume_hosts` only

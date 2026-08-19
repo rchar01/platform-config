@@ -1,0 +1,69 @@
+---
+- name: Exercise monitoring etcd persistent activation transition
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars_files:
+    - vars.yml
+  vars:
+    monitoring_etcd_activation_ready: true
+    monitoring_etcd_data_fstype: tmpfs
+    monitoring_etcd_bootstrap_require_selinux_enforcing: false
+  tasks:
+    - name: Validate monitoring etcd activation fixture contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate.yml
+
+    - name: Inspect monitoring etcd activation fixture evidence
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_preflight.yml
+
+    - name: Require inactive monitoring etcd activation fixture
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_activation_lifecycle == 'inactive'
+
+    - name: Enable monitoring etcd activation fixture
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_enable.yml
+
+    - name: Wait for active monitoring etcd activation fixture service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, monitoring-etcd.service]
+      register: monitoring_etcd_activation_fixture_active
+      changed_when: false
+      retries: 20
+      delay: 1
+      until: monitoring_etcd_activation_fixture_active.stdout == 'active'
+
+    - name: Wait for active monitoring etcd activation fixture container
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, container, exists, monitoring-etcd]
+      register: monitoring_etcd_activation_fixture_container
+      changed_when: false
+      retries: 20
+      delay: 1
+      until: monitoring_etcd_activation_fixture_container.rc == 0
+
+    - name: Inspect active monitoring etcd activation fixture
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_preflight.yml
+
+    - name: Require exact active monitoring etcd activation fixture
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_activation_lifecycle == 'active'
+
+    - name: Roll back monitoring etcd activation fixture
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: activation_rollback.yml
+
+    - name: Require completed monitoring etcd activation rollback
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_activation_member_rolled_back | bool

@@ -39,6 +39,8 @@ sh_quote = '$(subst ','"'"',$(1))'
 
 .PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky test-pki-host-local-zot-one-runner registry-pki-validation-material registry-pki-request registry-pki-request-controller-local registry-pki-request-intake registry-pki-abandon-expired-request registry-pki-cancel-request registry-pki-status registry-pki-response-check registry-pki-activate registry-pki-activate-controller-local registry-pki-recover registry-pki-publish-rolled-back-evidence registry-pki-evidence-export registry-pki-evidence-export-controller-local registry-pki-evidence-intake registry-pki-decision-preflight registry-pki-outcome-import registry-pki-outcome-import-controller-local storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-request-sha256 _guard-pki-csr-sha256 _guard-pki-csr-spki-sha256 _guard-pki-transport-host-key-sha256 _guard-pki-request-ttl _guard-pki-request-dir _guard-pki-artifact _guard-pki-deployment _guard-pki-evidence-dir _guard-pki-outcome-dir _guard-pki-outcome _guard-pki-response-dir _guard-pki-runner _guard-pki-status-coordinates
 
+.PHONY: activate-monitoring-etcd status-monitoring-etcd
+
 ## Show available commands
 help:
 	@printf '%s\n' 'Available targets:'
@@ -351,6 +353,14 @@ syntax-openbao-observers:
 ## Converge staged or explicitly active OpenBao-hosted observers
 deploy-openbao-observers:
 	@$(MAKE) apply PLAYBOOK=playbooks/openbao-observers.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Activate the bootstrapped monitoring etcd cluster
+activate-monitoring-etcd:
+	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/monitoring-etcd-activate.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Check strict read-only monitoring etcd status
+status-monitoring-etcd:
+	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/monitoring-etcd-status.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ## Check strict read-only OpenBao direct-node and Raft status
 status-openbao:

@@ -22,7 +22,7 @@ RestartSec={{ monitoring_etcd_quadlet_restart_sec }}
 TimeoutStartSec={{ monitoring_etcd_quadlet_timeout_start_sec }}
 MemorySwapMax={{ monitoring_etcd_quadlet_memory_swap_max }}
 
-{% if monitoring_etcd_service_enabled | bool %}
+{% if monitoring_etcd_quadlet_install_enabled | default(monitoring_etcd_service_enabled) | bool %}
 [Install]
 WantedBy=multi-user.target
 {% endif %}

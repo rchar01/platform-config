@@ -5,6 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/integration.yml
 BOOTSTRAP_PREFLIGHT_FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/bootstrap-preflight.yml
 BOOTSTRAP_MARKER_FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/bootstrap-marker.yml
+ACTIVATION_TRANSITION_FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/activation-transition.yml
 ROCKY_IMAGE="${MONITORING_ETCD_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 IMAGE='gcr.io/etcd-development/etcd@sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6'
 CONTAINER="platform-config-monitoring-etcd-role-test-$$"
@@ -54,6 +55,15 @@ run_bootstrap_marker() {
     ansible-playbook -i "localhost," -c local "$BOOTSTRAP_MARKER_FIXTURE"
 }
 
+run_activation_transition() {
+  podman exec \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections:/workspace/.ansible/collections \
+    --env ANSIBLE_ROLES_PATH=/workspace/roles \
+    --workdir /workspace \
+    "$CONTAINER" \
+    ansible-playbook -i "localhost," -c local "$ACTIVATION_TRANSITION_FIXTURE"
+}
+
 podman run \
   --detach \
   --name "$CONTAINER" \
@@ -90,7 +100,7 @@ podman exec "$CONTAINER" ansible-galaxy collection install \
 
 podman exec "$CONTAINER" mkdir -p /tmp/monitoring-etcd-test "$DATA_DIR"
 podman exec "$CONTAINER" mount \
-  -t tmpfs -o size=16m,nosuid,nodev tmpfs "$DATA_DIR"
+  -t tmpfs -o size=128m,nosuid,nodev tmpfs "$DATA_DIR"
 podman exec "$CONTAINER" bash -c \
   "printf '%s\n' preserved-before-convergence > '${DATA_DIR}/sentinel'"
 podman exec "$CONTAINER" openssl req \
@@ -396,6 +406,17 @@ fi
   || fail 'Monitoring etcd bootstrap marker has the wrong local member'
 if run_bootstrap_marker >/dev/null 2>&1; then
   fail 'Monitoring etcd bootstrap marker overwrote existing completion evidence'
+fi
+activation_transition_output=""
+if ! activation_transition_output="$(run_activation_transition 2>&1)"; then
+  printf '%s\n' "$activation_transition_output" >&2
+  fail 'Monitoring etcd persistent activation transition failed'
+fi
+[[ "$(podman exec "$CONTAINER" systemctl is-active monitoring-etcd.service || true)" == inactive ]] \
+  || fail 'Monitoring etcd activation rollback left the service active'
+if podman exec "$CONTAINER" test -e \
+  /run/systemd/generator/multi-user.target.wants/monitoring-etcd.service; then
+  fail 'Monitoring etcd activation rollback left generated enablement'
 fi
 podman exec "$CONTAINER" rm /var/lib/platform-config/monitoring-etcd-bootstrap.json
 

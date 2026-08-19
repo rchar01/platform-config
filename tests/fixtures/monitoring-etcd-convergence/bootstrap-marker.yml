@@ -2,20 +2,12 @@
 - name: Exercise monitoring etcd bootstrap marker publication
   hosts: localhost
   connection: local
-  gather_facts: false
+  gather_facts: true
   vars_files:
     - vars.yml
   vars:
-    monitoring_etcd_bootstrap_observation:
-      cluster_signature: "{{ '1' * 64 }}"
-      node_name: "{{ monitoring_etcd_node_name }}"
-      node_address: "{{ monitoring_etcd_node_address }}"
-      node_dns: "{{ monitoring_etcd_node_dns }}"
-      config_checksum: "{{ '2' * 64 }}"
-      bundle_revision: "{{ '3' * 64 }}"
-      image_digest: >-
-        sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6
-      ca_checksum: "{{ '4' * 64 }}"
+    monitoring_etcd_data_fstype: tmpfs
+    monitoring_etcd_bootstrap_require_selinux_enforcing: false
     monitoring_etcd_bootstrap_synthetic_accepted_status:
       operation_id: "{{ 'a' * 64 }}"
       cluster_id: "100"
@@ -29,6 +21,11 @@
         - https://etcd-test-2.internal.invalid:2379
         - https://etcd-test-3.internal.invalid:2379
   tasks:
+    - name: Inspect synthetic monitoring etcd bootstrap marker evidence
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_preflight.yml
+
     - name: Publish synthetic accepted monitoring etcd bootstrap status
       ansible.builtin.set_fact:
         monitoring_etcd_bootstrap_accepted_status: >-

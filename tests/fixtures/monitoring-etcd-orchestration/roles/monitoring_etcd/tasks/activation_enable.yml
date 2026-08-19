@@ -1,0 +1,25 @@
+---
+- name: Simulate unreachable persistent monitoring etcd activation member
+  ansible.builtin.command: /bin/true
+  changed_when: false
+  vars:
+    ansible_connection: ssh
+    ansible_host: 127.0.0.1
+    ansible_port: 1
+    ansible_user: nobody
+    ansible_ssh_timeout: 1
+  when: >-
+    monitoring_etcd_activation_test_enable_unreachable_host | default('')
+    == inventory_hostname
+
+- name: Reject mocked monitoring etcd persistent-activation failure
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_activation_test_enable_failure_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked monitoring etcd persistent activation failed.
+
+- name: Record mocked persistent monitoring etcd activation
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_member_enabled: true

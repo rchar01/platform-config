@@ -822,6 +822,25 @@ members before publishing completion markers. It does not enable etcd or
 authorize Patroni. Do not retry after partial state; preserve the data and
 diagnose it through a separately reviewed recovery procedure.
 
+After reviewing all three completion markers, set
+`monitoring_etcd_activation_ready: true` and persist the initialized cluster:
+
+```bash
+make activate-monitoring-etcd ENV=dev LIMIT=monitoring
+make status-monitoring-etcd ENV=dev LIMIT=monitoring
+```
+
+Activation requires another exact TTY approval. Any failed start, persistent
+Quadlet transition, or final health gate restores the inactive Quadlet on every
+reachable member. A successful activation is live and boot-enabled, but does not
+authorize Patroni until the separate PostgreSQL implementation and acceptance
+gates exist. Both commands require an explicit limit that selects exactly the
+three monitoring hosts and no other inventory hosts. Activation is a one-shot
+inactive-to-active transition: after success use status rather than rerunning
+activation. If a host was unreachable or the transition left partial state,
+reconcile that state through a separately reviewed recovery procedure before any
+retry.
+
 The OpenBao playbook can stage its complete three-node foundation, but only after inventory,
 strict SSH trust, generic baseline, approved storage initialization, PKI, package,
 network, and source-policy inputs pass their gates. Set

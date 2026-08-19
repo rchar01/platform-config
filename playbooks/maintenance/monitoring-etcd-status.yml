@@ -1,0 +1,156 @@
+---
+- name: Inspect every monitoring etcd status member
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require full-cluster monitoring etcd status
+      ansible.builtin.assert:
+        that:
+          - groups.get('monitoring', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+          - >-
+            query('ansible.builtin.inventory_hostnames',
+                  ansible_limit | default('all')) | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd status requires an explicit limit selecting exactly all
+          three monitoring hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Inspect local monitoring etcd status contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd_status
+
+    - name: Build monitoring etcd status observation set
+      ansible.builtin.set_fact:
+        monitoring_etcd_status_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'monitoring_etcd_activation_observation')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require consistent monitoring etcd status observations
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_status_observations | length == 3
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='operation_id') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='leader_member_id') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='members') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='endpoints') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='image_digest') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='ca_checksum') | unique | length == 1
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='inventory_host') | list | sort
+            == groups.get('monitoring', []) | list | sort
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='member_id') | unique | length == 3
+          - >-
+            monitoring_etcd_status_observations
+            | map(attribute='lifecycle') | unique | list == ['active']
+        fail_msg: Monitoring etcd status evidence is inconsistent.
+      run_once: true # noqa run-once[task]
+
+    - name: Select monitoring etcd runtime status control
+      ansible.builtin.add_host:
+        name: "{{ groups.get('monitoring', []) | sort | first }}"
+        groups: monitoring_etcd_runtime_status_control
+      run_once: true # noqa run-once[task]
+
+    - name: Preserve marker-bound monitoring etcd runtime identity
+      ansible.builtin.set_fact:
+        monitoring_etcd_status_expected_runtime_observation:
+          cluster_id: "{{ monitoring_etcd_status_observations[0].cluster_id }}"
+          members: "{{ monitoring_etcd_status_observations[0].members }}"
+          endpoints: "{{ monitoring_etcd_status_observations[0].endpoints }}"
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Require stable monitoring etcd runtime status
+  hosts: monitoring_etcd_runtime_status_control
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    monitoring_etcd_runtime_control_host: >-
+      {{ groups.get('monitoring', []) | sort | first }}
+  tasks:
+    - name: Collect first monitoring etcd runtime status
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: runtime_status.yml
+
+    - name: Preserve first monitoring etcd runtime status
+      ansible.builtin.set_fact:
+        monitoring_etcd_status_first_runtime_observation: >-
+          {{ monitoring_etcd_runtime_status_observation }}
+
+    - name: Require marker-bound first monitoring etcd runtime status
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_runtime_status_observation.cluster_id
+            == hostvars['localhost'].monitoring_etcd_status_expected_runtime_observation.cluster_id
+          - >-
+            monitoring_etcd_runtime_status_observation.members
+            == hostvars['localhost'].monitoring_etcd_status_expected_runtime_observation.members
+          - >-
+            monitoring_etcd_runtime_status_observation.endpoints
+            == hostvars['localhost'].monitoring_etcd_status_expected_runtime_observation.endpoints
+        fail_msg: >-
+          Monitoring etcd runtime status does not match bootstrap completion
+          identity.
+
+    - name: Wait before confirming monitoring etcd runtime stability
+      ansible.builtin.pause:
+        seconds: "{{ monitoring_etcd_status_stability_delay }}"
+
+    - name: Collect second monitoring etcd runtime status
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: runtime_status.yml
+
+    - name: Require stable monitoring etcd runtime status
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_runtime_status_observation
+            == monitoring_etcd_status_first_runtime_observation
+          - >-
+            monitoring_etcd_runtime_status_observation.cluster_id
+            == hostvars['localhost'].monitoring_etcd_status_expected_runtime_observation.cluster_id
+          - >-
+            monitoring_etcd_runtime_status_observation.members
+            == hostvars['localhost'].monitoring_etcd_status_expected_runtime_observation.members
+          - >-
+            monitoring_etcd_runtime_status_observation.endpoints
+            == hostvars['localhost'].monitoring_etcd_status_expected_runtime_observation.endpoints
+        fail_msg: Monitoring etcd runtime membership or leadership is unstable.

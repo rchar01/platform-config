@@ -45,6 +45,22 @@ the service. A failed start, health check, or stop preserves all data and
 publishes no completion marker; do not erase or retry ambiguous state without a
 separate recovery decision.
 
+`playbooks/maintenance/monitoring-etcd-activate.yml` is the only persistent
+activation boundary. It requires three exact marker-bound bundles, exact TTY
+approval, immediate revalidation, stable mTLS health before and after rendering
+the existing Quadlet with `[Install]`, and cluster-wide rollback to the inactive
+Quadlet on any failed transition. It never changes bootstrap markers or data.
+The play requires an explicit inventory limit selecting exactly the three
+monitoring hosts. It is a one-shot inactive-to-active transition; after success,
+use status instead of rerunning activation. Reconcile any unreachable or partial
+transition through a separately reviewed recovery procedure before retrying.
+
+Use `playbooks/maintenance/monitoring-etcd-status.yml` for strict read-only active
+status. It verifies all markers, bundles, generated boot enablement, services,
+exact running container image and bundle mounts, and two stable direct-endpoint
+observations without requiring the activation gate. It also requires an explicit
+limit selecting exactly the three monitoring hosts.
+
 Real member addresses, DNS names, the cluster token, and TLS source paths belong
 in private inventory or an outside-Git secret store. Normal convergence must
 never reset an existing data directory or silently form a replacement cluster.

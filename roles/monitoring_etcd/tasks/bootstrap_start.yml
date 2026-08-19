@@ -3,12 +3,14 @@
   ansible.builtin.assert:
     that:
       - not ansible_check_mode
-      - monitoring_etcd_bootstrap_ready | default(false) | bool
+      - >-
+        monitoring_etcd_bootstrap_ready | default(false) | bool
+        or monitoring_etcd_activation_ready | default(false) | bool
       - not monitoring_etcd_service_enabled | bool
       - monitoring_etcd_service_state == 'stopped'
     fail_msg: >-
-      Monitoring etcd bootstrap start requires explicit readiness, normal apply
-      mode, and the staged stopped/disabled service contract.
+      Monitoring etcd temporary start requires explicit bootstrap or activation
+      readiness, normal apply mode, and the staged stopped/disabled contract.
 
 - name: Start monitoring etcd member without enabling it
   ansible.builtin.systemd_service:

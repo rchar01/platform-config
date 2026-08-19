@@ -1,0 +1,417 @@
+---
+- name: Inspect monitoring etcd activation marker
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_marker_path }}"
+    follow: false
+  register: monitoring_etcd_activation_marker_stat
+  check_mode: false
+
+- name: Require safe monitoring etcd activation marker metadata
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_activation_marker_stat.stat.exists
+      - monitoring_etcd_activation_marker_stat.stat.isreg
+      - not monitoring_etcd_activation_marker_stat.stat.islnk
+      - monitoring_etcd_activation_marker_stat.stat.uid == 0
+      - monitoring_etcd_activation_marker_stat.stat.gid == 0
+      - monitoring_etcd_activation_marker_stat.stat.mode == '0600'
+    fail_msg: Monitoring etcd activation requires a safe bootstrap marker.
+
+- name: Read monitoring etcd activation marker
+  ansible.builtin.slurp:
+    src: "{{ monitoring_etcd_bootstrap_marker_path }}"
+  register: monitoring_etcd_activation_marker_data
+  check_mode: false
+  no_log: true
+
+- name: Parse monitoring etcd activation marker
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_marker: >-
+      {{ monitoring_etcd_activation_marker_data.content | b64decode | from_json }}
+  no_log: true
+
+- name: Inspect monitoring etcd activation current bundle
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_current_link }}"
+    follow: false
+  register: monitoring_etcd_activation_current_link
+  check_mode: false
+
+- name: Require safe monitoring etcd activation current bundle
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_activation_current_link.stat.exists
+      - monitoring_etcd_activation_current_link.stat.islnk
+      - >-
+        monitoring_etcd_activation_current_link.stat.lnk_source
+        is match('^/etc/monitoring/etcd/bundles/[0-9a-f]{64}$')
+    fail_msg: Monitoring etcd activation current bundle link is unsafe.
+
+- name: Enumerate monitoring etcd activation bundle tree
+  ansible.builtin.find:
+    paths:
+      - "{{ monitoring_etcd_activation_current_link.stat.lnk_source }}"
+    file_type: any
+    recurse: true
+    hidden: true
+  register: monitoring_etcd_activation_bundle_tree
+  changed_when: false
+  check_mode: false
+
+- name: Require exact monitoring etcd activation bundle tree
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_activation_bundle_tree.files
+        | map(attribute='path') | list | sort
+        == [
+             monitoring_etcd_activation_current_link.stat.lnk_source
+             ~ '/bundle-contract.json',
+             monitoring_etcd_activation_current_link.stat.lnk_source ~ '/etcd.yml',
+             monitoring_etcd_activation_current_link.stat.lnk_source ~ '/pki',
+             monitoring_etcd_activation_current_link.stat.lnk_source ~ '/pki/ca.crt',
+             monitoring_etcd_activation_current_link.stat.lnk_source ~ '/pki/tls.crt',
+             monitoring_etcd_activation_current_link.stat.lnk_source ~ '/pki/tls.key'
+           ] | sort
+    fail_msg: Monitoring etcd activation bundle tree is not exact.
+
+- name: Inspect monitoring etcd activation bundle files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ monitoring_etcd_config_path }}"
+    - "{{ monitoring_etcd_tls_ca_path }}"
+    - "{{ monitoring_etcd_tls_cert_path }}"
+    - "{{ monitoring_etcd_tls_key_path }}"
+    - "{{ monitoring_etcd_current_link }}/bundle-contract.json"
+  register: monitoring_etcd_activation_bundle_file_stats
+  check_mode: false
+  no_log: true
+
+- name: Require regular monitoring etcd activation bundle files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.uid == 0
+    fail_msg: Monitoring etcd activation bundle file is unsafe.
+  loop: "{{ monitoring_etcd_activation_bundle_file_stats.results }}"
+  no_log: true
+
+- name: Read monitoring etcd activation bundle contract
+  ansible.builtin.slurp:
+    src: "{{ monitoring_etcd_current_link }}/bundle-contract.json"
+  register: monitoring_etcd_activation_bundle_contract_data
+  check_mode: false
+  no_log: true
+
+- name: Parse monitoring etcd activation bundle contract
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_bundle_contract: >-
+      {{
+        monitoring_etcd_activation_bundle_contract_data.content
+        | b64decode | from_json
+      }}
+  no_log: true
+
+- name: Inspect monitoring etcd activation template sources
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ role_path }}/templates/etcd.yml.j2"
+    - "{{ role_path }}/templates/monitoring-etcd.container.j2"
+    - "{{ role_path }}/templates/validate-config.sh.j2"
+  register: monitoring_etcd_activation_template_source_stats
+  delegate_to: localhost
+  become: false
+  check_mode: false
+
+- name: Build expected monitoring etcd activation bundle contract
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_expected_bundle_contract:
+      image:
+        reference: "{{ monitoring_etcd_image }}"
+        manifest_digest: "{{ monitoring_etcd_image_manifest_digest }}"
+        architecture: "{{ monitoring_etcd_image_architecture }}"
+        runtime_uid: "{{ monitoring_etcd_runtime_uid }}"
+        runtime_gid: "{{ monitoring_etcd_runtime_gid }}"
+      member:
+        name: "{{ monitoring_etcd_node_name }}"
+        address: "{{ monitoring_etcd_node_address }}"
+        dns: "{{ monitoring_etcd_node_dns }}"
+      cluster:
+        members: "{{ monitoring_etcd_cluster_members }}"
+        token: "{{ monitoring_etcd_initial_cluster_token }}"
+        state: "{{ monitoring_etcd_initial_cluster_state }}"
+      ports:
+        client: "{{ monitoring_etcd_client_port }}"
+        peer: "{{ monitoring_etcd_peer_port }}"
+      logging:
+        logger: "{{ monitoring_etcd_logger }}"
+        level: "{{ monitoring_etcd_log_level }}"
+      pki_checksums:
+        - "{{ monitoring_etcd_activation_bundle_file_stats.results[1].stat.checksum }}"
+        - "{{ monitoring_etcd_activation_bundle_file_stats.results[2].stat.checksum }}"
+        - "{{ monitoring_etcd_activation_bundle_file_stats.results[3].stat.checksum }}"
+      template_checksums: >-
+        {{
+          monitoring_etcd_activation_template_source_stats.results
+          | map(attribute='stat.checksum') | list
+        }}
+  no_log: true
+
+- name: Require exact monitoring etcd activation bundle contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_activation_bundle_contract
+        == monitoring_etcd_activation_expected_bundle_contract
+      - >-
+        monitoring_etcd_activation_bundle_contract | to_json | hash('sha256')
+        == monitoring_etcd_activation_current_link.stat.lnk_source | basename
+    fail_msg: Monitoring etcd activation bundle contract is inconsistent.
+  no_log: true
+
+- name: Derive monitoring etcd activation signatures and Quadlets
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_cluster_signature: >-
+      {{
+        {
+          'members': monitoring_etcd_cluster_members,
+          'token_hash': monitoring_etcd_initial_cluster_token | hash('sha256'),
+          'client_port': monitoring_etcd_client_port,
+          'peer_port': monitoring_etcd_peer_port,
+          'image': monitoring_etcd_image,
+          'logger': monitoring_etcd_logger,
+          'log_level': monitoring_etcd_log_level
+        }
+        | to_json | hash('sha256')
+      }}
+    monitoring_etcd_activation_inactive_quadlet_checksum: >-
+      {{
+        lookup('ansible.builtin.template',
+               role_path ~ '/templates/monitoring-etcd.container.j2', rstrip=false)
+        | hash('sha256')
+      }}
+  vars:
+    monitoring_etcd_quadlet_install_enabled: false
+
+- name: Derive active monitoring etcd Quadlet checksum
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_active_quadlet_checksum: >-
+      {{
+        lookup('ansible.builtin.template',
+               role_path ~ '/templates/monitoring-etcd.container.j2', rstrip=false)
+        | hash('sha256')
+      }}
+  vars:
+    monitoring_etcd_quadlet_install_enabled: true
+
+- name: Inspect monitoring etcd activation lifecycle
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ monitoring_etcd_quadlet_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_activation_lifecycle_paths
+  check_mode: false
+
+- name: Inspect monitoring etcd activation service state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ monitoring_etcd_service_name }}"]
+  register: monitoring_etcd_activation_service_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Inspect monitoring etcd activation container state
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, exists, "{{ monitoring_etcd_container_name }}"]
+  register: monitoring_etcd_activation_container_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Classify monitoring etcd activation lifecycle
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_lifecycle: >-
+      {% if
+        monitoring_etcd_activation_lifecycle_paths.results[0].stat.checksum
+        == monitoring_etcd_activation_inactive_quadlet_checksum
+        and monitoring_etcd_activation_service_active.stdout == 'inactive'
+        and monitoring_etcd_activation_container_exists.rc != 0
+        and not monitoring_etcd_activation_lifecycle_paths.results[1].stat.exists
+        and not monitoring_etcd_activation_lifecycle_paths.results[2].stat.exists
+      %}inactive{% elif
+        monitoring_etcd_activation_lifecycle_paths.results[0].stat.checksum
+        == monitoring_etcd_activation_active_quadlet_checksum
+        and monitoring_etcd_activation_service_active.stdout == 'active'
+        and monitoring_etcd_activation_container_exists.rc == 0
+        and monitoring_etcd_activation_lifecycle_paths.results[1].stat.exists
+        and monitoring_etcd_activation_lifecycle_paths.results[1].stat.islnk
+        and monitoring_etcd_activation_lifecycle_paths.results[1].stat.lnk_source
+            == '/run/systemd/generator/' ~ monitoring_etcd_service_name
+        and not monitoring_etcd_activation_lifecycle_paths.results[2].stat.exists
+      %}active{% else %}mixed{% endif %}
+
+- name: Inspect active monitoring etcd container identity
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, inspect, "{{ monitoring_etcd_container_name }}"]
+  register: monitoring_etcd_activation_container_inspect_command
+  changed_when: false
+  check_mode: false
+  when: monitoring_etcd_activation_lifecycle == 'active'
+
+- name: Parse active monitoring etcd container identity
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_container_inspect: >-
+      {{ (monitoring_etcd_activation_container_inspect_command.stdout | from_json) | first }}
+  when: monitoring_etcd_activation_lifecycle == 'active'
+
+- name: Inspect approved monitoring etcd image identity
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, image, inspect, "{{ monitoring_etcd_image }}"]
+  register: monitoring_etcd_activation_image_inspect_command
+  changed_when: false
+  check_mode: false
+  when: monitoring_etcd_activation_lifecycle == 'active'
+
+- name: Parse approved monitoring etcd image identity
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_image_inspect: >-
+      {{ (monitoring_etcd_activation_image_inspect_command.stdout | from_json) | first }}
+  when: monitoring_etcd_activation_lifecycle == 'active'
+
+- name: Require marker-bound active monitoring etcd container
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_activation_container_inspect.State.Running | bool
+      - monitoring_etcd_activation_container_inspect.ImageName == monitoring_etcd_image
+      - >-
+        monitoring_etcd_activation_container_inspect.Image
+        == monitoring_etcd_activation_image_inspect.Id
+      - monitoring_etcd_activation_image_inspect.Digest == monitoring_etcd_image_digest
+      - >-
+        monitoring_etcd_activation_container_inspect.Mounts
+        | selectattr('Destination', 'equalto', monitoring_etcd_container_config_dir)
+        | map(attribute='Source') | list
+        == [monitoring_etcd_current_link]
+      - >-
+        monitoring_etcd_activation_container_inspect.Mounts
+        | selectattr('Destination', 'equalto', monitoring_etcd_container_config_dir)
+        | map(attribute='RW') | list
+        == [false]
+    fail_msg: >-
+      Active monitoring etcd container is not running from the exact approved
+      image and current immutable bundle.
+  when: monitoring_etcd_activation_lifecycle == 'active'
+
+- name: Select local monitoring etcd activation marker member
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_local_marker_members: >-
+      {{
+        monitoring_etcd_activation_marker.members
+        | selectattr('name', 'equalto', monitoring_etcd_node_name)
+        | list
+      }}
+
+- name: Require exact monitoring etcd activation marker members
+  ansible.builtin.assert:
+    that:
+      - item.keys() | list | sort == ['client_url', 'member_id', 'name', 'peer_url']
+      - item.member_id | string is match('^[1-9][0-9]*$')
+    fail_msg: Monitoring etcd activation marker member record is invalid.
+  loop: "{{ monitoring_etcd_activation_marker.members }}"
+  no_log: true
+
+- name: Validate monitoring etcd activation marker schema and binding
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_activation_marker.keys() | list | sort
+        == ['ca_checksum', 'cluster_id', 'cluster_signature', 'endpoints',
+            'image_digest', 'leader_member_id', 'local_member', 'members',
+            'operation_id', 'schema_version', 'service_enabled', 'service_state']
+           | sort
+      - monitoring_etcd_activation_marker.schema_version == 1
+      - monitoring_etcd_activation_marker.operation_id is match('^[0-9a-f]{64}$')
+      - monitoring_etcd_activation_marker.cluster_id | string is match('^[1-9][0-9]*$')
+      - monitoring_etcd_activation_marker.leader_member_id | string is match('^[1-9][0-9]*$')
+      - >-
+        monitoring_etcd_activation_marker.cluster_signature
+        == monitoring_etcd_activation_cluster_signature
+      - monitoring_etcd_activation_marker.image_digest == monitoring_etcd_image_digest
+      - >-
+        monitoring_etcd_activation_marker.ca_checksum
+        == monitoring_etcd_activation_bundle_file_stats.results[1].stat.checksum
+      - monitoring_etcd_activation_marker.service_state == 'stopped'
+      - not monitoring_etcd_activation_marker.service_enabled | bool
+      - monitoring_etcd_activation_marker.members | length == 3
+      - >-
+        monitoring_etcd_activation_marker.members
+        | map(attribute='member_id') | unique | length == 3
+      - monitoring_etcd_activation_local_marker_members | length == 1
+      - >-
+        monitoring_etcd_activation_marker.local_member.member_id | string
+        == monitoring_etcd_activation_local_marker_members[0].member_id | string
+      - monitoring_etcd_activation_marker.endpoints | length == 3
+      - >-
+        monitoring_etcd_activation_marker.members | map(attribute='name') | list | sort
+        == monitoring_etcd_cluster_members | map(attribute='name') | list | sort
+      - >-
+        monitoring_etcd_activation_marker.endpoints | sort
+        == monitoring_etcd_cluster_members
+           | map(attribute='dns')
+           | map('regex_replace', '^(.*)$', 'https://\\1:' ~ monitoring_etcd_client_port)
+           | list | sort
+      - >-
+        monitoring_etcd_activation_marker.local_member.keys() | list | sort
+        == ['address', 'bundle_revision', 'config_checksum', 'dns',
+            'inventory_host', 'member_id', 'name'] | sort
+      - monitoring_etcd_activation_marker.local_member.inventory_host == inventory_hostname
+      - monitoring_etcd_activation_marker.local_member.name == monitoring_etcd_node_name
+      - monitoring_etcd_activation_marker.local_member.address == monitoring_etcd_node_address
+      - monitoring_etcd_activation_marker.local_member.dns == monitoring_etcd_node_dns
+      - >-
+        monitoring_etcd_activation_marker.local_member.bundle_revision
+        == monitoring_etcd_activation_current_link.stat.lnk_source | basename
+      - >-
+        monitoring_etcd_activation_marker.local_member.config_checksum
+        == monitoring_etcd_activation_bundle_file_stats.results[0].stat.checksum
+      - monitoring_etcd_activation_lifecycle in ['inactive', 'active']
+    fail_msg: >-
+      Monitoring etcd activation marker, bundle, or lifecycle is inconsistent.
+  no_log: true
+
+- name: Publish monitoring etcd activation observation
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_observation:
+      operation_id: "{{ monitoring_etcd_activation_marker.operation_id }}"
+      cluster_signature: "{{ monitoring_etcd_activation_marker.cluster_signature }}"
+      cluster_id: "{{ monitoring_etcd_activation_marker.cluster_id | string }}"
+      leader_member_id: >-
+        {{ monitoring_etcd_activation_marker.leader_member_id | string }}
+      members: "{{ monitoring_etcd_activation_marker.members }}"
+      endpoints: "{{ monitoring_etcd_activation_marker.endpoints | sort }}"
+      image_digest: "{{ monitoring_etcd_activation_marker.image_digest }}"
+      ca_checksum: "{{ monitoring_etcd_activation_marker.ca_checksum }}"
+      inventory_host: "{{ inventory_hostname }}"
+      node_name: "{{ monitoring_etcd_node_name }}"
+      node_address: "{{ monitoring_etcd_node_address }}"
+      node_dns: "{{ monitoring_etcd_node_dns }}"
+      member_id: "{{ monitoring_etcd_activation_marker.local_member.member_id | string }}"
+      bundle_revision: >-
+        {{ monitoring_etcd_activation_marker.local_member.bundle_revision }}
+      config_checksum: >-
+        {{ monitoring_etcd_activation_marker.local_member.config_checksum }}
+      lifecycle: "{{ monitoring_etcd_activation_lifecycle }}"

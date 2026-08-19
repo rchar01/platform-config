@@ -1,0 +1,74 @@
+---
+- name: Render inactive monitoring etcd Quadlet during activation rollback
+  ansible.builtin.template:
+    src: monitoring-etcd.container.j2
+    dest: "{{ monitoring_etcd_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    monitoring_etcd_quadlet_install_enabled: false
+
+- name: Reload systemd during monitoring etcd activation rollback
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Quiesce monitoring etcd during activation rollback
+  ansible.builtin.include_tasks: quiesce.yml
+
+- name: Explicitly stop monitoring etcd after activation rollback reload
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_etcd_service_name }}"
+    state: stopped
+
+- name: Reset failed monitoring etcd state after activation rollback
+  ansible.builtin.command:
+    argv: [systemctl, reset-failed, "{{ monitoring_etcd_service_name }}"]
+  changed_when: false
+
+- name: Inspect monitoring etcd activation rollback state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ monitoring_etcd_service_name }}"]
+  register: monitoring_etcd_activation_rollback_active
+  changed_when: false
+  failed_when: monitoring_etcd_activation_rollback_active.stdout != 'inactive'
+  check_mode: false
+  retries: 10
+  delay: 1
+  until: monitoring_etcd_activation_rollback_active.stdout == 'inactive'
+
+- name: Inspect monitoring etcd activation rollback paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ monitoring_etcd_quadlet_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_activation_rollback_paths
+
+- name: Inspect monitoring etcd activation rollback container state
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, exists, "{{ monitoring_etcd_container_name }}"]
+  register: monitoring_etcd_activation_rollback_container_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require safe monitoring etcd activation rollback
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_activation_rollback_active.stdout == 'inactive'
+      - >-
+        monitoring_etcd_activation_rollback_paths.results[0].stat.checksum
+        == monitoring_etcd_activation_inactive_quadlet_checksum
+      - not monitoring_etcd_activation_rollback_paths.results[1].stat.exists
+      - not monitoring_etcd_activation_rollback_paths.results[2].stat.exists
+      - monitoring_etcd_activation_rollback_container_exists.rc != 0
+    fail_msg: Monitoring etcd activation rollback is incomplete.
+
+- name: Record rolled-back monitoring etcd activation member
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_member_rolled_back: true

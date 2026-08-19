@@ -1,0 +1,49 @@
+---
+- name: Render persistent active monitoring etcd Quadlet
+  ansible.builtin.template:
+    src: monitoring-etcd.container.j2
+    dest: "{{ monitoring_etcd_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    monitoring_etcd_quadlet_install_enabled: true
+
+- name: Reload systemd for active monitoring etcd Quadlet
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Inspect active monitoring etcd enablement paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - "{{ monitoring_etcd_quadlet_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_activation_enabled_paths
+
+- name: Require persistent active monitoring etcd enablement
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_activation_enabled_paths.results[0].stat.checksum
+        == monitoring_etcd_activation_active_quadlet_checksum
+      - monitoring_etcd_activation_enabled_paths.results[1].stat.exists
+      - monitoring_etcd_activation_enabled_paths.results[1].stat.islnk
+      - >-
+        monitoring_etcd_activation_enabled_paths.results[1].stat.lnk_source
+        == '/run/systemd/generator/' ~ monitoring_etcd_service_name
+      - not monitoring_etcd_activation_enabled_paths.results[2].stat.exists
+    fail_msg: Monitoring etcd active Quadlet did not generate boot enablement.
+
+- name: Start persistently active monitoring etcd member
+  ansible.builtin.systemd_service:
+    name: "{{ monitoring_etcd_service_name }}"
+    state: started
+
+- name: Record persistently active monitoring etcd member
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_member_enabled: true

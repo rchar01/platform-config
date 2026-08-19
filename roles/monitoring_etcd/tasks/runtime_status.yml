@@ -1,0 +1,106 @@
+---
+- name: Reset direct monitoring etcd runtime endpoints
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_status_endpoints: []
+
+- name: Build direct monitoring etcd runtime endpoints
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_status_endpoints: >-
+      {{
+        monitoring_etcd_bootstrap_status_endpoints
+        + ['https://' ~ item.dns ~ ':' ~ monitoring_etcd_client_port]
+      }}
+  loop: "{{ monitoring_etcd_cluster_members }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Wait for healthy monitoring etcd runtime endpoints
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "--user={{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }}"
+      - --env=ETCDCTL_DIAL_TIMEOUT=3s
+      - "--env=ETCDCTL_COMMAND_TIMEOUT={{ monitoring_etcd_bootstrap_command_timeout }}s"
+      - "{{ monitoring_etcd_container_name }}"
+      - /usr/local/bin/etcdctl
+      - "--endpoints={{ monitoring_etcd_bootstrap_status_endpoints | join(',') }}"
+      - --cacert=/etc/etcd/pki/ca.crt
+      - --cert=/etc/etcd/pki/tls.crt
+      - --key=/etc/etcd/pki/tls.key
+      - endpoint
+      - health
+      - --cluster
+      - -w
+      - json
+  register: monitoring_etcd_runtime_health_command
+  changed_when: false
+  check_mode: false
+  retries: "{{ monitoring_etcd_bootstrap_health_retries }}"
+  delay: "{{ monitoring_etcd_bootstrap_health_delay }}"
+  until: monitoring_etcd_runtime_health_command.rc == 0
+  delegate_to: "{{ monitoring_etcd_runtime_control_host }}"
+
+- name: Inspect monitoring etcd runtime membership
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "--user={{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }}"
+      - --env=ETCDCTL_DIAL_TIMEOUT=3s
+      - "--env=ETCDCTL_COMMAND_TIMEOUT={{ monitoring_etcd_bootstrap_command_timeout }}s"
+      - "{{ monitoring_etcd_container_name }}"
+      - /usr/local/bin/etcdctl
+      - "--endpoints={{ monitoring_etcd_bootstrap_status_endpoints | join(',') }}"
+      - --cacert=/etc/etcd/pki/ca.crt
+      - --cert=/etc/etcd/pki/tls.crt
+      - --key=/etc/etcd/pki/tls.key
+      - member
+      - list
+      - -w
+      - json
+  register: monitoring_etcd_runtime_member_command
+  changed_when: false
+  check_mode: false
+  delegate_to: "{{ monitoring_etcd_runtime_control_host }}"
+
+- name: Inspect monitoring etcd runtime endpoint status
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - exec
+      - "--user={{ monitoring_etcd_runtime_uid }}:{{ monitoring_etcd_runtime_gid }}"
+      - --env=ETCDCTL_DIAL_TIMEOUT=3s
+      - "--env=ETCDCTL_COMMAND_TIMEOUT={{ monitoring_etcd_bootstrap_command_timeout }}s"
+      - "{{ monitoring_etcd_container_name }}"
+      - /usr/local/bin/etcdctl
+      - "--endpoints={{ monitoring_etcd_bootstrap_status_endpoints | join(',') }}"
+      - --cacert=/etc/etcd/pki/ca.crt
+      - --cert=/etc/etcd/pki/tls.crt
+      - --key=/etc/etcd/pki/tls.key
+      - endpoint
+      - status
+      - --cluster
+      - -w
+      - json
+  register: monitoring_etcd_runtime_status_command
+  changed_when: false
+  check_mode: false
+  delegate_to: "{{ monitoring_etcd_runtime_control_host }}"
+
+- name: Parse monitoring etcd runtime status responses
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_health_response: >-
+      {{ monitoring_etcd_runtime_health_command.stdout | from_json }}
+    monitoring_etcd_bootstrap_member_response: >-
+      {{ monitoring_etcd_runtime_member_command.stdout | from_json }}
+    monitoring_etcd_bootstrap_status_response: >-
+      {{ monitoring_etcd_runtime_status_command.stdout | from_json }}
+
+- name: Validate monitoring etcd runtime status responses
+  ansible.builtin.include_tasks: bootstrap_validate_status.yml
+
+- name: Publish monitoring etcd runtime status observation
+  ansible.builtin.set_fact:
+    monitoring_etcd_runtime_status_observation: >-
+      {{ monitoring_etcd_bootstrap_status_observation }}

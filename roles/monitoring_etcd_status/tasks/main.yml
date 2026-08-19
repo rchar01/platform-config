@@ -1,0 +1,18 @@
+---
+- name: Validate declared monitoring etcd status contract
+  ansible.builtin.include_role:
+    name: monitoring_etcd
+    tasks_from: validate.yml
+
+- name: Inspect monitoring etcd status evidence
+  ansible.builtin.include_role:
+    name: monitoring_etcd
+    tasks_from: activation_preflight.yml
+
+- name: Require persistently active monitoring etcd status lifecycle
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_activation_observation.lifecycle == 'active'
+    fail_msg: >-
+      Monitoring etcd status requires the exact persistently active Quadlet,
+      generated boot enablement, active service, and managed container.

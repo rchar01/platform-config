@@ -1,4 +1,17 @@
 ---
+- name: Simulate unreachable monitoring etcd activation-start member
+  ansible.builtin.command: /bin/true
+  changed_when: false
+  vars:
+    ansible_connection: ssh
+    ansible_host: 127.0.0.1
+    ansible_port: 1
+    ansible_user: nobody
+    ansible_ssh_timeout: 1
+  when: >-
+    monitoring_etcd_activation_test_start_unreachable_host | default('')
+    == inventory_hostname
+
 - name: Reject mocked monitoring etcd bootstrap-start failure
   ansible.builtin.assert:
     that:

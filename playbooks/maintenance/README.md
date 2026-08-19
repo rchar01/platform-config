@@ -79,3 +79,10 @@ Available maintenance playbooks:
   atomically publishing root-only completion evidence. It never enables etcd or
   removes data. Failed or partial bootstrap state requires diagnosis rather than
   an automatic retry.
+- `monitoring-etcd-activate.yml`: requires three consistent bootstrap markers,
+  exact TTY approval, immediate revalidation, stable health, and exact generated
+  boot enablement. Failed transitions restore the inactive Quadlet and stop all
+  reachable members without changing markers or data.
+- `monitoring-etcd-status.yml`: strictly checks active marker, bundle, Quadlet,
+  service, container, membership, leadership, and endpoint health state. It is
+  read-only and does not require activation authorization.

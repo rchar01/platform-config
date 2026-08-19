@@ -53,6 +53,7 @@ make test-monitoring-etcd-image
 make test-monitoring-etcd-cluster
 make test-monitoring-etcd-rocky
 ./scripts/in-container pytest -q tests/python/test_monitoring_etcd_bootstrap.py
+./scripts/in-container pytest -q tests/python/test_monitoring_etcd_activation.py
 make test-monitoring-garage-cluster
 make test-monitoring-garage-loki
 make test-monitoring-garage-loki-cluster

@@ -1,0 +1,49 @@
+---
+- name: Count mocked monitoring etcd activation preflight
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_test_preflight_count: >-
+      {{ monitoring_etcd_activation_test_preflight_count | default(0) | int + 1 }}
+
+- name: Reject mocked post-approval monitoring etcd activation drift
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (monitoring_etcd_activation_test_post_approval_failure | default(false))
+        or monitoring_etcd_activation_test_preflight_count | int == 1
+    fail_msg: Mocked post-approval monitoring etcd activation preflight failed.
+
+- name: Publish mocked monitoring etcd activation observation
+  ansible.builtin.set_fact:
+    monitoring_etcd_activation_inactive_quadlet_checksum: "{{ '1' * 64 }}"
+    monitoring_etcd_activation_active_quadlet_checksum: "{{ '2' * 64 }}"
+    monitoring_etcd_activation_observation:
+      operation_id: >-
+        {% if monitoring_etcd_activation_test_uniform_post_approval_drift | default(false)
+              and monitoring_etcd_activation_test_preflight_count | int > 1
+        %}{{ 'b' * 64 }}{% else %}{{ 'a' * 64 }}{% endif %}
+      cluster_signature: consistent
+      cluster_id: "100"
+      leader_member_id: "101"
+      members:
+        - {name: monitoring-stage-1, member_id: "101"}
+        - {name: monitoring-stage-2, member_id: "102"}
+        - {name: monitoring-stage-3, member_id: "103"}
+      endpoints:
+        - https://monitoring-stage-1.internal.invalid:2379
+        - https://monitoring-stage-2.internal.invalid:2379
+        - https://monitoring-stage-3.internal.invalid:2379
+      image_digest: sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6
+      ca_checksum: consistent-ca
+      inventory_host: "{{ inventory_hostname }}"
+      node_name: "{{ monitoring_etcd_node_name }}"
+      node_address: "{{ monitoring_etcd_node_address }}"
+      node_dns: "{{ monitoring_etcd_node_dns }}"
+      member_id: >-
+        {{
+          {'monitoring-stage-1': '101', 'monitoring-stage-2': '102',
+           'monitoring-stage-3': '103'}[inventory_hostname]
+        }}
+      bundle_revision: "{{ inventory_hostname | hash('sha256') }}"
+      config_checksum: "{{ inventory_hostname | hash('sha256') }}"
+      lifecycle: >-
+        {{ monitoring_etcd_activation_test_lifecycle | default('inactive') }}
