@@ -91,6 +91,13 @@ absent bootstrap marker, exact staged bundle and PKI evidence, no etcd runtime
 activity, and one consistent contract across all three hosts. Passing preflight
 still does not authorize initialization or service startup.
 
+Set the separate `monitoring_etcd_bootstrap_ready` gate only for the explicitly
+invoked initial-bootstrap maintenance playbook. The operator must type the exact
+three-host and cluster-signature approval in a real TTY. Successful bootstrap
+forms and qualifies the three-voter cluster, stops every member again, and writes
+root-only completion markers; it does not enable etcd or authorize Patroni.
+Failure preserves data and requires diagnosis before any recovery action.
+
 The focused OpenBao staging playbook owns Podman installation directly, so
 OpenBao nodes do not require `container_hosts` membership. Storage remains a
 separate destructive boundary: add real nodes to `storage_volume_hosts` only

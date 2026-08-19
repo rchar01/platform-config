@@ -32,6 +32,11 @@ monitoring_etcd_data_required_mount_options:
   - nosuid
   - nodev
 monitoring_etcd_bootstrap_require_selinux_enforcing: true
+monitoring_etcd_bootstrap_ready: false
+monitoring_etcd_bootstrap_health_retries: 30
+monitoring_etcd_bootstrap_health_delay: 2
+monitoring_etcd_bootstrap_command_timeout: 8
+monitoring_etcd_bootstrap_stability_delay: 2
 
 monitoring_etcd_container_config_dir: /etc/etcd
 monitoring_etcd_container_config_path: "{{ monitoring_etcd_container_config_dir }}/etcd.yml"

@@ -1,0 +1,63 @@
+---
+- name: Validate synthetic monitoring etcd bootstrap status
+  hosts: monitoring
+  gather_facts: false
+  run_once: true
+  vars:
+    monitoring_etcd_client_port: 2379
+    monitoring_etcd_peer_port: 2380
+    monitoring_etcd_bootstrap_status_endpoints:
+      - https://monitoring-stage-1.internal.invalid:2379
+      - https://monitoring-stage-2.internal.invalid:2379
+      - https://monitoring-stage-3.internal.invalid:2379
+    monitoring_etcd_bootstrap_member_response:
+      members:
+        - ID: 101
+          name: monitoring-stage-1
+          peerURLs: [https://monitoring-stage-1.internal.invalid:2380]
+          clientURLs: [https://monitoring-stage-1.internal.invalid:2379]
+          isLearner: >-
+            {{ monitoring_etcd_bootstrap_test_learner | default(false) }}
+        - ID: 102
+          name: monitoring-stage-2
+          peerURLs: [https://monitoring-stage-2.internal.invalid:2380]
+          clientURLs: [https://monitoring-stage-2.internal.invalid:2379]
+          isLearner: false
+        - ID: 103
+          name: monitoring-stage-3
+          peerURLs: [https://monitoring-stage-3.internal.invalid:2380]
+          clientURLs: [https://monitoring-stage-3.internal.invalid:2379]
+          isLearner: false
+    monitoring_etcd_bootstrap_status_response:
+      - Endpoint: https://monitoring-stage-1.internal.invalid:2379
+        Status:
+          header: {cluster_id: 100, member_id: 101}
+          leader: >-
+            {{ monitoring_etcd_bootstrap_test_leader | default(101) }}
+      - Endpoint: https://monitoring-stage-2.internal.invalid:2379
+        Status:
+          header: {cluster_id: 100, member_id: 102}
+          leader: >-
+            {{ monitoring_etcd_bootstrap_test_leader | default(101) }}
+      - Endpoint: >-
+          {{
+            'https://unexpected.internal.invalid:2379'
+            if monitoring_etcd_bootstrap_test_endpoint_drift | default(false)
+            else 'https://monitoring-stage-3.internal.invalid:2379'
+          }}
+        Status:
+          header: {cluster_id: 100, member_id: 103}
+          leader: >-
+            {{ monitoring_etcd_bootstrap_test_leader | default(101) }}
+    monitoring_etcd_bootstrap_health_response:
+      - endpoint: https://monitoring-stage-1.internal.invalid:2379
+        health: >-
+          {{ not (monitoring_etcd_bootstrap_test_unhealthy | default(false)) }}
+      - endpoint: https://monitoring-stage-2.internal.invalid:2379
+        health: true
+      - endpoint: https://monitoring-stage-3.internal.invalid:2379
+        health: true
+  tasks:
+    - name: Exercise monitoring etcd bootstrap status validator
+      ansible.builtin.include_tasks: >-
+        {{ playbook_dir }}/../../../roles/monitoring_etcd/tasks/bootstrap_validate_status.yml

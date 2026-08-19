@@ -22,9 +22,11 @@ services. The rebuilt OpenBao service role foundation is staged and its strict
 read-only direct-node status gate is available. OpenBao-hosted monitoring
 observers now have a separate guarded stage/activate/smoke workflow, but their
 real endpoints remain unavailable until monitoring is deployed. OpenBao service
-activation, initialization, and HA smoke remain blocked. Monitoring also remains
-blocked while its three-node replacement is implemented. Do not use `site.yml`
-to bypass the phased handoff.
+activation, initialization, and HA smoke remain blocked. Monitoring etcd now has
+separate inactive staging, read-only preflight, and confirmation-gated initial
+bootstrap workflows, but none run merely by merging this repository. The
+remaining monitoring services and active HA handoff are still blocked. Do not
+use `site.yml` to bypass the phased handoff.
 
 | Area | Environment | Status | Runbook Coverage |
 |---|---|---|---|
@@ -37,7 +39,7 @@ to bypass the phased handoff.
 | Zot registry | dev | implemented | full bring-up and smoke commands |
 | OpenBao HA | dev | service foundation, read-only status, and observer orchestration staged | immutable image, direct-node role and status, inventory, bounded storage, and guarded monitoring observers; no active OpenBao service apply or HA smoke command |
 | GitLab runners | dev | implemented | full bring-up and smoke commands |
-| Monitoring HA | dev | replacement blocked | inventory and bounded-storage contract only; collectors remain inactive |
+| Monitoring HA | dev | etcd staging and bootstrap implemented; replacement otherwise blocked | guarded stopped etcd formation only; Patroni, Garage, Loki, Mimir, Grafana, active ingress, and collectors remain unavailable |
 | RKE2 and bundled Traefik | dev | implemented | full bring-up and smoke commands for the base cluster and default ingress controller |
 | kube-vip API HA | dev | implemented | RKE2 HelmChart-based API VIP commands and smoke checks |
 | Kong ingress controller | dev | optional | alternative RKE2 HelmChart-based classic Ingress controller with fixed NodePorts |
@@ -799,8 +801,28 @@ make apply ENV=dev PLAYBOOK=playbooks/registry.yml
 make smoke-registry ENV=dev
 ```
 
-The monitoring phase playbook intentionally fails at this point. The OpenBao
-playbook can stage its complete three-node foundation, but only after inventory,
+The combined monitoring phase playbook intentionally fails at this point. The
+focused monitoring etcd lane can stage all three members while disabled and
+stopped after private inventory supplies the exact topology, PKI, XFS source,
+firewall, and SELinux contract. Staging, preflight, and bootstrap are separate
+operator decisions:
+
+```bash
+make check ENV=dev PLAYBOOK=playbooks/monitoring-etcd.yml LIMIT=monitoring
+make apply ENV=dev PLAYBOOK=playbooks/monitoring-etcd.yml LIMIT=monitoring
+make apply ENV=dev PLAYBOOK=playbooks/maintenance/monitoring-etcd-bootstrap-preflight.yml LIMIT=monitoring
+make apply ENV=dev PLAYBOOK=playbooks/maintenance/monitoring-etcd-bootstrap.yml LIMIT=monitoring
+```
+
+The bootstrap command requires a real TTY and an exact approval containing all
+three selected hosts and the observed cluster-signature digest. It reruns the
+read-only preflight immediately after approval, starts all three members only for
+initial formation, requires two stable mTLS health observations, and stops all
+members before publishing completion markers. It does not enable etcd or
+authorize Patroni. Do not retry after partial state; preserve the data and
+diagnose it through a separately reviewed recovery procedure.
+
+The OpenBao playbook can stage its complete three-node foundation, but only after inventory,
 strict SSH trust, generic baseline, approved storage initialization, PKI, package,
 network, and source-policy inputs pass their gates. Set
 `openbao_orchestration_ready: true` only with all three component roles enabled

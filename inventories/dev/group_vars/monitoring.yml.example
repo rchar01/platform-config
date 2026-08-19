@@ -46,6 +46,7 @@ monitoring_haproxy_service_state: stopped
 # reviewed topology, PKI source paths, and an explicit orchestration approval.
 monitoring_etcd_orchestration_ready: false
 monitoring_etcd_bootstrap_preflight_ready: false
+monitoring_etcd_bootstrap_ready: false
 monitoring_etcd_contract_ready: false
 monitoring_etcd_enabled: false
 monitoring_etcd_converge: false

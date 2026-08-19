@@ -35,6 +35,16 @@ markers, exact rendered files and image identity, inactive generated services,
 and one consistent cross-host cluster contract. Its readiness gate does not
 authorize starting or initializing etcd.
 
+`playbooks/maintenance/monitoring-etcd-bootstrap.yml` is the separate initial
+bootstrap boundary. It requires the read-only preflight before and immediately
+after an exact interactive approval bound to the three hosts and cluster
+signature. It starts all three disabled members, requires two stable direct-node
+mTLS observations with exactly three voters and one leader, stops every member,
+and only then atomically publishes root-only completion markers. It never enables
+the service. A failed start, health check, or stop preserves all data and
+publishes no completion marker; do not erase or retry ambiguous state without a
+separate recovery decision.
+
 Real member addresses, DNS names, the cluster token, and TLS source paths belong
 in private inventory or an outside-Git secret store. Normal convergence must
 never reset an existing data directory or silently form a replacement cluster.

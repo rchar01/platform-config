@@ -1,0 +1,400 @@
+---
+- import_playbook: monitoring-etcd-bootstrap-preflight.yml
+
+- name: Authorize monitoring etcd initial bootstrap
+  hosts: monitoring
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    monitoring_etcd_bootstrap_control_host: >-
+      {{ groups.get('monitoring', []) | sort | first }}
+    monitoring_etcd_bootstrap_expected_approval: >-
+      bootstrap-monitoring-etcd|{{ groups.get('monitoring', []) | sort | join(',') }}|{{
+        hostvars[monitoring_etcd_bootstrap_control_host]
+        .monitoring_etcd_bootstrap_observation.cluster_signature
+      }}
+  tasks:
+    - name: Require explicit monitoring etcd bootstrap authorization
+      ansible.builtin.assert:
+        that:
+          - (monitoring_etcd_bootstrap_ready | default(false)) is boolean
+          - monitoring_etcd_bootstrap_ready | default(false)
+          - monitoring_etcd_bootstrap_preflight_ready | default(false)
+          - not ansible_check_mode
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap requires its explicit readiness gate, normal
+          apply mode, and all three monitoring inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Prompt for exact monitoring etcd bootstrap approval
+      ansible.builtin.pause:
+        prompt: >-
+          Type exactly {{ monitoring_etcd_bootstrap_expected_approval }}
+      register: monitoring_etcd_bootstrap_approval
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Require exact monitoring etcd bootstrap approval
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_bootstrap_approval.user_input
+            == monitoring_etcd_bootstrap_expected_approval
+        fail_msg: Exact monitoring etcd bootstrap approval did not match.
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Select monitoring etcd bootstrap control host
+      ansible.builtin.add_host:
+        name: "{{ monitoring_etcd_bootstrap_control_host }}"
+        groups: monitoring_etcd_bootstrap_control
+      run_once: true # noqa run-once[task]
+
+- name: Revalidate monitoring etcd immediately before initial bootstrap
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require full-cluster monitoring etcd bootstrap revalidation
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap revalidation requires all three monitoring
+          inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Require ready inactive monitoring etcd bootstrap contract
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_bootstrap_ready | default(false)
+          - monitoring_etcd_bootstrap_preflight_ready | default(false)
+          - monitoring_etcd_orchestration_ready | default(false)
+          - monitoring_etcd_enabled | default(false)
+          - monitoring_etcd_contract_ready | default(false)
+          - monitoring_etcd_converge | default(false)
+          - not (monitoring_etcd_service_enabled | default(false))
+          - monitoring_etcd_service_state | default('stopped') == 'stopped'
+          - monitoring_etcd_data_fstype == 'xfs'
+          - monitoring_etcd_bootstrap_require_selinux_enforcing | bool
+          - >-
+            monitoring_etcd_data_mount_source
+            is match('^/dev/[A-Za-z0-9_+./-]+$')
+        fail_msg: >-
+          Monitoring etcd bootstrap revalidation requires explicit readiness and
+          a fully staged inactive XFS contract on every member.
+
+    - name: Revalidate declared monitoring etcd bootstrap contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: validate.yml
+
+    - name: Reinspect observed monitoring etcd bootstrap contract
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_preflight.yml
+
+    - name: Build revalidated monitoring etcd bootstrap observations
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_revalidated_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'monitoring_etcd_bootstrap_observation')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require consistent revalidated monitoring etcd bootstrap observations
+      ansible.builtin.assert:
+        that:
+          - monitoring_etcd_bootstrap_revalidated_observations | length == 3
+          - >-
+            monitoring_etcd_bootstrap_revalidated_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            monitoring_etcd_bootstrap_revalidated_observations
+            | map(attribute='image_digest') | unique | length == 1
+          - >-
+            monitoring_etcd_bootstrap_revalidated_observations
+            | map(attribute='ca_checksum') | unique | length == 1
+          - >-
+            monitoring_etcd_bootstrap_revalidated_observations
+            | map(attribute='node_name') | list | sort
+            == monitoring_etcd_cluster_members
+               | map(attribute='name') | list | sort
+          - >-
+            monitoring_etcd_bootstrap_revalidated_observations
+            | map(attribute='node_address') | list | sort
+            == monitoring_etcd_cluster_members
+               | map(attribute='address') | list | sort
+          - >-
+            monitoring_etcd_bootstrap_revalidated_observations
+            | map(attribute='node_dns') | list | sort
+            == monitoring_etcd_cluster_members
+               | map(attribute='dns') | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap revalidation requires one consistent cluster
+          contract and three exact unique local identities.
+      run_once: true # noqa run-once[task]
+
+    - name: Admit revalidated monitoring etcd bootstrap members
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: monitoring_etcd_bootstrap_start
+      loop: "{{ ansible_play_hosts_all }}"
+      loop_control:
+        label: "{{ item }}"
+      run_once: true # noqa run-once[task]
+
+- name: Start the revalidated monitoring etcd initial cluster
+  hosts: monitoring_etcd_bootstrap_start
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  vars:
+    monitoring_etcd_bootstrap_control_host: >-
+      {{ groups.get('monitoring', []) | sort | first }}
+  tasks:
+    - name: Require exact revalidated monitoring etcd bootstrap start group
+      ansible.builtin.assert:
+        that:
+          - >-
+            groups.get('monitoring_etcd_bootstrap_start', []) | list | sort
+            == groups.get('monitoring', []) | list | sort
+          - >-
+            ansible_play_hosts_all | list | sort
+            == groups.get('monitoring', []) | list | sort
+        fail_msg: >-
+          Monitoring etcd bootstrap start requires all three members admitted by
+          the immediate revalidation gate.
+      run_once: true # noqa run-once[task]
+
+    - name: Reset local monitoring etcd bootstrap-start failure
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_local_start_failed: false
+
+    - name: Start this monitoring etcd member for initial bootstrap
+      block:
+        - name: Start the staged monitoring etcd member
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: bootstrap_start.yml
+      rescue:
+        - name: Record local monitoring etcd bootstrap-start failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_bootstrap_local_start_failed: true
+
+    - name: Reset monitoring etcd bootstrap-start failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_start_failed_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect monitoring etcd bootstrap-start failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_start_failed_hosts: >-
+          {{
+            hostvars['localhost'].monitoring_etcd_bootstrap_start_failed_hosts
+            + [item]
+          }}
+      loop: "{{ ansible_play_hosts_all }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].monitoring_etcd_bootstrap_local_start_failed | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Stop every member after a bootstrap-start failure
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_stop.yml
+      when:
+        - >-
+          hostvars['localhost'].monitoring_etcd_bootstrap_start_failed_hosts
+          | length > 0
+
+    - name: Stop after a monitoring etcd bootstrap-start failure
+      ansible.builtin.assert:
+        that:
+          - >-
+            hostvars['localhost'].monitoring_etcd_bootstrap_start_failed_hosts
+            | length == 0
+        fail_msg: >-
+          Monitoring etcd bootstrap failed to start every member. All reachable
+          members were stopped; preserve data for diagnosis.
+      run_once: true # noqa run-once[task]
+
+- name: Qualify monitoring etcd initial cluster
+  hosts: monitoring_etcd_bootstrap_control
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    monitoring_etcd_bootstrap_control_host: >-
+      {{ groups.get('monitoring', []) | sort | first }}
+  tasks:
+    - name: Reset controller monitoring etcd health failure
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_health_failed: false
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Establish stable monitoring etcd bootstrap health
+      block:
+        - name: Collect first monitoring etcd bootstrap health observation
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: bootstrap_status.yml
+
+        - name: Preserve first monitoring etcd bootstrap health observation
+          ansible.builtin.set_fact:
+            monitoring_etcd_bootstrap_first_status: >-
+              {{ monitoring_etcd_bootstrap_status_observation }}
+
+        - name: Wait before confirming monitoring etcd bootstrap stability
+          ansible.builtin.pause:
+            seconds: "{{ monitoring_etcd_bootstrap_stability_delay }}"
+
+        - name: Collect second monitoring etcd bootstrap health observation
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: bootstrap_status.yml
+
+        - name: Require stable monitoring etcd bootstrap health
+          ansible.builtin.assert:
+            that:
+              - >-
+                monitoring_etcd_bootstrap_status_observation
+                == monitoring_etcd_bootstrap_first_status
+            fail_msg: >-
+              Monitoring etcd bootstrap membership or leadership changed across
+              the required stable health observations.
+
+        - name: Publish accepted monitoring etcd bootstrap health
+          ansible.builtin.set_fact:
+            monitoring_etcd_bootstrap_accepted_status: >-
+              {{
+                monitoring_etcd_bootstrap_status_observation
+                | combine(
+                    {
+                      'operation_id': (
+                        {
+                          'cluster_signature': hostvars[
+                            monitoring_etcd_bootstrap_control_host
+                          ].monitoring_etcd_bootstrap_observation.cluster_signature,
+                          'status': monitoring_etcd_bootstrap_status_observation
+                        }
+                        | to_json
+                        | hash('sha256')
+                      )
+                    }
+                  )
+              }}
+          delegate_to: localhost
+          delegate_facts: true
+      rescue:
+        - name: Record monitoring etcd bootstrap health failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_bootstrap_health_failed: true
+          delegate_to: localhost
+          delegate_facts: true
+
+- name: Re-quiesce every monitoring etcd bootstrap member
+  hosts: monitoring
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Reset local monitoring etcd bootstrap-stop failure
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_local_stop_failed: false
+        monitoring_etcd_bootstrap_member_stopped: false
+
+    - name: Stop this monitoring etcd member after bootstrap qualification
+      block:
+        - name: Stop and disable the monitoring etcd member
+          ansible.builtin.include_role:
+            name: monitoring_etcd
+            tasks_from: bootstrap_stop.yml
+      rescue:
+        - name: Record local monitoring etcd bootstrap-stop failure
+          ansible.builtin.set_fact:
+            monitoring_etcd_bootstrap_local_stop_failed: true
+
+    - name: Reset monitoring etcd bootstrap-stop failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_stop_failed_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect monitoring etcd bootstrap-stop failures
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_stop_failed_hosts: >-
+          {{
+            hostvars['localhost'].monitoring_etcd_bootstrap_stop_failed_hosts
+            + [item]
+          }}
+      loop: "{{ ansible_play_hosts_all }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].monitoring_etcd_bootstrap_local_stop_failed | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Require qualified and fully stopped monitoring etcd bootstrap
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (
+              hostvars['localhost'].monitoring_etcd_bootstrap_health_failed
+              | bool
+            )
+          - >-
+            hostvars['localhost'].monitoring_etcd_bootstrap_stop_failed_hosts
+            | length == 0
+          - >-
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'monitoring_etcd_bootstrap_member_stopped')
+            | select('equalto', true)
+            | length == 3
+        fail_msg: >-
+          Monitoring etcd bootstrap did not reach stable health or could not stop
+          every member. No completion marker will be published; preserve all
+          data for diagnosis.
+      run_once: true # noqa run-once[task]
+
+- name: Publish monitoring etcd bootstrap completion evidence
+  hosts: monitoring
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Publish this monitoring etcd bootstrap marker
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_marker.yml
+
+- name: Reject bootstrap limits outside monitoring
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require selected monitoring host for bootstrap
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | intersect(groups.get('monitoring', []))
+            | length > 0
+        fail_msg: >-
+          Monitoring etcd bootstrap did not select the monitoring service group.
+      run_once: true # noqa run-once[task]

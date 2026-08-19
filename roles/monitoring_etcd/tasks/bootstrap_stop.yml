@@ -1,0 +1,40 @@
+---
+- name: Stop and disable monitoring etcd bootstrap member
+  ansible.builtin.include_tasks: quiesce.yml
+
+- name: Inspect stopped monitoring etcd bootstrap member
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_bootstrap_stopped_service
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Inspect disabled monitoring etcd bootstrap member
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - "{{ monitoring_etcd_service_name }}"
+  register: monitoring_etcd_bootstrap_disabled_service
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require stopped and disabled monitoring etcd bootstrap member
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_stopped_service.stdout == 'inactive'
+      - >-
+        monitoring_etcd_bootstrap_disabled_service.stdout
+        in ['disabled', 'static', 'indirect', 'generated']
+    fail_msg: >-
+      Monitoring etcd bootstrap could not restore the stopped/disabled service
+      boundary.
+
+- name: Record stopped monitoring etcd bootstrap member
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_member_stopped: true

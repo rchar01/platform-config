@@ -1,0 +1,40 @@
+---
+- name: Exercise monitoring etcd bootstrap marker publication
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars.yml
+  vars:
+    monitoring_etcd_bootstrap_observation:
+      cluster_signature: "{{ '1' * 64 }}"
+      node_name: "{{ monitoring_etcd_node_name }}"
+      node_address: "{{ monitoring_etcd_node_address }}"
+      node_dns: "{{ monitoring_etcd_node_dns }}"
+      config_checksum: "{{ '2' * 64 }}"
+      bundle_revision: "{{ '3' * 64 }}"
+      image_digest: >-
+        sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6
+      ca_checksum: "{{ '4' * 64 }}"
+    monitoring_etcd_bootstrap_synthetic_accepted_status:
+      operation_id: "{{ 'a' * 64 }}"
+      cluster_id: "100"
+      leader_member_id: "101"
+      members:
+        - {name: etcd-test-1, member_id: "101", peer_url: "https://etcd-test-1.internal.invalid:2380", client_url: "https://etcd-test-1.internal.invalid:2379"}
+        - {name: etcd-test-2, member_id: "102", peer_url: "https://etcd-test-2.internal.invalid:2380", client_url: "https://etcd-test-2.internal.invalid:2379"}
+        - {name: etcd-test-3, member_id: "103", peer_url: "https://etcd-test-3.internal.invalid:2380", client_url: "https://etcd-test-3.internal.invalid:2379"}
+      endpoints:
+        - https://etcd-test-1.internal.invalid:2379
+        - https://etcd-test-2.internal.invalid:2379
+        - https://etcd-test-3.internal.invalid:2379
+  tasks:
+    - name: Publish synthetic accepted monitoring etcd bootstrap status
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_accepted_status: >-
+          {{ monitoring_etcd_bootstrap_synthetic_accepted_status }}
+
+    - name: Publish synthetic monitoring etcd bootstrap marker
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_marker.yml

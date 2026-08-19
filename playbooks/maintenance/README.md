@@ -69,3 +69,13 @@ Available maintenance playbooks:
   It also requires fail-closed pristine/final verification.
   It provides no cleanup path; recreate the fixture VM on partial or ambiguous
   state. See [Storage Volume Acceptance Fixture](../../docs/storage-volume-test.md).
+- `monitoring-etcd-bootstrap-preflight.yml`: performs the strictly read-only
+  all-three-node pristine-storage, staged-artifact, runtime-absence, image,
+  firewall, SELinux, and cross-host identity gate for the dedicated Patroni etcd
+  cluster. Passing it does not authorize startup.
+- `monitoring-etcd-bootstrap.yml`: reruns that preflight around an exact
+  controller-side TTY approval, temporarily starts all three members, requires
+  two stable direct-node mTLS health observations, then stops every member before
+  atomically publishing root-only completion evidence. It never enables etcd or
+  removes data. Failed or partial bootstrap state requires diagnosis rather than
+  an automatic retry.

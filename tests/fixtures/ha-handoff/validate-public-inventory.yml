@@ -153,6 +153,7 @@
           - monitoring_group_example.monitoring_haproxy_service_state == 'stopped'
           - not monitoring_group_example.monitoring_etcd_orchestration_ready | bool
           - not monitoring_group_example.monitoring_etcd_bootstrap_preflight_ready | bool
+          - not monitoring_group_example.monitoring_etcd_bootstrap_ready | bool
           - not monitoring_group_example.monitoring_etcd_contract_ready | bool
           - not monitoring_group_example.monitoring_etcd_enabled | bool
           - not monitoring_group_example.monitoring_etcd_converge | bool

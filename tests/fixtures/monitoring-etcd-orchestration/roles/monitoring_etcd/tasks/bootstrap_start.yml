@@ -1,0 +1,12 @@
+---
+- name: Reject mocked monitoring etcd bootstrap-start failure
+  ansible.builtin.assert:
+    that:
+      - >-
+        monitoring_etcd_bootstrap_test_start_failure_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked monitoring etcd bootstrap member failed to start.
+
+- name: Record mocked monitoring etcd bootstrap member start
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_test_started: true

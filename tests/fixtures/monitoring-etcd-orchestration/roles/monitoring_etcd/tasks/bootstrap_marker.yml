@@ -1,0 +1,14 @@
+---
+- name: Require mocked monitoring etcd marker after complete stop
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_test_started | default(false)
+      - monitoring_etcd_bootstrap_test_stopped | default(false)
+      - >-
+        hostvars['localhost'].monitoring_etcd_bootstrap_accepted_status.operation_id
+        is match('^[0-9a-f]{64}$')
+    fail_msg: Mocked monitoring etcd marker was published outside safe ordering.
+
+- name: Record mocked monitoring etcd bootstrap marker
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_test_marker_published: true

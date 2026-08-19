@@ -1,0 +1,41 @@
+---
+- name: Require every mocked monitoring etcd bootstrap member started
+  ansible.builtin.assert:
+    that:
+      - >-
+        groups.get('monitoring', [])
+        | map('extract', hostvars, 'monitoring_etcd_bootstrap_test_started')
+        | select('equalto', true)
+        | length == 3
+    fail_msg: Mocked monitoring etcd status ran before every member started.
+
+- name: Reject mocked monitoring etcd bootstrap health failure
+  ansible.builtin.assert:
+    that:
+      - not (monitoring_etcd_bootstrap_test_health_failure | default(false))
+    fail_msg: Mocked monitoring etcd bootstrap health failed.
+
+- name: Count mocked monitoring etcd bootstrap status observations
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_test_status_count: >-
+      {{ monitoring_etcd_bootstrap_test_status_count | default(0) | int + 1 }}
+
+- name: Publish mocked monitoring etcd bootstrap status
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_status_observation:
+      cluster_id: "100"
+      leader_member_id: >-
+        {{
+          '102'
+          if monitoring_etcd_bootstrap_test_unstable | default(false)
+             and monitoring_etcd_bootstrap_test_status_count | int > 1
+          else '101'
+        }}
+      members:
+        - {name: monitoring-stage-1, member_id: "101", peer_url: "https://monitoring-stage-1.internal.invalid:2380", client_url: "https://monitoring-stage-1.internal.invalid:2379"}
+        - {name: monitoring-stage-2, member_id: "102", peer_url: "https://monitoring-stage-2.internal.invalid:2380", client_url: "https://monitoring-stage-2.internal.invalid:2379"}
+        - {name: monitoring-stage-3, member_id: "103", peer_url: "https://monitoring-stage-3.internal.invalid:2380", client_url: "https://monitoring-stage-3.internal.invalid:2379"}
+      endpoints:
+        - https://monitoring-stage-1.internal.invalid:2379
+        - https://monitoring-stage-2.internal.invalid:2379
+        - https://monitoring-stage-3.internal.invalid:2379

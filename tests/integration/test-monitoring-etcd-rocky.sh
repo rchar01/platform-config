@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/integration.yml
 BOOTSTRAP_PREFLIGHT_FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/bootstrap-preflight.yml
+BOOTSTRAP_MARKER_FIXTURE=/workspace/tests/fixtures/monitoring-etcd-convergence/bootstrap-marker.yml
 ROCKY_IMAGE="${MONITORING_ETCD_ROCKY_IMAGE:-docker.io/rockylinux/rockylinux:10.1}"
 IMAGE='gcr.io/etcd-development/etcd@sha256:a491baeaa0cb0c9cd89c0062ac44ece53886e3e5bddad18d2daf36678ce665b6'
 CONTAINER="platform-config-monitoring-etcd-role-test-$$"
@@ -44,6 +45,15 @@ run_bootstrap_preflight() {
     "$@"
 }
 
+run_bootstrap_marker() {
+  podman exec \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections:/workspace/.ansible/collections \
+    --env ANSIBLE_ROLES_PATH=/workspace/roles \
+    --workdir /workspace \
+    "$CONTAINER" \
+    ansible-playbook -i "localhost," -c local "$BOOTSTRAP_MARKER_FIXTURE"
+}
+
 podman run \
   --detach \
   --name "$CONTAINER" \
@@ -67,7 +77,7 @@ if [[ "$system_state" != running && "$system_state" != degraded ]]; then
 fi
 
 podman exec "$CONTAINER" dnf -qy install \
-  firewalld iproute openssl podman-7:5.8.2-5.el10_2.x86_64 \
+  firewalld iproute jq openssl podman-7:5.8.2-5.el10_2.x86_64 \
   python3-pip python3-firewall util-linux-core >/dev/null
 podman exec "$CONTAINER" bash -c \
   "printf '%s\n' '[storage]' 'driver = \"vfs\"' 'runroot = \"/run/containers/storage\"' 'graphroot = \"/var/lib/containers/storage\"' > /etc/containers/storage.conf"
@@ -365,6 +375,29 @@ podman exec "$CONTAINER" firewall-cmd --permanent --zone=public \
   "--remove-rich-rule=${unrelated_bootstrap_rule}" >/dev/null
 podman exec "$CONTAINER" firewall-cmd --zone=public \
   "--remove-rich-rule=${unrelated_bootstrap_rule}" >/dev/null
+
+marker_candidate="/var/lib/platform-config/.monitoring-etcd-bootstrap-$(printf 'a%.0s' {1..64}).json"
+podman exec "$CONTAINER" touch "$marker_candidate"
+if run_bootstrap_marker >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap marker accepted an existing candidate'
+fi
+podman exec "$CONTAINER" rm "$marker_candidate"
+
+bootstrap_marker_output=""
+if ! bootstrap_marker_output="$(run_bootstrap_marker 2>&1)"; then
+  printf '%s\n' "$bootstrap_marker_output" >&2
+  fail 'Monitoring etcd bootstrap marker publication failed'
+fi
+[[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a' /var/lib/platform-config/monitoring-etcd-bootstrap.json)" == 'root:root:600' ]] \
+  || fail 'Monitoring etcd bootstrap marker has unsafe metadata'
+[[ "$(podman exec "$CONTAINER" jq -r '.operation_id' /var/lib/platform-config/monitoring-etcd-bootstrap.json)" == "$(printf 'a%.0s' {1..64})" ]] \
+  || fail 'Monitoring etcd bootstrap marker has the wrong operation ID'
+[[ "$(podman exec "$CONTAINER" jq -r '.local_member.name' /var/lib/platform-config/monitoring-etcd-bootstrap.json)" == 'etcd-test-1' ]] \
+  || fail 'Monitoring etcd bootstrap marker has the wrong local member'
+if run_bootstrap_marker >/dev/null 2>&1; then
+  fail 'Monitoring etcd bootstrap marker overwrote existing completion evidence'
+fi
+podman exec "$CONTAINER" rm /var/lib/platform-config/monitoring-etcd-bootstrap.json
 
 podman exec "$CONTAINER" umount "$DATA_DIR"
 if run_playbook >/dev/null 2>&1; then

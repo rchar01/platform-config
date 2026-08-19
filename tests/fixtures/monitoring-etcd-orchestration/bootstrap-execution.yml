@@ -1,0 +1,73 @@
+---
+- name: Exercise mocked monitoring etcd bootstrap start
+  hosts: monitoring
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Start mocked monitoring etcd bootstrap member
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_start.yml
+
+- name: Exercise mocked monitoring etcd bootstrap status
+  hosts: monitoring
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Collect first mocked monitoring etcd bootstrap status
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_status.yml
+      run_once: true # noqa run-once[task]
+
+    - name: Preserve first mocked monitoring etcd bootstrap status
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_first_status: >-
+          {{ monitoring_etcd_bootstrap_status_observation }}
+      run_once: true # noqa run-once[task]
+
+    - name: Collect second mocked monitoring etcd bootstrap status
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_status.yml
+      run_once: true # noqa run-once[task]
+
+    - name: Require stable mocked monitoring etcd bootstrap status
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_etcd_bootstrap_status_observation
+            == monitoring_etcd_bootstrap_first_status
+        fail_msg: Mocked monitoring etcd bootstrap status is unstable.
+      run_once: true # noqa run-once[task]
+
+    - name: Publish accepted mocked monitoring etcd bootstrap status
+      ansible.builtin.set_fact:
+        monitoring_etcd_bootstrap_accepted_status: >-
+          {{
+            monitoring_etcd_bootstrap_status_observation
+            | combine({'operation_id': 'a' * 64})
+          }}
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Exercise mocked monitoring etcd bootstrap stop
+  hosts: monitoring
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Stop mocked monitoring etcd bootstrap member
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_stop.yml
+
+- name: Exercise mocked monitoring etcd bootstrap marker
+  hosts: monitoring
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Publish mocked monitoring etcd bootstrap marker
+      ansible.builtin.include_role:
+        name: monitoring_etcd
+        tasks_from: bootstrap_marker.yml

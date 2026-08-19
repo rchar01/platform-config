@@ -1,0 +1,133 @@
+---
+- name: Derive monitoring etcd bootstrap marker evidence
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_accepted_status: >-
+      {{ hostvars['localhost'].monitoring_etcd_bootstrap_accepted_status }}
+    monitoring_etcd_bootstrap_local_member_status: >-
+      {{
+        hostvars['localhost'].monitoring_etcd_bootstrap_accepted_status.members
+        | selectattr('name', 'equalto', monitoring_etcd_node_name)
+        | list
+      }}
+    monitoring_etcd_bootstrap_marker_candidate_path: >-
+      {{
+        monitoring_etcd_state_dir
+        ~ '/.monitoring-etcd-bootstrap-'
+        ~ hostvars['localhost'].monitoring_etcd_bootstrap_accepted_status.operation_id
+        ~ '.json'
+      }}
+
+- name: Require exact local monitoring etcd bootstrap evidence
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_local_member_status | length == 1
+      - >-
+        monitoring_etcd_bootstrap_accepted_status.operation_id
+        is match('^[0-9a-f]{64}$')
+    fail_msg: Monitoring etcd bootstrap completion evidence is incomplete.
+
+- name: Inspect monitoring etcd bootstrap marker paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ monitoring_etcd_bootstrap_marker_path }}"
+    - "{{ monitoring_etcd_bootstrap_marker_candidate_path }}"
+  register: monitoring_etcd_bootstrap_marker_path_stats
+
+- name: Require absent monitoring etcd bootstrap marker paths
+  ansible.builtin.assert:
+    that:
+      - not monitoring_etcd_bootstrap_marker_path_stats.results[0].stat.exists
+      - not monitoring_etcd_bootstrap_marker_path_stats.results[1].stat.exists
+    fail_msg: >-
+      Monitoring etcd bootstrap marker or candidate already exists. Stop and
+      investigate partial completion evidence.
+
+- name: Render monitoring etcd bootstrap marker candidate
+  ansible.builtin.copy:
+    dest: "{{ monitoring_etcd_bootstrap_marker_candidate_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: >-
+      {{
+        {
+          'schema_version': 1,
+          'operation_id': monitoring_etcd_bootstrap_accepted_status.operation_id,
+          'cluster_signature': monitoring_etcd_bootstrap_observation.cluster_signature,
+          'cluster_id': monitoring_etcd_bootstrap_accepted_status.cluster_id,
+          'leader_member_id': (
+            monitoring_etcd_bootstrap_accepted_status.leader_member_id
+          ),
+          'members': monitoring_etcd_bootstrap_accepted_status.members,
+          'endpoints': monitoring_etcd_bootstrap_accepted_status.endpoints,
+          'image_digest': monitoring_etcd_bootstrap_observation.image_digest,
+          'ca_checksum': monitoring_etcd_bootstrap_observation.ca_checksum,
+          'local_member': {
+            'inventory_host': inventory_hostname,
+            'name': monitoring_etcd_bootstrap_observation.node_name,
+            'address': monitoring_etcd_bootstrap_observation.node_address,
+            'dns': monitoring_etcd_bootstrap_observation.node_dns,
+            'member_id': monitoring_etcd_bootstrap_local_member_status[0].member_id,
+            'bundle_revision': (
+              monitoring_etcd_bootstrap_observation.bundle_revision
+            ),
+            'config_checksum': (
+              monitoring_etcd_bootstrap_observation.config_checksum
+            )
+          },
+          'service_state': 'stopped',
+          'service_enabled': false
+        }
+        | to_nice_json
+      }}
+
+- name: Publish monitoring etcd bootstrap marker atomically
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/ln
+      - --
+      - "{{ monitoring_etcd_bootstrap_marker_candidate_path }}"
+      - "{{ monitoring_etcd_bootstrap_marker_path }}"
+  changed_when: true
+
+- name: Remove published monitoring etcd bootstrap marker candidate
+  ansible.builtin.file:
+    path: "{{ monitoring_etcd_bootstrap_marker_candidate_path }}"
+    state: absent
+
+- name: Inspect published monitoring etcd bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ monitoring_etcd_bootstrap_marker_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: monitoring_etcd_bootstrap_published_marker
+
+- name: Read published monitoring etcd bootstrap marker
+  ansible.builtin.slurp:
+    src: "{{ monitoring_etcd_bootstrap_marker_path }}"
+  register: monitoring_etcd_bootstrap_published_marker_content
+
+- name: Require safe published monitoring etcd bootstrap marker
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_published_marker.stat.isreg
+      - not monitoring_etcd_bootstrap_published_marker.stat.islnk
+      - monitoring_etcd_bootstrap_published_marker.stat.uid == 0
+      - monitoring_etcd_bootstrap_published_marker.stat.gid == 0
+      - monitoring_etcd_bootstrap_published_marker.stat.mode == '0600'
+      - >-
+        (
+          monitoring_etcd_bootstrap_published_marker_content.content
+          | b64decode
+          | from_json
+        ).operation_id == monitoring_etcd_bootstrap_accepted_status.operation_id
+      - >-
+        (
+          monitoring_etcd_bootstrap_published_marker_content.content
+          | b64decode
+          | from_json
+        ).local_member.name == monitoring_etcd_node_name
+    fail_msg: Monitoring etcd bootstrap marker publication is invalid.

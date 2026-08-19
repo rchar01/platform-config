@@ -1,4 +1,18 @@
 ---
+- name: Count mocked monitoring etcd bootstrap-preflight observations
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_test_preflight_count: >-
+      {{ monitoring_etcd_bootstrap_test_preflight_count | default(0) | int + 1 }}
+
+- name: Reject mocked post-approval monitoring etcd bootstrap-preflight failure
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (monitoring_etcd_bootstrap_test_post_approval_preflight_failure
+             | default(false))
+        or monitoring_etcd_bootstrap_test_preflight_count | int == 1
+    fail_msg: Mocked post-approval monitoring etcd bootstrap preflight failed.
+
 - name: Reject mocked monitoring etcd bootstrap-preflight host failure
   ansible.builtin.assert:
     that:

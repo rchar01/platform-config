@@ -44,6 +44,19 @@
       - monitoring_etcd_data_required_mount_options is not string
       - monitoring_etcd_data_required_mount_options | length > 0
       - monitoring_etcd_bootstrap_require_selinux_enforcing is boolean
+      - monitoring_etcd_bootstrap_ready is boolean
+      - monitoring_etcd_bootstrap_health_retries is integer
+      - monitoring_etcd_bootstrap_health_retries >= 1
+      - monitoring_etcd_bootstrap_health_retries <= 60
+      - monitoring_etcd_bootstrap_health_delay is integer
+      - monitoring_etcd_bootstrap_health_delay >= 1
+      - monitoring_etcd_bootstrap_health_delay <= 10
+      - monitoring_etcd_bootstrap_command_timeout is integer
+      - monitoring_etcd_bootstrap_command_timeout >= 3
+      - monitoring_etcd_bootstrap_command_timeout <= 30
+      - monitoring_etcd_bootstrap_stability_delay is integer
+      - monitoring_etcd_bootstrap_stability_delay >= 1
+      - monitoring_etcd_bootstrap_stability_delay <= 30
       - monitoring_etcd_quadlet_restart_policy == 'on-failure'
       - monitoring_etcd_quadlet_restart_sec == '5s'
       - monitoring_etcd_quadlet_timeout_start_sec == '90s'

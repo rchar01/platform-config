@@ -1,0 +1,154 @@
+---
+- name: Reset normalized monitoring etcd bootstrap status
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_normalized_members: []
+    monitoring_etcd_bootstrap_member_ids: []
+    monitoring_etcd_bootstrap_status_member_ids: []
+    monitoring_etcd_bootstrap_cluster_ids: []
+    monitoring_etcd_bootstrap_leader_ids: []
+    monitoring_etcd_bootstrap_status_observed_endpoints: []
+    monitoring_etcd_bootstrap_health_observed_endpoints: []
+    monitoring_etcd_bootstrap_unhealthy_endpoints: []
+
+- name: Require complete named monitoring etcd bootstrap membership
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_member_response.members | length == 3
+      - >-
+        monitoring_etcd_bootstrap_member_response.members
+        | map(attribute='name') | list | sort
+        == monitoring_etcd_cluster_members
+           | map(attribute='name') | list | sort
+    fail_msg: >-
+      Monitoring etcd bootstrap membership does not contain the exact three
+      declared member names.
+
+- name: Normalize declared monitoring etcd bootstrap members
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_normalized_members: >-
+      {{
+        monitoring_etcd_bootstrap_normalized_members
+        + [
+            {
+              'name': item.name,
+              'member_id': (
+                monitoring_etcd_bootstrap_observed_member[0].ID | string
+              ),
+              'peer_url': 'https://' ~ item.dns ~ ':' ~ monitoring_etcd_peer_port,
+              'client_url': 'https://' ~ item.dns ~ ':' ~ monitoring_etcd_client_port
+            }
+          ]
+      }}
+    monitoring_etcd_bootstrap_member_ids: >-
+      {{
+        monitoring_etcd_bootstrap_member_ids
+        + [(monitoring_etcd_bootstrap_observed_member[0].ID | string)]
+      }}
+  vars:
+    monitoring_etcd_bootstrap_observed_member: >-
+      {{
+        monitoring_etcd_bootstrap_member_response.members
+        | selectattr('name', 'equalto', item.name)
+        | list
+      }}
+  loop: "{{ monitoring_etcd_cluster_members }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Require exact monitoring etcd bootstrap member URLs
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_observed_member | length == 1
+      - not monitoring_etcd_bootstrap_observed_member[0].isLearner | bool
+      - >-
+        monitoring_etcd_bootstrap_observed_member[0].peerURLs
+        == ['https://' ~ item.dns ~ ':' ~ monitoring_etcd_peer_port]
+      - >-
+        monitoring_etcd_bootstrap_observed_member[0].clientURLs
+        == ['https://' ~ item.dns ~ ':' ~ monitoring_etcd_client_port]
+    fail_msg: >-
+      Monitoring etcd bootstrap membership does not match the exact declared
+      voter and direct-endpoint contract.
+  vars:
+    monitoring_etcd_bootstrap_observed_member: >-
+      {{
+        monitoring_etcd_bootstrap_member_response.members
+        | selectattr('name', 'equalto', item.name)
+        | list
+      }}
+  loop: "{{ monitoring_etcd_cluster_members }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Normalize monitoring etcd bootstrap endpoint status
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_status_member_ids: >-
+      {{
+        monitoring_etcd_bootstrap_status_member_ids
+        + [(item.Status.header.member_id | string)]
+      }}
+    monitoring_etcd_bootstrap_cluster_ids: >-
+      {{
+        monitoring_etcd_bootstrap_cluster_ids
+        + [(item.Status.header.cluster_id | string)]
+      }}
+    monitoring_etcd_bootstrap_leader_ids: >-
+      {{
+        monitoring_etcd_bootstrap_leader_ids
+        + [(item.Status.leader | string)]
+      }}
+    monitoring_etcd_bootstrap_status_observed_endpoints: >-
+      {{ monitoring_etcd_bootstrap_status_observed_endpoints + [item.Endpoint] }}
+  loop: "{{ monitoring_etcd_bootstrap_status_response }}"
+  loop_control:
+    label: "{{ item.Endpoint }}"
+
+- name: Normalize monitoring etcd bootstrap endpoint health
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_health_observed_endpoints: >-
+      {{ monitoring_etcd_bootstrap_health_observed_endpoints + [item.endpoint] }}
+    monitoring_etcd_bootstrap_unhealthy_endpoints: >-
+      {{
+        monitoring_etcd_bootstrap_unhealthy_endpoints
+        + ([item.endpoint] if not item.health | bool else [])
+      }}
+  loop: "{{ monitoring_etcd_bootstrap_health_response }}"
+  loop_control:
+    label: "{{ item.endpoint }}"
+
+- name: Require strict monitoring etcd bootstrap cluster health
+  ansible.builtin.assert:
+    that:
+      - monitoring_etcd_bootstrap_member_response.members | length == 3
+      - monitoring_etcd_bootstrap_status_response | length == 3
+      - monitoring_etcd_bootstrap_health_response | length == 3
+      - monitoring_etcd_bootstrap_member_ids | unique | length == 3
+      - >-
+        monitoring_etcd_bootstrap_status_member_ids | unique | sort
+        == monitoring_etcd_bootstrap_member_ids | unique | sort
+      - monitoring_etcd_bootstrap_cluster_ids | unique | length == 1
+      - monitoring_etcd_bootstrap_cluster_ids[0] != '0'
+      - monitoring_etcd_bootstrap_leader_ids | unique | length == 1
+      - monitoring_etcd_bootstrap_leader_ids[0] != '0'
+      - >-
+        monitoring_etcd_bootstrap_leader_ids[0]
+        in monitoring_etcd_bootstrap_member_ids
+      - >-
+        monitoring_etcd_bootstrap_status_observed_endpoints | sort
+        == monitoring_etcd_bootstrap_status_endpoints | sort
+      - >-
+        monitoring_etcd_bootstrap_health_observed_endpoints | sort
+        == monitoring_etcd_bootstrap_status_endpoints | sort
+      - monitoring_etcd_bootstrap_unhealthy_endpoints | length == 0
+    fail_msg: >-
+      Monitoring etcd bootstrap requires exactly three healthy voters, one
+      nonzero cluster ID, one elected member leader, and all declared direct
+      endpoints.
+
+- name: Publish normalized monitoring etcd bootstrap status
+  ansible.builtin.set_fact:
+    monitoring_etcd_bootstrap_status_observation:
+      cluster_id: "{{ monitoring_etcd_bootstrap_cluster_ids[0] }}"
+      leader_member_id: "{{ monitoring_etcd_bootstrap_leader_ids[0] }}"
+      members: "{{ monitoring_etcd_bootstrap_normalized_members }}"
+      endpoints: "{{ monitoring_etcd_bootstrap_status_endpoints | sort }}"
