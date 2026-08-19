@@ -1,7 +1,7 @@
 # Host-Local PKI Exchange Access Role
 
 This role manages the persistent, restricted SSH principal used by
-`scripts/platform-pki-direct-exchange`. It is separate from Ansible administrator
+`platform-pki direct-exchange` from `platform-tools`. It is separate from Ansible administrator
 access and from certificate issuance lifecycle actions.
 
 The present state requires the lifecycle-owned exchange facade to exist with

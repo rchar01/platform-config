@@ -125,7 +125,7 @@
       request_sha256={{ (pki_host_local_certificate_request_result.stdout | from_json).request_sha256 }}
       csr_sha256={{ (pki_host_local_certificate_request_result.stdout | from_json).csr_sha256 }}
       csr_spki_sha256={{ (pki_host_local_certificate_request_result.stdout | from_json).csr_spki_sha256 }}
-      next=scripts/platform-pki-direct-exchange request-pull ENDPOINT_RECORD
+      next=platform-pki direct-exchange request-pull ENDPOINT_RECORD
       {{ (pki_host_local_certificate_request_result.stdout | from_json).request_id }} OUTPUT_DIR
     fail_msg: Direct request preparation did not return exact transferable coordinates.
   when:

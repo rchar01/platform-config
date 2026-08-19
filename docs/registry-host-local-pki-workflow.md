@@ -138,7 +138,7 @@ lock is already held and must not be run concurrently at the same coordinate.
 After direct request intake, publish the canonical request publication:
 
 ```bash
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   --stage request --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
   --source-dir "$EXCHANGE_ROOT/$SERVICE/$REQUEST_ID/request" \
@@ -154,7 +154,7 @@ The online transfer station downloads that exact request version with the same
 reviewed request inventory, trust, and host-key coordinate:
 
 ```bash
-scripts/platform-pki-gitlab-package download \
+platform-pki gitlab-package download \
   --stage request --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
   --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/request/$REQUEST_ID" \
@@ -182,7 +182,7 @@ online transfer station. Record the exact `approval` file digest as
 `APPROVAL_SHA256` and publish that digest-keyed attempt:
 
 ```bash
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   --stage approval --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$APPROVAL_SHA256" \
@@ -197,7 +197,7 @@ materializes the five signer command inputs from the separately validated
 request and approval packages:
 
 ```bash
-scripts/platform-pki-gitlab-package download \
+platform-pki gitlab-package download \
   --stage approval --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$APPROVAL_SHA256" \
@@ -221,7 +221,7 @@ to the online transfer station. The station publishes package version
 `REQUEST_ID`:
 
 ```bash
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   --stage response --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
   --source-dir /secure/response/"$REQUEST_ID" \
@@ -235,7 +235,7 @@ files plus `stage-manifest`; materialize a separate exact-six directory before
 deep response validation or direct push:
 
 ```bash
-scripts/platform-pki-gitlab-package download \
+platform-pki gitlab-package download \
   --stage response --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
   --destination-dir "$EXCHANGE_ROOT/gitlab-downloads/response/$REQUEST_ID" \
@@ -253,7 +253,7 @@ done
 After direct evidence pull and local intake, publish the exact evidence package:
 
 ```bash
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   --stage evidence --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$DEPLOYMENT_SHA256" \
@@ -268,7 +268,7 @@ then moves the reviewed signer inputs through controlled media to the offline
 signer:
 
 ```bash
-scripts/platform-pki-gitlab-package download \
+platform-pki gitlab-package download \
   --stage evidence --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$DEPLOYMENT_SHA256" \
@@ -283,7 +283,7 @@ controlled media to the online transfer station. The station publishes it at
 its exact digest-keyed version:
 
 ```bash
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   --stage outcome --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$OUTCOME_SHA256" \
@@ -297,7 +297,7 @@ Download the exact terminal outcome and materialize its six payload files before
 `outcome-push`:
 
 ```bash
-scripts/platform-pki-gitlab-package download \
+platform-pki gitlab-package download \
   --stage outcome --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$OUTCOME_SHA256" \
@@ -313,8 +313,9 @@ for name in outcome outcome.sig deployment deployment.sig deployers.allowed_sign
 done
 ```
 
-The repository has unit coverage for package validation and coordinate rules,
-but this runbook does not claim live GitLab runtime qualification.
+`platform-tools` has focused unit coverage for package validation and coordinate
+rules under `make test-pki-gitlab-package`, but this runbook does not claim live
+GitLab runtime qualification.
 
 ## Phase 1: Establish Prerequisites
 
@@ -396,7 +397,7 @@ the exact three public files through pinned SSH into a protected mode-`0700`
 directory under the mounted exchange root:
 
 ```bash
-scripts/platform-pki-direct-exchange request-pull \
+platform-pki direct-exchange request-pull \
   "$ENDPOINT_RECORD" "$REQUEST_ID" \
   "$EXCHANGE_ROOT/intake/request-$REQUEST_ID"
 ```
@@ -530,7 +531,7 @@ Require `status=ready`. This phase does not contact Zot or mutate the target.
 Push the same exact six-file reviewed response to the fixed target ingress:
 
 ```bash
-scripts/platform-pki-direct-exchange response-push \
+platform-pki direct-exchange response-push \
   "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
   "$EXCHANGE_ROOT/intake/response-$REQUEST_ID"
 ```
@@ -573,7 +574,7 @@ make registry-pki-evidence-export \
   ENV="$ENVIRONMENT" LIMIT="$TARGET" \
   REQUEST_ID="$REQUEST_ID" ARTIFACT_SHA256="$ARTIFACT_SHA256" \
   DEPLOYMENT_SHA256="$DEPLOYMENT_SHA256"
-scripts/platform-pki-direct-exchange evidence-pull \
+platform-pki direct-exchange evidence-pull \
   "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
   "$DEPLOYMENT_SHA256" \
   "$EXCHANGE_ROOT/intake/evidence-$DEPLOYMENT_SHA256"
@@ -716,7 +717,7 @@ platform-pki backup \
 Push the exact outcome into the fixed target spool:
 
 ```bash
-scripts/platform-pki-direct-exchange outcome-push \
+platform-pki direct-exchange outcome-push \
   "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
   "$DEPLOYMENT_SHA256" "$OUTCOME_SHA256" \
   "$EXCHANGE_ROOT/intake/outcome-$OUTCOME_SHA256"

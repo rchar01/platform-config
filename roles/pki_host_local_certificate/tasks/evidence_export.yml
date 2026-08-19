@@ -83,7 +83,7 @@
       request={{ pki_host_local_certificate_request_id }}
       artifact={{ pki_host_local_certificate_artifact_manifest_sha256 }}
       deployment={{ pki_host_local_certificate_deployment_sha256 }}
-      next=scripts/platform-pki-direct-exchange evidence-pull ENDPOINT_RECORD
+      next=platform-pki direct-exchange evidence-pull ENDPOINT_RECORD
       {{ pki_host_local_certificate_request_id }}
       {{ pki_host_local_certificate_artifact_manifest_sha256 }}
       {{ pki_host_local_certificate_deployment_sha256 }} OUTPUT_DIR

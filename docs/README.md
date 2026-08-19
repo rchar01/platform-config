@@ -50,8 +50,8 @@ and other secrets belong outside Git.
 - [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.
-- [GitLab PKI Package Exchange](pki-gitlab-package.md): Exact five-family package
-  publication and download behavior, validation, and remaining runtime gates.
+- [GitLab PKI Package Exchange](pki-gitlab-package.md): Integration guidance for
+  the `platform-tools` five-family package command and remaining runtime gates.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
   access configuration, installation, issuer staging validation, smoke tests,
   and reconciliation.

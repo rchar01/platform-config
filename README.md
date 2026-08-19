@@ -22,7 +22,9 @@ outside this public repository.
 
 ## Scope
 
-This repository owns public Ansible code: playbooks, roles, examples, helper scripts, and documentation.
+This repository owns public Ansible code: playbooks, roles, examples, Ansible
+support scripts, and documentation. Shared human and CI operator commands belong
+in `platform-tools`.
 
 It configures already-provisioned hosts. It does not create VMs, build Proxmox templates, manage OpenTofu state, or store secrets.
 
@@ -38,6 +40,9 @@ notes belong in `../platform-plans/config/plans/`, not in this public repo.
 - Ansible and lint tooling installed inside `Containerfile.dev` from
   `requirements-dev.txt` and `requirements.yml`.
 - The `vendor/platform-k8s-bastion` submodule for default bastion runtime input.
+- `platform-tools` at commit
+  `7bdc69a1757d9f3a0c0428c194303b3703627764` or a release containing it for
+  operator-side PKI exchange commands.
 - SSH access, host keys, private inventory, and secret files for real runs.
 
 ## Quick Start
@@ -103,7 +108,7 @@ runs require the matching private environment file and inventory.
 | [`platform-config`](https://codeberg.org/rch/platform-config) | Configures operating systems and services with Ansible. |
 | [`platform-k8s-bastion`](https://codeberg.org/rch/platform-k8s-bastion) | Contains Kubernetes bastion tooling and operational helpers. |
 | [`platform-docs`](https://codeberg.org/rch/platform-docs) | Contains architecture notes, runbooks, diagrams, and operational documentation. |
-| [`platform-tools`](https://codeberg.org/rch/platform-tools) | Provides shared optional helper tools used by the platform repositories. |
+| [`platform-tools`](https://codeberg.org/rch/platform-tools) | Provides shared operator tools, including host-local PKI exchange commands. |
 
 Typical workflow:
 
@@ -113,7 +118,7 @@ platform-template-builder
   -> platform-config
   -> platform-k8s-bastion
 
-platform-tools provides optional shared helper commands.
+platform-tools provides shared human and CI operator commands.
 platform-docs documents the design and operations across all repositories.
 ```
 

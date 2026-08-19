@@ -44,11 +44,11 @@ The request entry point validates preinstalled frozen target trust, installs the
 reviewed request helper, and generates or revalidates one root-owned local P-384
 key, CSR, canonical request, and SSH signature. In default direct mode it
 publishes only exact coordinates. An authorized transfer station uses
-`scripts/platform-pki-direct-exchange request-pull`, then the separate
+`platform-pki direct-exchange request-pull`, then the separate
 controller-only request-intake playbook verifies and publishes `tls.csr`,
 `request`, `request.sig`, `collection-receipt`, and frozen trust. The explicit
 `controller-local` compatibility target performs collection through its Ansible
-action instead. `scripts/platform-pki-gitlab-package publish` validates the
+action instead. `platform-pki gitlab-package publish` validates the
 result, creates `stage-manifest`, and publishes one exact Generic Package
 coordinate. See [GitLab PKI Package Exchange](pki-gitlab-package.md).
 
@@ -71,7 +71,7 @@ request, artifact, and deployment coordinates returned by each phase:
 make registry-pki-validation-material ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example
 make registry-pki-request ENV=dev LIMIT=registry-example
-scripts/platform-pki-direct-exchange request-pull \
+platform-pki direct-exchange request-pull \
   /outside-git/pki-endpoints/registry-example.json <request-id> \
   /outside-git/pki-exchange/intake/request-<request-id>
 PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
@@ -90,7 +90,7 @@ make registry-pki-status ENV=dev LIMIT=registry-example
 make registry-pki-response-check ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   RESPONSE_DIR=/outside-git/protected-response
-scripts/platform-pki-direct-exchange response-push \
+platform-pki direct-exchange response-push \
   /outside-git/pki-endpoints/registry-example.json <request-id> \
   <artifact-sha256> /outside-git/protected-response
 make registry-pki-activate ENV=dev LIMIT=registry-example \
@@ -102,7 +102,7 @@ make registry-pki-publish-rolled-back-evidence ENV=dev \
 make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
-scripts/platform-pki-direct-exchange evidence-pull \
+platform-pki direct-exchange evidence-pull \
   /outside-git/pki-endpoints/registry-example.json <request-id> \
   <artifact-sha256> <deployment-sha256> \
   /outside-git/pki-exchange/intake/evidence-<deployment-sha256>
@@ -118,7 +118,7 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
-scripts/platform-pki-direct-exchange outcome-push \
+platform-pki direct-exchange outcome-push \
   /outside-git/pki-endpoints/registry-example.json <request-id> \
   <artifact-sha256> <deployment-sha256> <outcome-sha256> \
   /outside-git/pki-exchange/intake/outcome-<outcome-sha256>

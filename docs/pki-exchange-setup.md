@@ -127,7 +127,7 @@ file path and never cache or publish that file:
 
 ```bash
 test -f "$PKI_EXCHANGE_PUBLISH_TOKEN_FILE"
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   ... \
   --token-type private \
   --token-file "$PKI_EXCHANGE_PUBLISH_TOKEN_FILE"

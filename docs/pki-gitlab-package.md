@@ -1,13 +1,13 @@
 # GitLab PKI Package Exchange
 
-`scripts/platform-pki-gitlab-package` publishes and downloads exact host-local
+`platform-pki gitlab-package` from `platform-tools` publishes and downloads exact host-local
 PKI Generic Packages. It implements transport only. It does not collect from a
 target, approve or sign a request, activate a certificate, decide a candidate,
 or treat GitLab as PKI authority.
 
-The canonical package contract is
-`platform-tools/docs/pki-gitlab-package-exchange.md`. Stop if that contract and
-this implementation disagree.
+The canonical package contract is the
+[`platform-tools` GitLab package exchange guide](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-gitlab-package-exchange.md).
+Stop if that contract and this integration guide disagree.
 
 Complete [PKI Exchange Setup](pki-exchange-setup.md) before using this helper.
 That guide owns transfer-station paths, project controls, credential separation,
@@ -112,7 +112,7 @@ and credentials without package deletion or settings authority.
 This template publishes one exact approval attempt:
 
 ```bash
-scripts/platform-pki-gitlab-package publish \
+platform-pki gitlab-package publish \
   --stage approval \
   --service registry-dev \
   --target dev-registry-01 \
@@ -151,7 +151,7 @@ applies the same full request validation. New integrations should use generic
 This template downloads one exact response coordinate:
 
 ```bash
-scripts/platform-pki-gitlab-package download \
+platform-pki gitlab-package download \
   --stage response \
   --service registry-dev \
   --target dev-registry-01 \
@@ -178,10 +178,11 @@ coordinate mutation, and over-limit responses fail closed. No operation uses
 
 ## Remaining Gates
 
-Fake HTTPS tests cover every family in both directions, manifest-last upload,
-partial resume, exact idempotency, conflicts, extras, malformed manifests,
-download mutation, redirects, and token redaction. They do not qualify live
-GitLab behavior. Before production use, still require:
+The `platform-tools` `make test-pki-gitlab-package` fake HTTPS tests cover every
+family in both directions, manifest-last upload, partial resume, exact
+idempotency, conflicts, extras, malformed manifests, download mutation,
+redirects, and token redaction. They do not qualify live GitLab behavior.
+Before production use, still require:
 
 - protected CI `resource_group` serialization for each exact coordinate;
 - disposable runtime qualification against exact GitLab `18.11.3-ce.0`;

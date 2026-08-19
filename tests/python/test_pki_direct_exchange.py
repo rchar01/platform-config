@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
-import re
 import stat
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import yaml
@@ -41,14 +37,6 @@ def facade(repo_root: Path) -> ModuleType:
         repo_root
         / "roles/pki_host_local_certificate/files/platform-pki-host-local-exchange",
         "platform_pki_host_local_exchange",
-    )
-
-
-@pytest.fixture
-def controller(repo_root: Path) -> ModuleType:
-    return load_script(
-        repo_root / "scripts/platform-pki-direct-exchange",
-        "platform_pki_direct_exchange",
     )
 
 
@@ -178,33 +166,8 @@ def test_facade_command_grammar_is_exact(facade: ModuleType) -> None:
         parser.parse_args(["export-request", REQUEST_ID, "--config", "/tmp/config"])
 
 
-def test_controller_command_grammar_is_exact(controller: ModuleType) -> None:
-    parser = controller.build_parser()
-    endpoint = "/protected/endpoint.json"
-    assert parser.parse_args(
-        ["request-pull", endpoint, REQUEST_ID, "/protected/request"]
-    ).command == "request-pull"
-    assert parser.parse_args(
-        [
-            "evidence-pull", endpoint, REQUEST_ID, ARTIFACT_SHA,
-            DEPLOYMENT_SHA, "/protected/evidence",
-        ]
-    ).command == "evidence-pull"
-    assert parser.parse_args(
-        ["response-push", endpoint, REQUEST_ID, ARTIFACT_SHA, "/protected/response"]
-    ).command == "response-push"
-    assert parser.parse_args(
-        [
-            "outcome-push", endpoint, REQUEST_ID, ARTIFACT_SHA,
-            DEPLOYMENT_SHA, "c" * 64, "/protected/outcome",
-        ]
-    ).command == "outcome-push"
-    with pytest.raises(SystemExit):
-        parser.parse_args(["cleanup-outcome", endpoint, REQUEST_ID])
-
-
 def test_allowlists_are_exact_and_exclude_private_key_name(
-    facade: ModuleType, controller: ModuleType, repo_root: Path
+    facade: ModuleType, repo_root: Path
 ) -> None:
     expected = {
         "request": 3,
@@ -212,14 +175,10 @@ def test_allowlists_are_exact_and_exclude_private_key_name(
         "evidence": 5,
         "outcome": 6,
     }
-    for module in (facade, controller):
-        assert {kind: len(names) for kind, names in module.NAMES_BY_KIND.items()} == expected
-        assert all("tls" + ".key" not in names for names in module.NAMES_BY_KIND.values())
-    for path in (
-        repo_root / "roles/pki_host_local_certificate/files/platform-pki-host-local-exchange",
-        repo_root / "scripts/platform-pki-direct-exchange",
-    ):
-        assert "tls" + ".key" not in path.read_text(encoding="utf-8")
+    assert {kind: len(names) for kind, names in facade.NAMES_BY_KIND.items()} == expected
+    assert all("tls" + ".key" not in names for names in facade.NAMES_BY_KIND.values())
+    path = repo_root / "roles/pki_host_local_certificate/files/platform-pki-host-local-exchange"
+    assert "tls" + ".key" not in path.read_text(encoding="utf-8")
 
 
 def test_canonical_frame_rejects_trailing_and_unsafe_metadata(
@@ -435,252 +394,6 @@ def test_export_revalidates_then_removes_exact_stage(
     assert calls == ["collected", "existing"]
     assert facade.decode_frame(output.getvalue(), "request", values, config) == files
     assert list(Path(config.spool_root).iterdir()) == []
-
-
-def endpoint_fixture(controller: ModuleType, root: Path, *, expected: str | None = None) -> tuple[Path, Any]:
-    identity = private_file(root / "identity", b"private identity\n")
-    algorithm = b"ssh-ed25519"
-    public = b"k" * 32
-    blob = len(algorithm).to_bytes(4, "big") + algorithm + len(public).to_bytes(4, "big") + public
-    encoded = base64.b64encode(blob).decode("ascii")
-    digest = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
-    known_hosts = private_file(
-        root / "known_hosts", f"target.test ssh-ed25519 {encoded}\n".encode("ascii")
-    )
-    value = {
-        "expected_host_key_sha256": expected or digest,
-        "host": "target.test",
-        "identity_path": os.fspath(identity),
-        "known_hosts_path": os.fspath(known_hosts),
-        "port": 22,
-        "remote_helper_path": "/usr/local/libexec/platform-pki-host-local-exchange",
-        "schema": 1,
-        "user": "admin",
-    }
-    endpoint_path = private_file(
-        root / "endpoint.json", controller.canonical_json(value) + b"\n"
-    )
-    return endpoint_path, controller.load_endpoint(os.fspath(endpoint_path))
-
-
-def test_pinned_ssh_argv_and_no_shell_use(
-    controller: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    endpoint_path, endpoint = endpoint_fixture(controller, tmp_path)
-    known_host_blob = base64.b64decode(endpoint.known_hosts_data.decode("ascii").split()[2])
-    assert endpoint.transport_host_key_sha256 == hashlib.sha256(
-        known_host_blob
-    ).hexdigest()
-    observed: dict[str, object] = {}
-
-    def fake_run(
-        argv: list[str], input_data: bytes | None
-    ) -> tuple[int, bytes, bytes]:
-        observed["argv"] = argv
-        observed["input_data"] = input_data
-        identity_path = Path(argv[argv.index("-i") + 1])
-        known_hosts_option = next(
-            value for value in argv if value.startswith("UserKnownHostsFile=")
-        )
-        known_hosts_path = Path(known_hosts_option.split("=", 1)[1])
-        observed["identity_path"] = identity_path
-        observed["known_hosts_path"] = known_hosts_path
-        assert identity_path.read_bytes() == endpoint.identity_data
-        assert known_hosts_path.read_bytes() == endpoint.known_hosts_data
-        return 0, b"frame", b""
-
-    monkeypatch.setattr(controller, "run_bounded", fake_run)
-    assert controller.invoke(endpoint, "export-request", [REQUEST_ID], None) == b"frame"
-    argv = observed["argv"]
-    assert isinstance(argv, list)
-    required = {
-        "BatchMode=yes", "IdentitiesOnly=yes", "StrictHostKeyChecking=yes",
-        "GlobalKnownHostsFile=/dev/null", "UpdateHostKeys=no",
-        "VerifyHostKeyDNS=no", "ForwardAgent=no", "ForwardX11=no",
-        "ClearAllForwardings=yes", "PermitLocalCommand=no",
-        "ProxyCommand=none", "ProxyJump=none", "CanonicalizeHostname=no",
-    }
-    assert required.issubset(set(argv))
-    assert endpoint.identity_path not in argv
-    assert f"UserKnownHostsFile={endpoint.known_hosts_path}" not in argv
-    proc_prefix = f"/proc/{os.getpid()}/fd/"
-    assert os.fspath(cast(Path, observed["identity_path"])).startswith(proc_prefix)
-    assert os.fspath(cast(Path, observed["known_hosts_path"])).startswith(proc_prefix)
-    assert argv[-6:] == [
-        "sudo", "-n", "--", endpoint.remote_helper_path, "export-request", REQUEST_ID
-    ]
-    assert observed["input_data"] is None
-    assert os.fspath(endpoint_path) not in argv
-    assert not cast(Path, observed["identity_path"]).exists()
-    assert not cast(Path, observed["known_hosts_path"]).exists()
-
-
-def test_controller_rejects_openssh_path_tokens(
-    controller: ModuleType, tmp_path: Path
-) -> None:
-    endpoint_path, _endpoint = endpoint_fixture(controller, tmp_path)
-    value = json.loads(endpoint_path.read_bytes())
-    value["known_hosts_path"] = "/outside-git/ssh/%h.known_hosts"
-    private_file(endpoint_path, controller.canonical_json(value) + b"\n")
-
-    with pytest.raises(controller.DirectExchangeError, match="canonical non-root path"):
-        controller.load_endpoint(os.fspath(endpoint_path))
-
-
-def test_ssh_uses_validated_bytes_after_source_replacement(
-    controller: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _endpoint_path, endpoint = endpoint_fixture(controller, tmp_path)
-    private_file(Path(endpoint.identity_path), b"replacement identity\n")
-    private_file(Path(endpoint.known_hosts_path), b"replacement known hosts\n")
-
-    def fake_run(
-        argv: list[str], _input_data: bytes | None
-    ) -> tuple[int, bytes, bytes]:
-        identity_path = Path(argv[argv.index("-i") + 1])
-        known_hosts_option = next(
-            value for value in argv if value.startswith("UserKnownHostsFile=")
-        )
-        known_hosts_path = Path(known_hosts_option.split("=", 1)[1])
-        assert identity_path.read_bytes() == endpoint.identity_data
-        assert known_hosts_path.read_bytes() == endpoint.known_hosts_data
-        return 0, b"frame", b""
-
-    monkeypatch.setattr(controller, "run_bounded", fake_run)
-    assert controller.invoke(endpoint, "export-request", [REQUEST_ID], None) == b"frame"
-
-
-@pytest.mark.parametrize(
-    ("stream", "limit", "message"),
-    (("stdout", "MAX_FRAME", "output"), ("stderr", "HEADER_LIMIT", "diagnostics")),
-)
-def test_controller_bounds_ssh_process_output(
-    controller: ModuleType, stream: str, limit: str, message: str
-) -> None:
-    size = getattr(controller, limit) + 1
-    script = f"import sys; sys.{stream}.buffer.write(b'x' * {size})"
-
-    with pytest.raises(controller.DirectExchangeError, match=f"{message} exceeded"):
-        controller.run_bounded([sys.executable, "-c", script], None)
-
-
-def test_bounded_process_times_out_under_stdin_backpressure(
-    controller: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(controller, "SSH_TIMEOUT_SECONDS", 0.1)
-
-    with pytest.raises(controller.subprocess.TimeoutExpired):
-        controller.run_bounded(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
-            b"x" * controller.MAX_FRAME,
-        )
-
-
-def test_openssh_loads_parent_memfd_identity(
-    controller: ModuleType, tmp_path: Path
-) -> None:
-    identity = tmp_path / "probe-identity"
-    subprocess.run(
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", identity],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    identity_data = identity.read_bytes()
-    identity.unlink()
-    identity.with_suffix(".pub").unlink()
-    descriptor = controller.sealed_memfd("platform-pki-probe", identity_data)
-    identity_path = f"/proc/{os.getpid()}/fd/{descriptor}"
-    try:
-        result = subprocess.run(
-            [
-                "ssh", "-vvv", "-F", "/dev/null", "-T",
-                "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
-                "-o", "ProxyCommand=/bin/false",
-                "-o", "CanonicalizeHostname=no",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-i", identity_path, "probe.invalid", "true",
-            ],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-        )
-    finally:
-        os.close(descriptor)
-
-    assert result.returncode == 255
-    diagnostics = result.stderr.decode("utf-8")
-    assert re.search(
-        rf"identity file {re.escape(identity_path)} type [0-9]+", diagnostics
-    )
-    assert f"Identity file {identity_path} not accessible" not in diagnostics
-
-
-def test_request_pull_reports_receipt_compatible_host_key_digest(
-    controller: ModuleType,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    endpoint_path, endpoint = endpoint_fixture(controller, tmp_path)
-    output_dir = tmp_path / "request-output"
-    files = {
-        "tls.csr": b"csr\n",
-        "request": b"request\n",
-        "request.sig": b"signature\n",
-    }
-    values = {"request_id": REQUEST_ID}
-    frame = controller.encode_frame(
-        "request", files, values, "registry-test", "target.test"
-    )
-    output = io.BytesIO()
-    monkeypatch.setattr(controller, "load_endpoint", lambda _path: endpoint)
-    monkeypatch.setattr(controller, "invoke", lambda *_args: frame)
-    monkeypatch.setattr(
-        controller.sys,
-        "argv",
-        [
-            "platform-pki-direct-exchange",
-            "request-pull",
-            os.fspath(endpoint_path),
-            REQUEST_ID,
-            os.fspath(output_dir),
-        ],
-    )
-    monkeypatch.setattr(controller.sys, "stdout", SimpleNamespace(buffer=output))
-
-    controller.main()
-
-    result = json.loads(output.getvalue())
-    assert result["transport_host_key_sha256"] == endpoint.transport_host_key_sha256
-    assert set(result) == {
-        "request_id",
-        "service",
-        "status",
-        "target",
-        "transport_host_key_sha256",
-    }
-
-
-def test_wrong_known_host_digest_is_rejected_before_ssh(
-    controller: ModuleType, tmp_path: Path
-) -> None:
-    endpoint_path, _endpoint = endpoint_fixture(controller, tmp_path)
-    value = json.loads(endpoint_path.read_bytes())
-    value["expected_host_key_sha256"] = "SHA256:" + "A" * 43
-    private_file(endpoint_path, controller.canonical_json(value) + b"\n")
-    with pytest.raises(controller.DirectExchangeError, match="digest differs"):
-        controller.load_endpoint(os.fspath(endpoint_path))
-
-
-def test_controller_rejects_unsafe_local_file_metadata(
-    controller: ModuleType, tmp_path: Path
-) -> None:
-    path = private_file(tmp_path / "unsafe", b"data\n")
-    path.chmod(0o644)
-    with pytest.raises(controller.DirectExchangeError, match="unsafe metadata"):
-        controller.protected_file(os.fspath(path), "unsafe file", maximum=32)
 
 
 def test_role_wiring_installs_fixed_config_and_private_spool(repo_root: Path) -> None:

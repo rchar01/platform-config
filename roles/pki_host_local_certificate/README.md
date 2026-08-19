@@ -63,7 +63,7 @@ Renewal, archive cleanup, and live inventory enablement remain outside this role
 `platform_pki_evidence_collection`, or `platform_pki_outcome_import`.
 
 Direct movement is an explicit operator command using
-`scripts/platform-pki-direct-exchange` and the target-only
+`platform-pki direct-exchange` from `platform-tools` and the target-only
 `platform-pki-host-local-exchange` facade. Ansible does not run SSH package
 movement or GitLab network commands. Local request/evidence intake uses
 controller-only action plugins with no target connection and no Ansible file
