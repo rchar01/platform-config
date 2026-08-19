@@ -5154,7 +5154,7 @@ def outcome_preflight(args) -> None:
 
 
 def outcome_import(args) -> None:
-    state, lock = common_open(args)
+    state, lock = common_open(args, shared=args.check)
     package = None
     try:
         entries = state_entries(state)
@@ -5168,6 +5168,7 @@ def outcome_import(args) -> None:
             fail("unresolved lifecycle state blocks signer-outcome import")
         validate_outcome_history_layout(state, args)
         trust, policy = load_trust(state, args.trust_id, args.target)
+        authenticate_active_public(state, args, trust, policy)
         package, files, package_identities = open_exact_tree(
             args.outcome_dir, OUTCOME_NAMES, "imported signer-outcome package"
         )
@@ -5197,6 +5198,8 @@ def outcome_import(args) -> None:
             if history_files != files:
                 fail("accepted signer outcome history conflicts with imported package")
             status_value = "existing"
+        elif args.check:
+            status_value = "would-import"
         else:
             _created, history_path = publish_outcome_history(
                 state,
@@ -5856,6 +5859,7 @@ def build_parser() -> argparse.ArgumentParser:
     outcome.add_argument("--deployment-sha256", required=True)
     outcome.add_argument("--outcome-sha256", required=True)
     outcome.add_argument("--outcome-dir", required=True)
+    outcome.add_argument("--check", action="store_true")
     outcome.set_defaults(function=outcome_import)
 
     prepare = commands.add_parser("response-prepare", help="create or reuse one protected hidden response ingress")

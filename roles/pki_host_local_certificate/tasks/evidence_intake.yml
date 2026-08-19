@@ -1,0 +1,59 @@
+---
+- name: Load host-local certificate common validation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Validate direct evidence intake contract
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - pki_host_local_certificate_exchange_mode == 'direct'
+      - pki_host_local_certificate_request_id is match('^[0-9a-f]{32}$')
+      - pki_host_local_certificate_artifact_manifest_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_deployment_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_evidence_source_dir | length > 0
+    fail_msg: Direct evidence intake requires one exact five-file evidence package.
+
+- name: Authenticate and publish exact direct evidence intake
+  platform_pki_evidence_intake:
+    evidence_dir: "{{ pki_host_local_certificate_evidence_source_dir }}"
+    exchange_root: "{{ pki_host_local_certificate_controller_exchange_root }}"
+    service: "{{ pki_host_local_certificate_service }}"
+    target: "{{ pki_host_local_certificate_target }}"
+    request_id: "{{ pki_host_local_certificate_request_id }}"
+    artifact_sha256: "{{ pki_host_local_certificate_artifact_manifest_sha256 }}"
+    deployment_sha256: "{{ pki_host_local_certificate_deployment_sha256 }}"
+  delegate_to: localhost
+  become: false
+  register: pki_host_local_certificate_evidence_intake_result
+
+- name: Validate exact direct evidence intake metadata
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_evidence_intake_result.status in ['collected', 'existing']
+      - pki_host_local_certificate_evidence_intake_result.request_id == pki_host_local_certificate_request_id
+      - pki_host_local_certificate_evidence_intake_result.artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256
+      - pki_host_local_certificate_evidence_intake_result.deployment_sha256 == pki_host_local_certificate_deployment_sha256
+      - >-
+        [
+          pki_host_local_certificate_evidence_intake_result.action,
+          pki_host_local_certificate_evidence_intake_result.result
+        ] in [
+          ['finalize', 'activated'],
+          ['abandon', 'not-activated'],
+          ['abandon', 'rolled-back']
+        ]
+      - >-
+        pki_host_local_certificate_evidence_intake_result.evidence_dir
+        == pki_host_local_certificate_controller_exchange_root ~ '/'
+           ~ pki_host_local_certificate_service ~ '/'
+           ~ pki_host_local_certificate_request_id ~ '/evidence/'
+           ~ pki_host_local_certificate_deployment_sha256
+    success_msg: >-
+      request={{ pki_host_local_certificate_request_id }}
+      artifact={{ pki_host_local_certificate_artifact_manifest_sha256 }}
+      deployment={{ pki_host_local_certificate_deployment_sha256 }}
+      evidence_dir={{ pki_host_local_certificate_evidence_intake_result.evidence_dir }}
+      action={{ pki_host_local_certificate_evidence_intake_result.action }}
+      result={{ pki_host_local_certificate_evidence_intake_result.result }}
+      status={{ pki_host_local_certificate_evidence_intake_result.status }}
+    fail_msg: Direct evidence intake returned metadata outside the exact deployment coordinates.

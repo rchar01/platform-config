@@ -54,6 +54,12 @@
 - name: Load host-local certificate lifecycle helper preflight
   ansible.builtin.import_tasks: lifecycle_helper.yml
 
+- name: Install fixed direct exchange facade
+  ansible.builtin.import_tasks: exchange_helper.yml
+  when:
+    - pki_host_local_certificate_exchange_mode == 'direct'
+    - not ansible_check_mode
+
 - name: Collect exact public host-local certificate request
   platform_pki_request_collection:
     lifecycle_helper_path: "{{ pki_host_local_certificate_lifecycle_helper_path }}"
@@ -80,7 +86,9 @@
     expected_csr_sha256: "{{ (pki_host_local_certificate_request_result.stdout | from_json).csr_sha256 }}"
     expected_csr_spki_sha256: "{{ (pki_host_local_certificate_request_result.stdout | from_json).csr_spki_sha256 }}"
   register: pki_host_local_certificate_request_collection_result
-  when: not ansible_check_mode
+  when:
+    - pki_host_local_certificate_exchange_mode == 'controller-local'
+    - not ansible_check_mode
 
 - name: Validate public request collection metadata
   ansible.builtin.assert:
@@ -103,4 +111,23 @@
            ~ (pki_host_local_certificate_request_result.stdout | from_json).request_id
            ~ '/trust'
     fail_msg: Request collection returned metadata outside the exact public exchange coordinates.
-  when: not ansible_check_mode
+  when:
+    - pki_host_local_certificate_exchange_mode == 'controller-local'
+    - not ansible_check_mode
+
+- name: Publish exact direct request transfer coordinates
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - (pki_host_local_certificate_request_result.stdout | from_json).status in ['created', 'existing']
+    success_msg: >-
+      request={{ (pki_host_local_certificate_request_result.stdout | from_json).request_id }}
+      request_sha256={{ (pki_host_local_certificate_request_result.stdout | from_json).request_sha256 }}
+      csr_sha256={{ (pki_host_local_certificate_request_result.stdout | from_json).csr_sha256 }}
+      csr_spki_sha256={{ (pki_host_local_certificate_request_result.stdout | from_json).csr_spki_sha256 }}
+      next=scripts/platform-pki-direct-exchange request-pull ENDPOINT_RECORD
+      {{ (pki_host_local_certificate_request_result.stdout | from_json).request_id }} OUTPUT_DIR
+    fail_msg: Direct request preparation did not return exact transferable coordinates.
+  when:
+    - pki_host_local_certificate_exchange_mode == 'direct'
+    - not ansible_check_mode

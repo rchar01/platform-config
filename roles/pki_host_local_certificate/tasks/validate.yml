@@ -64,6 +64,7 @@
       - pki_host_local_certificate_controller_exchange_root != '/'
       - not pki_host_local_certificate_controller_exchange_root.startswith('/etc/zot')
       - not pki_host_local_certificate_controller_exchange_root.startswith('/var/lib/platform-config/pki/host-local')
+      - pki_host_local_certificate_exchange_mode in ['direct', 'controller-local']
       - pki_host_local_certificate_transport in ['ssh', 'sftp']
       - pki_host_local_certificate_transport_host_key_sha256 is match('^[0-9a-f]{64}$')
       - pki_host_local_certificate_request_helper_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
@@ -74,6 +75,12 @@
       - pki_host_local_certificate_validator_helper_path == '/usr/local/libexec/platform-pki-zot-read-only-validate'
       - pki_host_local_certificate_helper_read_only is boolean
       - pki_host_local_certificate_response_source_dir | type_debug == 'str'
+      - pki_host_local_certificate_request_source_dir | type_debug == 'str'
+      - pki_host_local_certificate_evidence_source_dir | type_debug == 'str'
+      - pki_host_local_certificate_csr_sha256 | type_debug == 'str'
+      - pki_host_local_certificate_csr_sha256 | length == 0 or pki_host_local_certificate_csr_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_csr_spki_sha256 | type_debug == 'str'
+      - pki_host_local_certificate_csr_spki_sha256 | length == 0 or pki_host_local_certificate_csr_spki_sha256 is match('^[0-9a-f]{64}$')
       - pki_host_local_certificate_outcome_source_dir | type_debug == 'str'
       - pki_host_local_certificate_outcome_sha256 | type_debug == 'str'
       - pki_host_local_certificate_outcome_sha256 | length == 0 or pki_host_local_certificate_outcome_sha256 is match('^[0-9a-f]{64}$')
@@ -168,5 +175,20 @@
       value: "{{ pki_host_local_certificate_reviewed_ca_runner_path }}"
     - name: zot_config_path
       value: "{{ pki_host_local_certificate_zot_config_path }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Validate direct intake exact paths
+  ansible.builtin.assert:
+    that:
+      - item.value | length == 0 or item.value is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - item.value is not search('(^|/)\.\.?(/|$)')
+      - item.value is not search('(^|/)(latest|current)(/|$)')
+    fail_msg: Each direct intake path must be absolute, canonical, and immutable.
+  loop:
+    - name: request_source_dir
+      value: "{{ pki_host_local_certificate_request_source_dir }}"
+    - name: evidence_source_dir
+      value: "{{ pki_host_local_certificate_evidence_source_dir }}"
   loop_control:
     label: "{{ item.name }}"

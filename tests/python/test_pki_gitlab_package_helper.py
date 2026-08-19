@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import ssl
+import stat
 import subprocess
 import tempfile
 import threading
@@ -38,6 +39,33 @@ TRUST_NAMES = (
     "responses.allowed_signers",
     "deployers.allowed_signers",
 )
+STAGE_FILES = {
+    "request": REQUEST_FILES,
+    "approval": ("approval", "approval.sig"),
+    "response": (
+        "artifact",
+        "tls.crt",
+        "ca-chain.crt",
+        "fullchain.crt",
+        "response",
+        "response.sig",
+    ),
+    "evidence": (
+        "deployment",
+        "deployment.sig",
+        "validation-boundary",
+        "validation-result",
+        "validation-result.sig",
+    ),
+    "outcome": (
+        "outcome",
+        "outcome.sig",
+        "deployment",
+        "deployment.sig",
+        "deployers.allowed_signers",
+        "decision",
+    ),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -60,6 +88,8 @@ def _mkdir_private(path: Path, *, parents: bool = False) -> None:
 @dataclass
 class GitLabState:
     token: str
+    package_name: str = "pki-exchange-request-registry-test"
+    package_version: str = "0123456789abcdef0123456789abcdef"
     project_path: str = "platform/pki-exchange"
     project_endpoint_id: int = 42
     project_id: Any = 42
@@ -67,6 +97,8 @@ class GitLabState:
     package_status: str = "default"
     files: dict[str, bytes] = field(default_factory=dict)
     uploads: list[str] = field(default_factory=list)
+    downloads: list[str] = field(default_factory=list)
+    mutate_after_download: str | None = None
     ambiguous: bool = False
     malformed_link: bool = False
     reject_auth: bool = False
@@ -126,12 +158,11 @@ class GitLabHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    @staticmethod
-    def _package_object(status: str, package_id: int = 7) -> dict[str, Any]:
+    def _package_object(self, status: str, package_id: int = 7) -> dict[str, Any]:
         return {
             "id": package_id,
-            "name": "pki-exchange-request-registry-test",
-            "version": "0123456789abcdef0123456789abcdef",
+            "name": self.fixture.state.package_name,
+            "version": self.fixture.state.package_version,
             "package_type": "generic",
             "status": status,
         }
@@ -230,6 +261,27 @@ class GitLabHandler(http.server.BaseHTTPRequestHandler):
                 return
             self._json(200, values[1:] if len(values) > 1 else values)
             return
+        download_prefix = (
+            f"{base}/generic/"
+            f"{urllib.parse.quote(self.fixture.state.package_name, safe='')}/"
+            f"{urllib.parse.quote(self.fixture.state.package_version, safe='')}/"
+        )
+        if parsed.path.startswith(download_prefix) and not parsed.query:
+            name = urllib.parse.unquote(parsed.path[len(download_prefix) :])
+            if name not in self.fixture.state.files:
+                self._json(404, {"message": "not found"})
+                return
+            data = self.fixture.state.files[name]
+            self.fixture.state.downloads.append(name)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            if self.fixture.state.mutate_after_download == name:
+                self.fixture.state.files[name] = data + b"mutated\n"
+                self.fixture.state.mutate_after_download = None
+            return
         self._json(404, {"message": "not found"})
 
     def do_PUT(self) -> None:  # noqa: N802
@@ -239,8 +291,8 @@ class GitLabHandler(http.server.BaseHTTPRequestHandler):
             return
         prefix = (
             "/api/v4/projects/42/packages/generic/"
-            "pki-exchange-request-registry-test/"
-            "0123456789abcdef0123456789abcdef/"
+            f"{urllib.parse.quote(self.fixture.state.package_name, safe='')}/"
+            f"{urllib.parse.quote(self.fixture.state.package_version, safe='')}/"
         )
         if not self.path.startswith(prefix):
             self._json(404, {"message": "not found"})
@@ -657,6 +709,371 @@ def _refresh_manifest(scenario: PackageScenario) -> None:
             )
         ),
     )
+
+
+def _write_record(path: Path, values: tuple[tuple[str, str], ...]) -> None:
+    _write_private(path, "\n".join((*(f"{key}={value}" for key, value in values), "")))
+
+
+def _copy_private(source: Path, destination: Path) -> None:
+    shutil.copyfile(source, destination)
+    destination.chmod(0o600)
+
+
+def _stage_payloads(scenario: PackageScenario, stage: str) -> Path:
+    stages = scenario.root / "generic-stages"
+    if not stages.exists():
+        _mkdir_private(stages)
+    directory = stages / stage
+    if directory.exists():
+        return directory
+    _mkdir_private(directory)
+    request_id = "0123456789abcdef0123456789abcdef"
+    digest = "1" * 64
+    created = int(time.time())
+
+    if stage == "request":
+        for name in REQUEST_FILES:
+            _copy_private(scenario.request_dir / name, directory / name)
+        return directory
+    if stage == "approval":
+        _write_record(
+            directory / "approval",
+            (
+                ("schema", "1"),
+                ("request_id", request_id),
+                ("nonce", "a" * 64),
+                ("created_epoch", str(created)),
+                ("expires_epoch", str(created + 3600)),
+                ("approver_principal", "test-approver"),
+                ("request_sha256", digest),
+                ("csr_sha256", digest),
+                ("inventory_sha256", digest),
+                ("operation", "migrate"),
+                ("service", "registry-test"),
+                ("target", "test-target"),
+                ("profile", "server-p384-sha384-v1"),
+            ),
+        )
+        _copy_private(scenario.request_dir / "request.sig", directory / "approval.sig")
+        return directory
+    if stage == "response":
+        _copy_private(scenario.ca_file, directory / "tls.crt")
+        _write_private(
+            directory / "ca-chain.crt",
+            scenario.ca_file.read_bytes() + scenario.ca_file.read_bytes(),
+        )
+        _write_private(
+            directory / "fullchain.crt",
+            (directory / "tls.crt").read_bytes()
+            + scenario.ca_file.read_bytes(),
+        )
+        certificate_public = _run_bytes(
+            ["openssl", "x509", "-in", directory / "tls.crt", "-pubkey", "-noout"]
+        )
+        certificate_spki = _run_bytes(
+            ["openssl", "pkey", "-pubin", "-outform", "DER"],
+            stdin=certificate_public,
+        )
+        certificate_spki_sha256 = hashlib.sha256(certificate_spki).hexdigest()
+        _copy_private(scenario.request_dir / "request.sig", directory / "response.sig")
+        response_values = (
+            ("schema", "1"),
+            ("request_id", request_id),
+            ("nonce", "a" * 64),
+            ("operation", "migrate"),
+            ("service", "registry-test"),
+            ("target", "test-target"),
+            ("request_sha256", digest),
+            ("approval_sha256", digest),
+            ("inventory_sha256", digest),
+            ("csr_sha256", digest),
+            ("csr_spki_sha256", certificate_spki_sha256),
+            ("certificate_sha256", _sha256(directory / "tls.crt")),
+            ("certificate_spki_sha256", certificate_spki_sha256),
+            ("chain_sha256", _sha256(directory / "ca-chain.crt")),
+            ("issuer_root", "g1"),
+            ("issuer_intermediate", "g1-i1"),
+            ("serial", "01"),
+            ("not_before_epoch", str(created - 60)),
+            ("not_after_epoch", str(created + 86400)),
+            ("candidate_state", "pending"),
+            ("response_principal", "test-response"),
+            ("created_epoch", str(created)),
+        )
+        _write_record(directory / "response", response_values)
+        response = dict(response_values)
+        _write_record(
+            directory / "artifact",
+            (
+                ("schema", "1"),
+                ("kind", "certificate-export"),
+                ("service", "registry-test"),
+                ("request_id", request_id),
+                ("operation", "migrate"),
+                ("target", "test-target"),
+                ("source_kind", "csr-response"),
+                ("source_response_sha256", _sha256(directory / "response")),
+                (
+                    "source_response_signature_sha256",
+                    _sha256(directory / "response.sig"),
+                ),
+                ("certificate_sha256", response["certificate_sha256"]),
+                ("certificate_spki_sha256", response["certificate_spki_sha256"]),
+                ("chain_sha256", response["chain_sha256"]),
+                ("fullchain_sha256", _sha256(directory / "fullchain.crt")),
+                ("issuer_root", "g1"),
+                ("issuer_intermediate", "g1-i1"),
+                ("serial", "01"),
+                ("not_before_epoch", response["not_before_epoch"]),
+                ("not_after_epoch", response["not_after_epoch"]),
+                ("candidate_state", "pending"),
+                ("deployment_state", "unfinalized"),
+                ("response_principal", "test-response"),
+                ("created_epoch", str(created)),
+            ),
+        )
+        return directory
+
+    boundary_values = (
+        ("schema", "1"),
+        ("kind", "pki-validation-boundary"),
+        ("service", "registry-test"),
+        ("target", "test-target"),
+        ("local_validator", "test-target"),
+        ("remote_validator", "test-validator"),
+        ("endpoint", "https://registry.test/v2/"),
+        ("local_check", "platform-zot-local-active-tls-v1"),
+        ("remote_check", "platform-oci-v2-read-only-strict-tls-v1"),
+    )
+    boundary_path = directory / "validation-boundary"
+    _write_record(boundary_path, boundary_values)
+    deployment_values = (
+        ("schema", "1"),
+        ("request_id", request_id),
+        ("nonce", "a" * 64),
+        ("operation", "migrate"),
+        ("service", "registry-test"),
+        ("target", "test-target"),
+        ("request_sha256", digest),
+        ("response_sha256", "2" * 64),
+        ("response_signature_sha256", "3" * 64),
+        ("candidate_sha256", "4" * 64),
+        ("artifact_request_id", request_id),
+        ("artifact_manifest_sha256", "5" * 64),
+        ("certificate_sha256", "6" * 64),
+        ("certificate_spki_sha256", "7" * 64),
+        ("chain_sha256", "8" * 64),
+        ("fullchain_sha256", "9" * 64),
+        ("action", "finalize"),
+        ("result", "activated"),
+        ("local_certificate_sha256", "6" * 64),
+        ("local_key_spki_sha256", "7" * 64),
+        ("local_key_certificate_match", "true"),
+        ("served_certificate_sha256", "6" * 64),
+        ("served_intermediate_sha256", "b" * 64),
+        ("validation_boundary_sha256", _sha256(boundary_path)),
+        ("validation_result", "passed"),
+        ("activation_epoch", str(created - 20)),
+        ("validation_epoch", str(created - 10)),
+        ("rollback_state", "retained"),
+        ("rollback_hold_until_epoch", str(created + 1209600)),
+        ("deployment_principal", "test-target"),
+        ("created_epoch", str(created)),
+        ("expires_epoch", str(created + 3600)),
+    )
+    _write_record(directory / "deployment", deployment_values)
+    _copy_private(scenario.request_dir / "request.sig", directory / "deployment.sig")
+    if stage == "evidence":
+        boundary = dict(boundary_values)
+        deployment = dict(deployment_values)
+        _write_record(
+            directory / "validation-result",
+            (
+                ("schema", "1"),
+                ("kind", "pki-validation-result"),
+                ("service", "registry-test"),
+                ("target", "test-target"),
+                ("request_id", request_id),
+                ("artifact_manifest_sha256", deployment["artifact_manifest_sha256"]),
+                (
+                    "validation_boundary_sha256",
+                    deployment["validation_boundary_sha256"],
+                ),
+                ("action", "finalize"),
+                ("result", "activated"),
+                ("local_validator", boundary["local_validator"]),
+                ("remote_validator", boundary["remote_validator"]),
+                ("endpoint", boundary["endpoint"]),
+                ("local_service_result", "passed"),
+                ("local_tls_result", "passed"),
+                ("remote_tls_result", "passed"),
+                ("remote_application_result", "passed"),
+                ("remote_http_status", "200"),
+                ("remote_api_version", "registry/2.0"),
+                ("remote_auth_challenge", "not-required"),
+                ("served_certificate_sha256", deployment["served_certificate_sha256"]),
+                (
+                    "served_intermediate_sha256",
+                    deployment["served_intermediate_sha256"],
+                ),
+                ("activation_epoch", deployment["activation_epoch"]),
+                ("validation_epoch", deployment["validation_epoch"]),
+                ("deployment_sha256", _sha256(directory / "deployment")),
+            ),
+        )
+        _copy_private(
+            scenario.request_dir / "request.sig", directory / "validation-result.sig"
+        )
+        return directory
+
+    boundary_path.unlink()
+    _copy_private(
+        scenario.trust_dir / "deployers.allowed_signers",
+        directory / "deployers.allowed_signers",
+    )
+    deployment = dict(deployment_values)
+    decision_values = (
+        ("schema", "1"),
+        ("action", "finalize"),
+        ("state", "finalized"),
+        ("service", "registry-test"),
+        ("target", "test-target"),
+        ("request_id", request_id),
+        ("operation", "migrate"),
+        ("request_sha256", deployment["request_sha256"]),
+        ("response_sha256", deployment["response_sha256"]),
+        ("response_signature_sha256", deployment["response_signature_sha256"]),
+        ("candidate_sha256", deployment["candidate_sha256"]),
+        ("artifact_manifest_sha256", deployment["artifact_manifest_sha256"]),
+        ("certificate_sha256", deployment["certificate_sha256"]),
+        ("certificate_spki_sha256", deployment["certificate_spki_sha256"]),
+        ("chain_sha256", deployment["chain_sha256"]),
+        ("fullchain_sha256", deployment["fullchain_sha256"]),
+        ("deployment_sha256", _sha256(directory / "deployment")),
+        ("deployment_signature_sha256", _sha256(directory / "deployment.sig")),
+        ("deployers_sha256", _sha256(directory / "deployers.allowed_signers")),
+        ("predecessor_kind", "none"),
+        ("predecessor_request_id", "none"),
+        ("predecessor_certificate_sha256", "none"),
+        ("predecessor_certificate_spki_sha256", "none"),
+        ("predecessor_intermediate_sha256", "none"),
+        ("predecessor_response_sha256", "none"),
+        ("predecessor_artifact_manifest_sha256", "none"),
+        ("predecessor_deployment_sha256", "none"),
+        ("predecessor_decision_sha256", "none"),
+        ("resulting_active_request_id", request_id),
+        ("created_epoch", str(created)),
+    )
+    _write_record(directory / "decision", decision_values)
+    decision = dict(decision_values)
+    _write_record(
+        directory / "outcome",
+        (
+            ("schema", "1"),
+            ("kind", "csr-signer-outcome"),
+            ("service", "registry-test"),
+            ("target", "test-target"),
+            ("request_id", request_id),
+            ("operation", "migrate"),
+            ("request_sha256", decision["request_sha256"]),
+            ("response_sha256", decision["response_sha256"]),
+            ("response_signature_sha256", decision["response_signature_sha256"]),
+            ("candidate_sha256", decision["candidate_sha256"]),
+            ("artifact_manifest_sha256", decision["artifact_manifest_sha256"]),
+            ("certificate_sha256", decision["certificate_sha256"]),
+            ("certificate_spki_sha256", decision["certificate_spki_sha256"]),
+            ("chain_sha256", decision["chain_sha256"]),
+            ("fullchain_sha256", decision["fullchain_sha256"]),
+            ("deployment_sha256", decision["deployment_sha256"]),
+            (
+                "deployment_signature_sha256",
+                decision["deployment_signature_sha256"],
+            ),
+            ("deployers_sha256", decision["deployers_sha256"]),
+            ("decision_sha256", _sha256(directory / "decision")),
+            ("action", "finalize"),
+            ("state", "finalized"),
+            ("resulting_active_request_id", request_id),
+            ("created_epoch", str(created)),
+            ("outcome_principal", "test-response"),
+        ),
+    )
+    _copy_private(scenario.request_dir / "request.sig", directory / "outcome.sig")
+    return directory
+
+
+def _stage_version(stage: str, directory: Path) -> str:
+    request_id = "0123456789abcdef0123456789abcdef"
+    digest_file = {"approval": "approval", "evidence": "deployment", "outcome": "outcome"}.get(stage)
+    return request_id if digest_file is None else f"{request_id}-{_sha256(directory / digest_file)}"
+
+
+def _manifest_bytes(stage: str, directory: Path, version: str) -> bytes:
+    payloads = STAGE_FILES[stage]
+    lines = (
+        "schema=1",
+        "kind=pki-exchange-stage",
+        f"stage={stage}",
+        "service=registry-test",
+        "request_id=0123456789abcdef0123456789abcdef",
+        f"package_version={version}",
+        f"payload_count={len(payloads)}",
+        *(f"payload={name} sha256={_sha256(directory / name)}" for name in payloads),
+    )
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def _generic_argv(
+    scenario: PackageScenario,
+    command: str,
+    stage: str,
+    directory: Path,
+) -> list[str | Path]:
+    source = _stage_payloads(scenario, stage)
+    version = _stage_version(stage, source)
+    scenario.state.package_name = f"pki-exchange-{stage}-registry-test"
+    scenario.state.package_version = version
+    argv: list[str | Path] = [
+        scenario.helper,
+        command,
+        "--stage",
+        stage,
+        "--service",
+        "registry-test",
+        "--target",
+        "test-target",
+        "--request-id",
+        "0123456789abcdef0123456789abcdef",
+        "--package-version",
+        version,
+        "--source-dir" if command == "publish" else "--destination-dir",
+        source if command == "publish" else directory,
+        "--project-record",
+        scenario.project_record,
+        "--token-type",
+        "job",
+        "--token-file",
+        scenario.token_file,
+        "--ca-file",
+        scenario.ca_file,
+        "--processing-attempts",
+        "2",
+        "--processing-interval",
+        "0",
+    ]
+    if stage == "request":
+        argv.extend(
+            (
+                "--inventory-record",
+                scenario.inventory_record,
+                "--trust-dir",
+                scenario.trust_dir,
+                "--transport-host-key-sha256",
+                "b" * 64,
+            )
+        )
+    return argv
 
 
 def _replace_csr_and_rebind(
@@ -1426,3 +1843,283 @@ def test_publish_request_reports_controlled_source_removal_error(
     assert "cannot recheck GitLab token file" in stderr
     assert "Traceback" not in stderr
     assert package_scenario.token not in stderr
+
+
+@pytest.mark.parametrize("stage", tuple(STAGE_FILES))
+def test_generic_publish_every_stage_generates_manifest_last_and_is_idempotent(
+    package_scenario: PackageScenario,
+    stage: str,
+) -> None:
+    source = _stage_payloads(package_scenario, stage)
+    argv = _generic_argv(package_scenario, "publish", stage, source)
+
+    output = _json_result(package_scenario.run_argv(argv))
+
+    expected_names = (*STAGE_FILES[stage], "stage-manifest")
+    assert output["status"] == "published"
+    assert output["stage"] == stage
+    assert output["package_name"] == f"pki-exchange-{stage}-registry-test"
+    assert package_scenario.state.uploads == list(expected_names)
+    assert "stage-manifest" not in {path.name for path in source.iterdir()}
+    assert package_scenario.state.files["stage-manifest"] == _manifest_bytes(
+        stage, source, output["package_version"]
+    )
+
+    package_scenario.state.uploads.clear()
+    repeated = _json_result(package_scenario.run_argv(argv))
+    assert repeated["status"] == "existing"
+    assert package_scenario.state.uploads == []
+
+
+def test_response_publish_rejects_root_in_fullchain(
+    package_scenario: PackageScenario,
+) -> None:
+    source = _stage_payloads(package_scenario, "response")
+    _write_private(
+        source / "fullchain.crt",
+        (source / "tls.crt").read_bytes() + (source / "ca-chain.crt").read_bytes(),
+    )
+    artifact = (source / "artifact").read_text(encoding="ascii")
+    artifact = re.sub(
+        r"(?m)^fullchain_sha256=[0-9a-f]{64}$",
+        f"fullchain_sha256={_sha256(source / 'fullchain.crt')}",
+        artifact,
+    )
+    _write_private(source / "artifact", artifact)
+
+    result = package_scenario.run_argv(
+        _generic_argv(package_scenario, "publish", "response", source)
+    )
+
+    assert result.returncode != 0
+    assert "full chain does not contain exactly 2 certificates" in result.stderr
+    assert package_scenario.state.uploads == []
+
+
+@pytest.mark.parametrize("stage", tuple(STAGE_FILES))
+def test_generic_publish_every_stage_resumes_matching_partial(
+    package_scenario: PackageScenario,
+    stage: str,
+) -> None:
+    source = _stage_payloads(package_scenario, stage)
+    argv = _generic_argv(package_scenario, "publish", stage, source)
+    first = STAGE_FILES[stage][0]
+    package_scenario.state.files[first] = (source / first).read_bytes()
+
+    output = _json_result(package_scenario.run_argv(argv))
+
+    assert output["status"] == "published"
+    assert package_scenario.state.uploads == [
+        *STAGE_FILES[stage][1:],
+        "stage-manifest",
+    ]
+
+
+@pytest.mark.parametrize("stage", tuple(STAGE_FILES))
+def test_generic_download_every_stage_is_exact_atomic_and_idempotent(
+    package_scenario: PackageScenario,
+    stage: str,
+) -> None:
+    source = _stage_payloads(package_scenario, stage)
+    version = _stage_version(stage, source)
+    package_scenario.state.package_name = f"pki-exchange-{stage}-registry-test"
+    package_scenario.state.package_version = version
+    package_scenario.state.files = {
+        name: (source / name).read_bytes() for name in STAGE_FILES[stage]
+    }
+    package_scenario.state.files["stage-manifest"] = _manifest_bytes(
+        stage, source, version
+    )
+    downloads = package_scenario.root / "downloads"
+    _mkdir_private(downloads)
+    destination = downloads / stage
+    argv = _generic_argv(package_scenario, "download", stage, destination)
+
+    output = _json_result(package_scenario.run_argv(argv))
+
+    assert output["status"] == "downloaded"
+    assert output["gitlab_authority_claimed"] is False
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    assert {path.name for path in destination.iterdir()} == set(
+        (*STAGE_FILES[stage], "stage-manifest")
+    )
+    for name, expected in package_scenario.state.files.items():
+        path = destination / name
+        assert path.read_bytes() == expected
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert path.stat().st_nlink == 1
+
+    repeated = _json_result(package_scenario.run_argv(argv))
+    assert repeated["status"] == "existing"
+
+
+def _prime_generic_remote(
+    scenario: PackageScenario, stage: str
+) -> tuple[Path, str]:
+    source = _stage_payloads(scenario, stage)
+    version = _stage_version(stage, source)
+    scenario.state.package_name = f"pki-exchange-{stage}-registry-test"
+    scenario.state.package_version = version
+    scenario.state.files = {
+        name: (source / name).read_bytes() for name in STAGE_FILES[stage]
+    }
+    scenario.state.files["stage-manifest"] = _manifest_bytes(stage, source, version)
+    downloads = scenario.root / "downloads"
+    if not downloads.exists():
+        _mkdir_private(downloads)
+    return downloads / stage, version
+
+
+def test_generic_publish_rejects_conflict_extra_and_manifest_present_partial(
+    package_scenario: PackageScenario,
+) -> None:
+    source = _stage_payloads(package_scenario, "approval")
+    argv = _generic_argv(package_scenario, "publish", "approval", source)
+    package_scenario.state.files["approval"] = b"conflict\n"
+    conflict = package_scenario.run_argv(argv).assert_failure()
+    assert "conflicts with protected local bytes" in conflict.stderr
+
+    package_scenario.state.files = {"unexpected": b"extra\n"}
+    extra = package_scenario.run_argv(argv).assert_failure()
+    assert "unexpected file" in extra.stderr
+
+    package_scenario.state.files = {
+        "stage-manifest": _manifest_bytes(
+            "approval", source, _stage_version("approval", source)
+        )
+    }
+    partial = package_scenario.run_argv(argv).assert_failure()
+    assert "manifest-present approval package is incomplete" in partial.stderr
+
+
+def test_generic_publish_rejects_source_manifest_and_wrong_exact_version(
+    package_scenario: PackageScenario,
+) -> None:
+    source = _stage_payloads(package_scenario, "outcome")
+    _write_private(source / "stage-manifest", "not-source-input\n")
+    argv = _generic_argv(package_scenario, "publish", "outcome", source)
+    result = package_scenario.run_argv(argv).assert_failure()
+    assert "does not contain the exact 6 payload files" in result.stderr
+    assert package_scenario.state.request_count == 0
+
+    (source / "stage-manifest").unlink()
+    version_index = argv.index("--package-version") + 1
+    argv[version_index] = "0123456789abcdef0123456789abcdef-" + "f" * 64
+    wrong = package_scenario.run_argv(argv).assert_failure()
+    assert "does not bind the exact outcome payload" in wrong.stderr
+    assert package_scenario.state.request_count == 0
+
+
+def test_generic_download_rejects_partial_extra_and_manifest_mismatch(
+    package_scenario: PackageScenario,
+) -> None:
+    destination, _ = _prime_generic_remote(package_scenario, "approval")
+    argv = _generic_argv(package_scenario, "download", "approval", destination)
+    del package_scenario.state.files["approval.sig"]
+    partial = package_scenario.run_argv(argv).assert_failure()
+    assert "approval package is incomplete" in partial.stderr
+    assert not destination.exists()
+
+    _prime_generic_remote(package_scenario, "approval")
+    package_scenario.state.files["unexpected"] = b"extra\n"
+    extra = package_scenario.run_argv(argv).assert_failure()
+    assert "unexpected file" in extra.stderr
+    assert not destination.exists()
+
+    _prime_generic_remote(package_scenario, "approval")
+    package_scenario.state.files["stage-manifest"] = b"malformed\n"
+    mismatch = package_scenario.run_argv(argv).assert_failure()
+    assert "stage-manifest has an unexpected field count" in mismatch.stderr
+    assert not destination.exists()
+
+
+def test_generic_download_rejects_existing_conflict(
+    package_scenario: PackageScenario,
+) -> None:
+    destination, _ = _prime_generic_remote(package_scenario, "outcome")
+    _mkdir_private(destination)
+    _write_private(destination / "outcome", "conflict\n")
+    argv = _generic_argv(package_scenario, "download", "outcome", destination)
+
+    result = package_scenario.run_argv(argv).assert_failure()
+
+    assert "destination directory conflicts" in result.stderr
+    assert (destination / "outcome").read_text(encoding="ascii") == "conflict\n"
+
+
+def test_generic_download_rejects_coordinate_mutation(
+    package_scenario: PackageScenario,
+) -> None:
+    destination, _ = _prime_generic_remote(package_scenario, "evidence")
+    package_scenario.state.mutate_after_download = "stage-manifest"
+    argv = _generic_argv(package_scenario, "download", "evidence", destination)
+
+    result = package_scenario.run_argv(argv).assert_failure()
+
+    assert "coordinate changed during download" in result.stderr
+    assert not destination.exists()
+
+
+def test_generic_download_fails_closed_on_redirect_and_redacts_token(
+    package_scenario: PackageScenario,
+) -> None:
+    destination, _ = _prime_generic_remote(package_scenario, "response")
+    package_scenario.state.redirect_get = True
+    argv = _generic_argv(package_scenario, "download", "response", destination)
+
+    result = package_scenario.run_argv(argv).assert_failure()
+
+    assert "HTTP 302" in result.stderr
+    assert package_scenario.token not in result.stderr
+    assert package_scenario.token not in result.stdout
+    assert not destination.exists()
+
+
+def test_generic_download_redacts_token_from_http_failure(
+    package_scenario: PackageScenario,
+) -> None:
+    destination, _ = _prime_generic_remote(package_scenario, "approval")
+    package_scenario.state.reject_auth = True
+    argv = _generic_argv(package_scenario, "download", "approval", destination)
+
+    result = package_scenario.run_argv(argv).assert_failure()
+
+    assert "HTTP 401" in result.stderr
+    assert package_scenario.token not in result.stderr
+    assert package_scenario.token not in result.stdout
+    assert not destination.exists()
+
+
+def test_generic_download_does_not_select_neighboring_version(
+    package_scenario: PackageScenario,
+) -> None:
+    destination, _ = _prime_generic_remote(package_scenario, "approval")
+    argv = _generic_argv(package_scenario, "download", "approval", destination)
+    version_index = argv.index("--package-version") + 1
+    argv[version_index] = "0123456789abcdef0123456789abcdef-" + "f" * 64
+
+    result = package_scenario.run_argv(argv).assert_failure()
+
+    assert "exact GitLab package coordinate does not exist" in result.stderr
+    assert package_scenario.state.downloads == []
+    assert not destination.exists()
+
+
+def test_generic_publish_and_download_enforce_stage_size_bounds(
+    package_scenario: PackageScenario,
+) -> None:
+    source = _stage_payloads(package_scenario, "approval")
+    _write_private(source / "approval", b"x" * 16385)
+    publish_argv = _generic_argv(package_scenario, "publish", "approval", source)
+    publish = package_scenario.run_argv(publish_argv).assert_failure()
+    assert "protected file has unsafe metadata: approval" in publish.stderr
+    assert package_scenario.state.request_count == 0
+
+    destination, _ = _prime_generic_remote(package_scenario, "approval")
+    package_scenario.state.files["approval"] = b"x" * 16385
+    download_argv = _generic_argv(
+        package_scenario, "download", "approval", destination
+    )
+    download = package_scenario.run_argv(download_argv).assert_failure()
+    assert "response exceeds the configured size limit" in download.stderr
+    assert not destination.exists()

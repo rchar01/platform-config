@@ -1220,6 +1220,7 @@ def role_scenario(
         "pki_host_local_certificate_controller_exchange_root": str(
             exchange
         ),
+        "pki_host_local_certificate_exchange_mode": "controller-local",
         "pki_host_local_certificate_transport": "sftp",
         "pki_host_local_certificate_transport_host_key_sha256": "b" * 64,
         "pki_host_local_certificate_trust_paths": {

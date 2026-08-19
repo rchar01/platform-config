@@ -4,6 +4,6 @@
     msg: >-
       Select the structural trust, request, or activate task entry point.
       Status, response-check, recovery, rolled-back evidence publication,
-      evidence-export, decision-preflight, and outcome-import are also
-      operator-only structural entry points. Normal role execution is
-      intentionally unavailable.
+      request-intake, evidence-export, evidence-intake, decision-preflight,
+      and outcome-import are also operator-only structural entry points.
+      Normal role execution is intentionally unavailable.

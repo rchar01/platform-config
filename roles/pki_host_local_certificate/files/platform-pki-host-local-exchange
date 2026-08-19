@@ -1,0 +1,912 @@
+#!/usr/bin/env python3
+"""Exchange fixed host-local PKI artifacts over one bounded framed stream."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import stat
+import subprocess
+import sys
+from dataclasses import dataclass
+from typing import BinaryIO, Mapping, NoReturn, Sequence
+
+
+CONFIG_PATH = "/etc/platform-config/pki-host-local-exchange.json"
+ROOT_UID = 0
+ROOT_GID = 0
+HEADER_LIMIT = 16 * 1024
+REQUEST_NAMES = ("tls.csr", "request", "request.sig")
+RESPONSE_NAMES = (
+    "artifact", "tls.crt", "ca-chain.crt", "fullchain.crt", "response", "response.sig"
+)
+EVIDENCE_NAMES = (
+    "deployment", "deployment.sig", "validation-boundary", "validation-result",
+    "validation-result.sig",
+)
+OUTCOME_NAMES = (
+    "outcome", "outcome.sig", "deployment", "deployment.sig",
+    "deployers.allowed_signers", "decision",
+)
+NAMES_BY_KIND = {
+    "request": REQUEST_NAMES,
+    "response": RESPONSE_NAMES,
+    "evidence": EVIDENCE_NAMES,
+    "outcome": OUTCOME_NAMES,
+}
+MAX_SIZES = {
+    "tls.csr": 65536,
+    "request": 16384,
+    "request.sig": 16384,
+    "artifact": 16384,
+    "tls.crt": 65536,
+    "ca-chain.crt": 131072,
+    "fullchain.crt": 131072,
+    "response": 16384,
+    "response.sig": 16384,
+    "deployment": 32768,
+    "deployment.sig": 16384,
+    "validation-boundary": 16384,
+    "validation-result": 32768,
+    "validation-result.sig": 16384,
+    "outcome": 16384,
+    "outcome.sig": 16384,
+    "deployers.allowed_signers": 65536,
+    "decision": 32768,
+}
+MAX_FRAME = HEADER_LIMIT + sum(MAX_SIZES.values())
+HEX_32 = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+HEX_64 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+SERVICE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z", re.ASCII)
+IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
+TRUST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z", re.ASCII)
+PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9_@%+=:,.-]+\Z", re.ASCII)
+ACCEPTED_FIELDS = (
+    "schema", "kind", "service", "target", "request_id",
+    "artifact_manifest_sha256", "deployment_sha256", "outcome_sha256",
+    "decision_sha256", "action", "state", "resulting_active_request_id",
+)
+
+
+class ExchangeError(RuntimeError):
+    pass
+
+
+def fail(message: str) -> NoReturn:
+    raise ExchangeError(message)
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def require_request_id(value: str) -> str:
+    if HEX_32.fullmatch(value) is None:
+        fail("request ID is not canonical")
+    return value
+
+
+def require_digest(value: str, label: str) -> str:
+    if HEX_64.fullmatch(value) is None:
+        fail(f"{label} is not a canonical SHA-256 digest")
+    return value
+
+
+def canonical_path(value: str, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("/")
+        or value == "/"
+        or os.path.normpath(value) != value
+        or any(PATH_COMPONENT_RE.fullmatch(part) is None for part in value.split("/")[1:])
+    ):
+        fail(f"{label} is not an absolute canonical non-root path")
+    return value
+
+
+def file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_gid,
+        stat.S_IFMT(metadata.st_mode), stat.S_IMODE(metadata.st_mode),
+        metadata.st_nlink, metadata.st_size, metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def dir_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_uid, metadata.st_gid,
+        stat.S_IFMT(metadata.st_mode), stat.S_IMODE(metadata.st_mode),
+    )
+
+
+class PinnedDirectory:
+    def __init__(self, path: str, descriptors: list[int], components: list[str], identities: list[tuple[int, ...]]):
+        self.path = path
+        self.descriptors = descriptors
+        self.components = components
+        self.identities = identities
+        self.fd = descriptors[-1]
+
+    @classmethod
+    def open(cls, path: str, label: str, *, private: bool = True) -> "PinnedDirectory":
+        canonical_path(path, label)
+        descriptors: list[int] = []
+        identities: list[tuple[int, ...]] = []
+        components = path.split("/")[1:]
+        try:
+            descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            descriptors.append(descriptor)
+            identities.append(dir_identity(os.fstat(descriptor)))
+            for component in components:
+                descriptor = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=descriptors[-1],
+                )
+                descriptors.append(descriptor)
+                metadata = os.fstat(descriptor)
+                mode = stat.S_IMODE(metadata.st_mode)
+                if metadata.st_uid not in {0, ROOT_UID} or metadata.st_gid not in {0, ROOT_GID}:
+                    fail(f"{label} has an untrusted ancestor owner")
+                if mode & 0o022 and not mode & stat.S_ISVTX:
+                    fail(f"{label} has a writable non-sticky ancestor")
+                identities.append(dir_identity(metadata))
+            final = os.fstat(descriptors[-1])
+            if private and stat.S_IMODE(final.st_mode) != 0o700:
+                fail(f"{label} is not a private directory")
+            result = cls(path, descriptors, components, identities)
+            result.recheck(label)
+            return result
+        except Exception:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            raise
+
+    def recheck(self, label: str) -> None:
+        for index, expected in enumerate(self.identities):
+            if dir_identity(os.fstat(self.descriptors[index])) != expected:
+                fail(f"{label} descriptor identity changed")
+            if index:
+                actual = os.stat(
+                    self.components[index - 1], dir_fd=self.descriptors[index - 1],
+                    follow_symlinks=False,
+                )
+                if dir_identity(actual) != expected:
+                    fail(f"{label} path binding changed")
+
+    def close(self) -> None:
+        for descriptor in reversed(self.descriptors):
+            os.close(descriptor)
+        self.descriptors.clear()
+
+
+def scan(directory: PinnedDirectory, label: str) -> dict[str, os.stat_result]:
+    try:
+        return {entry.name: entry.stat(follow_symlinks=False) for entry in os.scandir(directory.fd)}
+    except OSError as error:
+        fail(f"cannot inspect {label}: {error.strerror}")
+
+
+def read_at(directory: PinnedDirectory, name: str, label: str, *, maximum: int) -> tuple[bytes, tuple[int, ...]]:
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory.fd)
+    except OSError as error:
+        fail(f"cannot open {label}: {error.strerror}")
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != ROOT_UID
+            or before.st_gid != ROOT_GID
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size <= 0
+            or before.st_size > maximum
+        ):
+            fail(f"{label} has unsafe metadata")
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        identity = file_identity(before)
+        actual = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+        if len(data) != before.st_size or file_identity(os.fstat(descriptor)) != identity or file_identity(actual) != identity:
+            fail(f"{label} changed while being read")
+        return data, identity
+    finally:
+        os.close(descriptor)
+
+
+def write_new_at(directory: PinnedDirectory, name: str, data: bytes, label: str) -> tuple[int, ...]:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600, dir_fd=directory.fd,
+        )
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                fail(f"cannot write {label}")
+            view = view[written:]
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+        if (
+            metadata.st_uid != ROOT_UID or metadata.st_gid != ROOT_GID
+            or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_nlink != 1
+        ):
+            fail(f"created {label} has unsafe metadata")
+        return file_identity(metadata)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def require_snapshot(directory: PinnedDirectory, name: str, identity: tuple[int, ...], label: str) -> None:
+    try:
+        actual = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+    except OSError as error:
+        fail(f"cannot reinspect {label}: {error.strerror}")
+    if file_identity(actual) != identity:
+        fail(f"{label} identity changed")
+
+
+def open_exact_tree(path: str, names: Sequence[str], label: str) -> tuple[PinnedDirectory, dict[str, bytes], dict[str, tuple[int, ...]]]:
+    directory = PinnedDirectory.open(path, label)
+    try:
+        if set(scan(directory, label)) != set(names):
+            fail(f"{label} does not contain the exact file set")
+        files: dict[str, bytes] = {}
+        identities: dict[str, tuple[int, ...]] = {}
+        for name in names:
+            files[name], identities[name] = read_at(
+                directory, name, f"{label} file {name}", maximum=MAX_SIZES[name]
+            )
+        directory.recheck(label)
+        return directory, files, identities
+    except Exception:
+        directory.close()
+        raise
+
+
+def rename_noreplace(source: PinnedDirectory, old: str, destination: PinnedDirectory, new: str, label: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = getattr(libc, "renameat2", None)
+    if function is None:
+        fail(f"atomic no-clobber rename is unavailable for {label}")
+    result = function(source.fd, os.fsencode(old), destination.fd, os.fsencode(new), 1)
+    if result != 0:
+        error = ctypes.get_errno()
+        fail(f"cannot publish {label}: {os.strerror(error)}")
+
+
+def remove_exact_tree(parent: PinnedDirectory, name: str, directory: PinnedDirectory, identities: Mapping[str, tuple[int, ...]], label: str) -> None:
+    directory.recheck(label)
+    if set(scan(directory, label)) != set(identities):
+        fail(f"{label} changed before cleanup")
+    for child, identity in identities.items():
+        require_snapshot(directory, child, identity, f"{label} file {child}")
+    expected = dir_identity(os.fstat(directory.fd))
+    if dir_identity(os.stat(name, dir_fd=parent.fd, follow_symlinks=False)) != expected:
+        fail(f"{label} path binding changed")
+    for child in identities:
+        os.unlink(child, dir_fd=directory.fd)
+    os.fsync(directory.fd)
+    os.rmdir(name, dir_fd=parent.fd)
+    os.fsync(parent.fd)
+
+
+def parse_record(data: bytes, label: str) -> dict[str, str]:
+    if not data.endswith(b"\n") or b"\r" in data or b"\x00" in data:
+        fail(f"{label} is not canonical LF-terminated text")
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail(f"{label} is not ASCII")
+    result: dict[str, str] = {}
+    for line in lines:
+        if "=" not in line:
+            fail(f"{label} contains a malformed field")
+        key, value = line.split("=", 1)
+        if (
+            not key or key in result or not value
+            or any(ord(character) < 0x21 or ord(character) > 0x7e for character in key + value)
+        ):
+            fail(f"{label} contains an unsafe field")
+        result[key] = value
+    return result
+
+
+@dataclass(frozen=True)
+class Config:
+    lifecycle_helper: str
+    pending_root: str
+    service: str
+    spool_root: str
+    state_root: str
+    target: str
+    trust_id: str
+    versions_root: str
+    zot_config: str
+
+
+def load_config() -> Config:
+    parent = PinnedDirectory.open(os.path.dirname(CONFIG_PATH), "exchange config parent", private=False)
+    try:
+        data, _identity = read_at(
+            parent, os.path.basename(CONFIG_PATH), "exchange config", maximum=HEADER_LIMIT
+        )
+    finally:
+        parent.close()
+    if not data.endswith(b"\n") or data.count(b"\n") != 1:
+        fail("exchange config is not one canonical JSON line")
+    try:
+        value = json.loads(data)
+    except (UnicodeDecodeError, ValueError):
+        fail("exchange config is invalid JSON")
+    keys = {
+        "lifecycle_helper", "pending_root", "schema", "service", "spool_root",
+        "state_root", "target", "trust_id", "versions_root", "zot_config",
+    }
+    if (
+        not isinstance(value, dict) or set(value) != keys or value["schema"] != 1
+        or canonical_json(value) + b"\n" != data
+        or SERVICE_RE.fullmatch(value.get("service", "")) is None
+        or IDENTITY_RE.fullmatch(value.get("target", "")) is None
+        or TRUST_RE.fullmatch(value.get("trust_id", "")) is None
+        or value["trust_id"] in {"latest", "current"}
+    ):
+        fail("exchange config violates the fixed schema")
+    paths = {
+        name: canonical_path(value[name], name)
+        for name in (
+            "lifecycle_helper", "pending_root", "spool_root", "state_root",
+            "versions_root", "zot_config",
+        )
+    }
+    if os.path.basename(paths["lifecycle_helper"]) != "platform-pki-host-local-lifecycle":
+        fail("exchange config selects an unexpected lifecycle helper")
+    roots = (paths["pending_root"], paths["spool_root"], paths["state_root"], paths["versions_root"])
+    for index, left in enumerate(roots):
+        for right in roots[index + 1:]:
+            if os.path.commonpath((left, right)) in {left, right}:
+                fail("exchange config roots must be disjoint")
+    return Config(
+        lifecycle_helper=paths["lifecycle_helper"], pending_root=paths["pending_root"],
+        service=value["service"], spool_root=paths["spool_root"],
+        state_root=paths["state_root"], target=value["target"],
+        trust_id=value["trust_id"], versions_root=paths["versions_root"],
+        zot_config=paths["zot_config"],
+    )
+
+
+def frame_header(kind: str, files: Mapping[str, bytes], coordinates: Mapping[str, str], config: Config) -> dict[str, object]:
+    names = NAMES_BY_KIND[kind]
+    if tuple(files) != names:
+        fail("frame files are not in the canonical order")
+    return {
+        "files": [
+            {"name": name, "sha256": sha256(files[name]), "size": len(files[name])}
+            for name in names
+        ],
+        "kind": kind,
+        **coordinates,
+        "schema": 1,
+        "service": config.service,
+        "target": config.target,
+    }
+
+
+def encode_frame(kind: str, files: Mapping[str, bytes], coordinates: Mapping[str, str], config: Config) -> bytes:
+    header = canonical_json(frame_header(kind, files, coordinates, config))
+    if len(header) + 1 > HEADER_LIMIT:
+        fail("frame header exceeds the fixed bound")
+    return header + b"\n" + b"".join(files[name] for name in NAMES_BY_KIND[kind])
+
+
+def read_bounded_stream(stream: BinaryIO) -> bytes:
+    data = stream.read(MAX_FRAME + 1)
+    if len(data) > MAX_FRAME or stream.read(1):
+        fail("framed stream exceeds the fixed bound")
+    return data
+
+
+def decode_frame(data: bytes, kind: str, coordinates: Mapping[str, str], config: Config) -> dict[str, bytes]:
+    newline = data.find(b"\n", 0, HEADER_LIMIT)
+    if newline <= 0:
+        fail("framed stream lacks one bounded header line")
+    encoded = data[:newline]
+    try:
+        header = json.loads(encoded)
+    except (UnicodeDecodeError, ValueError):
+        fail("framed stream header is invalid JSON")
+    expected_keys = {"files", "kind", "schema", "service", "target", *coordinates}
+    if (
+        not isinstance(header, dict) or set(header) != expected_keys
+        or canonical_json(header) != encoded or header["schema"] != 1
+        or header["kind"] != kind or header["service"] != config.service
+        or header["target"] != config.target
+        or any(header[name] != value for name, value in coordinates.items())
+    ):
+        fail("framed stream header differs from fixed coordinates")
+    names = NAMES_BY_KIND[kind]
+    entries = header["files"]
+    if not isinstance(entries, list) or len(entries) != len(names):
+        fail("framed stream file metadata has an invalid count")
+    offset = newline + 1
+    files: dict[str, bytes] = {}
+    for name, entry in zip(names, entries, strict=True):
+        if (
+            not isinstance(entry, dict) or set(entry) != {"name", "sha256", "size"}
+            or entry["name"] != name or not isinstance(entry["size"], int)
+            or isinstance(entry["size"], bool) or entry["size"] <= 0
+            or entry["size"] > MAX_SIZES[name]
+            or not isinstance(entry["sha256"], str)
+            or HEX_64.fullmatch(entry["sha256"]) is None
+        ):
+            fail(f"framed stream metadata is unsafe for {name}")
+        end = offset + entry["size"]
+        if end > len(data):
+            fail("framed stream payload is truncated")
+        payload = data[offset:end]
+        if sha256(payload) != entry["sha256"]:
+            fail(f"framed stream digest differs for {name}")
+        files[name] = payload
+        offset = end
+    if offset != len(data):
+        fail("framed stream has trailing payload bytes")
+    return files
+
+
+def common_lifecycle(config: Config) -> list[str]:
+    return [
+        config.lifecycle_helper, "--state-root", config.state_root,
+        "--pending-root", config.pending_root, "--versions-root", config.versions_root,
+        "--service", config.service, "--target", config.target,
+    ]
+
+
+def run_lifecycle(config: Config, command: str, arguments: Sequence[str]) -> dict[str, object]:
+    argv = [config.lifecycle_helper, command, *common_lifecycle(config)[1:], *arguments]
+    try:
+        result = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=False, shell=False, timeout=60,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        fail("lifecycle helper invocation failed")
+    if result.returncode != 0 or result.stderr or not result.stdout.endswith(b"\n") or result.stdout.count(b"\n") != 1:
+        fail("lifecycle helper rejected the exchange operation")
+    encoded = result.stdout[:-1]
+    try:
+        metadata = json.loads(encoded)
+    except (UnicodeDecodeError, ValueError):
+        fail("lifecycle helper returned invalid metadata")
+    if not isinstance(metadata, dict) or canonical_json(metadata) != encoded:
+        fail("lifecycle helper returned noncanonical metadata")
+    return metadata
+
+
+def create_child(parent: PinnedDirectory, name: str, label: str) -> PinnedDirectory:
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent.fd)
+        os.fsync(parent.fd)
+    except FileExistsError:
+        pass
+    child = PinnedDirectory.open(os.path.join(parent.path, name), label)
+    return child
+
+
+def cleanup_private_stage(parent: PinnedDirectory, name: str, stage: PinnedDirectory, identities: Mapping[str, tuple[int, ...]], label: str) -> None:
+    cleanup_name = f".cleanup-{secrets.token_hex(16)}"
+    expected = dir_identity(os.fstat(stage.fd))
+    rename_noreplace(parent, name, parent, cleanup_name, label)
+    os.fsync(parent.fd)
+    if dir_identity(os.stat(cleanup_name, dir_fd=parent.fd, follow_symlinks=False)) != expected:
+        fail(f"{label} cleanup coordinate became ambiguous")
+    stage.path = os.path.join(parent.path, cleanup_name)
+    stage.components[-1] = cleanup_name
+    remove_exact_tree(parent, cleanup_name, stage, identities, label)
+
+
+def export_files(config: Config, kind: str, coordinates: Mapping[str, str], command: str, arguments: Sequence[str]) -> None:
+    spool = PinnedDirectory.open(config.spool_root, "exchange spool")
+    stage: PinnedDirectory | None = None
+    stage_name = f".export-{kind}-{coordinates['request_id']}-{secrets.token_hex(16)}"
+    try:
+        os.mkdir(stage_name, 0o700, dir_fd=spool.fd)
+        os.fsync(spool.fd)
+        stage = PinnedDirectory.open(os.path.join(spool.path, stage_name), f"{kind} export stage")
+        lifecycle_args = [*arguments, "--output-dir", stage.path, "--output-owner-uid", str(ROOT_UID)]
+        first = run_lifecycle(config, command, lifecycle_args)
+        if first.get("status") != "collected" or first.get("request_id") != coordinates["request_id"]:
+            fail("lifecycle collection metadata differs from the requested coordinates")
+        directory, files, identities = open_exact_tree(stage.path, NAMES_BY_KIND[kind], f"{kind} export stage")
+        stage.close()
+        stage = directory
+        if kind == "request":
+            expected_digests = {
+                "request_sha256": sha256(files["request"]),
+                "csr_sha256": sha256(files["tls.csr"]),
+                "request_signature_sha256": sha256(files["request.sig"]),
+            }
+        else:
+            expected_digests = {
+                f"{name.replace('-', '_').replace('.', '_')}_sha256": sha256(files[name])
+                for name in EVIDENCE_NAMES
+            }
+            if first.get("artifact_sha256") != coordinates["artifact_sha256"] or first.get("deployment_sha256") != coordinates["deployment_sha256"]:
+                fail("lifecycle evidence metadata differs from the requested coordinates")
+        if any(first.get(key) != value for key, value in expected_digests.items()):
+            fail("lifecycle collection digests differ from staged bytes")
+        second = run_lifecycle(config, command, lifecycle_args)
+        if second.get("status") != "existing" or {
+            key: value for key, value in second.items() if key != "status"
+        } != {key: value for key, value in first.items() if key != "status"}:
+            fail("lifecycle collection revalidation changed")
+        stage.recheck(f"{kind} export stage")
+        for name, identity in identities.items():
+            require_snapshot(stage, name, identity, f"{kind} export stage file {name}")
+            current, current_identity = read_at(
+                stage, name, f"revalidated {kind} export file {name}",
+                maximum=MAX_SIZES[name],
+            )
+            if current != files[name] or current_identity != identity:
+                fail(f"{kind} export stage changed after lifecycle revalidation")
+        output = encode_frame(kind, files, coordinates, config)
+        sys.stdout.buffer.write(output)
+        sys.stdout.buffer.flush()
+        cleanup_private_stage(spool, stage_name, stage, identities, f"{kind} export stage")
+        stage.close()
+        stage = None
+    finally:
+        if stage is not None:
+            stage.close()
+        spool.close()
+
+
+def validate_response_payload(files: Mapping[str, bytes], config: Config, request_id: str, artifact_sha256: str) -> None:
+    artifact = parse_record(files["artifact"], "response artifact")
+    response = parse_record(files["response"], "response record")
+    if sha256(files["artifact"]) != artifact_sha256:
+        fail("response artifact differs from its coordinate")
+    for record in (artifact, response):
+        if record.get("request_id") != request_id or record.get("service") != config.service or record.get("target") != config.target:
+            fail("response records differ from fixed target coordinates")
+
+
+def state_lock(config: Config) -> tuple[PinnedDirectory, int]:
+    state = PinnedDirectory.open(config.state_root, "lifecycle state root")
+    try:
+        descriptor = os.open("lock", os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=state.fd)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != ROOT_UID
+            or metadata.st_gid != ROOT_GID or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            fail("lifecycle lock has unsafe metadata")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return state, descriptor
+    except Exception:
+        state.close()
+        raise
+
+
+def stage_response(config: Config, request_id: str, artifact_sha256: str, data: bytes) -> dict[str, object]:
+    coordinates = {"request_id": request_id, "artifact_sha256": artifact_sha256}
+    files = decode_frame(data, "response", coordinates, config)
+    validate_response_payload(files, config, request_id, artifact_sha256)
+    prepared = run_lifecycle(config, "response-prepare", ["--request-id", request_id])
+    if prepared.get("status") not in {"prepared", "existing", "installed"} or prepared.get("request_id") != request_id:
+        fail("lifecycle response preparation returned invalid metadata")
+    state, lock = state_lock(config)
+    versions: PinnedDirectory | None = None
+    ingress: PinnedDirectory | None = None
+    try:
+        versions = PinnedDirectory.open(config.versions_root, "versions root")
+        version_entries = scan(versions, "versions root")
+        ingress_name = f".ingress-{request_id}"
+        if request_id in version_entries:
+            if ingress_name in version_entries:
+                fail("installed version and response ingress coexist")
+            version = PinnedDirectory.open(os.path.join(config.versions_root, request_id), "installed version")
+            try:
+                existing = {
+                    name: read_at(version, name, f"installed response file {name}", maximum=MAX_SIZES[name])[0]
+                    for name in RESPONSE_NAMES
+                }
+                if existing != files:
+                    fail("installed response conflicts with supplied bytes")
+                return {"artifact_sha256": artifact_sha256, "request_id": request_id, "status": "existing"}
+            finally:
+                version.close()
+        if prepared["status"] == "installed":
+            fail("lifecycle reported an installed response without its fixed version")
+        ingress = PinnedDirectory.open(os.path.join(config.versions_root, ingress_name), "response ingress")
+        entries = scan(ingress, "response ingress")
+        if not set(entries).issubset(RESPONSE_NAMES):
+            fail("response ingress contains unexpected entries")
+        created: dict[str, tuple[int, ...]] = {}
+        try:
+            for name in RESPONSE_NAMES:
+                if name in entries:
+                    existing, _identity = read_at(ingress, name, f"response ingress file {name}", maximum=MAX_SIZES[name])
+                    if existing != files[name]:
+                        fail(f"response ingress conflicts at {name}")
+                else:
+                    created[name] = write_new_at(ingress, name, files[name], f"response ingress file {name}")
+            os.fsync(ingress.fd)
+            exact, current_files, _identities = open_exact_tree(ingress.path, RESPONSE_NAMES, "response ingress")
+            exact.close()
+            if current_files != files:
+                fail("response ingress changed during staging")
+        except Exception:
+            for name, identity in created.items():
+                require_snapshot(ingress, name, identity, f"created response ingress file {name}")
+            for name in created:
+                os.unlink(name, dir_fd=ingress.fd)
+            if created:
+                os.fsync(ingress.fd)
+            raise
+        return {
+            "artifact_sha256": artifact_sha256, "request_id": request_id,
+            "status": "existing" if not created else "staged",
+        }
+    finally:
+        if ingress is not None:
+            ingress.close()
+        if versions is not None:
+            versions.close()
+        os.close(lock)
+        state.close()
+
+
+def outcome_stage_id(request_id: str, artifact_sha256: str, deployment_sha256: str, outcome_sha256: str) -> str:
+    return f"pki-outcome-v1:{request_id}:{artifact_sha256}:{deployment_sha256}:{outcome_sha256}"
+
+
+def validate_outcome_payload(files: Mapping[str, bytes], config: Config, coordinates: Mapping[str, str]) -> None:
+    outcome = parse_record(files["outcome"], "signer outcome")
+    deployment = parse_record(files["deployment"], "outcome deployment")
+    decision = parse_record(files["decision"], "signer decision")
+    if sha256(files["outcome"]) != coordinates["outcome_sha256"] or sha256(files["deployment"]) != coordinates["deployment_sha256"]:
+        fail("outcome payload differs from supplied digests")
+    for record in (outcome, deployment, decision):
+        if record.get("request_id") != coordinates["request_id"] or record.get("service") != config.service or record.get("target") != config.target:
+            fail("outcome records differ from fixed target coordinates")
+    if outcome.get("artifact_manifest_sha256") != coordinates["artifact_sha256"] or outcome.get("deployment_sha256") != coordinates["deployment_sha256"]:
+        fail("outcome manifest differs from fixed coordinates")
+    if deployment.get("artifact_manifest_sha256") != coordinates["artifact_sha256"]:
+        fail("outcome deployment differs from the artifact coordinate")
+
+
+def publish_outcome(config: Config, coordinates: Mapping[str, str], data: bytes) -> dict[str, object]:
+    files = decode_frame(data, "outcome", coordinates, config)
+    validate_outcome_payload(files, config, coordinates)
+    spool = PinnedDirectory.open(config.spool_root, "exchange spool")
+    outcomes = request = stage = None
+    stage_name = f".stage-{secrets.token_hex(16)}"
+    try:
+        outcomes = create_child(spool, "outcomes", "outcome spool root")
+        request = create_child(outcomes, coordinates["request_id"], "outcome request spool")
+        destination = coordinates["outcome_sha256"]
+        if destination in scan(request, "outcome request spool"):
+            existing, existing_files, _ = open_exact_tree(
+                os.path.join(request.path, destination), OUTCOME_NAMES, "existing outcome stage"
+            )
+            existing.close()
+            if existing_files != files:
+                fail("existing outcome stage conflicts with supplied bytes")
+            status_value = "existing"
+        else:
+            os.mkdir(stage_name, 0o700, dir_fd=request.fd)
+            os.fsync(request.fd)
+            stage = PinnedDirectory.open(os.path.join(request.path, stage_name), "outcome publication stage")
+            identities = {
+                name: write_new_at(stage, name, files[name], f"outcome stage file {name}")
+                for name in OUTCOME_NAMES
+            }
+            os.fsync(stage.fd)
+            exact, staged_files, _ = open_exact_tree(stage.path, OUTCOME_NAMES, "outcome publication stage")
+            exact.close()
+            if staged_files != files:
+                fail("outcome publication stage changed")
+            rename_noreplace(request, stage_name, request, destination, "outcome stage")
+            os.fsync(request.fd)
+            stage.path = os.path.join(request.path, destination)
+            if set(scan(stage, "published outcome stage")) != set(identities):
+                fail("published outcome stage changed")
+            status_value = "staged"
+        return {
+            **coordinates,
+            "stage_id": outcome_stage_id(**coordinates),
+            "status": status_value,
+        }
+    finally:
+        if stage is not None:
+            stage.close()
+        if request is not None:
+            request.close()
+        if outcomes is not None:
+            outcomes.close()
+        spool.close()
+
+
+def accepted_outcome(
+    config: Config,
+    coordinates: Mapping[str, str],
+    state: PinnedDirectory,
+) -> dict[str, bytes]:
+    history = None
+    try:
+        pointer_data, _ = read_at(state, "accepted-outcome", "accepted outcome pointer", maximum=16384)
+        lines = parse_record(pointer_data, "accepted outcome pointer")
+        if tuple(lines) != ACCEPTED_FIELDS:
+            fail("accepted outcome pointer has an unexpected schema")
+        expected = {
+            "schema": "1", "kind": "host-local-accepted-signer-outcome",
+            "service": config.service, "target": config.target,
+            "request_id": coordinates["request_id"],
+            "artifact_manifest_sha256": coordinates["artifact_sha256"],
+            "deployment_sha256": coordinates["deployment_sha256"],
+            "outcome_sha256": coordinates["outcome_sha256"],
+        }
+        if any(lines.get(key) != value for key, value in expected.items()):
+            fail("accepted outcome pointer differs from cleanup coordinates")
+        history, history_files, _ = open_exact_tree(
+            os.path.join(
+                config.state_root, "outcomes", coordinates["request_id"],
+                coordinates["outcome_sha256"],
+            ),
+            OUTCOME_NAMES,
+            "accepted outcome history",
+        )
+        if sha256(history_files["decision"]) != lines["decision_sha256"]:
+            fail("accepted outcome history differs from its pointer")
+        return history_files
+    finally:
+        if history is not None:
+            history.close()
+
+
+def cleanup_outcome(config: Config, coordinates: Mapping[str, str]) -> dict[str, object]:
+    state, lock = state_lock(config)
+    spool = outcomes = request = stage = None
+    try:
+        history_files = accepted_outcome(config, coordinates, state)
+        spool = PinnedDirectory.open(config.spool_root, "exchange spool")
+        outcomes = PinnedDirectory.open(os.path.join(spool.path, "outcomes"), "outcome spool root")
+        request = PinnedDirectory.open(
+            os.path.join(outcomes.path, coordinates["request_id"]), "outcome request spool"
+        )
+        name = coordinates["outcome_sha256"]
+        if name not in scan(request, "outcome request spool"):
+            status_value = "absent"
+        else:
+            stage, files, identities = open_exact_tree(
+                os.path.join(request.path, name), OUTCOME_NAMES, "accepted outcome source stage"
+            )
+            if files != history_files:
+                fail("accepted outcome source differs from immutable history")
+            cleanup_private_stage(request, name, stage, identities, "accepted outcome source stage")
+            stage.close()
+            stage = None
+            status_value = "cleaned"
+        return {
+            **coordinates, "stage_id": outcome_stage_id(**coordinates), "status": status_value
+        }
+    finally:
+        if stage is not None:
+            stage.close()
+        if request is not None:
+            request.close()
+        if outcomes is not None:
+            outcomes.close()
+        if spool is not None:
+            spool.close()
+        os.close(lock)
+        state.close()
+
+
+def coordinates(request_id: str, artifact_sha256: str | None = None, deployment_sha256: str | None = None, outcome_sha256: str | None = None) -> dict[str, str]:
+    result = {"request_id": require_request_id(request_id)}
+    for name, value in (
+        ("artifact_sha256", artifact_sha256),
+        ("deployment_sha256", deployment_sha256),
+        ("outcome_sha256", outcome_sha256),
+    ):
+        if value is not None:
+            result[name] = require_digest(value, name.replace("_", " "))
+    return result
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    request = commands.add_parser("export-request")
+    request.add_argument("request_id")
+    evidence = commands.add_parser("export-evidence")
+    evidence.add_argument("request_id")
+    evidence.add_argument("artifact_sha256")
+    evidence.add_argument("deployment_sha256")
+    response = commands.add_parser("stage-response")
+    response.add_argument("request_id")
+    response.add_argument("artifact_sha256")
+    outcome = commands.add_parser("stage-outcome")
+    outcome.add_argument("request_id")
+    outcome.add_argument("artifact_sha256")
+    outcome.add_argument("deployment_sha256")
+    outcome.add_argument("outcome_sha256")
+    cleanup = commands.add_parser("cleanup-outcome")
+    cleanup.add_argument("request_id")
+    cleanup.add_argument("artifact_sha256")
+    cleanup.add_argument("deployment_sha256")
+    cleanup.add_argument("outcome_sha256")
+    return parser
+
+
+def main() -> None:
+    os.umask(0o077)
+    if os.geteuid() != ROOT_UID or os.getegid() != ROOT_GID:
+        fail("effective uid and gid 0 are required")
+    args = build_parser().parse_args()
+    config = load_config()
+    if args.command == "export-request":
+        values = coordinates(args.request_id)
+        export_files(
+            config, "request", values, "collection-prepare",
+            ["--trust-id", config.trust_id, "--request-id", values["request_id"]],
+        )
+        return
+    if args.command == "export-evidence":
+        values = coordinates(args.request_id, args.artifact_sha256, args.deployment_sha256)
+        export_files(
+            config, "evidence", values, "evidence-collection-prepare",
+            [
+                "--trust-id", config.trust_id, "--request-id", values["request_id"],
+                "--artifact-sha256", values["artifact_sha256"],
+                "--deployment-sha256", values["deployment_sha256"],
+            ],
+        )
+        return
+    if args.command == "stage-response":
+        values = coordinates(args.request_id, args.artifact_sha256)
+        result = stage_response(config, values["request_id"], values["artifact_sha256"], read_bounded_stream(sys.stdin.buffer))
+    else:
+        values = coordinates(
+            args.request_id, args.artifact_sha256, args.deployment_sha256,
+            args.outcome_sha256,
+        )
+        if args.command == "stage-outcome":
+            result = publish_outcome(config, values, read_bounded_stream(sys.stdin.buffer))
+        else:
+            result = cleanup_outcome(config, values)
+    sys.stdout.buffer.write(canonical_json(result) + b"\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ExchangeError, OSError, ValueError) as error:
+        print(f"platform-pki-host-local-exchange: {error}", file=sys.stderr)
+        raise SystemExit(1) from None

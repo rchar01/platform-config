@@ -37,6 +37,12 @@
 - name: Load host-local certificate lifecycle helper preflight
   ansible.builtin.import_tasks: lifecycle_helper.yml
 
+- name: Install fixed direct exchange facade
+  ansible.builtin.import_tasks: exchange_helper.yml
+  when:
+    - pki_host_local_certificate_exchange_mode == 'direct'
+    - not ansible_check_mode
+
 - name: Load reviewed runner validator helper preflight
   ansible.builtin.import_tasks: validator_helper.yml
 
@@ -75,12 +81,13 @@
           '--target', pki_host_local_certificate_target,
           '--request-id', pki_host_local_certificate_request_id
         ]
-        + (['--check'] if ansible_check_mode else [])
+        + (['--check'] if ansible_check_mode or pki_host_local_certificate_exchange_mode == 'direct' else [])
       }}
   register: pki_host_local_certificate_response_prepare_result
   changed_when: >-
     pki_host_local_certificate_response_prepare_result.rc == 0
     and not ansible_check_mode
+    and pki_host_local_certificate_exchange_mode == 'controller-local'
     and (pki_host_local_certificate_response_prepare_result.stdout | from_json).status == 'prepared'
   check_mode: false
 
@@ -89,6 +96,9 @@
     that:
       - pki_host_local_certificate_response_prepare_result.stderr | length == 0
       - pki_host_local_certificate_response_prepare.status in ['prepared', 'existing', 'installed', 'would-prepare']
+      - >-
+        pki_host_local_certificate_exchange_mode == 'controller-local'
+        or pki_host_local_certificate_response_prepare.status in ['existing', 'installed']
       - pki_host_local_certificate_response_prepare.request_id == pki_host_local_certificate_request_id
       - >-
         (pki_host_local_certificate_response_prepare.status == 'installed'
@@ -121,6 +131,7 @@
     artifact_sha256: "{{ pki_host_local_certificate_artifact_manifest_sha256 }}"
   register: pki_host_local_certificate_response_ingress_result
   when:
+    - pki_host_local_certificate_exchange_mode == 'controller-local'
     - not ansible_check_mode
     - (pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'
 
@@ -144,6 +155,7 @@
       - response.sig
       - tls.crt
   when:
+    - pki_host_local_certificate_exchange_mode == 'controller-local'
     - not ansible_check_mode
     - (pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'
 
@@ -157,6 +169,7 @@
   loop_control:
     label: "{{ item.key }}"
   when:
+    - pki_host_local_certificate_exchange_mode == 'controller-local'
     - not ansible_check_mode
     - (pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'
 

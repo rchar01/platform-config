@@ -4,6 +4,10 @@ The dev registry is a Zot OCI registry deployed by `zot_registry` on hosts in th
 
 ## Host-Local PKI Development
 
+Use [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) as
+the canonical step-by-step operator procedure. This page defines the detailed
+role boundaries, status semantics, and registry behavior behind that runbook.
+
 The `playbooks/registry-pki-*.yml` playbooks are operator-only host-local
 certificate entry points. They are not imported by `site.yml` or normal
 registry convergence. The implemented workflow imports one explicit
@@ -32,21 +36,24 @@ implement trust rotation.
 
 The request entry point validates preinstalled frozen target trust, installs the
 reviewed request helper, and generates or revalidates one root-owned local P-384
-key, CSR, canonical request, and SSH signature. Outside check mode, its fixed
-action collects only `tls.csr`, `request`, and `request.sig` into the protected
-controller exchange and publishes a frozen copy of the reviewed trust beside
-the request. The separate
-`scripts/platform-pki-gitlab-package` helper can validate and publish an already
-collected canonical request package to one exact GitLab Generic Package
-coordinate; it does not collect from the target or create the receipt or stage
-manifest. See [GitLab PKI Package Exchange](pki-gitlab-package.md).
+key, CSR, canonical request, and SSH signature. In default direct mode it
+publishes only exact coordinates. An authorized transfer station uses
+`scripts/platform-pki-direct-exchange request-pull`, then the separate
+controller-only request-intake playbook verifies and publishes `tls.csr`,
+`request`, `request.sig`, `collection-receipt`, and frozen trust. The explicit
+`controller-local` compatibility target performs collection through its Ansible
+action instead. `scripts/platform-pki-gitlab-package publish` validates the
+result, creates `stage-manifest`, and publishes one exact Generic Package
+coordinate. See [GitLab PKI Package Exchange](pki-gitlab-package.md).
 
-Place an externally produced response in one protected controller directory
+Place an externally produced response in one protected transfer-station directory
 containing exactly `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`,
 `response`, and `response.sig`. Response check authenticates and immutably
 publishes that response entirely on the controller; it does not contact Zot or
-mutate the target. Activation then performs exact response ingress, requires the
-operator to type
+mutate the target. Default direct mode then requires an exact `response-push` to
+the fixed target ingress; activation never moves package bytes through Ansible.
+The explicit `controller-local` target retains the old Ansible ingress path.
+Activation requires the operator to type
 `activate SERVICE REQUEST_ID ARTIFACT_SHA256`, updates Zot transactionally, and
 validates strict HTTPS `GET /v2/` behavior from exactly one distinct reviewed
 runner. Explicit recovery acts only on a journal-bound interrupted transaction.
@@ -58,6 +65,15 @@ request, artifact, and deployment coordinates returned by each phase:
 make registry-pki-validation-material ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example
 make registry-pki-request ENV=dev LIMIT=registry-example
+scripts/platform-pki-direct-exchange request-pull \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  /outside-git/pki-exchange/intake/request-<request-id>
+PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
+make registry-pki-request-intake ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> REQUEST_SHA256=<request-sha256> \
+  CSR_SHA256=<csr-sha256> CSR_SPKI_SHA256=<csr-spki-sha256> \
+  TRANSPORT_HOST_KEY_SHA256=<transport-host-key-sha256> \
+  REQUEST_DIR=/platform-pki-exchange/intake/request-<request-id>
 make registry-pki-request ENV=dev LIMIT=registry-example \
   REQUEST_TTL_SECONDS=604800
 make registry-pki-abandon-expired-request ENV=dev LIMIT=registry-example \
@@ -68,6 +84,9 @@ make registry-pki-status ENV=dev LIMIT=registry-example
 make registry-pki-response-check ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   RESPONSE_DIR=/outside-git/protected-response
+scripts/platform-pki-direct-exchange response-push \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  <artifact-sha256> /outside-git/protected-response
 make registry-pki-activate ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
@@ -77,6 +96,15 @@ make registry-pki-publish-rolled-back-evidence ENV=dev \
 make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
+scripts/platform-pki-direct-exchange evidence-pull \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  <artifact-sha256> <deployment-sha256> \
+  /outside-git/pki-exchange/intake/evidence-<deployment-sha256>
+PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
+make registry-pki-evidence-intake ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256> \
+  EVIDENCE_DIR=/platform-pki-exchange/intake/evidence-<deployment-sha256>
 make registry-pki-status ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
@@ -84,11 +112,14 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
+scripts/platform-pki-direct-exchange outcome-push \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  <artifact-sha256> <deployment-sha256> <outcome-sha256> \
+  /outside-git/protected-outcome
 make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256> \
-  OUTCOME_SHA256=<outcome-manifest-sha256> \
-  OUTCOME_DIR=/outside-git/export/csr-outcomes/v1/artifacts/registry-dev/<request-id>
+  OUTCOME_SHA256=<outcome-sha256>
 ```
 
 Request lifetime defaults to 3600 seconds. `REQUEST_TTL_SECONDS` is an explicit
@@ -138,24 +169,18 @@ mode validates the installed response and candidate without transfer, prompts,
 service restart, runner invocation, or cleanup. Status, response check, evidence
 export, and decision preflight remain read-only with respect to Zot.
 
-Outcome import accepts exactly `outcome`, `outcome.sig`, `deployment`,
-`deployment.sig`, `deployers.allowed_signers`, and `decision` from one explicit
-current-user-owned mode-`0700` controller directory. Every file must be a
-single-link mode-`0600` regular file. The controller independently verifies the
-outcome signature with frozen response trust and verifies deployment evidence
-with frozen deployer trust. The target repeats both checks against its own frozen
-trust and requires the deployment and signature to equal its exact evidence
-attempt. Normal mode uses a protected randomized transient target stage. Check
-mode fully authenticates and rechecks the controller package, then invokes a
-read-only target preflight with canonical scalar outcome coordinates through the
-safely quoted, become-aware low-level connection path. It executes no Ansible
-module, creates no AnsiballZ payload, remote stage, or Ansible transfer path, and
-leaves lifecycle and Zot state unchanged. Target preflight authenticates active
-state from named public version files, signed request material when available,
-the signed response, artifact/certificate chain, and matching signed target
-evidence. It does not enumerate or access the private-key version entry and does
-not claim to authenticate the package signature. No private key crosses either
-boundary.
+Default direct outcome import consumes exactly `outcome`, `outcome.sig`,
+`deployment`, `deployment.sig`, `deployers.allowed_signers`, and `decision` from
+the fixed protected target spool created by `outcome-push`. It performs no
+Ansible package transfer. The target verifies the outcome signature with frozen
+response trust, verifies deployment evidence with frozen deployer trust, and
+requires the deployment and signature to equal its exact evidence attempt.
+Check mode runs the same target read-only preflight and leaves lifecycle and Zot
+state unchanged. The explicit `registry-pki-outcome-import-controller-local`
+compatibility target accepts an exact protected controller directory,
+authenticates it locally, and uses the separately guarded legacy ingress path.
+Neither mode enumerates or accesses the private-key version entry, and no private
+key crosses either boundary.
 More strictly, the importer never stats, opens, reads, hashes, stages, or
 transfers candidate/version/restored-managed private-key files. Managed rollback
 validation parses the restored Zot TLS path object but accesses only its selected

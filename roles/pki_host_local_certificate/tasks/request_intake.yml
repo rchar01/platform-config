@@ -1,0 +1,59 @@
+---
+- name: Load host-local certificate common validation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Validate direct request intake contract
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - pki_host_local_certificate_exchange_mode == 'direct'
+      - pki_host_local_certificate_request_id is match('^[0-9a-f]{32}$')
+      - pki_host_local_certificate_request_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_csr_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_csr_spki_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_request_source_dir | length > 0
+    fail_msg: Direct request intake requires the exact request directory and request/CSR coordinates.
+
+- name: Authenticate and publish exact direct request intake
+  platform_pki_request_intake:
+    request_dir: "{{ pki_host_local_certificate_request_source_dir }}"
+    exchange_root: "{{ pki_host_local_certificate_controller_exchange_root }}"
+    service: "{{ pki_host_local_certificate_service }}"
+    target: "{{ pki_host_local_certificate_target }}"
+    transport_host_key_sha256: "{{ pki_host_local_certificate_transport_host_key_sha256 }}"
+    inventory_sha256: "{{ pki_host_local_certificate_inventory_sha256 }}"
+    profile: "{{ pki_host_local_certificate_profile }}"
+    requester_principal: "{{ pki_host_local_certificate_requester_principal }}"
+    response_principal: "{{ pki_host_local_certificate_response_principal }}"
+    common_name: "{{ pki_host_local_certificate_common_name }}"
+    dns_sans: "{{ pki_host_local_certificate_dns_sans }}"
+    ip_sans: "{{ pki_host_local_certificate_ip_sans }}"
+    trust_paths: "{{ pki_host_local_certificate_trust_sources }}"
+    trust_sha256: "{{ pki_host_local_certificate_trust_sha256 }}"
+    expected_request_sha256: "{{ pki_host_local_certificate_request_sha256 }}"
+    expected_csr_sha256: "{{ pki_host_local_certificate_csr_sha256 }}"
+    expected_csr_spki_sha256: "{{ pki_host_local_certificate_csr_spki_sha256 }}"
+    request_id: "{{ pki_host_local_certificate_request_id }}"
+  delegate_to: localhost
+  become: false
+  register: pki_host_local_certificate_request_intake_result
+
+- name: Validate exact direct request intake metadata
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_request_intake_result.status in ['collected', 'existing']
+      - pki_host_local_certificate_request_intake_result.request_id == pki_host_local_certificate_request_id
+      - pki_host_local_certificate_request_intake_result.request_sha256 == pki_host_local_certificate_request_sha256
+      - pki_host_local_certificate_request_intake_result.csr_sha256 == pki_host_local_certificate_csr_sha256
+      - pki_host_local_certificate_request_intake_result.csr_spki_sha256 == pki_host_local_certificate_csr_spki_sha256
+      - pki_host_local_certificate_request_intake_result.transport == 'ssh'
+      - pki_host_local_certificate_request_intake_result.transport_host_key_sha256 == pki_host_local_certificate_transport_host_key_sha256
+    success_msg: >-
+      request={{ pki_host_local_certificate_request_id }}
+      request_sha256={{ pki_host_local_certificate_request_sha256 }}
+      csr_sha256={{ pki_host_local_certificate_csr_sha256 }}
+      csr_spki_sha256={{ pki_host_local_certificate_csr_spki_sha256 }}
+      request_dir={{ pki_host_local_certificate_request_intake_result.request_dir }}
+      trust_dir={{ pki_host_local_certificate_request_intake_result.trust_dir }}
+      status={{ pki_host_local_certificate_request_intake_result.status }}
+    fail_msg: Direct request intake returned metadata outside the exact reviewed coordinates.

@@ -471,27 +471,44 @@ This operator-only workflow keeps the leaf private key on one registry target.
 Configure the real one-host inventory, reviewed five-file trust, reviewed CA,
 validation boundary, protected controller exchange root, and a distinct
 read-only runner in private or outside-Git configuration. See
-[Registry](registry.md#host-local-pki-development) for the trust and lifecycle
-contract.
+[Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for the
+complete request, controlled-media approval/signing, response activation,
+evidence, signer decision, outcome import, recovery, backup, and verification
+sequence. See [Registry](registry.md#host-local-pki-development) for the detailed
+trust and lifecycle contract.
 
-Bootstrap target trust once, then create or resume and collect the request:
+Bootstrap target trust once, then create or resume the target-local request. The
+default direct mode publishes coordinates but moves no bytes through Ansible:
 
 ```bash
 make apply ENV=dev PLAYBOOK=playbooks/registry-pki-trust.yml \
   LIMIT=registry-example
 make registry-pki-request ENV=dev LIMIT=registry-example
+scripts/platform-pki-direct-exchange request-pull \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  /outside-git/pki-exchange/intake/request-<request-id>
+PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
+make registry-pki-request-intake ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> REQUEST_SHA256=<request-sha256> \
+  CSR_SHA256=<csr-sha256> CSR_SPKI_SHA256=<csr-spki-sha256> \
+  TRANSPORT_HOST_KEY_SHA256=<transport-host-key-sha256> \
+  REQUEST_DIR=/platform-pki-exchange/intake/request-<request-id>
 make registry-pki-status ENV=dev LIMIT=registry-example
 ```
 
 Move the public request through the separately approved controlled-media and
 offline-signing process. Place the returned exact six-file response in a
 protected controller directory, authenticate it without target mutation, and
-activate it with one separate runner:
+push it to the fixed direct ingress before activating it with one separate
+runner:
 
 ```bash
 make registry-pki-response-check ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   RESPONSE_DIR=/outside-git/protected-response
+scripts/platform-pki-direct-exchange response-push \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  <artifact-sha256> /outside-git/protected-response
 make registry-pki-activate ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
@@ -520,13 +537,23 @@ make registry-pki-publish-rolled-back-evidence ENV=dev \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
 ```
 
-After successful activation, export and authenticate the exact evidence, then
-perform a fresh separate-runner decision preflight:
+After successful activation, prepare, pull, and authenticate the exact evidence,
+then perform a fresh separate-runner decision preflight. After the offline
+decision, push the exact outcome before importing it:
 
 ```bash
 make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
+scripts/platform-pki-direct-exchange evidence-pull \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  <artifact-sha256> <deployment-sha256> \
+  /outside-git/pki-exchange/intake/evidence-<deployment-sha256>
+PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
+make registry-pki-evidence-intake ENV=dev LIMIT=registry-example \
+  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
+  DEPLOYMENT_SHA256=<deployment-sha256> \
+  EVIDENCE_DIR=/platform-pki-exchange/intake/evidence-<deployment-sha256>
 make registry-pki-status ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
@@ -534,11 +561,14 @@ make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
   RUNNER_LIMIT=registry-validator-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256>
+scripts/platform-pki-direct-exchange outcome-push \
+  /outside-git/pki-endpoints/registry-example.json <request-id> \
+  <artifact-sha256> <deployment-sha256> <outcome-sha256> \
+  /outside-git/protected-outcome
 make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
   REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
   DEPLOYMENT_SHA256=<deployment-sha256> \
-  OUTCOME_SHA256=<outcome-manifest-sha256> \
-  OUTCOME_DIR=/outside-git/export/csr-outcomes/v1/artifacts/registry-dev/<request-id>
+  OUTCOME_SHA256=<outcome-sha256>
 ```
 
 Only after an active version authenticates successfully, change the target's
@@ -560,14 +590,16 @@ predecessor evidence.
 The current workflow always reports `renewal_eligible=false`; authenticated
 renewal completion remains unsupported.
 
-Outcome import never stats, opens, reads, hashes, stages, or transfers a
+Direct outcome import never transfers the package through Ansible. It consumes
+only the exact fixed-spool package created by `outcome-push` and never stats,
+opens, reads, hashes, stages, or transfers a
 candidate/version/restored-managed private-key file. Managed rollback validation
 parses the restored Zot TLS path object but accesses only its public certificate
 chain. In Ansible check mode the controller still authenticates the complete
 six-file package, but only canonical scalar coordinates reach the target's
 read-only preflight over Ansible's safely quoted, become-aware low-level
-connection path; no module payload, target stage, temporary transfer, or package
-copy is created. The target authenticates active state from public version,
+connection path; no module payload, temporary transfer, or package copy is
+created. The target authenticates active state from public version,
 signed request/response, artifact/certificate, and available signed evidence
 without enumerating or accessing the version private key. If an interruption
 leaves immutable outcome

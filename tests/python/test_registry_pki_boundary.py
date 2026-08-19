@@ -14,9 +14,11 @@ import yaml
 
 from conftest import CommandRunner
 from plugins.action import platform_pki_evidence_collection as evidence_collection_action
+from plugins.action import platform_pki_evidence_intake as evidence_intake_action
 from plugins.action import platform_pki_evidence_status as evidence_status_action
 from plugins.action import platform_pki_outcome_import as outcome_import_action
 from plugins.action import platform_pki_request_collection as request_collection_action
+from plugins.action import platform_pki_request_intake as request_intake_action
 from plugins.action import platform_pki_response_ingress as response_ingress_action
 from plugins.action import platform_pki_response_intake as response_intake_action
 from plugins.module_utils.platform_pki_exchange import (
@@ -38,9 +40,11 @@ ALLOWED_ACTIONS = {
     "ansible.builtin.pause",
     "ansible.builtin.stat",
     "platform_pki_evidence_collection",
+    "platform_pki_evidence_intake",
     "platform_pki_evidence_status",
     "platform_pki_outcome_import",
     "platform_pki_request_collection",
+    "platform_pki_request_intake",
     "platform_pki_response_ingress",
     "platform_pki_response_intake",
     "platform_pki_trust_ingress",
@@ -72,6 +76,7 @@ METADATA_BY_ACTION = {
     },
     "ansible.builtin.copy": {
         "name",
+        "vars",
         "loop",
         "loop_control",
         "when",
@@ -96,7 +101,13 @@ METADATA_BY_ACTION = {
         "delegate_to",
         "register",
     },
-    "platform_pki_evidence_collection": {"name", "register"},
+    "platform_pki_evidence_collection": {"name", "register", "when"},
+    "platform_pki_evidence_intake": {
+        "name",
+        "delegate_to",
+        "become",
+        "register",
+    },
     "platform_pki_evidence_status": {
         "name",
         "delegate_to",
@@ -104,8 +115,14 @@ METADATA_BY_ACTION = {
         "register",
         "when",
     },
-    "platform_pki_outcome_import": {"name", "register", "no_log"},
+    "platform_pki_outcome_import": {"name", "register", "no_log", "when"},
     "platform_pki_request_collection": {"name", "register", "when"},
+    "platform_pki_request_intake": {
+        "name",
+        "delegate_to",
+        "become",
+        "register",
+    },
     "platform_pki_response_ingress": {"name", "register", "when"},
     "platform_pki_response_intake": {
         "name",
@@ -209,15 +226,36 @@ ALLOWED_CONDITIONS = {
     (
         "platform_pki_request_collection",
         "Collect exact public host-local certificate request",
-    ): "not ansible_check_mode",
+    ): [
+        "pki_host_local_certificate_exchange_mode == 'controller-local'",
+        "not ansible_check_mode",
+    ],
     (
         "ansible.builtin.assert",
         "Validate public request collection metadata",
-    ): "not ansible_check_mode",
+    ): [
+        "pki_host_local_certificate_exchange_mode == 'controller-local'",
+        "not ansible_check_mode",
+    ],
+    (
+        "ansible.builtin.import_tasks",
+        "Install fixed direct exchange facade",
+    ): [
+        "pki_host_local_certificate_exchange_mode == 'direct'",
+        "not ansible_check_mode",
+    ],
+    (
+        "ansible.builtin.assert",
+        "Publish exact direct request transfer coordinates",
+    ): [
+        "pki_host_local_certificate_exchange_mode == 'direct'",
+        "not ansible_check_mode",
+    ],
     (
         "platform_pki_response_ingress",
         "Transfer exact controller response into protected target ingress",
     ): [
+        "pki_host_local_certificate_exchange_mode == 'controller-local'",
         "not ansible_check_mode",
         "(pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'",
     ],
@@ -225,6 +263,7 @@ ALLOWED_CONDITIONS = {
         "ansible.builtin.assert",
         "Validate exact response ingress metadata",
     ): [
+        "pki_host_local_certificate_exchange_mode == 'controller-local'",
         "not ansible_check_mode",
         "(pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'",
     ],
@@ -232,6 +271,7 @@ ALLOWED_CONDITIONS = {
         "ansible.builtin.assert",
         "Validate derived exact response ingress digests",
     ): [
+        "pki_host_local_certificate_exchange_mode == 'controller-local'",
         "not ansible_check_mode",
         "(pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'",
     ],
@@ -271,6 +311,50 @@ ALLOWED_CONDITIONS = {
         "ansible.builtin.assert",
         "Require installed validator helper for read-only preflight",
     ): "ansible_check_mode or pki_host_local_certificate_helper_read_only",
+    (
+        "platform_pki_evidence_collection",
+        "Collect exact authenticated host-local deployment evidence",
+    ): "pki_host_local_certificate_exchange_mode == 'controller-local'",
+    (
+        "ansible.builtin.assert",
+        "Validate exact evidence collection metadata",
+    ): "pki_host_local_certificate_exchange_mode == 'controller-local'",
+    (
+        "ansible.builtin.assert",
+        "Publish exact direct evidence transfer coordinates",
+    ): "pki_host_local_certificate_exchange_mode == 'direct'",
+    (
+        "platform_pki_outcome_import",
+        "Authenticate, transfer, and import exact signer outcome",
+    ): "pki_host_local_certificate_exchange_mode == 'controller-local'",
+    (
+        "ansible.builtin.assert",
+        "Validate exact signer-outcome import metadata",
+    ): "pki_host_local_certificate_exchange_mode == 'controller-local'",
+    (
+        "ansible.builtin.command",
+        "Authenticate and import exact directly staged signer outcome",
+    ): "pki_host_local_certificate_exchange_mode == 'direct'",
+    (
+        "ansible.builtin.assert",
+        "Validate exact direct signer-outcome import metadata",
+    ): "pki_host_local_certificate_exchange_mode == 'direct'",
+    (
+        "ansible.builtin.command",
+        "Remove only the accepted direct outcome stage",
+    ): [
+        "pki_host_local_certificate_exchange_mode == 'direct'",
+        "not ansible_check_mode",
+        "(pki_host_local_certificate_direct_outcome_import_command.stdout | from_json).status in ['imported', 'existing']",
+    ],
+    (
+        "ansible.builtin.assert",
+        "Validate exact direct outcome cleanup metadata",
+    ): [
+        "pki_host_local_certificate_exchange_mode == 'direct'",
+        "not ansible_check_mode",
+        "(pki_host_local_certificate_direct_outcome_import_command.stdout | from_json).status in ['imported', 'existing']",
+    ],
 }
 EXPECTED_COPIES = {
     "Install host-local certificate request helper": {
@@ -294,6 +378,20 @@ EXPECTED_COPIES = {
         "group": "root",
         "mode": "0755",
     },
+    "Install host-local certificate exchange facade": {
+        "src": "platform-pki-host-local-exchange",
+        "dest": "{{ pki_host_local_certificate_exchange_helper_path }}",
+        "owner": "root",
+        "group": "root",
+        "mode": "0755",
+    },
+    "Install fixed host-local certificate exchange config": {
+        "content": "{{ pki_host_local_certificate_exchange_config | to_json(sort_keys=true, separators=[',', ':']) }}\n",
+        "dest": "{{ pki_host_local_certificate_exchange_config_path }}",
+        "owner": "root",
+        "group": "root",
+        "mode": "0600",
+    },
     "Install host-local certificate validator helper on reviewed runner": {
         "src": "platform-pki-zot-read-only-validate",
         "dest": "{{ pki_host_local_certificate_validator_helper_path }}",
@@ -308,6 +406,22 @@ EXPECTED_COPIES = {
         "group": "root",
         "mode": "0600",
     },
+}
+EXPECTED_COPY_VARS = {
+    "Install fixed host-local certificate exchange config": {
+        "pki_host_local_certificate_exchange_config": {
+            "lifecycle_helper": "{{ pki_host_local_certificate_lifecycle_helper_path }}",
+            "pending_root": "{{ pki_host_local_certificate_pending_root }}",
+            "schema": 1,
+            "service": "{{ pki_host_local_certificate_service }}",
+            "spool_root": "{{ pki_host_local_certificate_exchange_spool_root }}",
+            "state_root": "{{ pki_host_local_certificate_state_root }}",
+            "target": "{{ pki_host_local_certificate_target }}",
+            "trust_id": "{{ pki_host_local_certificate_trust_id }}",
+            "versions_root": "{{ pki_host_local_certificate_versions_root }}",
+            "zot_config": "{{ pki_host_local_certificate_zot_config_path }}",
+        }
+    }
 }
 EXPECTED_FILES = {
     "Create absent host-local certificate helper directory": {
@@ -330,6 +444,13 @@ EXPECTED_FILES = {
         "owner": "root",
         "group": "root",
         "mode": "0755",
+    },
+    "Create fixed host-local certificate exchange directories": {
+        "path": "{{ item.path }}",
+        "state": "directory",
+        "owner": "root",
+        "group": "root",
+        "mode": "{{ item.mode }}",
     },
     "Create absent host-local certificate validator helper directory": {
         "path": "{{ pki_host_local_certificate_validator_helper_path | dirname }}",
@@ -377,6 +498,26 @@ ACTION_OPTION_SETS = {
         "expected_csr_sha256",
         "expected_csr_spki_sha256",
     },
+    "platform_pki_request_intake": {
+        "request_dir",
+        "exchange_root",
+        "service",
+        "target",
+        "transport_host_key_sha256",
+        "inventory_sha256",
+        "profile",
+        "requester_principal",
+        "response_principal",
+        "common_name",
+        "dns_sans",
+        "ip_sans",
+        "trust_paths",
+        "trust_sha256",
+        "expected_request_sha256",
+        "expected_csr_sha256",
+        "expected_csr_spki_sha256",
+        "request_id",
+    },
     "platform_pki_response_intake": {
         "response_dir",
         "exchange_root",
@@ -406,6 +547,15 @@ ACTION_OPTION_SETS = {
         "pending_root",
         "versions_root",
         "trust_id",
+        "exchange_root",
+        "service",
+        "target",
+        "request_id",
+        "artifact_sha256",
+        "deployment_sha256",
+    },
+    "platform_pki_evidence_intake": {
+        "evidence_dir",
         "exchange_root",
         "service",
         "target",
@@ -448,6 +598,10 @@ CUSTOM_ACTIONS = {
         "platform_pki_request_collection",
         ACTION_OPTION_SETS["platform_pki_request_collection"],
     ),
+    "Authenticate and publish exact direct request intake": (
+        "platform_pki_request_intake",
+        ACTION_OPTION_SETS["platform_pki_request_intake"],
+    ),
     "Authenticate and snapshot exact controller-side certificate response": (
         "platform_pki_response_intake",
         ACTION_OPTION_SETS["platform_pki_response_intake"],
@@ -459,6 +613,10 @@ CUSTOM_ACTIONS = {
     "Collect exact authenticated host-local deployment evidence": (
         "platform_pki_evidence_collection",
         ACTION_OPTION_SETS["platform_pki_evidence_collection"],
+    ),
+    "Authenticate and publish exact direct evidence intake": (
+        "platform_pki_evidence_intake",
+        ACTION_OPTION_SETS["platform_pki_evidence_intake"],
     ),
     "Authenticate exact controller evidence publication": (
         "platform_pki_evidence_status",
@@ -493,6 +651,14 @@ COMMAND_DISPATCHES = {
     "Prepare exact target response ingress": (
         "pki_host_local_certificate_lifecycle_helper_path",
         "response-prepare",
+    ),
+    "Authenticate and import exact directly staged signer outcome": (
+        "pki_host_local_certificate_lifecycle_helper_path",
+        "outcome-import",
+    ),
+    "Remove only the accepted direct outcome stage": (
+        "pki_host_local_certificate_exchange_helper_path",
+        "cleanup-outcome",
     ),
     "Install or preflight exact immutable certificate version": (
         "pki_host_local_certificate_lifecycle_helper_path",
@@ -665,6 +831,7 @@ def _validate_task(task: Any, source: str | Path) -> None:
         )
     if action == "ansible.builtin.import_tasks" and task[action] not in {
         "lifecycle_helper.yml",
+        "exchange_helper.yml",
         "status.yml",
         "validate.yml",
         "validate_trust.yml",
@@ -745,6 +912,10 @@ def _validate_task(task: Any, source: str | Path) -> None:
         if task[action] != expected_copy:
             raise BoundaryViolation(
                 f"host-local boundary contains an unpinned copy transfer in {source}"
+            )
+        if task.get("vars") != EXPECTED_COPY_VARS.get(task_name):
+            raise BoundaryViolation(
+                f"host-local boundary copy has unexpected variable bindings in {source}"
             )
         expected_delegate = (
             "{{ pki_host_local_certificate_remote_validator }}"
@@ -1003,6 +1174,10 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     operator_playbooks = (
         (repo_root / "playbooks/registry-pki-request.yml", "request"),
         (
+            repo_root / "playbooks/registry-pki-request-intake.yml",
+            "request_intake",
+        ),
+        (
             repo_root / "playbooks/registry-pki-abandon-expired-request.yml",
             "abandon_expired_request",
         ),
@@ -1020,6 +1195,10 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
             "publish_rolled_back_evidence",
         ),
         (repo_root / "playbooks/registry-pki-evidence-export.yml", "evidence_export"),
+        (
+            repo_root / "playbooks/registry-pki-evidence-intake.yml",
+            "evidence_intake",
+        ),
         (repo_root / "playbooks/registry-pki-outcome-import.yml", "outcome_import"),
         (
             repo_root / "playbooks/registry-pki-decision-preflight.yml",
@@ -1054,9 +1233,11 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
 
     action_modules = {
         "platform_pki_request_collection": request_collection_action,
+        "platform_pki_request_intake": request_intake_action,
         "platform_pki_response_intake": response_intake_action,
         "platform_pki_response_ingress": response_ingress_action,
         "platform_pki_evidence_collection": evidence_collection_action,
+        "platform_pki_evidence_intake": evidence_intake_action,
         "platform_pki_evidence_status": evidence_status_action,
         "platform_pki_outcome_import": outcome_import_action,
     }
@@ -1109,6 +1290,54 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
             and "evidence-collection-prepare" not in plugin_text
         ):
             raise BoundaryViolation(f"fetch allowlist/helper binding is incomplete in {plugin}")
+
+    defaults = _load_yaml(role_dir / "defaults/main.yml")
+    if defaults.get("pki_host_local_certificate_exchange_mode") != "direct":
+        raise BoundaryViolation("host-local exchange mode does not fail closed to direct")
+    for plugin in (
+        repo_root / "plugins/action/platform_pki_request_intake.py",
+        repo_root / "plugins/action/platform_pki_evidence_intake.py",
+    ):
+        tree = ast.parse(plugin.read_text(encoding="utf-8"), filename=str(plugin))
+        transfer_calls = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"fetch_file", "_transfer_data", "copy", "slurp"}
+        }
+        if transfer_calls:
+            raise BoundaryViolation(
+                f"direct local intake uses Ansible/package transfer calls: {plugin}"
+            )
+
+    direct_transfer_tasks = (
+        (
+            role_dir / "tasks/request.yml",
+            "Collect exact public host-local certificate request",
+        ),
+        (
+            role_dir / "tasks/activate.yml",
+            "Transfer exact controller response into protected target ingress",
+        ),
+        (
+            role_dir / "tasks/evidence_export.yml",
+            "Collect exact authenticated host-local deployment evidence",
+        ),
+        (
+            role_dir / "tasks/outcome_import.yml",
+            "Authenticate, transfer, and import exact signer outcome",
+        ),
+    )
+    for task_path, task_name in direct_transfer_tasks:
+        conditions = _task_named(_load_yaml(task_path), task_name).get("when")
+        if not conditions or (
+            "pki_host_local_certificate_exchange_mode == 'controller-local'"
+            not in ([conditions] if isinstance(conditions, str) else conditions)
+        ):
+            raise BoundaryViolation(
+                f"direct mode can reach compatibility transfer task: {task_name}"
+            )
 
     activation_tasks = _load_yaml(role_dir / "tasks/activate.yml")
     activation_contract = _task_named(

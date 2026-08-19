@@ -21,9 +21,14 @@ TEST_IN_CONTAINER ?= $(IN_CONTAINER)
 TEST_WORKERS ?= 2
 REQUEST_ID ?=
 REQUEST_SHA256 ?=
+CSR_SHA256 ?=
+CSR_SPKI_SHA256 ?=
+TRANSPORT_HOST_KEY_SHA256 ?=
 REQUEST_TTL_SECONDS ?= 3600
+REQUEST_DIR ?=
 ARTIFACT_SHA256 ?=
 DEPLOYMENT_SHA256 ?=
+EVIDENCE_DIR ?=
 OUTCOME_DIR ?=
 OUTCOME_SHA256 ?=
 RESPONSE_DIR ?=
@@ -32,7 +37,7 @@ RUNNER_LIMIT ?=
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 sh_quote = '$(subst ','"'"',$(1))'
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky test-pki-host-local-zot-one-runner registry-pki-validation-material registry-pki-request registry-pki-abandon-expired-request registry-pki-cancel-request registry-pki-status registry-pki-response-check registry-pki-activate registry-pki-recover registry-pki-publish-rolled-back-evidence registry-pki-evidence-export registry-pki-decision-preflight registry-pki-outcome-import storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-request-sha256 _guard-pki-request-ttl _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome-dir _guard-pki-outcome _guard-pki-response-dir _guard-pki-runner _guard-pki-status-coordinates
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky test-pki-host-local-zot-one-runner registry-pki-validation-material registry-pki-request registry-pki-request-controller-local registry-pki-request-intake registry-pki-abandon-expired-request registry-pki-cancel-request registry-pki-status registry-pki-response-check registry-pki-activate registry-pki-activate-controller-local registry-pki-recover registry-pki-publish-rolled-back-evidence registry-pki-evidence-export registry-pki-evidence-export-controller-local registry-pki-evidence-intake registry-pki-decision-preflight registry-pki-outcome-import registry-pki-outcome-import-controller-local storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-request-sha256 _guard-pki-csr-sha256 _guard-pki-csr-spki-sha256 _guard-pki-transport-host-key-sha256 _guard-pki-request-ttl _guard-pki-request-dir _guard-pki-artifact _guard-pki-deployment _guard-pki-evidence-dir _guard-pki-outcome-dir _guard-pki-outcome _guard-pki-response-dir _guard-pki-runner _guard-pki-status-coordinates
 
 ## Show available commands
 help:
@@ -59,9 +64,14 @@ help:
 	@printf '  %-24s %s\n' 'TEST_WORKERS' 'Parallel pytest worker count, default: 2'
 	@printf '  %-24s %s\n' 'REQUEST_ID' 'Exact host-local PKI request ID'
 	@printf '  %-24s %s\n' 'REQUEST_SHA256' 'Exact host-local PKI request digest'
+	@printf '  %-24s %s\n' 'CSR_SHA256' 'Exact host-local PKI CSR digest'
+	@printf '  %-24s %s\n' 'CSR_SPKI_SHA256' 'Exact host-local PKI CSR public-key digest'
+	@printf '  %-24s %s\n' 'TRANSPORT_HOST_KEY_SHA256' 'Exact lowercase hexadecimal SSH host-key blob digest'
 	@printf '  %-24s %s\n' 'REQUEST_TTL_SECONDS' 'Per-request PKI lifetime, default: 3600, maximum: 604800'
+	@printf '  %-24s %s\n' 'REQUEST_DIR' 'Exact three-file request path visible inside the dev container'
 	@printf '  %-24s %s\n' 'ARTIFACT_SHA256' 'Exact host-local PKI artifact digest'
 	@printf '  %-24s %s\n' 'DEPLOYMENT_SHA256' 'Exact host-local PKI deployment digest'
+	@printf '  %-24s %s\n' 'EVIDENCE_DIR' 'Exact five-file evidence path visible inside the dev container'
 	@printf '  %-24s %s\n' 'OUTCOME_DIR' 'Exact protected six-file signer-outcome directory'
 	@printf '  %-24s %s\n' 'OUTCOME_SHA256' 'Exact host-local PKI signer-outcome manifest digest'
 	@printf '  %-24s %s\n' 'RESPONSE_DIR' 'Exact protected six-file response directory'
@@ -231,9 +241,17 @@ verify: check-dev-toolchain check-test-container-profile check-container-wrapper
 ## Run local static checks with supplemental parallel pytest
 verify-parallel: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test-parallel
 
-## Create or resume and collect one exact host-local PKI request
+## Create or resume one exact direct host-local PKI request
 registry-pki-request: _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
-	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-request.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-request.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+
+## Create and controller-collect one compatibility PKI request
+registry-pki-request-controller-local: _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-request.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=controller-local -e registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+
+## Authenticate one locally retrieved exact three-file direct request
+registry-pki-request-intake: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-request-sha256 _guard-pki-csr-sha256 _guard-pki-csr-spki-sha256 _guard-pki-transport-host-key-sha256 _guard-pki-request-dir
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-request-intake.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_request_sha256=$(REQUEST_SHA256) -e pki_host_local_certificate_csr_sha256=$(CSR_SHA256) -e pki_host_local_certificate_csr_spki_sha256=$(CSR_SPKI_SHA256) -e pki_host_local_certificate_transport_host_key_sha256=$(TRANSPORT_HOST_KEY_SHA256) -e pki_host_local_certificate_request_source_dir=$(REQUEST_DIR))
 
 ## Abandon one exact expired host-local PKI request
 registry-pki-abandon-expired-request: _guard-pki-env _guard-pki-limit _guard-pki-request-id
@@ -255,9 +273,13 @@ registry-pki-status: _guard-pki-env _guard-pki-limit _guard-pki-status-coordinat
 registry-pki-response-check: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-response-dir
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-response-check.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_response_source_dir=$(RESPONSE_DIR))
 
-## Interactively activate one exact response and validate it from one runner
+## Interactively activate one directly staged response and validate it
 registry-pki-activate: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-runner
-	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
+
+## Activate one controller-transferred compatibility response
+registry-pki-activate-controller-local: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-runner
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=controller-local -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
 ## Recover only the journal-bound host-local PKI transaction
 registry-pki-recover: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact
@@ -267,17 +289,29 @@ registry-pki-recover: _guard-pki-env _guard-pki-limit _guard-pki-request-id _gua
 registry-pki-publish-rolled-back-evidence: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-runner
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-publish-rolled-back-evidence.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
-## Export one exact authenticated five-file deployment evidence attempt
+## Report direct coordinates for one exact five-file evidence attempt
 registry-pki-evidence-export: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment
-	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-evidence-export.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256))
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-evidence-export.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256))
+
+## Controller-collect one exact compatibility evidence attempt
+registry-pki-evidence-export-controller-local: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-evidence-export.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=controller-local -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256))
+
+## Authenticate one locally retrieved exact five-file direct evidence attempt
+registry-pki-evidence-intake: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-evidence-dir
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-evidence-intake.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_evidence_source_dir=$(EVIDENCE_DIR))
 
 ## Revalidate one exported deployment before an offline signer decision
 registry-pki-decision-preflight: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-runner
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-decision-preflight.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
-## Import one exact authenticated terminal signer outcome
-registry-pki-outcome-import: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome-dir _guard-pki-outcome
-	@PLATFORM_CONFIG_PKI_OUTCOME_DIR=$(call sh_quote,$(OUTCOME_DIR)) $(MAKE) apply PLAYBOOK=playbooks/registry-pki-outcome-import.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_outcome_source_dir=/platform-pki-outcome -e pki_host_local_certificate_outcome_sha256=$(OUTCOME_SHA256))
+## Import one exact outcome already staged in the fixed target spool
+registry-pki-outcome-import: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-outcome-import.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_outcome_sha256=$(OUTCOME_SHA256))
+
+## Transfer and import one controller-local compatibility outcome
+registry-pki-outcome-import-controller-local: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome-dir _guard-pki-outcome
+	@PLATFORM_CONFIG_PKI_OUTCOME_DIR=$(call sh_quote,$(OUTCOME_DIR)) $(MAKE) apply PLAYBOOK=playbooks/registry-pki-outcome-import.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=controller-local -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_outcome_source_dir=/platform-pki-outcome -e pki_host_local_certificate_outcome_sha256=$(OUTCOME_SHA256))
 
 ## Run read-only pristine storage fixture checks
 storage-test-preflight: _guard-storage-test
@@ -403,14 +437,29 @@ _guard-pki-request-id:
 _guard-pki-request-sha256:
 	@value=$(call sh_quote,$(REQUEST_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'REQUEST_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
 
+_guard-pki-csr-sha256:
+	@value=$(call sh_quote,$(CSR_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'CSR_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
+
+_guard-pki-csr-spki-sha256:
+	@value=$(call sh_quote,$(CSR_SPKI_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'CSR_SPKI_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
+
+_guard-pki-transport-host-key-sha256:
+	@value=$(call sh_quote,$(TRANSPORT_HOST_KEY_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'TRANSPORT_HOST_KEY_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
+
 _guard-pki-request-ttl:
 	@value=$(call sh_quote,$(REQUEST_TTL_SECONDS)); test "$${#value}" -le 6 && case "$$value" in 0|0*|*[!0-9]*) false ;; *) true ;; esac && test "$$value" -le 604800 || { printf '%s\n' 'REQUEST_TTL_SECONDS must be a canonical integer from 1 through 604800.' >&2; exit 1; }
+
+_guard-pki-request-dir:
+	@value=$(call sh_quote,$(REQUEST_DIR)); case "$$value" in /|*/|*//*|*/./*|*/../*|*/.|*/..|*[!A-Za-z0-9_./-]*) printf '%s\n' 'REQUEST_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; /*) ;; *) printf '%s\n' 'REQUEST_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; esac
 
 _guard-pki-artifact:
 	@value=$(call sh_quote,$(ARTIFACT_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'ARTIFACT_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
 
 _guard-pki-deployment:
 	@value=$(call sh_quote,$(DEPLOYMENT_SHA256)); test "$${#value}" -eq 64 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'DEPLOYMENT_SHA256 must be exactly 64 lowercase hexadecimal characters.' >&2; exit 1; }
+
+_guard-pki-evidence-dir:
+	@value=$(call sh_quote,$(EVIDENCE_DIR)); case "$$value" in /|*/|*//*|*/./*|*/../*|*/.|*/..|*[!A-Za-z0-9_./-]*) printf '%s\n' 'EVIDENCE_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; /*) ;; *) printf '%s\n' 'EVIDENCE_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; esac
 
 _guard-pki-outcome-dir:
 	@value=$(call sh_quote,$(OUTCOME_DIR)); case "$$value" in /|*/|*//*|*/./*|*/../*|*/.|*/..|*[!A-Za-z0-9_./-]*) printf '%s\n' 'OUTCOME_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; /*) ;; *) printf '%s\n' 'OUTCOME_DIR must be one exact canonical absolute protected directory.' >&2; exit 1 ;; esac

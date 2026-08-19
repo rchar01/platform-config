@@ -41,6 +41,9 @@ and other secrets belong outside Git.
 - [Registry](registry.md): Zot registry access, host-local certificate lifecycle,
   authentication, OCI smoke tests, client tools, Kubernetes pulls, and
   image-signing considerations.
+- [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
+  end-to-end request, offline signing, activation, evidence, terminal outcome,
+  recovery, backup, and local-verification procedure.
 - [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.

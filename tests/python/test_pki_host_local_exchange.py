@@ -24,10 +24,12 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from plugins.action import platform_pki_request_collection as collection_action
 from plugins.action import platform_pki_evidence_collection as evidence_action
+from plugins.action import platform_pki_evidence_intake as evidence_intake_action
 from plugins.action import platform_pki_evidence_status as evidence_status_action
 from plugins.action import platform_pki_response_ingress as ingress_action
 from plugins.action import platform_pki_response_intake as response_action
 from plugins.action import platform_pki_outcome_import as outcome_action
+from plugins.action import platform_pki_request_intake as request_intake_action
 from plugins.module_utils import platform_pki_exchange as exchange_module
 from plugins.module_utils.platform_pki_exchange import (
     ARTIFACT_FIELDS,
@@ -71,6 +73,17 @@ REQUEST_ID = "0123456789abcdef0123456789abcdef"
 SERVICE = "registry-test"
 TARGET = "test-target"
 RESPONSE_PRINCIPAL = "test-response"
+
+
+def _run_local_intake_action(
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    args: dict[str, object],
+) -> dict[str, object]:
+    monkeypatch.setattr(module.ActionBase, "run", lambda self, **kwargs: {})
+    action = object.__new__(module.ActionModule)
+    action._task = SimpleNamespace(args=args, check_mode=False)
+    return action.run(task_vars={})
 
 
 def _private_dir(path: Path) -> Path:
@@ -688,6 +701,173 @@ def _publish_evidence_material(
         tree.close()
         evidence_parent.close()
         parent.close()
+
+
+def test_direct_request_intake_authenticates_publishes_and_is_idempotent(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        _files,
+        bindings,
+        request_source,
+        trust_paths,
+        trust_digests,
+        _response_key,
+        _leaf_key,
+    ) = _request_material(isolated_test_dir)
+    exchange = _private_dir(isolated_test_dir / "direct-request-exchange")
+    args = {
+        "request_dir": os.fspath(request_source),
+        "exchange_root": os.fspath(exchange),
+        "service": bindings["service"],
+        "target": bindings["target"],
+        "transport_host_key_sha256": bindings["transport_host_key_sha256"],
+        "inventory_sha256": bindings["inventory_sha256"],
+        "profile": bindings["profile"],
+        "requester_principal": bindings["requester_principal"],
+        "response_principal": bindings["response_principal"],
+        "common_name": bindings["common_name"],
+        "dns_sans": bindings["dns_sans"],
+        "ip_sans": bindings["ip_sans"],
+        "trust_paths": trust_paths,
+        "trust_sha256": trust_digests,
+        "expected_request_sha256": bindings["expected_request_sha256"],
+        "expected_csr_sha256": bindings["expected_csr_sha256"],
+        "expected_csr_spki_sha256": bindings["expected_csr_spki_sha256"],
+        "request_id": bindings["request_id"],
+    }
+
+    assert request_intake_action.ActionModule.TRANSFERS_FILES is False
+    collected = _run_local_intake_action(monkeypatch, request_intake_action, args)
+    assert collected == {
+        "changed": True,
+        "status": "collected",
+        "request_id": REQUEST_ID,
+        "request_dir": os.fspath(exchange / SERVICE / REQUEST_ID / "request"),
+        "trust_dir": os.fspath(exchange / SERVICE / REQUEST_ID / "trust"),
+        "request_sha256": bindings["expected_request_sha256"],
+        "csr_sha256": bindings["expected_csr_sha256"],
+        "csr_spki_sha256": bindings["expected_csr_spki_sha256"],
+        "transport": "ssh",
+        "transport_host_key_sha256": bindings["transport_host_key_sha256"],
+    }
+    receipt = parse_record(
+        exchange.joinpath(SERVICE, REQUEST_ID, "request", "collection-receipt").read_bytes(),
+        RECEIPT_FIELDS,
+        "direct request receipt",
+    )
+    assert receipt["transport"] == "ssh"
+    assert receipt["transport_host_key_sha256"] == bindings["transport_host_key_sha256"]
+
+    existing = _run_local_intake_action(monkeypatch, request_intake_action, args)
+    assert existing == {**collected, "changed": False, "status": "existing"}
+
+
+def test_direct_evidence_intake_authenticates_publishes_and_is_idempotent(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_source, exchange, evidence_args, _signing_key = _evidence_material(
+        isolated_test_dir
+    )
+    args = {
+        "evidence_dir": os.fspath(evidence_source),
+        "exchange_root": os.fspath(exchange),
+        "service": evidence_args["service"],
+        "target": evidence_args["target"],
+        "request_id": evidence_args["request_id"],
+        "artifact_sha256": evidence_args["artifact_sha256"],
+        "deployment_sha256": evidence_args["deployment_sha256"],
+    }
+
+    assert evidence_intake_action.ActionModule.TRANSFERS_FILES is False
+    collected = _run_local_intake_action(monkeypatch, evidence_intake_action, args)
+    assert collected == {
+        "changed": True,
+        "status": "collected",
+        "request_id": REQUEST_ID,
+        "evidence_dir": os.fspath(
+            exchange
+            / SERVICE
+            / REQUEST_ID
+            / "evidence"
+            / str(evidence_args["deployment_sha256"])
+        ),
+        "deployment_sha256": evidence_args["deployment_sha256"],
+        "artifact_sha256": evidence_args["artifact_sha256"],
+        "action": "finalize",
+        "result": "activated",
+        "validation_boundary_sha256": sha256(
+            evidence_source.joinpath("validation-boundary").read_bytes()
+        ),
+        "validation_result_sha256": sha256(
+            evidence_source.joinpath("validation-result").read_bytes()
+        ),
+    }
+    existing = _run_local_intake_action(monkeypatch, evidence_intake_action, args)
+    assert existing == {**collected, "changed": False, "status": "existing"}
+
+
+def test_direct_request_intake_rejects_an_extra_source_entry(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        _files,
+        bindings,
+        request_source,
+        trust_paths,
+        trust_digests,
+        _response_key,
+        _leaf_key,
+    ) = _request_material(isolated_test_dir)
+    _private_file(request_source / "unexpected", b"unexpected\n")
+    exchange = _private_dir(isolated_test_dir / "rejected-request-exchange")
+    args = {
+        "request_dir": os.fspath(request_source),
+        "exchange_root": os.fspath(exchange),
+        "service": bindings["service"],
+        "target": bindings["target"],
+        "transport_host_key_sha256": bindings["transport_host_key_sha256"],
+        "inventory_sha256": bindings["inventory_sha256"],
+        "profile": bindings["profile"],
+        "requester_principal": bindings["requester_principal"],
+        "response_principal": bindings["response_principal"],
+        "common_name": bindings["common_name"],
+        "dns_sans": bindings["dns_sans"],
+        "ip_sans": bindings["ip_sans"],
+        "trust_paths": trust_paths,
+        "trust_sha256": trust_digests,
+        "expected_request_sha256": bindings["expected_request_sha256"],
+        "expected_csr_sha256": bindings["expected_csr_sha256"],
+        "expected_csr_spki_sha256": bindings["expected_csr_spki_sha256"],
+        "request_id": bindings["request_id"],
+    }
+
+    with pytest.raises(AnsibleActionFail, match="exact fixed file set"):
+        _run_local_intake_action(monkeypatch, request_intake_action, args)
+
+
+def test_direct_evidence_intake_rejects_wrong_deployment_coordinate(
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence_source, exchange, evidence_args, _signing_key = _evidence_material(
+        isolated_test_dir
+    )
+    args = {
+        "evidence_dir": os.fspath(evidence_source),
+        "exchange_root": os.fspath(exchange),
+        "service": evidence_args["service"],
+        "target": evidence_args["target"],
+        "request_id": evidence_args["request_id"],
+        "artifact_sha256": evidence_args["artifact_sha256"],
+        "deployment_sha256": "f" * 64,
+    }
+
+    with pytest.raises(AnsibleActionFail, match="digest differs from its coordinate"):
+        _run_local_intake_action(monkeypatch, evidence_intake_action, args)
 
 
 def _outcome_material(

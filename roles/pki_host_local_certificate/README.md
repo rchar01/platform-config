@@ -13,9 +13,11 @@ Use only these structural playbooks:
   validation boundary on one exact target and one distinct runner. The
   certificate lifecycle role does not import that prerequisite role.
 - `registry-pki-trust.yml` bootstraps the exact reviewed five-file target trust.
-- `registry-pki-request.yml` creates or validates a target-local request and,
-  outside check mode, collects only `tls.csr`, `request`, and `request.sig` into
-  the protected controller exchange.
+- `registry-pki-request.yml` creates or validates a target-local request. Direct
+  mode exposes only the three public files through the fixed SSH facade;
+  controller-local compatibility mode uses the original Ansible collection.
+- `registry-pki-request-intake.yml` authenticates an already retrieved exact
+  three-file request locally and atomically publishes request plus frozen trust.
 - `registry-pki-abandon-expired-request.yml` removes only one exact authenticated
   expired pending request. It refuses unexpired requests and any response,
   version, active, evidence, or unresolved journal state for that request.
@@ -32,13 +34,15 @@ Use only these structural playbooks:
   publishes signed target evidence.
 - `registry-pki-recover.yml` explicitly performs only the recovery encoded by
   the lifecycle journal and then reads status.
-- `registry-pki-evidence-export.yml` collects one exact authenticated target
-  evidence attempt into the controller exchange.
+- `registry-pki-evidence-export.yml` reports exact direct retrieval coordinates,
+  or collects through Ansible only in controller-local compatibility mode.
+- `registry-pki-evidence-intake.yml` authenticates an already retrieved exact
+  five-file evidence attempt locally and publishes it by deployment digest.
 - `registry-pki-decision-preflight.yml` binds controller-exported evidence to
   current target status and a fresh read-only runner observation.
-- `registry-pki-outcome-import.yml` authenticates one exact six-file terminal
-  signer package on the controller and target, then publishes immutable target
-  history and its accepted pointer.
+- `registry-pki-outcome-import.yml` imports one exact terminal signer package
+  already staged in the fixed target spool. Compatibility mode retains the
+  original controller transfer action.
 
 Trust, request, expired-request abandonment, activation, and recovery remain
 explicit operator actions. Request lifetime defaults to 3600 seconds and may be
@@ -50,6 +54,21 @@ Zot certificate file. Zot may serve a concatenated fullchain, but the digest in
 `current_cert_sha256` remains the signer-managed leaf certificate digest used
 by CSR history and candidate finalization.
 Renewal, archive cleanup, and live inventory enablement remain outside this role.
+
+## Exchange Modes
+
+`pki_host_local_certificate_exchange_mode` accepts only `direct` or
+`controller-local` and defaults to `direct`. Direct mode never reaches
+`platform_pki_request_collection`, `platform_pki_response_ingress`,
+`platform_pki_evidence_collection`, or `platform_pki_outcome_import`.
+
+Direct movement is an explicit operator command using
+`scripts/platform-pki-direct-exchange` and the target-only
+`platform-pki-host-local-exchange` facade. Ansible does not run SSH package
+movement or GitLab network commands. Local request/evidence intake uses
+controller-only action plugins with no target connection and no Ansible file
+transfer. Compatibility behavior is selected only by a documented
+`*-controller-local` Make target or an explicit mode variable.
 
 ## Fixed Helpers
 
@@ -70,8 +89,9 @@ controller-side copy operations that handle `tls.key`.
 
 ## Frozen Inputs
 
-All operational values default to inert empty strings, empty mappings, zeroes,
-or `false`, except fixed helper and namespace paths. An operator must supply the
+Operational values default to inert empty strings, empty mappings, zeroes, or
+`false`, except fixed helper and namespace paths, the fixed Zot config path, and
+the fail-closed `direct` exchange mode. An operator must supply the
 exact request, artifact, response-file digest mapping, validation boundary,
 reviewed CA, endpoint, runner, lifetime, rollback, and phase bindings required
 by the selected entry point.
@@ -110,21 +130,26 @@ Status, evidence export, and decision preflight never create or update helper
 files. They require exact existing mode-`0755` lifecycle or validator helpers,
 including in check mode. When status receives a deployment digest, it first
 authenticates that exact controller evidence publication with
-`platform_pki_evidence_status`; only verified final/activated evidence permits
-the controller-exported flag to reach target status. Status does not contact
+`platform_pki_evidence_status`; verified `finalize/activated`,
+`abandon/not-activated`, or `abandon/rolled-back` evidence permits the
+controller-exported flag to reach target status. Status does not contact
 controller evidence when the deployment digest is empty.
 
-Outcome import reuses the installed lifecycle helper, response principal,
-controller-frozen response/deployer trust, and target-frozen trust. It accepts no
-key or new trust input. The source is one absolute mode-`0700` current-user
-directory containing exactly the six upstream files at mode `0600` with one link
-each. In normal mode the action transfers only those bytes through a randomized
-root-owned mode-`0700` stage, marks the byte-bearing task `no_log`, and requires
-exact cleanup before returning. Check mode completes controller authentication
-and rechecks first, then invokes only the read-only scalar target preflight
-through Ansible's safely quoted, become-aware low-level connection path. It does
-not execute an Ansible module and creates no AnsiballZ payload, stage, or Ansible
-temporary transfer path.
+Controller-local outcome import reuses the installed lifecycle helper, response
+principal, controller-frozen response/deployer trust, and target-frozen trust.
+It accepts no key or new trust input. The source is one absolute mode-`0700`
+current-user directory containing exactly six mode-`0600`, singly linked files.
+The compatibility action transfers only those bytes through a randomized
+root-owned stage. Check mode authenticates controller bytes and invokes the
+read-only target preflight without transferring outcome bytes.
+
+Direct outcome import derives its only source as
+`EXCHANGE_SPOOL_ROOT/outcomes/REQUEST_ID/OUTCOME_SHA256`; callers cannot supply
+another path. `outcome-import --check` opens and authenticates that exact
+six-file stage under a shared lifecycle lock and returns `would-import` or
+`existing` without mutation. Normal import returns `imported` or `existing`.
+Only then may the fixed facade remove that exact stage after proving it equals
+immutable accepted history. Neither path reads `tls.key`.
 
 The importer never stats, opens, reads, hashes, stages, or transfers a candidate,
 version, or restored managed private-key file. Managed rollback validation parses
@@ -201,11 +226,12 @@ Zot must reference the immutable version files under
 
 Decision preflight supplies the exact exported deployment digest to status, so
 the lifecycle helper must authenticate matching target evidence and report
-`evidence-exported`. The delegated runner then validates the exact active leaf,
+`evidence-exported` before outcome import or `complete` with a finalized signer
+outcome afterward. The delegated runner then validates the exact active leaf,
 expected served intermediate, reviewed boundary, reviewed CA digest, and HTTPS
-`/v2/` endpoint. The canonical observation must be no more than 300 seconds
-from the controller observation time. No observation file is copied and no Zot
-state is changed. A successful run emits only a safe assertion summary binding
+`/v2/` endpoint. The canonical observation must be no more than 300 seconds from
+the controller observation time. No observation file is copied and no Zot state
+is changed. A successful run emits only a safe assertion summary binding
 service, target, request, artifact, deployment, observed epoch, the exact
 observed-plus-300 expiry epoch, and `result=passed`.
 

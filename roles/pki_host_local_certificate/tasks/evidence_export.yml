@@ -32,6 +32,7 @@
     artifact_sha256: "{{ pki_host_local_certificate_artifact_manifest_sha256 }}"
     deployment_sha256: "{{ pki_host_local_certificate_deployment_sha256 }}"
   register: pki_host_local_certificate_evidence_collection_result
+  when: pki_host_local_certificate_exchange_mode == 'controller-local'
 
 - name: Validate exact evidence collection metadata
   ansible.builtin.assert:
@@ -72,3 +73,19 @@
         else 'abandonment-evidence-exported'
       }}
     fail_msg: Evidence collection returned metadata outside the exact deployment coordinates.
+  when: pki_host_local_certificate_exchange_mode == 'controller-local'
+
+- name: Publish exact direct evidence transfer coordinates
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_exchange_mode == 'direct'
+    success_msg: >-
+      request={{ pki_host_local_certificate_request_id }}
+      artifact={{ pki_host_local_certificate_artifact_manifest_sha256 }}
+      deployment={{ pki_host_local_certificate_deployment_sha256 }}
+      next=scripts/platform-pki-direct-exchange evidence-pull ENDPOINT_RECORD
+      {{ pki_host_local_certificate_request_id }}
+      {{ pki_host_local_certificate_artifact_manifest_sha256 }}
+      {{ pki_host_local_certificate_deployment_sha256 }} OUTPUT_DIR
+    fail_msg: Direct evidence export requires the direct exchange mode.
+  when: pki_host_local_certificate_exchange_mode == 'direct'

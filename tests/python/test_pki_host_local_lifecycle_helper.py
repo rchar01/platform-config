@@ -563,7 +563,7 @@ class LifecycleCase:
         check: bool = False,
         environment: dict[str, str] | None = None,
     ) -> CommandResult:
-        command = "outcome-preflight" if check else "outcome-import"
+        command = "outcome-import"
         argv = [
             *self.common(command, config=True),
             "--trust-id", "reviewed-v1",
@@ -572,28 +572,9 @@ class LifecycleCase:
             "--deployment-sha256", deployment_sha256,
             "--outcome-sha256", outcome_sha256,
         ]
+        argv.extend(("--outcome-dir", package))
         if check:
-            decision = self.module.parse_record(
-                package.joinpath("decision").read_bytes(),
-                self.module.DECISION_FIELDS,
-                "preflight fixture decision",
-            )
-            outcome = self.module.parse_record(
-                package.joinpath("outcome").read_bytes(),
-                self.module.OUTCOME_FIELDS,
-                "preflight fixture outcome",
-            )
-            argv.extend((
-                "--decision-sha256", digest(package / "decision"),
-                "--outcome-principal", outcome["outcome_principal"],
-            ))
-            for field in self.module.DECISION_FIELDS:
-                if field != "schema":
-                    argv.extend((
-                        f"--decision-{field.replace('_', '-')}", decision[field]
-                    ))
-        else:
-            argv.extend(("--outcome-dir", package))
+            argv.append("--check")
         return self.run(argv, environment=environment)
 
 
