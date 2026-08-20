@@ -6,6 +6,17 @@ This file gives a short, release-oriented view of what changed between versions.
 
 No user-visible changes yet.
 
+## v3.0.1 - 2026-08-20
+
+This patch restores normal registry convergence for hosts upgrading directly
+from v2.0.0 through v2.0.2.
+
+### Fixes
+
+- Replace only the exact trusted v2 lifecycle helper with the shipped v3 helper
+  before Zot custody selection. Unknown drift, unsafe metadata, source drift,
+  initialized state without a helper, and check mode continue to fail closed.
+
 ## v3.0.0 - 2026-08-20
 
 This release removes workflow-state inventory edits from registry host-local PKI
