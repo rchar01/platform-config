@@ -103,9 +103,9 @@ commands may therefore execute at that point as part of policy evaluation.
 The Make defaults remain `../platform-private/config/...`. In a coordinated
 worktree, set `PLATFORM_CONFIG_PRIVATE_ROOT` to the sibling `platform-private`
 checkout if it is not at the wrapper's detected repository-parent location. The
-wrapper mounts that root at `/platform-private` and at the container `$HOME`
-path used by the supplied environment example, so the private environment and
-inventory paths remain container-visible.
+wrapper mounts that root read-only at `/platform-private`. From the container
+repository root `/workspace`, the default sibling paths therefore remain
+container-visible.
 
 ## Evidence
 

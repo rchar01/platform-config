@@ -614,19 +614,59 @@ def test_storage_test_helper_rejects_unclean_or_duplicate_recap(
     assert "exactly one clean row" in result.stderr
 
 
-def test_storage_test_private_example_and_wrapper_path_contract(repo_root: Path) -> None:
+def test_storage_test_private_example_and_wrapper_path_contract(
+    repo_root: Path, command_runner: CommandRunner
+) -> None:
     example = (repo_root / "examples/private-config/config-test.ansible.env.example").read_text(
         encoding="utf-8"
     )
     wrapper = (repo_root / "scripts/in-container").read_text(encoding="utf-8")
     makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
-    assert 'PLATFORM_PRIVATE_CONFIG_ROOT="$HOME/Projects/public/platform-private/config"' in example
+    assert 'PLATFORM_PRIVATE_CONFIG_ROOT="${PLATFORM_PRIVATE_CONFIG_ROOT:-../platform-private/config}"' in example
     assert 'PLATFORM_CONFIG_INVENTORY="$PLATFORM_PRIVATE_CONFIG_ROOT/inventories/config-test/hosts.yml"' in example
     assert "PRIVATE_CONFIG_ROOT ?= ../platform-private/config" in makefile
     assert "storage-test-preflight: _guard-storage-test\n" in makefile
     assert '--env-file "$(ENV_FILE)" --inventory "$(INVENTORY)"' in makefile
     assert 'podman_args+=(--volume "$private_root:/platform-private:ro")' in wrapper
-    assert 'podman_args+=(--volume "$private_root:/tmp/platform-home/Projects/public/platform-private:ro")' in wrapper
+    assert wrapper.count('podman_args+=(--volume "$private_root:') == 1
+
+    default_result = command_runner.run(
+        [
+            "sh",
+            "-c",
+            (
+                'unset PLATFORM_PRIVATE_CONFIG_ROOT; . "$1"; '
+                'printf "%s\\n%s\\n" "$PLATFORM_PRIVATE_CONFIG_ROOT" '
+                '"$PLATFORM_CONFIG_INVENTORY"'
+            ),
+            "private-example",
+            repo_root / "examples/private-config/config-test.ansible.env.example",
+        ],
+        cwd=repo_root,
+    ).assert_success()
+    assert default_result.stdout.splitlines() == [
+        "../platform-private/config",
+        "../platform-private/config/inventories/config-test/hosts.yml",
+    ]
+
+    override_result = command_runner.run(
+        [
+            "sh",
+            "-c",
+            (
+                '. "$1"; printf "%s\\n%s\\n" '
+                '"$PLATFORM_PRIVATE_CONFIG_ROOT" "$PLATFORM_CONFIG_INVENTORY"'
+            ),
+            "private-example",
+            repo_root / "examples/private-config/config-test.ansible.env.example",
+        ],
+        cwd=repo_root,
+        environment={"PLATFORM_PRIVATE_CONFIG_ROOT": "/reviewed/private/config"},
+    ).assert_success()
+    assert override_result.stdout.splitlines() == [
+        "/reviewed/private/config",
+        "/reviewed/private/config/inventories/config-test/hosts.yml",
+    ]
 
 
 def test_storage_test_playbook_rejects_all_ssh_option_surfaces(repo_root: Path) -> None:

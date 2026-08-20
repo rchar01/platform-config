@@ -1082,15 +1082,10 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     private_home_permissions = in_container[
         in_container.index("chmod 0700") : in_container.index('case "$profile"')
     ]
-    for private_home_ancestor in (
-        '"$tmp_home/.config"',
-        '"$tmp_home/Projects"',
-        '"$tmp_home/Projects/public"',
-    ):
-        if private_home_ancestor not in private_home_permissions:
-            raise BoundaryViolation(
-                "controller private-source mount ancestry is not owner-only"
-            )
+    if '"$tmp_home/.config"' not in private_home_permissions:
+        raise BoundaryViolation(
+            "controller private-source mount ancestry is not owner-only"
+        )
     defaults = _load_yaml(role_dir / "defaults/main.yml")
     tasks = _load_yaml(role_dir / "tasks/main.yml")
     validation_tasks = _load_yaml(role_dir / "tasks/validate.yml")

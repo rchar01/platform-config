@@ -179,12 +179,11 @@ bootstrap/
 +-- platform-private/
 ```
 
-When the VM cannot clone the repositories, create one plaintext archive on the
-source host:
+When the VM cannot clone the repositories, run these commands from the directory
+containing both sibling repositories on the source host:
 
 ```bash
-tar -C "$HOME/Projects/public" -czf "$HOME/platform-bootstrap.tgz" \
-  platform-config platform-private
+tar -czf "$HOME/platform-bootstrap.tgz" platform-config platform-private
 scp "$HOME/platform-bootstrap.tgz" example-user@192.0.2.50:/tmp/
 ```
 

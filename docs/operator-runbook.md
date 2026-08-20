@@ -125,11 +125,15 @@ The normal private files are:
 Each file exports only path and environment selection values:
 
 ```bash
-export PLATFORM_PRIVATE_CONFIG_ROOT="$HOME/Projects/public/platform-private/config"
+export PLATFORM_PRIVATE_CONFIG_ROOT="${PLATFORM_PRIVATE_CONFIG_ROOT:-../platform-private/config}"
 export PLATFORM_INFRASTRUCTURE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/platform-infrastructure/config"
 export PLATFORM_CONFIG_ENVIRONMENT="homelab"
 export PLATFORM_CONFIG_INVENTORY="$PLATFORM_PRIVATE_CONFIG_ROOT/inventories/homelab/hosts.yml"
 ```
+
+Run these commands from the `platform-config` repository root. Set
+`PLATFORM_PRIVATE_CONFIG_ROOT` to an absolute config-directory path before
+sourcing a file when the private repository is not its sibling.
 
 Use a new shell or source the matching file when switching environments:
 

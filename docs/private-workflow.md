@@ -82,10 +82,15 @@ The `*.ansible.env` files should set paths and environment selection only. Do no
 
 ## Environment Files
 
+Run commands from the `platform-config` repository root. The examples use the
+sibling private repository by default; set `PLATFORM_PRIVATE_CONFIG_ROOT` to an
+absolute config-directory path before sourcing a file when using another
+layout.
+
 Homelab example:
 
 ```bash
-export PLATFORM_PRIVATE_CONFIG_ROOT="$HOME/Projects/public/platform-private/config"
+export PLATFORM_PRIVATE_CONFIG_ROOT="${PLATFORM_PRIVATE_CONFIG_ROOT:-../platform-private/config}"
 export PLATFORM_INFRASTRUCTURE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/platform-infrastructure/config"
 export PLATFORM_CONFIG_ENVIRONMENT="homelab"
 export PLATFORM_CONFIG_INVENTORY="$PLATFORM_PRIVATE_CONFIG_ROOT/inventories/homelab/hosts.yml"
@@ -94,7 +99,7 @@ export PLATFORM_CONFIG_INVENTORY="$PLATFORM_PRIVATE_CONFIG_ROOT/inventories/home
 Dev example:
 
 ```bash
-export PLATFORM_PRIVATE_CONFIG_ROOT="$HOME/Projects/public/platform-private/config"
+export PLATFORM_PRIVATE_CONFIG_ROOT="${PLATFORM_PRIVATE_CONFIG_ROOT:-../platform-private/config}"
 export PLATFORM_INFRASTRUCTURE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/platform-infrastructure/config"
 export PLATFORM_CONFIG_ENVIRONMENT="dev"
 export PLATFORM_CONFIG_INVENTORY="$PLATFORM_PRIVATE_CONFIG_ROOT/inventories/dev/hosts.yml"
