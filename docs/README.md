@@ -41,6 +41,9 @@ and other secrets belong outside Git.
 - [Registry](registry.md): Zot registry access, host-local certificate lifecycle,
   authentication, OCI smoke tests, client tools, Kubernetes pulls, and
   image-signing considerations.
+- [GitLab Runner Self-Bootstrap](gitlab-runner-self-bootstrap.md): Configure the
+  first managed runner from itself with the repository container, self-SSH,
+  private inventory, storage gates, and focused convergence.
 - [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
   end-to-end request, offline signing, activation, evidence, terminal outcome,
   recovery, backup, and local-verification procedure.

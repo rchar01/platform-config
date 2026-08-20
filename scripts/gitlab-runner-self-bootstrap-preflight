@@ -1,0 +1,1230 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016  # Single-quoted snippets expand inside sh -c or Python.
+set -uo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+
+usage() {
+  printf '%s\n' \
+    'Usage: gitlab-runner-self-bootstrap-preflight {inspect|build|connect|all} --env ENV --limit HOST --min-controller-free-gib N --min-root-free-gib N [--allow-dirty] [--connect-timeout SECONDS] [--connect-retries COUNT]' >&2
+}
+
+die() {
+  printf 'gitlab-runner-self-bootstrap-preflight: %s\n' "$1" >&2
+  exit 2
+}
+
+passes=0
+warnings=0
+failures=0
+
+pass() {
+  passes=$((passes + 1))
+  printf '[PASS] %-36s %s\n' "$1" "$2"
+}
+
+warn() {
+  warnings=$((warnings + 1))
+  printf '[WARN] %-36s %s\n' "$1" "$2"
+}
+
+fail() {
+  failures=$((failures + 1))
+  printf '[FAIL] %-36s %s\n' "$1" "$2" >&2
+}
+
+skip() {
+  printf '[SKIP] %-36s %s\n' "$1" "$2"
+}
+
+summary() {
+  printf '\nPassed: %d\nWarnings: %d\nFailed: %d\n' "$passes" "$warnings" "$failures"
+  if ((failures == 0)); then
+    printf 'Result: READY\n'
+    return 0
+  fi
+  printf 'Result: NOT READY\n'
+  return 1
+}
+
+require_command() {
+  if command -v -- "$1" >/dev/null 2>&1; then
+    pass "host.command.$1" "available"
+  else
+    fail "host.command.$1" "required command is missing"
+  fi
+}
+
+check_worktree() {
+  local label=$1 path=$2 commit worktree_status
+  if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    fail "repository.$label" "not a Git worktree: $path"
+    return
+  fi
+  if ! commit=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null); then
+    fail "repository.$label" "has no resolvable HEAD"
+    return
+  fi
+  pass "repository.$label" "commit ${commit:0:12}"
+  if ! worktree_status=$(git -C "$path" status --porcelain=v1 --untracked-files=normal 2>/dev/null); then
+    fail "repository.$label.clean" "could not inspect worktree status"
+  elif [[ -z $worktree_status ]]; then
+    pass "repository.$label.clean" "worktree is clean"
+  elif [[ $allow_dirty == true ]]; then
+    warn "repository.$label.clean" "dirty worktree allowed explicitly"
+  else
+    fail "repository.$label.clean" "worktree is dirty; review it or use --allow-dirty"
+  fi
+  if git -C "$path" diff --check >/dev/null 2>&1; then
+    pass "repository.$label.diff" "no whitespace errors"
+  else
+    fail "repository.$label.diff" "git diff --check failed"
+  fi
+}
+
+check_space() {
+  local label=$1 path=$2 minimum=$3 available_kib required_kib
+  if [[ ! -e $path ]]; then
+    fail "$label" "path does not exist: $path"
+    return
+  fi
+  if ! available_kib=$(df -Pk -- "$path" 2>/dev/null | awk 'NR == 2 { print $4 }'); then
+    fail "$label" "could not read free space for $path"
+    return
+  fi
+  if [[ ! $available_kib =~ ^[0-9]+$ ]]; then
+    fail "$label" "invalid free-space result for $path"
+    return
+  fi
+  required_kib=$((minimum * 1024 * 1024))
+  if ((available_kib >= required_kib)); then
+    pass "$label" "$((available_kib / 1024 / 1024)) GiB free, minimum ${minimum} GiB"
+  else
+    fail "$label" "$((available_kib / 1024 / 1024)) GiB free, minimum ${minimum} GiB"
+  fi
+}
+
+run_in_environment() {
+  "$repo_root/scripts/in-container" sh -c \
+    '. "$1"; shift; exec "$@"' \
+    platform-self-bootstrap "$container_env_file" "$@"
+}
+
+json_value() {
+  python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+for part in sys.argv[1].split("."):
+    value = value.get(part) if isinstance(value, dict) else None
+if value is None:
+    print("")
+elif isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, (dict, list)):
+    print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+else:
+    print(value)
+' "$1"
+}
+
+operation=""
+environment=""
+limit=""
+min_controller_free_gib=""
+min_root_free_gib=""
+allow_dirty=false
+connect_timeout=10
+connect_retries=6
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+if [[ $1 == -h || $1 == --help ]]; then
+  usage
+  exit 0
+fi
+operation=$1
+shift
+case "$operation" in
+  inspect|build|connect|all) ;;
+  *) die "unsupported operation: $operation" ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      [[ $# -ge 2 ]] || die "--env requires a value"
+      environment=$2
+      shift 2
+      ;;
+    --limit)
+      [[ $# -ge 2 ]] || die "--limit requires a value"
+      limit=$2
+      shift 2
+      ;;
+    --min-controller-free-gib)
+      [[ $# -ge 2 ]] || die "--min-controller-free-gib requires a value"
+      min_controller_free_gib=$2
+      shift 2
+      ;;
+    --min-root-free-gib)
+      [[ $# -ge 2 ]] || die "--min-root-free-gib requires a value"
+      min_root_free_gib=$2
+      shift 2
+      ;;
+    --allow-dirty)
+      allow_dirty=true
+      shift
+      ;;
+    --connect-timeout)
+      [[ $# -ge 2 ]] || die "--connect-timeout requires a value"
+      connect_timeout=$2
+      shift 2
+      ;;
+    --connect-retries)
+      [[ $# -ge 2 ]] || die "--connect-retries requires a value"
+      connect_retries=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unexpected argument: $1" ;;
+  esac
+done
+
+[[ $environment =~ ^[a-z][a-z0-9-]*$ ]] || die "--env must be a literal environment name"
+[[ $limit =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--limit must be one literal inventory hostname"
+[[ $min_controller_free_gib =~ ^[1-9][0-9]*$ ]] || die "--min-controller-free-gib must be a positive integer"
+[[ $min_root_free_gib =~ ^[1-9][0-9]*$ ]] || die "--min-root-free-gib must be a positive integer"
+[[ $connect_timeout =~ ^[1-9][0-9]*$ ]] || die "--connect-timeout must be a positive integer"
+[[ $connect_retries =~ ^[1-9][0-9]*$ ]] || die "--connect-retries must be a positive integer"
+((min_controller_free_gib <= 1000000)) || die "--min-controller-free-gib is unreasonably large"
+((min_root_free_gib <= 1000000)) || die "--min-root-free-gib is unreasonably large"
+((connect_timeout <= 3600)) || die "--connect-timeout must not exceed 3600 seconds"
+((connect_retries <= 100)) || die "--connect-retries must not exceed 100"
+
+private_root=${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_root/../platform-private}
+secret_root=${PLATFORM_CONFIG_SECRET_ROOT:-$HOME/.config/platform-infrastructure}
+dev_image=${PLATFORM_CONFIG_DEV_IMAGE:-platform-config-dev:latest}
+env_file="$private_root/config/$environment.ansible.env"
+inventory="$private_root/config/inventories/$environment/hosts.yml"
+container_env_file="/platform-private/config/$environment.ansible.env"
+container_inventory="/platform-private/config/inventories/$environment/hosts.yml"
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/runner-self-bootstrap.XXXXXXXX") || die "could not create temporary directory"
+trap 'rm -rf "$tmp_dir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+inspect_phase() {
+  local command_name path metadata podman_info podman_values graph_root os_id arch pid1 root_nevra unit_files rootful_containers
+
+  printf '%s\n' '== Inspect host and repositories =='
+  printf '%s\n' 'Output contains private host and storage metadata; do not publish it.'
+
+  if ((EUID == 0)); then
+    fail "host.user.nonroot" "run as the bootstrap account, not root"
+  else
+    pass "host.user.nonroot" "running as $(id -un)"
+  fi
+  if [[ -d ${HOME:-} && -w ${HOME:-} ]]; then
+    pass "host.user.home" "writable home directory"
+  else
+    fail "host.user.home" "HOME is missing or not writable"
+  fi
+
+  for command_name in podman git make ssh ssh-keygen python3 sudo systemctl rpm dnf stat realpath df findmnt lsblk blkid wipefs ip getent timeout awk grep ps find sort uname; do
+    require_command "$command_name"
+  done
+
+  for path in Containerfile.dev Makefile ansible.cfg requirements-dev.txt requirements-test.txt requirements.yml scripts/in-container playbooks/bootstrap.yml playbooks/base-os.yml playbooks/storage-volumes.yml playbooks/container-runtime.yml playbooks/gitlab-runners.yml; do
+    if [[ -f $repo_root/$path && ! -L $repo_root/$path ]]; then
+      pass "repository.public.file" "$path"
+    else
+      fail "repository.public.file" "missing or symlinked: $path"
+    fi
+  done
+
+  check_worktree public "$repo_root"
+
+  if [[ -d $private_root && ! -L $private_root ]]; then
+    private_root=$(realpath --canonicalize-existing "$private_root")
+    pass "repository.private.path" "$private_root"
+    check_worktree private "$private_root"
+  else
+    fail "repository.private.path" "missing or symlinked sibling repository: $private_root"
+  fi
+
+  for path in "$env_file" "$inventory"; do
+    if [[ -f $path && ! -L $path ]]; then
+      pass "private.file" "$path"
+    else
+      fail "private.file" "missing, non-regular, or symlinked: $path"
+    fi
+  done
+
+  if [[ -d $secret_root && ! -L $secret_root ]]; then
+    metadata=$(stat -Lc '%u:%a:%F' -- "$secret_root" 2>/dev/null || true)
+    if [[ $metadata == "$(id -u):700:directory" ]]; then
+      pass "secret.root" "current-user-owned mode 0700"
+    else
+      fail "secret.root" "must be current-user-owned mode 0700: $secret_root"
+    fi
+  else
+    fail "secret.root" "missing or symlinked: $secret_root"
+  fi
+
+  if sudo -n true >/dev/null 2>&1; then
+    pass "host.privilege.sudo" "passwordless sudo works"
+  else
+    fail "host.privilege.sudo" "sudo -n true failed"
+  fi
+
+  podman_info=$(podman info --format json 2>/dev/null || true)
+  if [[ -n $podman_info ]] && podman_values=$(python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+host = data.get("host", {})
+store = data.get("store", {})
+security = host.get("security", {})
+rootless = security.get("rootless", host.get("rootless", False))
+graph = store.get("graphRoot", "")
+driver = store.get("graphDriverName", "")
+if rootless is not True or not graph or not driver:
+    raise SystemExit(1)
+print(graph)
+print(driver)
+' <<<"$podman_info" 2>/dev/null); then
+    mapfile -t podman_fields <<<"$podman_values"
+    graph_root=${podman_fields[0]:-}
+    pass "controller.podman.rootless" "driver ${podman_fields[1]:-unknown}"
+    check_space "capacity.controller" "$graph_root" "$min_controller_free_gib"
+  else
+    fail "controller.podman.rootless" "podman info did not report a usable rootless store"
+    check_space "capacity.controller" "$repo_root" "$min_controller_free_gib"
+  fi
+
+  os_id=""
+  if [[ -r /etc/os-release ]]; then
+    os_id=$(sh -c '. /etc/os-release; printf "%s" "${ID:-}"' 2>/dev/null || true)
+  fi
+  if [[ $os_id == rocky ]]; then
+    pass "host.os" "Rocky Linux"
+  else
+    fail "host.os" "expected Rocky Linux, found ${os_id:-unknown}"
+  fi
+  arch=$(uname -m 2>/dev/null || true)
+  if [[ $arch == x86_64 ]]; then
+    pass "host.architecture" "$arch"
+  else
+    fail "host.architecture" "expected x86_64, found ${arch:-unknown}"
+  fi
+  pid1=$(ps -p 1 -o comm= 2>/dev/null | awk '{$1=$1; print}' || true)
+  if [[ $pid1 == systemd ]]; then
+    pass "host.systemd" "systemd is PID 1"
+  else
+    fail "host.systemd" "systemd is not PID 1"
+  fi
+  if systemctl is-active --quiet sshd 2>/dev/null; then
+    pass "host.sshd" "active"
+  else
+    fail "host.sshd" "sshd is not active"
+  fi
+  if python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    pass "host.python" "$(python3 --version 2>&1)"
+  else
+    fail "host.python" "Python 3.11 or newer is required for tomllib"
+  fi
+
+  check_space "capacity.root" / "$min_root_free_gib"
+
+  if [[ -f /etc/logrotate.conf && ! -L /etc/logrotate.conf ]]; then
+    pass "host.logrotate" "/etc/logrotate.conf exists"
+  else
+    fail "host.logrotate" "/etc/logrotate.conf is missing or unsafe"
+  fi
+  if [[ -f /etc/cloud/templates/hosts.redhat.tmpl ]]; then
+    pass "host.cloud-init-template" "present"
+  else
+    warn "host.cloud-init-template" "absent; private inventory must disable template management"
+  fi
+  if [[ -d /sys/module/overlay ]] || grep -qw overlay /proc/filesystems 2>/dev/null || { command -v modinfo >/dev/null 2>&1 && modinfo overlay >/dev/null 2>&1; }; then
+    pass "host.kernel.overlayfs" "available"
+  else
+    fail "host.kernel.overlayfs" "OverlayFS is unavailable or could not be verified"
+  fi
+
+  root_nevra=$(rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman 2>/dev/null || true)
+  if [[ $root_nevra == podman-* ]]; then
+    pass "host.podman.package" "$root_nevra"
+  else
+    fail "host.podman.package" "Podman is not installed as an RPM"
+  fi
+
+  if sudo test ! -e /etc/gitlab-runner/config.toml; then
+    pass "runner.clean.config" "absent"
+  else
+    fail "runner.clean.config" "/etc/gitlab-runner/config.toml already exists"
+  fi
+  if sudo test ! -e /etc/containers/systemd/gitlab-runner.container; then
+    pass "runner.clean.quadlet" "absent"
+  else
+    fail "runner.clean.quadlet" "runner Quadlet already exists"
+  fi
+  if unit_files=$(systemctl list-unit-files gitlab-runner.service --no-legend 2>/dev/null); then
+    if grep -q '^gitlab-runner\.service' <<<"$unit_files"; then
+      fail "runner.clean.service" "gitlab-runner.service already exists"
+    else
+      pass "runner.clean.service" "absent"
+    fi
+  else
+    fail "runner.clean.service" "could not inspect systemd unit files"
+  fi
+  if sudo test ! -e /var/lib/containers/storage; then
+    pass "runner.clean.container" "no rootful Podman storage exists"
+  elif rootful_containers=$(sudo podman ps -a --format '{{.Names}}' 2>/dev/null); then
+    if grep -Fxq gitlab-runner <<<"$rootful_containers"; then
+      fail "runner.clean.container" "gitlab-runner container already exists"
+    else
+      pass "runner.clean.container" "absent"
+    fi
+  else
+    fail "runner.clean.container" "could not inspect existing rootful containers"
+  fi
+
+  path=/etc/dnf/plugins/versionlock.list
+  if sudo test ! -e "$path"; then
+    pass "host.podman.versionlock" "absent"
+  elif sudo test -f "$path" && ! sudo test -L "$path"; then
+    metadata=$(sudo stat -Lc '%U:%G:%a:%F' -- "$path" 2>/dev/null || true)
+    if [[ $metadata =~ ^root:root:[0-7]*[0145][0145]:regular\ file$ ]]; then
+      pass "host.podman.versionlock" "safe root-owned regular file"
+    else
+      fail "host.podman.versionlock" "unsafe metadata: $metadata"
+    fi
+  else
+    fail "host.podman.versionlock" "path is not a safe regular file"
+  fi
+}
+
+build_phase() {
+  local image_id mount_output
+  printf '\n%s\n' '== Build and validate controller image =='
+  if ((failures > 0)); then
+    skip "controller.image.build" "inspect phase failed"
+    return
+  fi
+  if make -C "$repo_root" container-build DEV_IMAGE="$dev_image"; then
+    pass "controller.image.build" "fresh build completed"
+  else
+    fail "controller.image.build" "make container-build failed"
+    return
+  fi
+  if PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" ./scripts/check-dev-toolchain >/dev/null; then
+    pass "controller.image.toolchain" "development toolchain is healthy"
+  else
+    fail "controller.image.toolchain" "toolchain check failed"
+  fi
+  if image_id=$(podman image inspect --format '{{.Id}}' "$dev_image" 2>/dev/null); then
+    pass "controller.image.identity" "$image_id"
+  else
+    fail "controller.image.identity" "built image cannot be inspected"
+  fi
+  if mount_output=$(PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" sh -c '
+set -eu
+test -f /workspace/Makefile
+test -r "$1"
+test -r /tmp/platform-home/.config/platform-infrastructure
+private_options=$(findmnt -n -o OPTIONS -T /platform-private)
+secret_options=$(findmnt -n -o OPTIONS -T /tmp/platform-home/.config/platform-infrastructure)
+case ",$private_options," in *,ro,*) ;; *) exit 1 ;; esac
+case ",$secret_options," in *,ro,*) ;; *) exit 1 ;; esac
+' platform-self-bootstrap "$container_env_file" 2>&1); then
+    pass "controller.image.mounts" "workspace available; private and secret mounts are read-only"
+  else
+    fail "controller.image.mounts" "container mount contract failed: ${mount_output:-no details}"
+  fi
+  if [[ -d $HOME/.ssh ]]; then
+    if PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" test -r /tmp/platform-home/.ssh >/dev/null 2>&1; then
+      pass "controller.image.ssh" "SSH directory is visible read-only"
+    else
+      fail "controller.image.ssh" "SSH directory is not visible"
+    fi
+  fi
+  if [[ -n ${SSH_AUTH_SOCK:-} && -S ${SSH_AUTH_SOCK:-} ]]; then
+    if PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" test -S /tmp/ssh-agent >/dev/null 2>&1; then
+      pass "controller.image.agent" "forwarded agent socket is visible"
+    else
+      fail "controller.image.agent" "forwarded agent socket is not visible"
+    fi
+  else
+    warn "controller.image.agent" "no forwarded SSH agent; inventory must select a readable key"
+  fi
+}
+
+connect_phase() {
+  local inventory_json selected_json selected_file list_output address user port connection become target_env
+  local local_ips resolved_ips matched known_host_lookup config_json ssh_g ssh_error
+  local attempt output token_path token_metadata ca_path ca_safe url package_nevra installed_nevra available_nevras
+  local cloud_template users_manage keys_count identity_file identity_metadata identity_uid identity_mode identity_type
+  local storage_member storage_rows root_source root_vg root_chain candidate_chain device initialize mountpoint reuse vg lv pv fstype capacity_gib size_gib required_free_gib partition
+  local device_real ancestor ancestor_real root_ancestor root_ancestor_real actual_bytes expected_bytes existing_vg existing_pvs lv_path existing_fstype
+  local topology_output wipefs_output blkid_output blkid_status os_disk size_bytes requested_bytes rounded_bytes mount_targets mount_status mount_content mount_content_status free_bytes required_bytes extent_bytes
+  local pv_real pv_type pv_parent pv_parent_real pv_partition
+  local -a effective_inventory_ssh_args
+
+  printf '\n%s\n' '== Validate inventory and self-connection =='
+  if ((failures > 0)); then
+    skip "inventory.validation" "earlier phase failed"
+    return
+  fi
+  if ! podman image exists "$dev_image" >/dev/null 2>&1; then
+    fail "controller.image.present" "run the build operation first: $dev_image"
+    return
+  fi
+  pass "controller.image.present" "$dev_image"
+
+  if ! inventory_json=$(run_in_environment ansible-inventory -i "$container_inventory" --list 2>"$tmp_dir/inventory.err"); then
+    fail "inventory.parse" "ansible-inventory failed"
+    return
+  fi
+  printf '%s\n' "$inventory_json" >"$tmp_dir/inventory.json"
+  chmod 0600 "$tmp_dir/inventory.json"
+  if ! selected_json=$(python3 - "$limit" "$tmp_dir/inventory.json" <<'PY'
+import json, re, shlex, sys
+
+target = sys.argv[1]
+with open(sys.argv[2], encoding="utf-8") as stream:
+    data = json.load(stream)
+hostvars = data.get("_meta", {}).get("hostvars", {})
+if target not in hostvars:
+    raise SystemExit("literal host is absent from inventory")
+for group in ("rocky", "container_hosts", "gitlab_runners"):
+    if target not in data.get(group, {}).get("hosts", []):
+        raise SystemExit(f"host is not a member of required group: {group}")
+values = hostvars[target]
+connection = str(values.get("ansible_connection", "ssh") or "ssh")
+if connection not in {"ssh", "ansible.builtin.ssh"}:
+    raise SystemExit("ansible_connection must use SSH")
+ssh_executable = str(values.get("ansible_ssh_executable", "") or "")
+if ssh_executable and ssh_executable != "/usr/bin/ssh":
+    raise SystemExit("ansible_ssh_executable must be /usr/bin/ssh when explicitly set")
+address = values.get("ansible_host", target)
+user = values.get("ansible_user", "")
+port = values.get("ansible_port", 22)
+if not isinstance(address, str) or not address or address.lower() == "localhost" or address.startswith("-") or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in address):
+    raise SystemExit("ansible_host is invalid")
+if not isinstance(user, str) or not re.match(r"^[A-Za-z_][A-Za-z0-9_.-]*[$]?$", user):
+    raise SystemExit("ansible_user is required")
+if type(port) is not int or not 1 <= port <= 65535:
+    raise SystemExit("ansible_port is invalid")
+if values.get("ansible_become") is not True:
+    raise SystemExit("ansible_become must be true")
+unsafe_patterns = (
+    r"strict\s*host\s*key\s*checking\s*(?:=|\s)\s*(?:no|false|off|0|accept-new)(?=\s|$)",
+    r"user\s*known\s*hosts\s*file\s*(?:=|\s)\s*(?:/dev/null|none)(?=\s|$)",
+)
+for name in ("ansible_ssh_args", "ansible_ssh_common_args", "ansible_ssh_extra_args"):
+    raw = str(values.get(name, "") or "")
+    value = raw.lower()
+    if any(re.search(pattern, value) for pattern in unsafe_patterns):
+        raise SystemExit(f"unsafe SSH setting in {name}")
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as error:
+        raise SystemExit(f"invalid SSH argument quoting in {name}: {error}") from error
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        option = ""
+        if token == "-o":
+            index += 1
+            if index >= len(tokens):
+                raise SystemExit(f"missing SSH -o value in {name}")
+            option = tokens[index]
+        elif token.startswith("-o"):
+            option = token[2:]
+        if option:
+            key, separator, option_value = option.partition("=")
+            normalized_key = key.lower()
+            normalized_value = option_value.lower()
+            if normalized_key == "stricthostkeychecking" and (not separator or normalized_value not in {"yes", "true", "ask"}):
+                raise SystemExit(f"unsafe StrictHostKeyChecking in {name}")
+            if normalized_key == "userknownhostsfile" and (not separator or normalized_value != "/tmp/platform-home/.ssh/known_hosts"):
+                raise SystemExit(f"unsafe UserKnownHostsFile in {name}")
+        index += 1
+executor = values.get("gitlab_runner_executor", "")
+manager_image = values.get("gitlab_runner_image", "")
+docker_image = values.get("gitlab_runner_docker_image", "")
+digest = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+if executor != "docker":
+    raise SystemExit("gitlab_runner_executor must be docker")
+if not digest.match(str(manager_image)) or not digest.match(str(docker_image)):
+    raise SystemExit("runner manager and Docker fallback images must be digest-pinned")
+if values.get("podman_host_socket_enabled") is not True or values.get("gitlab_runner_podman_socket_enabled") is not True:
+    raise SystemExit("runner Docker mode requires the role-managed Podman socket")
+if values.get("gitlab_runner_docker_pull_policy", "always") != "always":
+    raise SystemExit("runner Docker pull policy must be always")
+if values.get("gitlab_runner_docker_network_per_build", True) is not True:
+    raise SystemExit("runner per-build networking must be enabled")
+expected_runner_identifiers = {
+    "gitlab_runner_config_dir": "/etc/gitlab-runner",
+    "gitlab_runner_config_path": "/etc/gitlab-runner/config.toml",
+    "gitlab_runner_container_name": "gitlab-runner",
+    "gitlab_runner_quadlet_dir": "/etc/containers/systemd",
+    "gitlab_runner_quadlet_name": "gitlab-runner.container",
+    "gitlab_runner_quadlet_path": "/etc/containers/systemd/gitlab-runner.container",
+    "gitlab_runner_service_name": "gitlab-runner.service",
+}
+for name, expected in expected_runner_identifiers.items():
+    if values.get(name, expected) != expected:
+        raise SystemExit(f"self-bootstrap requires default clean-state identifier: {name}")
+url = values.get("gitlab_runner_gitlab_url", "")
+if not isinstance(url, str) or not url.startswith("https://"):
+    raise SystemExit("gitlab_runner_gitlab_url must use HTTPS")
+token = values.get("gitlab_runner_token_src", "")
+if not isinstance(token, str) or not token.startswith("/tmp/platform-home/.config/platform-infrastructure/"):
+    raise SystemExit("runner token must resolve under the mounted outside-Git secret root")
+package = values.get("podman_host_package_nevra", "")
+if not isinstance(package, str) or not re.match(r"^podman-[0-9]+:[0-9][A-Za-z0-9_.+~-]*-[A-Za-z0-9_.+~-]+[.]x86_64$", package):
+    raise SystemExit("podman_host_package_nevra must be an exact x86_64 NEVRA")
+volumes = values.get("gitlab_runner_docker_volumes", ["/cache"])
+if not isinstance(volumes, list) or not volumes or any(not isinstance(item, str) or not item.startswith("/") or ":" in item for item in volumes):
+    raise SystemExit("runner Docker volumes must be container-only absolute paths")
+keys = values.get("users_ansible_authorized_keys", [])
+if not isinstance(keys, list):
+    raise SystemExit("users_ansible_authorized_keys must be a list")
+selected = {
+    "address": address,
+    "become": True,
+    "ca_path": values.get("gitlab_runner_tls_ca_cert_src", "") or "",
+    "cloud_template": values.get("platform_host_aliases_cloud_init_template", "/etc/cloud/templates/hosts.redhat.tmpl"),
+    "connection": connection,
+    "environment": values.get("platform_environment", ""),
+    "gitlab_url": url,
+    "identity_file": values.get("ansible_ssh_private_key_file", "") or "",
+    "keys_count": len(keys),
+    "package_nevra": package,
+    "port": port,
+    "storage_member": target in data.get("storage_volume_hosts", {}).get("hosts", []),
+    "storage_volumes": values.get("storage_volumes", []),
+    "storage_layouts": values.get("storage_volume_layouts", []),
+    "ssh_args": values.get("ansible_ssh_args", "") or "",
+    "ssh_common_args": values.get("ansible_ssh_common_args", "") or "",
+    "ssh_extra_args": values.get("ansible_ssh_extra_args", "") or "",
+    "token_path": token,
+    "user": user,
+    "users_manage": values.get("users_manage_ansible_user", False) is True,
+}
+print(json.dumps(selected, sort_keys=True, separators=(",", ":")))
+PY
+  ); then
+    fail "inventory.contract" "${selected_json:-inventory contract validation failed}"
+    return
+  fi
+  selected_file="$tmp_dir/selected.json"
+  printf '%s\n' "$selected_json" >"$selected_file"
+  chmod 0600 "$selected_file"
+  pass "inventory.contract" "required groups and runner contract are valid"
+
+  address=$(json_value address <"$selected_file")
+  user=$(json_value user <"$selected_file")
+  port=$(json_value port <"$selected_file")
+  connection=$(json_value connection <"$selected_file")
+  become=$(json_value become <"$selected_file")
+  target_env=$(json_value environment <"$selected_file")
+  if [[ $connection == ssh || $connection == ansible.builtin.ssh ]]; then
+    pass "inventory.connection" "$connection"
+  else
+    fail "inventory.connection" "$connection"
+  fi
+  if [[ $become == true ]]; then
+    pass "inventory.become" "enabled"
+  else
+    fail "inventory.become" "disabled"
+  fi
+  if [[ $target_env == "$environment" ]]; then
+    pass "inventory.environment" "$target_env"
+  else
+    fail "inventory.environment" "expected $environment, found ${target_env:-empty}"
+  fi
+
+  if list_output=$(run_in_environment ansible -i "$container_inventory" all --list-hosts --limit "$limit" 2>/dev/null); then
+    mapfile -t listed_hosts < <(awk 'NR > 1 && NF == 1 { print $1 }' <<<"$list_output")
+    if [[ ${#listed_hosts[@]} -eq 1 && ${listed_hosts[0]} == "$limit" ]]; then
+      pass "inventory.limit" "resolves exactly $limit"
+    else
+      fail "inventory.limit" "did not resolve exactly one literal host"
+    fi
+  else
+    fail "inventory.limit" "host resolution failed"
+  fi
+
+  if getent passwd "$user" >/dev/null 2>&1; then
+    pass "host.user.inventory" "$user exists locally"
+  else
+    fail "host.user.inventory" "$user does not exist locally"
+  fi
+
+  local_ips=$(ip -j address 2>/dev/null | python3 -c '
+import json, sys
+for link in json.load(sys.stdin):
+    for item in link.get("addr_info", []):
+        value = item.get("local")
+        if value:
+            print(value.split("%", 1)[0])
+' 2>/dev/null || true)
+  resolved_ips=$(getent ahosts "$address" 2>/dev/null | awk '{print $1}' | sort -u || true)
+  matched=false
+  while IFS= read -r resolved; do
+    [[ -n $resolved ]] || continue
+    if grep -Fxq "$resolved" <<<"$local_ips" && [[ $resolved != 127.* && $resolved != ::1 ]]; then
+      matched=true
+      break
+    fi
+  done <<<"$resolved_ips"
+  if [[ $matched == true ]]; then
+    pass "inventory.self-target" "$address resolves to this host"
+  else
+    fail "inventory.self-target" "$address does not resolve to a non-loopback local address"
+  fi
+
+  if config_json=$(run_in_environment ansible-config dump --format json 2>/dev/null) && python3 -c '
+import json, sys
+items = json.load(sys.stdin)
+matches = [item for item in items if item.get("name") == "HOST_KEY_CHECKING"]
+raise SystemExit(not (len(matches) == 1 and matches[0].get("value") is True))
+' <<<"$config_json"; then
+    pass "ssh.ansible-host-key" "enabled"
+  else
+    fail "ssh.ansible-host-key" "effective Ansible host-key checking is not enabled"
+  fi
+
+  if run_in_environment python -c '
+import os, shlex, sys
+for name in ("ANSIBLE_SSH_ARGS", "ANSIBLE_SSH_COMMON_ARGS", "ANSIBLE_SSH_EXTRA_ARGS"):
+    raw = os.environ.get(name, "")
+    try:
+        tokens = shlex.split(raw)
+    except ValueError:
+        raise SystemExit(1)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        option = ""
+        if token == "-o":
+            index += 1
+            if index >= len(tokens):
+                raise SystemExit(1)
+            option = tokens[index]
+        elif token.startswith("-o"):
+            option = token[2:]
+        if option:
+            key, separator, value = option.partition("=")
+            key = key.lower()
+            value = value.lower()
+            if key == "stricthostkeychecking" and (not separator or value not in {"yes", "true", "ask"}):
+                raise SystemExit(1)
+            if key == "userknownhostsfile" and (not separator or value != "/tmp/platform-home/.ssh/known_hosts"):
+                raise SystemExit(1)
+        index += 1
+' >/dev/null 2>&1; then
+    pass "ssh.environment-options" "critical SSH environment options are safe"
+  else
+    fail "ssh.environment-options" "unsafe or malformed SSH environment options"
+  fi
+
+  known_host_lookup=$address
+  if [[ $port != 22 ]]; then
+    known_host_lookup="[$address]:$port"
+  fi
+  if [[ -f $HOME/.ssh/known_hosts && ! -L $HOME/.ssh/known_hosts ]] && ssh-keygen -F "$known_host_lookup" -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1; then
+    pass "ssh.known-host" "pinned entry exists"
+  else
+    fail "ssh.known-host" "no safe pinned known_hosts entry for $known_host_lookup"
+  fi
+
+  mapfile -t effective_inventory_ssh_args < <(python3 - "$selected_file" <<'PY'
+import json, shlex, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    selected = json.load(stream)
+for name in ("ssh_args", "ssh_common_args", "ssh_extra_args"):
+    for argument in shlex.split(selected.get(name, "")):
+        print(argument)
+PY
+  )
+  if ssh_g=$(PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" ssh -G "${effective_inventory_ssh_args[@]}" -o UserKnownHostsFile=/tmp/platform-home/.ssh/known_hosts -p "$port" -l "$user" "$address" 2>/dev/null) && ssh_error=$(python3 -c '
+import sys
+values = {}
+for line in sys.stdin:
+    key, _, value = line.strip().partition(" ")
+    if key:
+        values[key.lower()] = value.strip()
+strict = values.get("stricthostkeychecking", "").lower()
+known = values.get("userknownhostsfile", "").lower().split()
+if strict not in {"yes", "true", "ask"}:
+    raise SystemExit("StrictHostKeyChecking must be yes or ask")
+if not known or any(item in {"none", "/dev/null"} for item in known):
+    raise SystemExit("UserKnownHostsFile must use real files")
+print("safe")
+' <<<"$ssh_g" 2>&1); then
+    pass "ssh.effective-config" "$ssh_error"
+  else
+    fail "ssh.effective-config" "${ssh_error:-OpenSSH configuration unavailable}"
+  fi
+
+  cloud_template=$(json_value cloud_template <"$selected_file")
+  if [[ -z $cloud_template ]]; then
+    pass "inventory.cloud-template" "management disabled explicitly"
+  elif sudo test -f "$cloud_template" && ! sudo test -L "$cloud_template"; then
+    pass "inventory.cloud-template" "$cloud_template"
+  else
+    fail "inventory.cloud-template" "configured template is absent or unsafe: $cloud_template"
+  fi
+
+  users_manage=$(json_value users_manage <"$selected_file")
+  keys_count=$(json_value keys_count <"$selected_file")
+  if [[ $users_manage == true ]]; then
+    if [[ $keys_count =~ ^[1-9][0-9]*$ ]]; then
+      pass "access.ansible-owned" "$keys_count desired authorized key(s)"
+      warn "access.identity-handoff" "confirm the selected durable identity is in desired state before key pruning"
+    else
+      fail "access.ansible-owned" "managed account has no desired authorized keys"
+    fi
+  else
+    pass "access.externally-owned" "cloud-init or another approved system owns the account"
+  fi
+
+  identity_file=$(json_value identity_file <"$selected_file")
+  if [[ -n $identity_file ]]; then
+    if identity_metadata=$(PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" sh -c '
+path=$1
+test -f "$path" && test ! -L "$path" && test -r "$path"
+stat -Lc "%u:%a:%F" -- "$path"
+' platform-self-bootstrap "$identity_file" 2>/dev/null); then
+      IFS=: read -r identity_uid identity_mode identity_type <<<"$identity_metadata"
+      if [[ $identity_uid == "$(id -u)" && $identity_mode =~ ^[46]00$ && $identity_type == "regular file" ]]; then
+        pass "ssh.identity-file" "readable owner-only identity"
+      else
+        fail "ssh.identity-file" "identity metadata is unsafe"
+      fi
+    else
+      fail "ssh.identity-file" "configured identity is missing, unreadable, or symlinked"
+    fi
+  elif [[ -n ${SSH_AUTH_SOCK:-} && -S ${SSH_AUTH_SOCK:-} ]] && PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" ssh-add -l >/dev/null 2>&1; then
+    pass "ssh.agent-identity" "forwarded agent has at least one identity"
+  else
+    fail "ssh.identity" "inventory has no identity file and no usable forwarded agent"
+  fi
+
+  attempt=1
+  output=""
+  while ((attempt <= connect_retries)); do
+    if output=$(timeout "$connect_timeout" "$repo_root/scripts/in-container" sh -c \
+      '. "$1"; exec ansible -i "$2" all -m ansible.builtin.ping --limit "$3" -o' \
+      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1); then
+      break
+    fi
+    if ((attempt < connect_retries)); then
+      sleep 5
+    fi
+    attempt=$((attempt + 1))
+  done
+  if ((attempt <= connect_retries)); then
+    pass "ssh.ansible-ping" "succeeded on attempt $attempt"
+  else
+    fail "ssh.ansible-ping" "failed after $connect_retries attempts"
+    return
+  fi
+
+  if output=$(timeout "$connect_timeout" "$repo_root/scripts/in-container" sh -c \
+    '. "$1"; exec ansible -i "$2" all -b -m ansible.builtin.command -a "id -u" --limit "$3" -o' \
+      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(awk -F '\(stdout\) ' 'NF == 2 {print $2}' <<<"$output") == 0 ]]; then
+    pass "ssh.passwordless-become" "become command returned UID 0"
+  else
+    fail "ssh.passwordless-become" "passwordless become failed"
+  fi
+  if output=$(timeout "$connect_timeout" "$repo_root/scripts/in-container" sh -c \
+    '. "$1"; exec ansible -i "$2" all -m ansible.builtin.command -a "id -un" --limit "$3" -o' \
+      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(awk -F '\(stdout\) ' 'NF == 2 {print $2}' <<<"$output") == "$user" ]]; then
+    pass "ssh.inventory-user" "$user"
+  else
+    fail "ssh.inventory-user" "remote user did not match inventory"
+  fi
+
+  package_nevra=$(json_value package_nevra <"$selected_file")
+  installed_nevra=$(rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' podman 2>/dev/null || true)
+  if [[ $installed_nevra == "$package_nevra" ]]; then
+    pass "podman.exact-nevra" "$package_nevra"
+  else
+    fail "podman.exact-nevra" "installed ${installed_nevra:-none}; inventory requires $package_nevra"
+  fi
+  available_nevras=$(dnf -q repoquery --available --qf '%{name}-%{epoch}:%{version}-%{release}.%{arch}' podman 2>/dev/null || true)
+  if grep -Fxq "$package_nevra" <<<"$available_nevras"; then
+    pass "podman.repository-nevra" "exact package is available"
+  else
+    fail "podman.repository-nevra" "exact package is unavailable from enabled repositories"
+  fi
+
+  token_path=$(json_value token_path <"$selected_file")
+  if token_metadata=$(PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" sh -c '
+path=$1
+root=$(realpath -e /tmp/platform-home/.config/platform-infrastructure)
+resolved=$(realpath -e "$path")
+case "$resolved" in "$root"/*) ;; *) exit 1 ;; esac
+test -f "$resolved" && test ! -L "$path"
+stat -Lc "%u:%a:%s:%F" -- "$resolved"
+' platform-self-bootstrap "$token_path" 2>/dev/null); then
+    IFS=: read -r token_uid token_mode token_size token_type <<<"$token_metadata"
+    if [[ $token_uid == "$(id -u)" && $token_mode =~ ^[46]00$ && $token_size =~ ^[1-9][0-9]*$ && $token_type == "regular file" ]]; then
+      pass "secret.runner-token" "regular owner-only nonempty file"
+    else
+      fail "secret.runner-token" "unsafe token metadata"
+    fi
+  else
+    fail "secret.runner-token" "token file is missing, unreadable, or symlinked"
+  fi
+
+  ca_path=$(json_value ca_path <"$selected_file")
+  ca_safe=false
+  if [[ -n $ca_path ]]; then
+    if PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" sh -c '
+path=$1
+root=$(realpath -e /tmp/platform-home/.config/platform-infrastructure)
+resolved=$(realpath -e "$path")
+case "$resolved" in "$root"/*) ;; *) exit 1 ;; esac
+test -f "$resolved" && test ! -L "$path"
+openssl x509 -in "$resolved" -noout -checkend 0
+' platform-self-bootstrap "$ca_path" >/dev/null 2>&1; then
+      pass "secret.gitlab-ca" "valid current X.509 certificate"
+      ca_safe=true
+    else
+      fail "secret.gitlab-ca" "CA is missing, symlinked, invalid, or expired"
+    fi
+  else
+    pass "secret.gitlab-ca" "public trust store selected"
+    ca_safe=true
+  fi
+
+  url=$(json_value gitlab_url <"$selected_file")
+  if [[ $ca_safe != true ]]; then
+    skip "network.gitlab-tls" "CA preflight failed"
+  elif PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" python -c '
+import ssl, sys, urllib.error, urllib.parse, urllib.request
+url, ca = sys.argv[1:]
+parsed = urllib.parse.urlsplit(url)
+path = parsed.path.rstrip("/") + "/users/sign_in"
+target = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+context = ssl.create_default_context(cafile=ca or None)
+request = urllib.request.Request(target, method="GET", headers={"User-Agent": "platform-config-self-bootstrap-preflight"})
+try:
+    response = urllib.request.urlopen(request, context=context, timeout=10)
+    status = response.status
+except urllib.error.HTTPError as error:
+    status = error.code
+raise SystemExit(not 200 <= status < 400)
+' "$url" "$ca_path" >/dev/null 2>&1; then
+    pass "network.gitlab-tls" "HTTPS endpoint validated"
+  else
+    fail "network.gitlab-tls" "GitLab HTTPS validation failed"
+  fi
+
+  storage_member=$(json_value storage_member <"$selected_file")
+  if [[ $storage_member == true ]]; then
+    if ! storage_rows=$(python3 - "$selected_file" <<'PY'
+import json, re, sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    selected = json.load(stream)
+volumes = selected.get("storage_volumes", [])
+layouts = selected.get("storage_layouts", [])
+if not isinstance(volumes, list) or not volumes or not isinstance(layouts, list):
+    raise SystemExit(1)
+layout_map = {}
+for layout in layouts:
+    if not isinstance(layout, dict) or not isinstance(layout.get("name"), str):
+        raise SystemExit(1)
+    layout_map[layout["name"]] = layout
+for layout in layouts:
+    capacity = layout.get("capacity_gib", 0)
+    required_free = layout.get("required_free_gib", 0)
+    requested = [volume for volume in volumes if isinstance(volume, dict) and volume.get("layout") == layout["name"]]
+    sizes = [volume.get("size_gib", 0) for volume in requested]
+    if not requested or type(capacity) is not int or capacity <= 0 or type(required_free) is not int or required_free < 0:
+        raise SystemExit(1)
+    if any(type(size) is not int or size <= 0 for size in sizes) or sum(sizes) + required_free > capacity:
+        raise SystemExit(1)
+for volume in volumes:
+    if not isinstance(volume, dict):
+        raise SystemExit(1)
+    if "layout" not in volume:
+        raise SystemExit(1)
+    layout = layout_map.get(volume["layout"])
+    if layout is None:
+        raise SystemExit(1)
+    device = volume.get("device", layout.get("device", ""))
+    mountpoint = volume.get("mountpoint", "")
+    vg = volume.get("vg_name", layout.get("vg_name", ""))
+    lv = volume.get("lv_name", "")
+    initialize = volume.get("initialize", layout.get("initialize", False))
+    reuse = layout.get("reuse_existing_vg", False)
+    partition = volume.get("partition_number", layout.get("partition_number", 1))
+    pv = volume.get("pv_device", layout.get("pv_device", f"{device}-part{partition}"))
+    fstype = volume.get("fstype", "xfs")
+    capacity = layout.get("capacity_gib", 0)
+    size = volume.get("size_gib", 0)
+    required_free = layout.get("required_free_gib", 0)
+    values = (device, mountpoint, vg, lv, pv, fstype)
+    if any(not isinstance(item, str) or not item or any(character in item for character in "\t\n\r") for item in values):
+        raise SystemExit(1)
+    if not re.match(r"^/dev/disk/by-(id|path)/.+", device):
+        raise SystemExit(1)
+    if not re.match(r"^/dev/disk/by-(id|path)/.+", pv):
+        raise SystemExit(1)
+    if not mountpoint.startswith("/") or not isinstance(initialize, bool) or not isinstance(reuse, bool):
+        raise SystemExit(1)
+    if type(capacity) is not int or not 0 <= capacity <= 1000000:
+        raise SystemExit(1)
+    if type(size) is not int or not 0 <= size <= 1000000:
+        raise SystemExit(1)
+    if type(required_free) is not int or not 0 <= required_free <= 1000000:
+        raise SystemExit(1)
+    if type(partition) is not int or partition <= 0:
+        raise SystemExit(1)
+    if layout and (capacity <= 0 or size <= 0 or size + required_free > capacity):
+        raise SystemExit(1)
+    print("\t".join((device, str(initialize).lower(), mountpoint, str(reuse).lower(), vg, lv, pv, fstype, str(capacity), str(size), str(required_free), str(partition))))
+PY
+    ); then
+      fail "storage.inventory" "storage volumes are absent or use unsafe paths"
+    else
+      pass "storage.inventory" "storage host has valid volume definitions"
+      if ! root_source=$(findmnt -n -o SOURCE / 2>/dev/null) || [[ $root_source != /dev/* ]]; then
+        fail "storage.root-discovery" "root filesystem source is unavailable or not block-backed"
+        storage_rows=""
+      elif ! root_chain=$(lsblk -s -nrpo PATH "$root_source" 2>/dev/null) || [[ -z $root_chain ]]; then
+        fail "storage.root-discovery" "could not resolve the root storage ancestor chain"
+        storage_rows=""
+      else
+        pass "storage.root-discovery" "$root_source"
+      fi
+      root_vg=""
+      if command -v lvs >/dev/null 2>&1; then
+        root_vg=$(sudo lvs --noheadings -o vg_name "$root_source" 2>/dev/null | awk '{$1=$1; print}' || true)
+      fi
+      declare -A checked_devices=()
+      declare -A vg_missing_bytes=()
+      declare -A vg_headroom_bytes=()
+      declare -A vg_extent_bytes=()
+      while IFS=$'\t' read -r device initialize mountpoint reuse vg lv pv fstype capacity_gib size_gib required_free_gib partition; do
+        [[ -n $device ]] || continue
+        if [[ ! -b $device ]]; then
+          fail "storage.device" "not a block device: $device"
+          continue
+        fi
+        if [[ $device != /dev/disk/by-id/* && $device != /dev/disk/by-path/* ]]; then
+          fail "storage.device" "unstable device path: $device"
+          continue
+        fi
+        device_real=$(realpath --canonicalize-existing "$device" 2>/dev/null || true)
+        if [[ -z $device_real ]]; then
+          fail "storage.device" "cannot resolve stable device: $device"
+          continue
+        fi
+        if ! candidate_chain=$(lsblk -s -nrpo PATH "$device" 2>/dev/null) || [[ -z $candidate_chain ]]; then
+          fail "storage.device" "could not resolve candidate storage ancestors: $device"
+          continue
+        fi
+        os_disk=false
+        while IFS= read -r ancestor; do
+          [[ -n $ancestor ]] || continue
+          ancestor_real=$(realpath --canonicalize-existing "$ancestor" 2>/dev/null || true)
+          if [[ -z $ancestor_real ]]; then
+            fail "storage.os-disk" "could not canonicalize candidate ancestor: $ancestor"
+            os_disk=true
+            continue
+          fi
+          while IFS= read -r root_ancestor; do
+            [[ -n $root_ancestor ]] || continue
+            root_ancestor_real=$(realpath --canonicalize-existing "$root_ancestor" 2>/dev/null || true)
+            if [[ -z $root_ancestor_real ]]; then
+              fail "storage.os-disk" "could not canonicalize root ancestor: $root_ancestor"
+              os_disk=true
+            elif [[ $ancestor_real == "$root_ancestor_real" ]]; then
+              os_disk=true
+            fi
+          done <<<"$root_chain"
+        done <<<"$candidate_chain"
+        if [[ $os_disk == true ]]; then
+          fail "storage.os-disk" "$device intersects the root storage stack"
+          continue
+        fi
+        pass "storage.os-disk" "$device is separate from the root storage stack"
+        if [[ -z ${checked_devices[$device]:-} ]]; then
+          checked_devices[$device]=true
+          actual_bytes=$(lsblk -bdno SIZE "$device" 2>/dev/null | awk '{$1=$1; print}' || true)
+          if [[ $actual_bytes =~ ^[0-9]+$ && $capacity_gib =~ ^[0-9]+$ ]]; then
+            expected_bytes=$((capacity_gib * 1024 * 1024 * 1024))
+            if ((capacity_gib == 0 || actual_bytes >= expected_bytes)); then
+              pass "storage.capacity" "$device satisfies declared capacity"
+            else
+              fail "storage.capacity" "$device is smaller than declared capacity"
+            fi
+          else
+            fail "storage.capacity" "could not read capacity for $device"
+          fi
+          if [[ $initialize == true ]]; then
+            if ! topology_output=$(lsblk -nr -o TYPE "$device" 2>/dev/null); then
+              fail "storage.new-device" "could not inspect topology for $device"
+            elif [[ $topology_output != disk ]]; then
+              fail "storage.new-device" "$device has child block devices"
+            elif ! wipefs_output=$(sudo wipefs --no-act --noheadings --output TYPE,UUID,LABEL "$device" 2>/dev/null); then
+              fail "storage.new-device" "wipefs could not inspect signatures on $device"
+            elif [[ -n ${wipefs_output//[[:space:]]/} ]]; then
+              fail "storage.new-device" "$device has filesystem, partition, RAID, or LVM signatures"
+            else
+              blkid_status=0
+              blkid_output=$(sudo blkid "$device" 2>/dev/null) || blkid_status=$?
+              if ((blkid_status == 2)) && [[ -z $blkid_output ]]; then
+                pass "storage.new-device" "$device is an empty disk"
+              elif ((blkid_status == 0)); then
+                fail "storage.new-device" "$device has a blkid signature"
+              else
+                fail "storage.new-device" "blkid could not safely inspect $device"
+              fi
+            fi
+          elif [[ $reuse != true ]]; then
+            fail "storage.existing-layout" "$device requires explicit reuse_existing_vg: true"
+          elif ! command -v pvs >/dev/null 2>&1 || ! command -v lvs >/dev/null 2>&1; then
+            fail "storage.existing-layout" "pvs and lvs are required to verify existing VG reuse"
+          elif [[ ! -b $pv ]]; then
+            fail "storage.existing-layout" "declared PV does not exist: $pv"
+          else
+            pv_real=$(realpath --canonicalize-existing "$pv" 2>/dev/null || true)
+            pv_type=$(lsblk -dnro TYPE "$pv" 2>/dev/null | awk '{$1=$1; print}' || true)
+            pv_parent=$(lsblk -dnro PKNAME "$pv" 2>/dev/null | awk '{$1=$1; print}' || true)
+            pv_partition=$(lsblk -dnro PARTN "$pv" 2>/dev/null | awk '{$1=$1; print}' || true)
+            if [[ -n $pv_parent ]]; then
+              pv_parent_real=$(realpath --canonicalize-existing "/dev/$pv_parent" 2>/dev/null || true)
+            else
+              pv_parent_real=""
+            fi
+            existing_vg=$(sudo pvs --noheadings -o vg_name "$pv" 2>/dev/null | awk '{$1=$1; print}' || true)
+            existing_pvs=$(sudo pvs --noheadings -o pv_name --select "vg_name=$vg" 2>/dev/null | awk 'NF {count++} END {print count+0}' || true)
+            extent_bytes=$(sudo vgs --units b --nosuffix --noheadings -o vg_extent_size "$vg" 2>/dev/null | awk '{printf "%.0f", $1}' || true)
+            if [[ -n $pv_real && $pv_type == part && $pv_parent_real == "$device_real" && $pv_partition == "$partition" && $existing_vg == "$vg" && $existing_pvs == 1 && $vg != "$root_vg" && $extent_bytes =~ ^[1-9][0-9]*$ ]]; then
+              vg_extent_bytes[$vg]=$extent_bytes
+              pass "storage.existing-layout" "$pv is the declared partition and sole PV for non-root VG $vg"
+            else
+              fail "storage.existing-layout" "existing PV/VG ownership does not match the declared one-PV non-root layout"
+            fi
+          fi
+        fi
+        lv_path="/dev/$vg/$lv"
+        if [[ -e $lv_path ]]; then
+          existing_fstype=$(sudo blkid -o value -s TYPE "$lv_path" 2>/dev/null || true)
+          if [[ $reuse == true && $existing_fstype == "$fstype" ]]; then
+            pass "storage.logical-volume" "$lv_path has compatible filesystem state"
+          elif [[ $reuse == true ]]; then
+            fail "storage.logical-volume" "$lv_path must have the declared $fstype filesystem before reuse"
+          elif [[ -z $existing_fstype || $existing_fstype == "$fstype" ]]; then
+            pass "storage.logical-volume" "$lv_path has compatible filesystem state"
+          else
+            fail "storage.logical-volume" "$lv_path has $existing_fstype, expected $fstype"
+          fi
+          if [[ $reuse == true && $size_gib =~ ^[1-9][0-9]*$ ]]; then
+            size_bytes=$(sudo lvs --units b --nosuffix --noheadings -o lv_size "$lv_path" 2>/dev/null | awk '{printf "%.0f", $1}' || true)
+            requested_bytes=$((size_gib * 1024 * 1024 * 1024))
+            extent_bytes=${vg_extent_bytes[$vg]:-0}
+            if ((extent_bytes > 0)); then
+              rounded_bytes=$(( (requested_bytes + extent_bytes - 1) / extent_bytes * extent_bytes ))
+            else
+              rounded_bytes=0
+            fi
+            if [[ $size_bytes =~ ^[0-9]+$ ]] && ((size_bytes == rounded_bytes && rounded_bytes > 0)); then
+              pass "storage.logical-volume-size" "$lv_path exactly matches the extent-rounded declared size"
+            else
+              fail "storage.logical-volume-size" "$lv_path does not exactly match the extent-rounded declared size"
+            fi
+          fi
+          mount_status=0
+          mount_targets=$(findmnt -rn -S "$lv_path" -o TARGET 2>/dev/null) || mount_status=$?
+          if ((mount_status == 1)); then
+            pass "storage.logical-volume-mounts" "$lv_path is unmounted"
+          elif ((mount_status != 0)); then
+            fail "storage.logical-volume-mounts" "could not inspect mount targets for $lv_path"
+          elif [[ -n $mount_targets ]] && ! grep -Fvx "$mountpoint" <<<"$mount_targets" | grep -q .; then
+            pass "storage.logical-volume-mounts" "$lv_path is unmounted or only at $mountpoint"
+          else
+            fail "storage.logical-volume-mounts" "$lv_path is mounted outside $mountpoint"
+          fi
+        else
+          pass "storage.logical-volume" "$lv_path will be created"
+          if [[ $reuse == true && $size_gib =~ ^[1-9][0-9]*$ ]]; then
+            requested_bytes=$((size_gib * 1024 * 1024 * 1024))
+            extent_bytes=${vg_extent_bytes[$vg]:-0}
+            if ((extent_bytes > 0)); then
+              rounded_bytes=$(( (requested_bytes + extent_bytes - 1) / extent_bytes * extent_bytes ))
+              vg_missing_bytes[$vg]=$(( ${vg_missing_bytes[$vg]:-0} + rounded_bytes ))
+            else
+              fail "storage.logical-volume-size" "cannot calculate missing LV allocation without a valid VG extent"
+            fi
+          fi
+        fi
+        if [[ $reuse == true && $required_free_gib =~ ^[0-9]+$ ]]; then
+          required_bytes=$((required_free_gib * 1024 * 1024 * 1024))
+          if (( ${vg_headroom_bytes[$vg]:-0} < required_bytes )); then
+            vg_headroom_bytes[$vg]=$required_bytes
+          fi
+        fi
+        if [[ ! -e $mountpoint && ! -L $mountpoint ]]; then
+          pass "storage.mountpoint" "$mountpoint is absent"
+        elif [[ -L $mountpoint || ! -d $mountpoint ]]; then
+          fail "storage.mountpoint" "$mountpoint exists but is not a safe directory"
+        else
+          mount_content_status=0
+          mount_content=$(sudo find "$mountpoint" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || mount_content_status=$?
+          if ((mount_content_status != 0)); then
+            fail "storage.mountpoint" "could not inspect $mountpoint"
+          elif [[ -n $mount_content ]]; then
+            fail "storage.mountpoint" "$mountpoint is not empty"
+          else
+            pass "storage.mountpoint" "$mountpoint is empty"
+          fi
+        fi
+      done <<<"$storage_rows"
+      for vg in "${!vg_headroom_bytes[@]}"; do
+        free_bytes=$(sudo vgs --units b --nosuffix --noheadings -o vg_free "$vg" 2>/dev/null | awk '{printf "%.0f", $1}' || true)
+        required_bytes=$(( ${vg_missing_bytes[$vg]:-0} + ${vg_headroom_bytes[$vg]} ))
+        if [[ $free_bytes =~ ^[0-9]+$ ]] && ((free_bytes >= required_bytes)); then
+          pass "storage.vg-headroom" "$vg has required free space"
+        else
+          fail "storage.vg-headroom" "$vg lacks declared free space and missing-LV allocation headroom"
+        fi
+      done
+    fi
+  else
+    pass "storage.root-model" "runner data remains on root; root capacity gate passed"
+  fi
+
+  for playbook in bootstrap.yml base-os.yml storage-volumes.yml container-runtime.yml gitlab-runners.yml; do
+    if run_in_environment ansible-playbook -i "$container_inventory" "/workspace/playbooks/$playbook" --syntax-check --limit "$limit" >/dev/null 2>&1; then
+      pass "playbook.syntax" "$playbook"
+    else
+      fail "playbook.syntax" "$playbook failed syntax validation"
+    fi
+  done
+}
+
+inspect_phase
+case "$operation" in
+  inspect) ;;
+  build) build_phase ;;
+  connect) connect_phase ;;
+  all)
+    build_phase
+    connect_phase
+    ;;
+esac
+
+summary

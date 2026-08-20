@@ -1,0 +1,495 @@
+# GitLab Runner Self-Bootstrap
+
+Use this procedure when the first managed GitLab Runner host must configure
+itself before a normal workstation or CI Ansible controller is available. The
+host temporarily acts as both:
+
+- the Ansible control node, where the repositories and outside-Git inputs are
+  available; and
+- the managed node, which Ansible reaches over SSH from the repository's Podman
+  development container.
+
+This procedure does not provision the VM, create its initial account, or create
+the runner in GitLab. Those steps must be complete before configuration starts.
+For a controlled host that cannot run the Ansible workflow, use
+[Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md), which
+configures only the runner service and not the complete host baseline.
+
+## Security Boundary
+
+Keep real inventory in the sibling private configuration repository. Keep
+tokens, private keys, and other secrets outside every Git repository. Use
+fictional values from this guide only as examples.
+
+The Docker executor gives the persistent runner manager access to the rootful
+Podman API socket. That socket is host-root-equivalent if the manager is
+compromised. Restrict this design to protected runners serving trusted projects,
+and never mount the socket or a static deployment key into job containers.
+
+The bootstrap checkout and credentials are control-plane assets. They are not
+job workspaces and must not be exposed through runner volumes. GitLab Runner
+checks out each project separately for its job.
+
+## Clean Host Contract
+
+Establish the following conditions before the first Ansible command.
+
+### Initial User And Privilege
+
+- A normal administrative account, such as the cloud-init user, exists with a
+  writable home directory and interactive shell.
+- The account can use rootless Podman.
+- `sudo -n true` succeeds without prompting for a password.
+- The account can reach itself through the VM's managed network address over
+  SSH.
+- `sshd` is enabled and running.
+- Python 3 is available for Ansible modules.
+- The account's home directory and `/tmp` have enough space for Ansible
+  temporary files and the development image.
+
+Do not assume that a dedicated `ansible` account already exists. The `users`
+role creates that account only when private inventory explicitly enables
+`users_manage_ansible_user`. It is valid to retain the initial cloud-init user
+as `ansible_user` when that is the reviewed access model.
+
+Choose access ownership explicitly before running `playbooks/bootstrap.yml`:
+
+- keep `users_manage_ansible_user: false` when cloud-init or another approved
+  system remains responsible for the initial account and authorized key; or
+- enable Ansible ownership and declare every durable authorized key. Include
+  the key used by the active bootstrap session until a second connection with
+  the intended durable access has succeeded. Before the steady-state apply,
+  remove a temporary key from the owning private inventory variables so
+  Ansible removes it from the managed account.
+
+The users role can manage authorized keys exclusively. An incomplete key list
+can remove the only working access path even though the already-open SSH session
+continues long enough for the play to finish.
+
+### Controller Tools
+
+The bootstrap account must be able to run:
+
+- Podman;
+- Git;
+- Make; and
+- an OpenSSH client.
+
+Ansible and its collections do not need to be installed on the host. `make
+deps` builds the pinned development image defined by `Containerfile.dev`.
+
+Prefer to install the same exact Podman NEVRA that private inventory will
+declare before starting self-bootstrap. Replacing or downgrading the host's
+Podman package while the Ansible control container is active is an avoidable
+bootstrap risk. The exact package must remain available from an enabled,
+approved repository.
+
+### Operating System
+
+The current runner path expects:
+
+- a supported Rocky Linux release on `x86_64`;
+- systemd as the service manager;
+- DNF and RPM;
+- a running kernel that provides OverlayFS, either loaded or available as a
+  module; and
+- repositories that provide the configured base packages, `kmod`, Chrony,
+  firewalld, its Python bindings, the DNF versionlock plugin, and the exact
+  Podman NEVRA.
+
+Keep the system clock sufficiently accurate for HTTPS before Chrony is
+configured. Preserve the normal Rocky SELinux model; the Podman and runner roles
+manage their required labels and narrow exception explicitly.
+
+The `common` role expects a safe root-owned cloud-init hosts template at
+`/etc/cloud/templates/hosts.redhat.tmpl`. For an image without that template,
+set this in private inventory instead of creating a fake file:
+
+```yaml
+platform_host_aliases_cloud_init_template: ""
+```
+
+The role also expects the normal Rocky `/etc/logrotate.conf` file.
+
+### Network And Name Resolution
+
+The bootstrap host needs:
+
+- a stable address reachable from its rootless Podman container;
+- working DNS, routing, and HTTPS CA trust;
+- access to both Git repositories;
+- access to the GitLab endpoint;
+- access to approved OS package repositories;
+- access to registries for the development, runner, helper, and job images; and
+- access to Debian package mirrors, PyPI, and Ansible Galaxy while building the
+  development image, unless that image is imported from an approved source.
+
+Use a GitLab URL whose hostname or IP is present in the service certificate's
+subject alternative names. Installing the issuing CA does not fix a hostname
+mismatch.
+
+## Self-SSH
+
+The development container is the Ansible control node. Consequently,
+`ansible_connection: local` is unsafe for this workflow: `localhost` would be
+the development container, not the VM host.
+
+Use one reviewed authentication method:
+
+- deliberately forward an SSH agent for the duration of bootstrap; or
+- create a dedicated temporary bootstrap key on the VM and authorize its public
+  key for the initial account.
+
+The container wrapper mounts a valid `SSH_AUTH_SOCK` and the bootstrap user's
+`~/.ssh` directory. Record the VM host key in `~/.ssh/known_hosts` only after
+comparing its fingerprint with an independent console or equivalent trusted
+source. Do not disable strict host-key checking.
+
+The resulting connection path is:
+
+```text
+bootstrap shell
+  -> rootless Podman development container
+  -> SSH to the VM's managed address
+  -> passwordless sudo
+  -> managed host
+```
+
+Before running Ansible, verify the same path with an explicit SSH command from
+the development container:
+
+```bash
+./scripts/in-container sh -c \
+  'ssh -o IdentitiesOnly=yes \
+    -i "$HOME/.ssh/example-self-bootstrap_ed25519" \
+    example-user@192.0.2.50 \
+    "sudo -n true && python3 --version"'
+```
+
+When using an agent instead of a named identity file, omit `-i` and remove
+`IdentitiesOnly=yes` if the intended key is available only through that agent.
+
+## Repository And Secret Layout
+
+Clone reviewed revisions of the public and private repositories as siblings:
+
+```text
+bootstrap/
++-- platform-config/
++-- platform-private/
+```
+
+The wrapper discovers the sibling private repository and mounts it read-only
+inside the development container. The private environment file and inventory
+remain under:
+
+```text
+platform-private/config/
++-- example.ansible.env
++-- inventories/
+    +-- example/
+        +-- hosts.yml
+        +-- group_vars/
+        +-- host_vars/
+```
+
+Install only the required outside-Git files on the bootstrap host:
+
+```text
+~/.config/platform-infrastructure/
++-- config/
+|   +-- gitlab-runners/
+|       +-- example/
+|           +-- runner.token
++-- pki/
+    +-- export/
+        +-- ansible/
+            +-- ca/
+                +-- root-ca.crt
+```
+
+The runner token file must be a regular file with mode `0400` or `0600`. Omit
+the CA source when GitLab uses a publicly trusted issuer. Never clone or copy an
+entire secret store when only these bounded inputs are required.
+
+## Private Inventory Contract
+
+Use real values only in the private repository. A bootstrap runner normally
+belongs to these groups:
+
+```yaml
+---
+all:
+  children:
+    rocky:
+      hosts:
+        example-runner-01:
+          ansible_host: 192.0.2.50
+
+    container_hosts:
+      hosts:
+        example-runner-01:
+
+    gitlab_runners:
+      hosts:
+        example-runner-01:
+
+    storage_volume_hosts:
+      hosts: {}
+```
+
+The corresponding private variables must provide:
+
+- the actual SSH user and authentication path or agent policy;
+- timezone and any required host aliases;
+- the exact approved Podman NEVRA;
+- the reachable GitLab URL and optional CA source;
+- digest-pinned runner manager and Docker fallback images;
+- Docker executor and manager-only Podman socket settings;
+- runner name and intended tags; and
+- the outside-Git token source path.
+
+Runner tags are configured on the pre-created GitLab runner object. Inventory
+documents the intended tags but does not update them server-side.
+
+## Storage Gate
+
+Choose and review one storage model before convergence.
+
+### Root Filesystem
+
+Leave the host out of `storage_volume_hosts`. The runner role creates
+`/var/lib/gitlab-runner`, and rootful Podman uses `/var/lib/containers`. Confirm
+that the root filesystem has enough capacity for images, writable layers,
+workspaces, and caches.
+
+### New Dedicated Disk
+
+Use only a stable `/dev/disk/by-id/...` or `/dev/disk/by-path/...` source. Before
+setting `initialize: true`, independently verify that the disk:
+
+- is not the OS disk;
+- has no child partitions;
+- has no filesystem, partition, RAID, or LVM signatures; and
+- has enough capacity for every declared LV plus required free headroom.
+
+For the automated self-bootstrap preflight, declare the disk through a named
+`storage_volume_layouts` entry with positive `capacity_gib`, per-volume
+`size_gib`, and reviewed `required_free_gib`. Unbounded direct volume definitions
+are valid for the role but intentionally fail this bootstrap readiness gate
+because the helper cannot prove a minimum dedicated-disk capacity from them.
+
+Decide explicitly whether the dedicated layout owns
+`/var/lib/gitlab-runner`, `/var/lib/containers`, or both. Docker executor image
+and container-layer growth is primarily under `/var/lib/containers`; dedicating
+only the runner data directory does not move that storage pressure off root.
+
+Configure storage before starting the rootful runner runtime. The rootless
+development container uses the bootstrap user's storage and must not place data
+under a rootful mountpoint that will later be covered.
+
+### Existing LVM Volume Group
+
+Set `reuse_existing_vg: true` with explicit `initialize: false` only after
+confirming the role's reuse contract. The stable partition must be the VG's one
+PV, the VG must have no additional PVs, and every existing requested LV must
+match its declared non-shrinking size, filesystem, and mountpoint. Never reuse
+the OS VG for runner data.
+
+The optional `root_lvm` role is a separate decision. It is disabled by default
+and expands only a precisely declared existing LVM-backed root layout; it does
+not convert a non-LVM root filesystem or shrink storage.
+
+## Clean Runner State
+
+The preferred initial state has no existing:
+
+- `/etc/gitlab-runner/config.toml`;
+- runner Quadlet or `gitlab-runner.service`;
+- runner manager container;
+- rootful Podman job state under a future storage mountpoint; or
+- unsafe Podman versionlock path.
+
+An absent versionlock file is acceptable. An existing file must be a safe
+root-owned regular file. If an existing runner configuration is present, the
+role validates its declared executor contract and refuses incompatible changes
+without an explicit controlled force-registration procedure.
+
+## Preflight
+
+The host-side `scripts/gitlab-runner-self-bootstrap-preflight` helper verifies
+the clean-host contract without running Ansible check mode or applying changes.
+It provides four explicit operations:
+
+- `inspect` checks the host, repositories, tools, clean runner state, and
+  operator-provided free-space gates;
+- `build` runs inspection, forces a fresh development-image build, and verifies
+  the container toolchain and mount boundary;
+- `connect` runs inspection, requires an existing development image, validates
+  the exact private inventory host, storage and secret metadata, strict
+  self-SSH, passwordless become, GitLab TLS, exact Podman NEVRA, and focused
+  playbook syntax; and
+- `all` runs `inspect`, `build`, and `connect` in order.
+
+Select reviewed positive integer minimums for the filesystem containing the
+rootless controller storage and for the managed root filesystem. Then run the
+phases separately:
+
+```bash
+environment=example
+runner_host=example-runner-01
+read -r -p 'Minimum controller free GiB: ' controller_min_gib
+read -r -p 'Minimum managed-root free GiB: ' root_min_gib
+
+make runner-self-bootstrap-inspect \
+  ENV="$environment" LIMIT="$runner_host" \
+  MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
+  MIN_ROOT_FREE_GIB="$root_min_gib"
+
+make runner-self-bootstrap-build \
+  ENV="$environment" LIMIT="$runner_host" \
+  MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
+  MIN_ROOT_FREE_GIB="$root_min_gib"
+
+make runner-self-bootstrap-connect \
+  ENV="$environment" LIMIT="$runner_host" \
+  MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
+  MIN_ROOT_FREE_GIB="$root_min_gib"
+```
+
+Alternatively, request every phase explicitly:
+
+```bash
+make runner-self-bootstrap-all \
+  ENV="$environment" LIMIT="$runner_host" \
+  MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
+  MIN_ROOT_FREE_GIB="$root_min_gib"
+```
+
+Both repositories must be clean by default. For an exceptional reviewed local
+change, invoke the script directly with `--allow-dirty`; the Make targets do not
+weaken the clean-worktree gate. The helper reports private host and disk
+metadata, so do not paste its output into public issues.
+
+The individual read-only commands remain useful when collecting evidence before
+private inventory is complete:
+
+```bash
+hostnamectl --static
+cat /etc/os-release
+uname -m
+python3 --version
+podman --version
+git --version
+make --version
+sudo -n true
+ip -brief address
+ip route
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL
+findmnt /
+df -h /
+rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' podman
+dnf repoquery --qf '%{name}-%{epoch}:%{version}-%{release}.%{arch}' podman
+```
+
+Do not publish real addresses, disk identities, repository endpoints, or SSH
+fingerprints with the evidence.
+
+## Convergence
+
+Using the environment, host, and capacity gates selected during preflight,
+re-run the complete readiness check immediately before convergence:
+
+```bash
+make runner-self-bootstrap-all \
+  ENV="$environment" LIMIT="$runner_host" \
+  MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
+  MIN_ROOT_FREE_GIB="$root_min_gib"
+```
+
+Converge users and SSH first:
+
+```bash
+make check ENV="$environment" PLAYBOOK=playbooks/bootstrap.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/bootstrap.yml LIMIT="$runner_host"
+```
+
+Before closing the original session, open a second connection through the
+development container with the intended durable identity and confirm
+`sudo -n true`. Update private inventory so `ansible_user` and its identity-file
+or agent policy select that durable access path. If Ansible owns the authorized
+keys, also remove the temporary public key from its desired key list. Prove the
+inventory-selected connection, then repeat the bootstrap playbook so it removes
+the temporary authorized key and verifies steady-state access:
+
+```bash
+make ping ENV="$environment" LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/bootstrap.yml LIMIT="$runner_host"
+```
+
+Apply the base OS in isolation and repeat it to verify steady-state behavior:
+
+```bash
+make check ENV="$environment" PLAYBOOK=playbooks/base-os.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/base-os.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/base-os.yml LIMIT="$runner_host"
+make smoke-firewalld ENV="$environment" LIMIT="$runner_host"
+```
+
+If dedicated storage was approved, converge it before the container runtime:
+
+```bash
+make check ENV="$environment" PLAYBOOK=playbooks/storage-volumes.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/storage-volumes.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/storage-volumes.yml LIMIT="$runner_host"
+```
+
+Converge and verify the rootful container runtime:
+
+```bash
+make check ENV="$environment" PLAYBOOK=playbooks/container-runtime.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/container-runtime.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/container-runtime.yml LIMIT="$runner_host"
+make smoke-container ENV="$environment" LIMIT="$runner_host"
+```
+
+Finally, register and verify the runner:
+
+```bash
+make check ENV="$environment" PLAYBOOK=playbooks/gitlab-runners.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/gitlab-runners.yml LIMIT="$runner_host"
+make apply ENV="$environment" PLAYBOOK=playbooks/gitlab-runners.yml LIMIT="$runner_host"
+make smoke-runners ENV="$environment" LIMIT="$runner_host"
+```
+
+Use focused phase playbooks for first bring-up. Do not use `site.yml` while any
+imported environment phase remains intentionally blocked.
+
+Confirm in GitLab that the runner is online and has only the intended scope,
+protection, and tags. Then run a minimal job selected by all environment-specific
+tags before providing deployment credentials or privileged workloads.
+
+## Cleanup And Ongoing Ownership
+
+After successful smoke and job validation:
+
+1. Verify a durable approved access path before removing bootstrap access.
+2. When Ansible owns the account, remove a temporary public key from private
+   desired state and converge `playbooks/bootstrap.yml` with the durable
+   inventory-selected identity before deleting the temporary private key.
+3. When cloud-init or another external system owns the account, remove a
+   temporary authorized key through that owning workflow, then delete its
+   private key.
+4. Disconnect any deliberately forwarded SSH agent before the runner begins
+   accepting jobs.
+5. Remove temporary repository credentials or replace them with bounded
+   read-only credentials required for maintenance.
+6. Keep the runner token source available with owner-only permissions when this
+   host remains its own Ansible controller; future role preflight requires the
+   source file even when registration already exists.
+7. Keep the public and private checkouts inaccessible to runner job volumes.
+
+For later operation from another control node, transfer only the private
+inventory and outside-Git inputs through approved channels. Do not copy the
+managed host's generated `/etc/gitlab-runner/config.toml` to register another
+runner.

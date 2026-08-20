@@ -103,6 +103,10 @@ static runner volume.
 | `gitlab_runner_docker_volumes` | `[/cache]` | Container-only persistent volumes; host binds are rejected |
 | `gitlab_runner_force_register` | `false` | Destructive one-time local re-registration switch |
 
-See [Manual GitLab Runner Deployment](../../docs/gitlab-runner-manual-deployment.md)
-and the [Operator Runbook](../../docs/operator-runbook.md) for rollout and smoke
+See [GitLab Runner Self-Bootstrap](../../docs/gitlab-runner-self-bootstrap.md)
+when the first managed runner must temporarily act as its own Ansible control
+node. See
+[Manual GitLab Runner Deployment](../../docs/gitlab-runner-manual-deployment.md)
+for the non-Ansible fallback and the
+[Operator Runbook](../../docs/operator-runbook.md) for normal rollout and smoke
 procedures.

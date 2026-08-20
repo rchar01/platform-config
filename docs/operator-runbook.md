@@ -911,6 +911,12 @@ Before configuring dev GitLab runners, confirm homelab GitLab is reachable from 
 
 Runner authentication tokens are created in GitLab and stored outside Git. Do not put runner tokens in public examples, plain private vars, shell history, or logs.
 
+When the first managed runner must configure itself before another Ansible
+control node is available, follow
+[GitLab Runner Self-Bootstrap](gitlab-runner-self-bootstrap.md). That workflow
+keeps the full host baseline under Ansible while the runner host temporarily
+acts as both controller and managed node.
+
 For a controlled host that cannot use the normal Ansible workflow, follow
 [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md). The
 manual procedure reproduces only the runner service, not the complete managed
