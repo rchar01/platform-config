@@ -7,8 +7,27 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-20
+
+### Breaking Changes
+
+- Replaced the legacy standalone OpenBao variables and automatic startup with a
+  disabled-by-default staged HA interface. Review the new staging, status,
+  observer, HAProxy, and rolling-maintenance workflow before migrating an
+  existing deployment. Initialization, unsealing, and runtime activation remain
+  separate operator-controlled work.
+- Replaced `kong_ingress_enabled` with `platform_ingress_controller`. Bundled
+  Traefik is now the default ingress controller; selecting Kong or changing an
+  existing cluster's controller requires a planned ingress migration.
+
 ### Added
 
+- Added staged OpenBao HA, Keepalived VIP, HAProxy, observer, read-only status,
+  and guarded rolling-maintenance workflows while keeping initialization,
+  unsealing, and runtime activation outside automation.
+- Added monitoring HAProxy contracts and staging, locked external health probes,
+  immutable artifact identities, runtime qualification fixtures, and a staged
+  mTLS etcd lifecycle with preflight, bootstrap, status, and activation gates.
 - Added a fail-closed GitLab Generic Package request publisher for host-local
   PKI public artifacts, with canonical request, receipt, manifest, CSR,
   signature, trust, status, pagination, partial-resume, and digest validation.
@@ -18,12 +37,37 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added fixed target lifecycle and separate-runner validation helpers plus
   protected controller actions for exact request, response, and evidence
   exchange.
+- Added direct restricted-SSH PKI exchange, fixed access revocation, explicit CI
+  gates, terminal outcome verification, and no-clobber request and evidence
+  materialization.
+- Added Podman and Docker GitLab Runner executor support, safe first-runner
+  bootstrap preflight, and documented manual repository transfer.
+- Added isolated storage-volume acceptance and reuse workflows, Rocky
+  10.1-to-10.2 alignment, exact Podman RPM pinning, guarded RKE2 kernel
+  prerequisite reboot, Kubernetes bastion user-bootstrap controls, and a
+  focused bastion Podman playbook.
+- Added staging validation for bootstrap-token-issuer v0.3.1 and fail-closed
+  translated API egress policy checks.
 
 ### Changed
 
 - Added explicit `managed` and `host-local` Zot TLS custody. Host-local custody
   resolves authenticated immutable `fullchain.crt` and `tls.key` paths on the
   target and refuses configuration drift outside the lifecycle transaction.
+- Migrated the default repository test suite to pytest, added a sanitized pinned
+  test container, and added supplemental parallel verification targets.
+- Pinned monitoring, container-runtime, and release artifact identities and made
+  volume-group reuse and OverlayFS qualification auditable and fail closed.
+
+### Fixed
+
+- Fixed bootstrap-token-issuer release retrieval, cleanup, rollback identities,
+  policy selection, timestamp validation, and bootstrap group checks.
+- Fixed storage acceptance privilege, utility, package, reboot-stability,
+  SELinux-label, and verification-scope handling.
+- Fixed GitLab Runner rollback, runtime kernel-package installation, EFI capacity
+  validation, host-alias persistence, and PKI exchange endpoint preparation.
+- Removed checkout-layout assumptions from configuration and runner workflows.
 
 ### Security
 
@@ -39,6 +83,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added interactive activation, journaled fail-closed recovery, strict TLS and
   read-only OCI validation from one distinct runner, and fixed public-file
   allowlists for request and evidence transfer.
+- Added fixed-account restricted PKI exchange access with root-controlled
+  dispatch, exact ownership markers, post-revocation absence checks, and no
+  interactive Ansible behavior in unattended CI paths.
 
 ## [1.1.0] - 2026-07-25
 

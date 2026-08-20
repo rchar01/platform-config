@@ -4,14 +4,42 @@ This file gives a short, release-oriented view of what changed between versions.
 
 ## Unreleased
 
+No user-visible changes yet.
+
+## v2.0.0 - 2026-08-20
+
+This release adds staged HA service operations, complete host-local registry PKI,
+expanded runner and storage acceptance, and two required configuration
+migrations.
+
+### Upgrade Notes
+
+- Replace legacy OpenBao role variables and automatic startup assumptions with
+  the new disabled-by-default staged HA workflow. Review staging, status,
+  observer, HAProxy, and rolling-maintenance gates before applying;
+  initialization, unsealing, and runtime activation remain operator-controlled.
+- Replace `kong_ingress_enabled` with `platform_ingress_controller`. Traefik is
+  now the default; selecting Kong or changing an existing cluster's ingress
+  controller requires a planned migration.
+
+### Highlights
+
+- Add staged OpenBao HA, Keepalived VIP, HAProxy, observer, status, and guarded
+  rolling-maintenance workflows without automating initialization, unsealing, or
+  runtime activation.
+- Add monitoring HAProxy and external-probe contracts, immutable artifact pins,
+  runtime qualification fixtures, and staged mTLS etcd bootstrap and activation.
 - Add target-local Zot certificate request collection, authenticated response
   intake, interactive activation and recovery, separate-runner validation,
   deployment evidence export, authenticated terminal signer-outcome import,
-  completion status, and authenticated host-local Zot TLS custody. External
-  signing and transport, renewal, GitLab runtime qualification, and live
-  enablement remain separate gates.
-- Add a protected GitLab Generic Package publisher for validated host-local PKI
-  request packages.
+  completion status, authenticated host-local Zot TLS custody, direct restricted
+  exchange, GitLab package transport, explicit CI gates, fixed access revocation,
+  and terminal verification.
+- Add Podman and Docker GitLab Runner executors, safe first-runner bootstrap,
+  isolated storage-volume acceptance, Rocky alignment, exact Podman package
+  pinning, guarded RKE2 kernel preparation, and focused bastion operations.
+- Move the default test suite to pytest in sanitized pinned containers while
+  retaining focused serial and supplemental parallel verification paths.
 
 ## v1.1.0 - 2026-07-25
 
