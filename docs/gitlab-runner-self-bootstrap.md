@@ -333,7 +333,8 @@ It provides four explicit operations:
 
 Select reviewed positive integer minimums for the filesystem containing the
 rootless controller storage and for the managed root filesystem. Then run the
-phases separately:
+phases separately. Run one command at a time, and stop to resolve every
+`[FAIL]` before continuing to the next phase:
 
 ```bash
 environment=example
@@ -357,13 +358,20 @@ make runner-self-bootstrap-connect \
   MIN_ROOT_FREE_GIB="$root_min_gib"
 ```
 
-Alternatively, request every phase explicitly:
+After all three individual phases pass, run the complete aggregate gate:
 
 ```bash
 make runner-self-bootstrap-all \
   ENV="$environment" LIMIT="$runner_host" \
   MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
   MIN_ROOT_FREE_GIB="$root_min_gib"
+```
+
+Do not start Ansible convergence unless this final command reports:
+
+```text
+Failed: 0
+Result: READY
 ```
 
 Both repositories must be clean by default. For an exceptional reviewed local
