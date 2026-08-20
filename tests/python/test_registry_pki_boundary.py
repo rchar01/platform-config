@@ -1972,8 +1972,7 @@ def test_registry_pki_unattended_activation_is_explicit_and_digest_pinned(
         "_guard-pki-artifact",
         "_guard-pki-runner",
         "pki_host_local_certificate_exchange_mode=direct",
-        '\"pki_host_local_certificate_interactive_confirmation\":false',
-        '\"pki_host_local_certificate_unattended_authorized\":true',
+        "@vars/registry-pki-activation-unattended.yml",
         "pki_host_local_certificate_request_id=$(REQUEST_ID)",
         "pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256)",
         "pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)",
@@ -1989,29 +1988,37 @@ def test_registry_pki_unattended_activation_is_explicit_and_digest_pinned(
             "$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode="
             in interactive_target
         )
-        assert (
-            '\"pki_host_local_certificate_interactive_confirmation\":true'
-            in interactive_target
-        )
-        assert (
-            '\"pki_host_local_certificate_unattended_authorized\":false'
-            in interactive_target
-        )
+        assert "@vars/registry-pki-activation-interactive.yml" in interactive_target
         for forced_value in (
             "pki_host_local_certificate_exchange_mode=",
-            '\"pki_host_local_certificate_interactive_confirmation\":true',
-            '\"pki_host_local_certificate_unattended_authorized\":false',
+            "@vars/registry-pki-activation-interactive.yml",
         ):
             assert interactive_target.index(
                 "$(EXTRA_ARGS)"
             ) < interactive_target.index(forced_value)
 
     assert target.index("$(EXTRA_ARGS)") < target.index(
-        '\"pki_host_local_certificate_interactive_confirmation\":false'
+        "@vars/registry-pki-activation-unattended.yml"
     )
-    assert target.index("$(EXTRA_ARGS)") < target.index(
-        '\"pki_host_local_certificate_unattended_authorized\":true'
+
+    interactive_vars = yaml.safe_load(
+        (repo_root / "vars/registry-pki-activation-interactive.yml").read_text(
+            encoding="utf-8"
+        )
     )
+    unattended_vars = yaml.safe_load(
+        (repo_root / "vars/registry-pki-activation-unattended.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert interactive_vars == {
+        "pki_host_local_certificate_interactive_confirmation": True,
+        "pki_host_local_certificate_unattended_authorized": False,
+    }
+    assert unattended_vars == {
+        "pki_host_local_certificate_interactive_confirmation": False,
+        "pki_host_local_certificate_unattended_authorized": True,
+    }
 
 
 def test_registry_pki_wrapper_rejects_shell_env_without_execution(

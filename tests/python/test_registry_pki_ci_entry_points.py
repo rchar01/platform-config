@@ -388,18 +388,15 @@ def test_activation_make_routes_override_conflicting_caller_modes(
     routes = {
         "registry-pki-activate": (
             "pki_host_local_certificate_exchange_mode=direct",
-            '\"pki_host_local_certificate_interactive_confirmation\":true',
-            '\"pki_host_local_certificate_unattended_authorized\":false',
+            "@vars/registry-pki-activation-interactive.yml",
         ),
         "registry-pki-activate-controller-local": (
             "pki_host_local_certificate_exchange_mode=controller-local",
-            '\"pki_host_local_certificate_interactive_confirmation\":true',
-            '\"pki_host_local_certificate_unattended_authorized\":false',
+            "@vars/registry-pki-activation-interactive.yml",
         ),
         "registry-pki-activate-unattended": (
             "pki_host_local_certificate_exchange_mode=direct",
-            '\"pki_host_local_certificate_interactive_confirmation\":false',
-            '\"pki_host_local_certificate_unattended_authorized\":true',
+            "@vars/registry-pki-activation-unattended.yml",
         ),
     }
     for name, forced in routes.items():
