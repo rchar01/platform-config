@@ -400,10 +400,9 @@ role:
 - Removes sudo authority first and removes the account only when that safe
   root-owned marker still matches every recorded identity attribute.
 
-Enable it in private inventory with a reference to the outside-Git public key:
+Configure the outside-Git public key reference in private inventory:
 
 ```yaml
-pki_host_local_exchange_access_state: present
 pki_host_local_exchange_access_authorized_key: >-
   {{
     lookup(
@@ -417,34 +416,33 @@ pki_host_local_exchange_access_authorized_key: >-
   }}
 ```
 
-The role defaults to `absent` and is part of normal registry convergence so
-revocation and policy drift remain managed. Disabled access is revoked before
-service roles; enabled access converges afterward.
+The role has no inventory-selectable state. Its default task entry point is
+structurally revoke-only, and normal registry convergence always revokes access
+before service roles and never re-enables it. The wrapper first uses the fixed
+lease-claim entry point; the focused access playbook then requires that owned
+lease before selecting fixed access enablement.
 
 The access role intentionally does not own the lifecycle facade. The focused
-playbook and normal enabled registry convergence first call the certificate
-role's fixed lifecycle-helper and exchange-endpoint task files through the
+playbook first calls the certificate role's fixed lifecycle-helper and
+exchange-endpoint task files through the
 administrative Ansible identity. This installs or updates only the helper,
 facade, fixed config, and target spool; it does not create a request or change
 certificate state. The access role then rejects a missing, symlinked, writable,
 or incorrectly owned facade or ancestor during apply.
 
-Use the focused entry point for initial setup or upgrades. Check mode predicts a
-missing endpoint and account hierarchy without enabling access; apply installs
-them, and a second check verifies idempotency:
+Syntax-check the focused entry point during setup or upgrades. The canonical
+workflow's fixed direct-exchange Make routes apply it only after atomically
+claiming the target operation lease and before token-bound EXIT/signal
+revocation. A concurrent claim fails without changing the active operation. Do
+not leave the standalone enable target as an operator step:
 
-**Actor:** Lifecycle/access administrator. **Run on:** Ansible controller and one
-exact target. **Prerequisite:** Reviewed private public-key reference and access
-state. **Output/provenance:** Syntax result, converged restricted endpoint, and
-idempotency check from Ansible. **Idempotent retry/result:** Exact state is a
-no-op; unmanaged or unsafe identity/facade state fails closed. **Next actor:**
-Canonical workflow Bootstrap stage.
+**Actor:** Lifecycle/access administrator. **Run on:** Ansible controller.
+**Prerequisite:** Reviewed private public-key reference. **Output/provenance:**
+Syntax result. **Idempotent retry/result:** Repeated syntax checks are
+non-mutating. **Next actor:** Canonical workflow Bootstrap stage.
 
 ```bash
 make syntax ENV=dev PLAYBOOK=playbooks/registry-pki-exchange-access.yml
-make registry-pki-exchange-access ENV=dev LIMIT=registry-example
-make check ENV=dev PLAYBOOK=playbooks/registry-pki-exchange-access.yml \
-  LIMIT=registry-example
 ```
 
 The normal Ansible administrative identity remains separate. The public

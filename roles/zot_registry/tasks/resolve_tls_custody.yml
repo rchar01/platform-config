@@ -1,0 +1,139 @@
+---
+- name: Initialize Zot TLS custody to exact managed paths
+  ansible.builtin.set_fact:
+    zot_registry_tls_effective_custody: managed
+    zot_registry_tls_effective_cert_path: "{{ zot_registry_tls_cert_path }}"
+    zot_registry_tls_effective_key_path: "{{ zot_registry_tls_key_path }}"
+
+- name: Render exact managed Zot configuration digest
+  ansible.builtin.set_fact:
+    zot_registry_tls_managed_config_sha256: >-
+      {{ lookup('ansible.builtin.template', role_path ~ '/templates/config.json.j2') | hash('sha256') }}
+  when: zot_registry_tls_enabled | bool
+
+- name: Inspect Zot TLS custody state
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: "{{ item.checksum }}"
+    checksum_algorithm: sha256
+    get_mime: false
+  loop:
+    - name: state_root
+      path: "{{ zot_registry_tls_host_local_state_root }}"
+      checksum: false
+    - name: pending_root
+      path: "{{ zot_registry_tls_host_local_pending_root }}"
+      checksum: false
+    - name: versions_root
+      path: "{{ zot_registry_tls_host_local_versions_root }}"
+      checksum: false
+    - name: config
+      path: "{{ zot_registry_config_path }}"
+      checksum: true
+    - name: helper
+      path: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+      checksum: true
+  loop_control:
+    label: "{{ item.name }}"
+  register: zot_registry_tls_custody_state_stats
+  when: zot_registry_tls_enabled | bool
+
+- name: Index Zot TLS custody state
+  ansible.builtin.set_fact:
+    zot_registry_tls_custody_state: >-
+      {{ dict(zot_registry_tls_custody_state_stats.results
+              | map(attribute='item.name')
+              | zip(zot_registry_tls_custody_state_stats.results
+                    | map(attribute='stat'))) }}
+  when: zot_registry_tls_enabled | bool
+
+- name: Inspect shipped Zot TLS lifecycle helper source
+  ansible.builtin.stat:
+    path: "{{ role_path }}/../pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+    get_mime: false
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: zot_registry_tls_lifecycle_helper_source
+  when: zot_registry_tls_enabled | bool
+
+- name: Validate exact Zot TLS lifecycle helper
+  ansible.builtin.import_tasks: validate_tls_lifecycle_helper.yml
+  when: zot_registry_tls_enabled | bool
+
+- name: Require unambiguous fresh Zot TLS bootstrap state
+  ansible.builtin.assert:
+    that:
+      - not zot_registry_tls_custody_state.pending_root.exists
+      - not zot_registry_tls_custody_state.versions_root.exists
+      - >-
+        not zot_registry_tls_custody_state.config.exists
+        or (
+          zot_registry_tls_custody_state.config.isreg
+          and not zot_registry_tls_custody_state.config.islnk
+          and zot_registry_tls_custody_state.config.uid == 0
+          and zot_registry_tls_custody_state.config.gid == 0
+          and zot_registry_tls_custody_state.config.mode == '0644'
+          and zot_registry_tls_custody_state.config.checksum
+              == zot_registry_tls_managed_config_sha256
+        )
+    fail_msg: >-
+      An absent lifecycle root selects managed bootstrap only when lifecycle data
+      roots are also absent and any existing Zot configuration is exact managed
+      configuration.
+  when:
+    - zot_registry_tls_enabled | bool
+    - not zot_registry_tls_custody_state.state_root.exists
+
+- name: Derive Zot TLS custody from initialized lifecycle state
+  ansible.builtin.command:
+    argv:
+      - "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+      - zot-custody
+      - --state-root
+      - "{{ zot_registry_tls_host_local_state_root }}"
+      - --pending-root
+      - "{{ zot_registry_tls_host_local_pending_root }}"
+      - --versions-root
+      - "{{ zot_registry_tls_host_local_versions_root }}"
+      - --service
+      - "{{ zot_registry_tls_host_local_service }}"
+      - --target
+      - "{{ zot_registry_tls_host_local_target }}"
+      - --zot-config
+      - "{{ zot_registry_tls_host_local_zot_config_path }}"
+      - --managed-cert
+      - "{{ zot_registry_tls_cert_path }}"
+      - --managed-key
+      - "{{ zot_registry_tls_key_path }}"
+      - --managed-config-sha256
+      - "{{ zot_registry_tls_managed_config_sha256 }}"
+  register: zot_registry_tls_custody_result
+  check_mode: false
+  changed_when: false
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody_state.state_root.exists
+
+- name: Validate derived Zot TLS custody
+  ansible.builtin.import_tasks: validate_tls_custody_result.yml
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody_state.state_root.exists
+
+- name: Select derived Zot TLS paths
+  ansible.builtin.set_fact:
+    zot_registry_tls_effective_custody: >-
+      {{ (zot_registry_tls_custody_result.stdout | from_json).custody }}
+    zot_registry_tls_effective_cert_path: >-
+      {{ (zot_registry_tls_custody_result.stdout | from_json).cert_path }}
+    zot_registry_tls_effective_key_path: >-
+      {{ (zot_registry_tls_custody_result.stdout | from_json).key_path }}
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody_state.state_root.exists

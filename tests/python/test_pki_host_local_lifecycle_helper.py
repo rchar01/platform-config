@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -486,6 +487,16 @@ class LifecycleCase:
             *extra,
         ])
 
+    def zot_custody(self, *, managed_config_sha256: str | None = None) -> CommandResult:
+        managed_cert = self.root / "zot/managed.crt"
+        managed_key = self.root / "zot/managed.key"
+        return self.run([
+            *self.common("zot-custody", config=True),
+            "--managed-cert", managed_cert,
+            "--managed-key", managed_key,
+            "--managed-config-sha256", managed_config_sha256 or digest(self.zot_config),
+        ])
+
     def outcome_package(self, evidence_path: Path) -> tuple[Path, str]:
         package = private_dir(self.root / "outcome-package")
         deployment_bytes = evidence_path.joinpath("deployment").read_bytes()
@@ -931,6 +942,127 @@ def test_status_falls_back_until_authenticated_outcome(
     ))
     assert exported["status"] == "evidence-exported"
     assert exported["signer_outcome_state"] == "unavailable"
+
+
+def test_zot_custody_selects_exact_managed_config_before_activation(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    selected = result_json(lifecycle_case.zot_custody())
+
+    assert selected == {
+        "schema": "1",
+        "kind": "platform-config-zot-tls-custody",
+        "custody": "managed",
+        "request_id": "none",
+        "cert_path": str(lifecycle_case.root / "zot/managed.crt"),
+        "key_path": str(lifecycle_case.root / "zot/managed.key"),
+        "artifact_sha256": "none",
+        "certificate_sha256": "none",
+        "spki_sha256": "none",
+        "chain_sha256": "none",
+        "fullchain_sha256": "none",
+        "zot_config_sha256": digest(lifecycle_case.zot_config),
+    }
+
+
+def test_zot_custody_selects_only_finished_authenticated_active_version(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    activated = result_json(lifecycle_case.activate())
+    assert_failure(lifecycle_case.zot_custody())
+
+    observation = lifecycle_case.observation(activated["activation_epoch"] + 1)
+    result_json(lifecycle_case.finish(observation))
+    selected = result_json(lifecycle_case.zot_custody())
+
+    assert selected["custody"] == "host-local"
+    assert selected["request_id"] == REQUEST_ID
+    assert selected["cert_path"] == str(
+        lifecycle_case.versions_root / REQUEST_ID / "fullchain.crt"
+    )
+    assert selected["key_path"] == str(
+        lifecycle_case.versions_root / REQUEST_ID / "tls.key"
+    )
+    assert selected["artifact_sha256"] == lifecycle_case.artifact_sha256
+    assert selected["certificate_sha256"] == lifecycle_case.certificate_sha256
+    assert selected["spki_sha256"] == lifecycle_case.certificate_spki_sha256
+    assert selected["zot_config_sha256"] == digest(lifecycle_case.zot_config)
+
+
+@pytest.mark.parametrize(
+    "journal",
+    (
+        "activation-journal",
+        "evidence-attempt-journal",
+        "abandonment-journal",
+        "expired-request-abandonment-journal",
+        "pending-request-cancellation-journal",
+        "request.journal",
+        "trust-install.journal",
+    ),
+)
+def test_zot_custody_rejects_every_unresolved_journal_without_fallback(
+    lifecycle_case: LifecycleCase,
+    journal: str,
+) -> None:
+    private_file(lifecycle_case.state / journal, b"unresolved\n")
+
+    result = lifecycle_case.zot_custody()
+
+    assert_failure(result)
+    assert "unresolved lifecycle state blocks Zot TLS custody selection" in result.stderr
+
+
+@pytest.mark.parametrize("corruption", ("managed-config", "active", "rollback"))
+def test_zot_custody_rejects_config_and_authenticated_state_corruption(
+    lifecycle_case: LifecycleCase,
+    corruption: str,
+) -> None:
+    if corruption == "managed-config":
+        expected_config_sha256 = digest(lifecycle_case.zot_config)
+        config = json.loads(lifecycle_case.zot_config.read_text(encoding="ascii"))
+        config["http"]["address"] = "127.0.0.1"
+        lifecycle_case.zot_config.write_text(
+            json.dumps(config, indent=2) + "\n", encoding="ascii"
+        )
+        result = lifecycle_case.zot_custody(
+            managed_config_sha256=expected_config_sha256
+        )
+    else:
+        activate_and_finish(lifecycle_case)
+        path = lifecycle_case.state / corruption
+        fields = (
+            lifecycle_case.module.ACTIVE_FIELDS
+            if corruption == "active"
+            else lifecycle_case.module.ROLLBACK_FIELDS
+        )
+        values = lifecycle_case.module.parse_record(
+            path.read_bytes(), fields, f"fixture {corruption}"
+        )
+        values["activating_certificate_sha256" if corruption == "rollback" else "certificate_sha256"] = "f" * 64
+        private_file(path, record(fields, values))
+        result = lifecycle_case.zot_custody()
+
+    assert_failure(result)
+    assert result.stdout == ""
+
+
+def test_zot_custody_rejects_ambiguous_state_and_obeys_shared_lock(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    private_file(lifecycle_case.state / "unexpected", b"ambiguous\n")
+    ambiguous = lifecycle_case.zot_custody()
+    assert_failure(ambiguous)
+    assert "state root contains unexpected entries" in ambiguous.stderr
+    lifecycle_case.state.joinpath("unexpected").unlink()
+
+    with lifecycle_case.state.joinpath("lock").open("rb") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        blocked = lifecycle_case.zot_custody()
+    assert_failure(blocked)
+    assert "another lifecycle operation holds the state lock" in blocked.stderr
 
 
 def rewrite_lifecycle_outcome_decision(

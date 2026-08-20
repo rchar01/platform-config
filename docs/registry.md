@@ -11,11 +11,15 @@ role boundaries, status semantics, and registry behavior behind that runbook.
 The certificate lifecycle `playbooks/registry-pki-*.yml` playbooks are
 operator-only entry points and are not imported by `site.yml`. The persistent
 `pki_host_local_exchange_access` role is an exception: normal registry
-convergence revokes disabled access before service roles and manages enabled
-access after them so revocation cannot be skipped by an unrelated service
-failure. The focused `registry-pki-exchange-access.yml` setup entry point
+convergence always runs its structurally fixed revoke entry point before service
+roles and never re-enables access. The focused
+`registry-pki-exchange-access.yml` entry point
 installs the lifecycle-owned helper, facade, config, and spool without creating
-a request or changing certificate state before it converges access. The
+a request or changing certificate state before it converges access for one
+exact registry target. Config-owned direct-exchange wrappers place that focused
+enablement inside a target-scoped token-bound operation lease around one
+transport operation. A concurrent wrapper cannot revoke or enable through an
+existing lease. The
 implemented workflow imports one explicit
 digest-pinned authenticated signer outcome after deployment evidence export. It
 does not automate signing, controlled-media transport, or renewal.
@@ -57,15 +61,14 @@ transfer-station directory containing `artifact`, `tls.crt`, `ca-chain.crt`,
 `fullchain.crt`, `response`, and `response.sig`. The source must neither be
 inside nor contain the controller exchange root. Response check authenticates
 and immutably publishes it entirely on the controller; it does not contact Zot
-or mutate the target. Default direct mode then requires an exact
-`response-push`; activation never moves package bytes through Ansible. The
-explicit `controller-local` target retains the old Ansible ingress path.
+or mutate the target. Direct mode then requires an exact `response-push`;
+activation never moves package bytes through Ansible.
 
-Normal and controller-local activation require the operator to type
-`activate SERVICE REQUEST_ID ARTIFACT_SHA256`. The explicit direct-only
-`registry-pki-activate-unattended` target skips only that pause; it preserves
-response authentication, target-local key matching, strict local and
-distinct-runner validation, and journal-bound rollback. Follow the canonical
+The single `registry-pki-activate` route is direct-only and runs automatically
+after its exact request digest, artifact digest, distinct runner, response
+authentication, target-local key matching, and candidate preflights pass. It
+preserves strict local and distinct-runner validation and journal-bound rollback.
+Follow the canonical
 [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for every
 exact command, actor handoff, argument source, retry result, GitLab stage, and
 cleanup boundary. Do not reconstruct a partial sequence from this role reference.
@@ -167,18 +170,18 @@ exact reported path. A retained `.accepted-outcome-stage-*` similarly blocks
 import as ambiguous lifecycle state until that exact root-owned stage is reviewed
 and recovered. Never use wildcard stage cleanup.
 
-Managed Zot TLS custody remains the default. After activation has authenticated
-an active version, private inventory may set:
+Zot TLS custody is derived from target lifecycle state and cannot be selected by
+inventory. Fresh state uses the exact managed paths and required controller
+sources. Initialized state without an active version remains managed only while
+there is no unresolved journal and the current Zot configuration is the exact
+role-rendered managed configuration. After `activate-finish`, normal registry
+convergence resolves the authenticated immutable `fullchain.crt` and `tls.key`
+paths through the exact shipped lifecycle helper under its shared lock.
 
-```yaml
-zot_registry_tls_custody: host-local
-zot_registry_tls_host_local_target: registry-example
-```
-
-Normal registry convergence then resolves the immutable `fullchain.crt` and
-`tls.key` paths through the lifecycle helper; inventory cannot select those
-paths. The role refuses any host-local rendered configuration drift rather than
-invalidating the authenticated active record. Do not run a live request,
+Helper drift or error, unresolved journals, malformed or ambiguous lifecycle
+state, and any configuration mismatch fail closed; none is interpreted as a
+managed fallback. The role refuses host-local rendered configuration drift
+rather than invalidating the authenticated active record. Do not run a live request,
 activation, or package publication until private inventory, reviewed trust and
 CA files, the validation boundary, runner identity, controlled-media process,
 and any GitLab project controls have been separately approved.

@@ -1,0 +1,17 @@
+---
+- name: Claim restricted registry PKI exchange operation lease
+  hosts: registry
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Require one exact registry target for exchange access lease claim
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - groups.get('registry', []) | select('equalto', inventory_hostname) | list | length == 1
+        fail_msg: Exchange access lease claim requires one exact registry target.
+
+    - name: Run fixed host-local PKI exchange operation lease claim
+      ansible.builtin.include_role:
+        name: pki_host_local_exchange_access
+        tasks_from: enable

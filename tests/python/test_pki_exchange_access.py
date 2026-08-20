@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import runpy
 import stat
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -242,12 +243,16 @@ def task_named(tasks: list[dict[str, Any]], name: str) -> dict[str, Any]:
 def test_access_role_is_fixed_owned_and_fail_closed(repo_root: Path) -> None:
     role = repo_root / "roles/pki_host_local_exchange_access"
     defaults = yaml.safe_load((role / "defaults/main.yml").read_text(encoding="utf-8"))
-    assert defaults["pki_host_local_exchange_access_state"] == "absent"
+    assert "pki_host_local_exchange_access_state" not in defaults
     assert defaults["pki_host_local_exchange_access_user"] == "exchange-operator"
     assert defaults["pki_host_local_exchange_access_group"] == "exchange-operator"
     assert defaults["pki_host_local_exchange_access_marker_path"].endswith(".managed")
     assert defaults["pki_host_local_exchange_access_root_dispatch_path"] == ROOT_DISPATCH
     assert defaults["pki_host_local_exchange_access_helper_path"] == HELPER
+    assert defaults["pki_host_local_exchange_access_lease_path"] == (
+        "/var/lib/platform-pki-exchange-access.lease"
+    )
+    assert defaults["pki_host_local_exchange_access_operation_token"] == ""
 
     present = yaml.safe_load((role / "tasks/present.yml").read_text(encoding="utf-8"))
     collision = task_named(
@@ -341,15 +346,19 @@ def test_absent_role_only_revokes_owned_identity_and_removes_sudo_first(
 def test_registry_playbooks_order_exchange_access(repo_root: Path) -> None:
     registry = yaml.safe_load((repo_root / "playbooks/registry.yml").read_text(encoding="utf-8"))
     play = registry[0]
-    assert play["pre_tasks"][0]["when"].endswith("== 'absent'")
-    assert play["roles"] == ["firewalld", "podman_host", "zot_registry"]
-    post_names = [task["name"] for task in play["post_tasks"]]
-    assert post_names == [
-        "Install host-local PKI lifecycle helper for enabled exchange access",
-        "Install host-local PKI exchange endpoint for enabled access",
-        "Converge enabled host-local PKI exchange access after service convergence",
+    assert play["pre_tasks"] == [
+        {
+            "name": "Revoke host-local PKI exchange access before service convergence",
+            "ansible.builtin.include_role": {
+                "name": "pki_host_local_exchange_access",
+                "tasks_from": "revoke",
+            },
+        }
     ]
-    assert all(task["when"].endswith("== 'present'") for task in play["post_tasks"])
+    assert play["roles"] == ["firewalld", "podman_host", "zot_registry"]
+    assert "post_tasks" not in play
+    assert "pki_host_local_exchange_access_state" not in yaml.safe_dump(play)
+
     focused = yaml.safe_load(
         (repo_root / "playbooks/registry-pki-exchange-access.yml").read_text(
             encoding="utf-8"
@@ -357,15 +366,100 @@ def test_registry_playbooks_order_exchange_access(repo_root: Path) -> None:
     )
     tasks = focused[0]["tasks"]
     assert [task["name"] for task in tasks] == [
+        "Require one exact registry target for exchange access enablement",
+        "Require owned host-local PKI exchange operation lease",
         "Install host-local PKI lifecycle helper for enabled exchange access",
         "Install host-local PKI exchange endpoint for enabled access",
-        "Converge restricted host-local PKI exchange access",
+        "Run fixed enabled host-local PKI exchange access boundary",
     ]
-    assert tasks[0]["ansible.builtin.include_role"]["tasks_from"] == "lifecycle_helper"
-    assert tasks[1]["ansible.builtin.include_role"]["tasks_from"] == "exchange_helper"
-    assert tasks[2]["ansible.builtin.include_role"]["name"] == (
-        "pki_host_local_exchange_access"
+    assert tasks[0]["ansible.builtin.assert"]["that"] == [
+        "ansible_play_hosts_all == [inventory_hostname]",
+        (
+            "groups.get('registry', []) | select('equalto', inventory_hostname) "
+            "| list | length == 1"
+        ),
+    ]
+    assert tasks[1]["ansible.builtin.include_role"]["tasks_from"] == "require_lease"
+    assert tasks[2]["ansible.builtin.include_role"]["tasks_from"] == "lifecycle_helper"
+    assert tasks[3]["ansible.builtin.include_role"]["tasks_from"] == "exchange_helper"
+    assert tasks[4]["ansible.builtin.include_role"] == {
+        "name": "pki_host_local_exchange_access",
+        "tasks_from": "enable_access",
+    }
+    assert "pki_host_local_exchange_access_state" not in yaml.safe_dump(focused)
+
+    role = repo_root / "roles/pki_host_local_exchange_access/tasks"
+    enable_entry = yaml.safe_load((role / "enable.yml").read_text(encoding="utf-8"))
+    assert enable_entry[0] == {
+        "name": "Load fixed host-local PKI exchange access validation",
+        "ansible.builtin.import_tasks": "validate.yml",
+    }
+    assert "ansible.builtin.assert" in enable_entry[1]
+    claim = task_named(
+        task_named(enable_entry, "Claim fixed host-local PKI exchange operation lease")[
+            "block"
+        ],
+        "Atomically create empty host-local PKI exchange operation lease",
     )
+    claim_source = claim["ansible.builtin.command"]["argv"][2]
+    assert "os.mkdir(path, 0o700)" in claim_source
+    assert "os.setxattr(" in claim_source
+    assert "user.platform_config_operation" in claim_source
+    assert "flock" not in yaml.safe_dump(enable_entry)
+    claim_block = task_named(
+        enable_entry, "Claim fixed host-local PKI exchange operation lease"
+    )
+    cleanup_claim = task_named(
+        claim_block["rescue"],
+        "Release incomplete owned host-local PKI exchange lease claim",
+    )
+    assert cleanup_claim["when"][-1].endswith("lease_claim.rc == 0")
+
+    enable_access = yaml.safe_load(
+        (role / "enable_access.yml").read_text(encoding="utf-8")
+    )
+    assert enable_access[0] == {
+        "name": "Require fixed host-local PKI exchange operation lease",
+        "ansible.builtin.import_tasks": "require_lease.yml",
+    }
+    assert enable_access[2] == {
+        "name": "Enable fixed host-local PKI exchange access",
+        "ansible.builtin.import_tasks": "present.yml",
+    }
+    assert [task["name"] for task in enable_access[-4:]] == [
+        "Read fixed host-local PKI exchange public key after enablement",
+        "Inspect fixed host-local PKI exchange account after enablement",
+        "Inspect fixed host-local PKI exchange group after enablement",
+        "Require fixed host-local PKI exchange access to be enabled",
+    ]
+    enabled = enable_access[-1]["ansible.builtin.assert"]["that"]
+    assert "pki_host_local_exchange_access_enabled_user.rc == 0" in enabled
+    assert "pki_host_local_exchange_access_enabled_group.rc == 0" in enabled
+    assert any("enabled_key.content" in condition for condition in enabled)
+    assert "pki_host_local_exchange_access_state" not in yaml.safe_dump(
+        enable_entry + enable_access
+    )
+
+    lease_validation = (role / "validate_lease.yml").read_text(encoding="utf-8")
+    for required in (
+        "os.O_NOFOLLOW",
+        "metadata.st_uid != 0",
+        "stat.S_IMODE(metadata.st_mode) != 0o700",
+        "os.listdir(descriptor)",
+        "user.platform_config_operation",
+        "lease belongs to another operation",
+    ):
+        assert required in lease_validation
+
+    claim_play = yaml.safe_load(
+        (
+            repo_root / "playbooks/registry-pki-exchange-access-claim.yml"
+        ).read_text(encoding="utf-8")
+    )[0]
+    assert claim_play["tasks"][1]["ansible.builtin.include_role"] == {
+        "name": "pki_host_local_exchange_access",
+        "tasks_from": "enable",
+    }
 
     revoke = yaml.safe_load(
         (repo_root / "playbooks/registry-pki-exchange-access-revoke.yml").read_text(
@@ -389,27 +483,41 @@ def test_registry_playbooks_order_exchange_access(repo_root: Path) -> None:
         },
     }
 
-    role = repo_root / "roles/pki_host_local_exchange_access/tasks"
     revoke_entry = yaml.safe_load((role / "revoke.yml").read_text(encoding="utf-8"))
-    assert revoke_entry[:2] == [
-        {
-            "name": "Load fixed host-local PKI exchange access validation",
-            "ansible.builtin.import_tasks": "validate.yml",
-        },
-        {
-            "name": "Revoke fixed host-local PKI exchange access",
-            "ansible.builtin.import_tasks": "absent.yml",
-        },
-    ]
-    assert [task["name"] for task in revoke_entry[2:]] == [
-        "Inspect fixed host-local PKI exchange paths after revocation",
-        "Inspect fixed host-local PKI exchange account after revocation",
-        "Inspect fixed host-local PKI exchange group after revocation",
-        "Require fixed host-local PKI exchange access to be absent",
-    ]
-    postcondition = revoke_entry[-1]["ansible.builtin.assert"]["that"]
+    assert revoke_entry[0] == {
+        "name": "Load fixed host-local PKI exchange access validation",
+        "ansible.builtin.import_tasks": "validate.yml",
+    }
+    revoke_access = task_named(
+        revoke_entry, "Revoke fixed host-local PKI exchange access"
+    )
+    assert revoke_access["ansible.builtin.import_tasks"] == "absent.yml"
+    postcondition_task = task_named(
+        revoke_entry, "Require fixed host-local PKI exchange access to be absent"
+    )
+    postcondition = postcondition_task["ansible.builtin.assert"]["that"]
     assert "pki_host_local_exchange_access_revoked_user.rc == 2" in postcondition
     assert "pki_host_local_exchange_access_revoked_group.rc == 2" in postcondition
+    release = task_named(
+        revoke_entry,
+        "Release empty host-local PKI exchange operation lease after revocation",
+    )
+    assert release["ansible.builtin.command"]["argv"][:2] == [
+        "/usr/bin/rmdir",
+        "--",
+    ]
+    assert revoke_entry.index(postcondition_task) < revoke_entry.index(release)
+    assert task_named(
+        revoke_entry,
+        "Validate host-local PKI exchange operation lease before revocation",
+    )["when"].endswith("lease.stat.exists")
+    assert task_named(
+        revoke_entry,
+        "Require token-bound cleanup to retain its operation lease",
+    )["when"] == "pki_host_local_exchange_access_operation_token != ''"
+    assert revoke_entry[-1]["name"] == (
+        "Require fixed host-local PKI exchange operation lease to be absent"
+    )
     assert "pki_host_local_exchange_access_state" not in yaml.safe_dump(revoke_entry)
     assert "pki_host_local_exchange_access_state" not in (
         role / "validate.yml"
@@ -418,10 +526,15 @@ def test_registry_playbooks_order_exchange_access(repo_root: Path) -> None:
         role / "absent.yml"
     ).read_text(encoding="utf-8")
     main = yaml.safe_load((role / "main.yml").read_text(encoding="utf-8"))
-    assert main[0] == revoke_entry[0]
+    assert main == [
+        {
+            "name": "Run fixed absent host-local PKI exchange access boundary",
+            "ansible.builtin.import_tasks": "revoke.yml",
+        }
+    ]
 
 
-def test_revoke_make_target_forces_absent_after_caller_arguments(
+def test_revoke_make_target_uses_only_the_fixed_revoke_entry_point(
     repo_root: Path,
     command_runner: CommandRunner,
 ) -> None:
@@ -429,12 +542,9 @@ def test_revoke_make_target_forces_absent_after_caller_arguments(
     target = makefile.split("registry-pki-exchange-access-revoke:", 1)[1].split(
         "\n\n", 1
     )[0]
-    caller = "$(EXTRA_ARGS)"
-    forced = "-e pki_host_local_exchange_access_state=absent"
-
     assert "_guard-pki-limit" in target
     assert "PLAYBOOK=playbooks/registry-pki-exchange-access-revoke.yml" in target
-    assert target.index(caller) < target.index(forced)
+    assert "pki_host_local_exchange_access_state" not in target
     playbook = yaml.safe_load(
         (repo_root / "playbooks/registry-pki-exchange-access-revoke.yml").read_text(
             encoding="utf-8"
@@ -455,13 +565,402 @@ def test_revoke_make_target_forces_absent_after_caller_arguments(
         cwd=repo_root,
     ).assert_success()
     assert "pki_host_local_exchange_access_state=present" in dry_run.stdout
-    assert forced in dry_run.stdout
-    assert dry_run.stdout.index("pki_host_local_exchange_access_state=present") < (
-        dry_run.stdout.rindex("pki_host_local_exchange_access_state=absent")
-    )
+    assert "pki_host_local_exchange_access_state=absent" not in dry_run.stdout
     assert "PLAYBOOK=playbooks/registry-pki-exchange-access-revoke.yml" in (
         dry_run.stdout
     )
+
+
+def test_operation_lease_mkdir_rejects_overlap_without_replacing_owner(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+) -> None:
+    tasks = yaml.safe_load(
+        (
+            repo_root / "roles/pki_host_local_exchange_access/tasks/enable.yml"
+        ).read_text(encoding="utf-8")
+    )
+    claim_block = task_named(
+        tasks, "Claim fixed host-local PKI exchange operation lease"
+    )["block"]
+    claim = task_named(
+        claim_block, "Atomically create empty host-local PKI exchange operation lease"
+    )["ansible.builtin.command"]["argv"]
+    lease = tmp_path / "exchange.lease"
+    first_token = "a" * 64
+    second_token = "b" * 64
+
+    assert claim[0] == "/usr/bin/python3"
+    command_runner.run(
+        (sys.executable, claim[1], claim[2], lease, first_token)
+    ).assert_success()
+    command_runner.run(
+        (sys.executable, claim[1], claim[2], lease, second_token)
+    ).assert_failure()
+
+    assert list(lease.iterdir()) == []
+    assert os.getxattr(lease, "user.platform_config_operation") == first_token.encode()
+
+
+def _write_direct_exchange_test_tools(bin_dir: Path, log: Path) -> None:
+    bin_dir.mkdir()
+    make = bin_dir / "make"
+    make.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'make' >>\"$EXCHANGE_TEST_LOG\"\n"
+        "printf '|%s' \"$@\" >>\"$EXCHANGE_TEST_LOG\"\n"
+        "printf '\\n' >>\"$EXCHANGE_TEST_LOG\"\n"
+        "target=\"\"\n"
+        "operation_token=\"\"\n"
+        "for argument in \"$@\"; do\n"
+        "  case \"$argument\" in\n"
+        "    registry-pki-exchange-access-claim|registry-pki-exchange-access|registry-pki-exchange-access-revoke)\n"
+        "      target=$argument ;;\n"
+        "    OPERATION_TOKEN=*) operation_token=${argument#OPERATION_TOKEN=} ;;\n"
+        "  esac\n"
+        "done\n"
+        "case \"$target\" in\n"
+        "  registry-pki-exchange-access-claim)\n"
+        "    if [[ -n ${EXCHANGE_TEST_LEASE_DIR:-} ]]; then\n"
+        "      mkdir \"$EXCHANGE_TEST_LEASE_DIR\" || exit \"${EXCHANGE_TEST_CLAIM_STATUS:-31}\"\n"
+        "      printf '%s\\n' \"$operation_token\" >\"$EXCHANGE_TEST_LEASE_DIR.token\"\n"
+        "    fi\n"
+        "    if [[ -n ${EXCHANGE_TEST_SIGNAL_DURING_CLAIM:-} ]]; then\n"
+        "      kill -\"$EXCHANGE_TEST_SIGNAL_DURING_CLAIM\" \"$PPID\"\n"
+        "      sleep 0.05\n"
+        "    fi\n"
+        "    exit \"${EXCHANGE_TEST_CLAIM_STATUS:-0}\" ;;\n"
+        "  registry-pki-exchange-access)\n"
+        "    exit \"${EXCHANGE_TEST_ENABLE_STATUS:-0}\" ;;\n"
+        "  registry-pki-exchange-access-revoke)\n"
+        "    if [[ -n ${EXCHANGE_TEST_LEASE_DIR:-} ]]; then\n"
+        "      [[ -d $EXCHANGE_TEST_LEASE_DIR ]] || exit 44\n"
+        "      [[ $(<\"$EXCHANGE_TEST_LEASE_DIR.token\") == \"$operation_token\" ]] || exit 44\n"
+        "      rmdir \"$EXCHANGE_TEST_LEASE_DIR\"\n"
+        "      rm \"$EXCHANGE_TEST_LEASE_DIR.token\"\n"
+        "    fi\n"
+        "    exit \"${EXCHANGE_TEST_REVOKE_STATUS:-0}\" ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    platform_pki = bin_dir / "platform-pki"
+    platform_pki.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'platform-pki' >>\"$EXCHANGE_TEST_LOG\"\n"
+        "printf '|%s' \"$@\" >>\"$EXCHANGE_TEST_LOG\"\n"
+        "printf '\\n' >>\"$EXCHANGE_TEST_LOG\"\n"
+        "if [[ -n ${EXCHANGE_TEST_SIGNAL_PARENT:-} ]]; then\n"
+        "  kill -\"$EXCHANGE_TEST_SIGNAL_PARENT\" \"$PPID\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit \"${EXCHANGE_TEST_PLATFORM_STATUS:-0}\"\n",
+        encoding="utf-8",
+    )
+    make.chmod(0o755)
+    platform_pki.chmod(0o755)
+    log.write_text("", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("route", "route_arguments"),
+    (
+        ("request-pull", ("/endpoint.json", REQUEST_ID, "/request")),
+        ("response-push", ("/endpoint.json", REQUEST_ID, ARTIFACT, "/response")),
+        (
+            "evidence-pull",
+            ("/endpoint.json", REQUEST_ID, ARTIFACT, DEPLOYMENT, "/evidence"),
+        ),
+        (
+            "outcome-push",
+            (
+                "/endpoint.json",
+                REQUEST_ID,
+                ARTIFACT,
+                DEPLOYMENT,
+                OUTCOME,
+                "/outcome",
+            ),
+        ),
+    ),
+)
+def test_direct_exchange_wrapper_fixes_route_and_access_boundaries(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+    route: str,
+    route_arguments: tuple[str, ...],
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    environment = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "EXCHANGE_TEST_LOG": os.fspath(log),
+    }
+
+    command_runner.run(
+        (
+            repo_root / "scripts/registry-pki-direct-exchange",
+            "--env",
+            "dev",
+            "--env-file",
+            "/private/dev.ansible.env",
+            "--inventory",
+            "/private/hosts.yml",
+            "--limit",
+            "registry-one.test",
+            route,
+            *route_arguments,
+        ),
+        environment=environment,
+    ).assert_success()
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 4
+    assert "|registry-pki-exchange-access-claim|" in lines[0]
+    assert "|registry-pki-exchange-access|" in lines[1]
+    assert lines[2] == "|".join(
+        ("platform-pki", "direct-exchange", route, *route_arguments)
+    )
+    assert "|registry-pki-exchange-access-revoke|" in lines[3]
+    assert all("|EXTRA_ARGS=" in line for line in (lines[0], lines[1], lines[3]))
+    tokens = {
+        field
+        for line in (lines[0], lines[1], lines[3])
+        for field in line.split("|")
+        if field.startswith("OPERATION_TOKEN=")
+    }
+    assert len(tokens) == 1
+    token = next(iter(tokens)).removeprefix("OPERATION_TOKEN=")
+    assert len(token) == 64
+    assert set(token) <= set("0123456789abcdef")
+
+
+def test_direct_exchange_wrapper_revokes_on_failure_and_rejects_other_routes(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    environment = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "EXCHANGE_TEST_LOG": os.fspath(log),
+        "EXCHANGE_TEST_PLATFORM_STATUS": "17",
+    }
+    common = (
+        repo_root / "scripts/registry-pki-direct-exchange",
+        "--env",
+        "dev",
+        "--env-file",
+        "/private/dev.ansible.env",
+        "--inventory",
+        "/private/hosts.yml",
+        "--limit",
+        "registry-one.test",
+    )
+
+    failed = command_runner.run(
+        (*common, "request-pull", "/endpoint.json", REQUEST_ID, "/request"),
+        environment=environment,
+    )
+    assert failed.returncode == 17
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert "|registry-pki-exchange-access-revoke|" in lines[-1]
+
+    log.write_text("", encoding="utf-8")
+    rejected = command_runner.run(
+        (*common, "cleanup-outcome", REQUEST_ID),
+        environment=environment,
+    ).assert_failure()
+    assert rejected.returncode == 2
+    assert log.read_text(encoding="utf-8") == ""
+
+    source = (repo_root / "scripts/registry-pki-direct-exchange").read_text(
+        encoding="utf-8"
+    )
+    for signal_name in ("HUP", "INT", "TERM"):
+        assert f"trap 'exit " in source
+        assert signal_name in source
+    assert 'platform-pki direct-exchange "$route" "${route_arguments[@]}"' in source
+    assert "make_access registry-pki-exchange-access-revoke\ncommand" not in source
+
+
+def _direct_exchange_test_command(repo_root: Path) -> tuple[str | Path, ...]:
+    return (
+        repo_root / "scripts/registry-pki-direct-exchange",
+        "--env",
+        "dev",
+        "--env-file",
+        "/private/dev.ansible.env",
+        "--inventory",
+        "/private/hosts.yml",
+        "--limit",
+        "registry-one.test",
+        "request-pull",
+        "/endpoint.json",
+        REQUEST_ID,
+        "/request",
+    )
+
+
+def test_overlapping_lease_rejection_cleanup_does_not_mutate_owner(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    lease = tmp_path / "target.lease"
+    lease.mkdir()
+    lease_token = Path(f"{lease}.token")
+    lease_token.write_text(f"{'f' * 64}\n", encoding="utf-8")
+    result = command_runner.run(
+        _direct_exchange_test_command(repo_root),
+        environment={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "EXCHANGE_TEST_LOG": os.fspath(log),
+            "EXCHANGE_TEST_LEASE_DIR": os.fspath(lease),
+        },
+    )
+    assert result.returncode == 31
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert "|registry-pki-exchange-access-claim|" in lines[0]
+    assert "|registry-pki-exchange-access-revoke|" in lines[1]
+    assert not any(line.startswith("platform-pki|") for line in lines)
+    assert lease.is_dir()
+    assert lease_token.read_text(encoding="utf-8") == f"{'f' * 64}\n"
+
+
+@pytest.mark.parametrize(
+    ("signal_name", "expected_status"),
+    (("HUP", 129), ("INT", 130), ("TERM", 143)),
+)
+def test_direct_exchange_wrapper_cleans_claim_completed_before_signal_delivery(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+    signal_name: str,
+    expected_status: int,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    lease = tmp_path / "target.lease"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    result = command_runner.run(
+        _direct_exchange_test_command(repo_root),
+        environment={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "EXCHANGE_TEST_LOG": os.fspath(log),
+            "EXCHANGE_TEST_LEASE_DIR": os.fspath(lease),
+            "EXCHANGE_TEST_SIGNAL_DURING_CLAIM": signal_name,
+            "EXCHANGE_TEST_REVOKE_STATUS": "33",
+        },
+    )
+    assert result.returncode == expected_status
+    assert "final access revocation failed with status 33" in result.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert "|registry-pki-exchange-access-claim|" in lines[0]
+    assert "|registry-pki-exchange-access-revoke|" in lines[1]
+    assert not lease.exists()
+    assert not Path(f"{lease}.token").exists()
+    assert not any(line.startswith("platform-pki|") for line in lines)
+
+
+def test_partial_enable_failure_attempts_owned_cleanup(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    result = command_runner.run(
+        _direct_exchange_test_command(repo_root),
+        environment={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "EXCHANGE_TEST_LOG": os.fspath(log),
+            "EXCHANGE_TEST_ENABLE_STATUS": "32",
+        },
+    )
+    assert result.returncode == 32
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3
+    assert "|registry-pki-exchange-access-claim|" in lines[0]
+    assert "|registry-pki-exchange-access|" in lines[1]
+    assert "|registry-pki-exchange-access-revoke|" in lines[2]
+    assert not any(line.startswith("platform-pki|") for line in lines)
+
+
+def test_successful_transfer_returns_final_revoke_failure(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    result = command_runner.run(
+        _direct_exchange_test_command(repo_root),
+        environment={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "EXCHANGE_TEST_LOG": os.fspath(log),
+            "EXCHANGE_TEST_REVOKE_STATUS": "33",
+        },
+    )
+    assert result.returncode == 33
+    assert "final access revocation failed with status 33" in result.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 4
+    assert lines[2].startswith("platform-pki|direct-exchange|request-pull|")
+    assert "|registry-pki-exchange-access-revoke|" in lines[3]
+
+
+@pytest.mark.parametrize(
+    ("signal_name", "expected_status"),
+    (("HUP", 129), ("INT", 130), ("TERM", 143)),
+)
+def test_direct_exchange_wrapper_revokes_on_handled_signals(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    tmp_path: Path,
+    signal_name: str,
+    expected_status: int,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "exchange.log"
+    _write_direct_exchange_test_tools(bin_dir, log)
+    result = command_runner.run(
+        (
+            repo_root / "scripts/registry-pki-direct-exchange",
+            "--env",
+            "dev",
+            "--env-file",
+            "/private/dev.ansible.env",
+            "--inventory",
+            "/private/hosts.yml",
+            "--limit",
+            "registry-one.test",
+            "request-pull",
+            "/endpoint.json",
+            REQUEST_ID,
+            "/request",
+        ),
+        environment={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "EXCHANGE_TEST_LOG": os.fspath(log),
+            "EXCHANGE_TEST_SIGNAL_PARENT": signal_name,
+        },
+    )
+    assert result.returncode == expected_status
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 4
+    assert "|registry-pki-exchange-access-revoke|" in lines[-1]
 
 
 def test_absent_role_is_idempotent_when_managed_marker_is_absent(

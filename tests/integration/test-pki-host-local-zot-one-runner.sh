@@ -77,7 +77,7 @@ INVENTORY_SHA256=
 CURRENT_CERT_SHA256=
 TRANSPORT_HOST_KEY_SHA256=
 ZOT_IMAGE=
-ZOT_CUSTODY=managed
+EXCHANGE_MODE=controller-local
 
 fail() {
   printf '%s\n' "$1" >&2
@@ -158,8 +158,7 @@ for timeout_name in OPERATION_TIMEOUT PULL_TIMEOUT READY_TIMEOUT CONTROLLER_TIME
   [[ "${!timeout_name}" =~ ^[1-9][0-9]*$ ]] \
     || fail "${timeout_name} must be a positive integer"
 done
-[[ -f "${FIXTURE_DIR}/zot.yml" && -f "${FIXTURE_DIR}/synthetic_signer.py" \
-  && -f "${FIXTURE_DIR}/pty_prompt.py" ]] \
+[[ -f "${FIXTURE_DIR}/zot.yml" && -f "${FIXTURE_DIR}/synthetic_signer.py" ]] \
   || fail 'PKI/Zot one-runner fixtures are incomplete'
 timeout "$OPERATION_TIMEOUT" podman image exists "$DEV_IMAGE" >/dev/null 2>&1 \
   || fail "Development image ${DEV_IMAGE} is absent; run 'make deps' before this opt-in lane"
@@ -426,7 +425,7 @@ write_vars() {
     --arg approvers_sha "${TRUST_SHA[approvers.allowed_signers]}" \
     --arg responses_sha "${TRUST_SHA[responses.allowed_signers]}" \
     --arg deployers_sha "${TRUST_SHA[deployers.allowed_signers]}" \
-    --arg zot_custody "$ZOT_CUSTODY" \
+    --arg exchange_mode "$EXCHANGE_MODE" \
     '{
       pki_host_local_certificate_service: $service,
       pki_host_local_certificate_target: $target,
@@ -447,7 +446,7 @@ write_vars() {
       pki_host_local_certificate_pending_root: $pending_root,
       pki_host_local_certificate_versions_root: $versions_root,
       pki_host_local_certificate_controller_exchange_root: $exchange_root,
-      pki_host_local_certificate_exchange_mode: "controller-local",
+      pki_host_local_certificate_exchange_mode: $exchange_mode,
       pki_host_local_certificate_transport: "ssh",
       pki_host_local_certificate_transport_host_key_sha256: $transport_sha,
       pki_host_local_certificate_request_id: $request_id,
@@ -470,8 +469,6 @@ write_vars() {
       pki_host_local_certificate_served_intermediate_sha256: $intermediate_sha,
       pki_host_local_certificate_activation_action: (if $artifact_sha == "" then "" else "finalize" end),
       pki_host_local_certificate_activation_result: (if $artifact_sha == "" then "" else "activated" end),
-      pki_host_local_certificate_interactive_confirmation: ($artifact_sha != ""),
-      pki_host_local_certificate_unattended_authorized: false,
       pki_host_local_certificate_trust_sources: {
         "policy": $policy,
         "requesters.allowed_signers": $requesters,
@@ -493,7 +490,6 @@ write_vars() {
         "responses.allowed_signers": $responses_sha,
         "deployers.allowed_signers": $deployers_sha
       },
-      zot_registry_tls_custody: $zot_custody,
       zot_registry_tls_host_local_target: $target,
       zot_registry_tls_cert_src: $initial_cert,
       zot_registry_tls_key_src: $initial_key,
@@ -510,21 +506,9 @@ write_vars() {
 
 controller_command() {
   local log=$1
-  local input=$2
-  shift 2
+  shift
   local status
   local -a execution=("$@")
-  if [[ "$input" != /dev/null ]]; then
-    execution=(
-      python3
-      /workspace/tests/fixtures/pki-host-local-zot-one-runner/pty_prompt.py
-      --prompt 'Type exactly activate '
-      --input-file "$input"
-      --timeout "$CONTROLLER_TIMEOUT"
-      --
-      "$@"
-    )
-  fi
   local -a command=(
     timeout "$((CONTROLLER_TIMEOUT + 30))" podman run --rm
     --label "$LABEL"
@@ -555,15 +539,10 @@ controller_command() {
 run_playbook() {
   local phase=$1
   local playbook=$2
-  local input=${3:-/dev/null}
-  if (($# >= 3)); then
-    shift 3
-  else
-    shift 2
-  fi
+  shift 2
   local log="${LOG_DIR}/${phase}.log"
 
-  if ! controller_command "$log" "$input" \
+  if ! controller_command "$log" \
     ansible-playbook -i "$INVENTORY" "$playbook" -e "@${VARS_FILE}" "$@"; then
     print_file "$log"
     fail "Ansible phase failed: ${phase}"
@@ -608,6 +587,30 @@ assert_exact_target_dir() {
     || fail "Unexpected target directory entries at ${directory}: ${actual}"
 }
 
+stage_direct_response() {
+  local ingress="${VERSIONS_ROOT}/.ingress-${REQUEST_ID}"
+  local name
+  local prepare
+
+  prepare="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
+    /usr/local/libexec/platform-pki-host-local-lifecycle response-prepare \
+    --state-root "$STATE_ROOT" --pending-root "$PENDING_ROOT" \
+    --versions-root "$VERSIONS_ROOT" --service "$SERVICE" --target "$TARGET" \
+    --trust-id "$TRUST_ID" --request-id "$REQUEST_ID")"
+  [[ "$(jq -er '.status' <<< "$prepare")" == prepared ]] \
+    || fail 'Direct response ingress preparation did not create the exact stage'
+  for name in artifact tls.crt ca-chain.crt fullchain.crt response response.sig; do
+    timeout "$OPERATION_TIMEOUT" podman cp \
+      "${RESPONSE_SOURCE_DIR}/${name}" "${TARGET_CONTAINER}:/tmp/${REQUEST_ID}-${name}"
+    timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" install \
+      -o root -g root -m 0600 "/tmp/${REQUEST_ID}-${name}" "${ingress}/${name}"
+    timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" rm -f \
+      "/tmp/${REQUEST_ID}-${name}"
+  done
+  assert_exact_target_dir "$ingress" \
+    'artifact,ca-chain.crt,fullchain.crt,response,response.sig,tls.crt'
+}
+
 extract_coordinate() {
   local file=$1
   local name=$2
@@ -632,7 +635,7 @@ extract_coordinate() {
 write_vars
 
 LAST_STAGE='Zot role check mode and initial convergence'
-run_playbook zot-check "$ZOT_PLAYBOOK" /dev/null --check
+run_playbook zot-check "$ZOT_PLAYBOOK" --check
 if timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" test -e /etc/zot/config.json; then
   fail 'Zot role check mode created its configuration'
 fi
@@ -660,7 +663,7 @@ write_vars
 
 LAST_STAGE='real trust bootstrap and request collection'
 run_playbook trust /workspace/playbooks/registry-pki-trust.yml
-run_playbook trust-check /workspace/playbooks/registry-pki-trust.yml /dev/null --check
+run_playbook trust-check /workspace/playbooks/registry-pki-trust.yml --check
 run_playbook trust-idempotent /workspace/playbooks/registry-pki-trust.yml
 assert_idempotent trust-idempotent
 run_playbook request /workspace/playbooks/registry-pki-request.yml
@@ -675,10 +678,14 @@ status_json="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
   || fail 'Authenticated target status did not report request-pending'
 REQUEST_ID="$(jq -er '.pending_request_id' <<< "$status_json")"
 [[ "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]] || fail 'Target status returned a noncanonical request ID'
-run_playbook request-check /workspace/playbooks/registry-pki-request.yml /dev/null --check
+run_playbook request-check /workspace/playbooks/registry-pki-request.yml --check
 run_playbook request-idempotent /workspace/playbooks/registry-pki-request.yml
 assert_idempotent request-idempotent
 write_vars
+
+LAST_STAGE='initialized lifecycle managed Zot custody'
+run_playbook zot-initialized-managed "$ZOT_PLAYBOOK"
+assert_idempotent zot-initialized-managed
 
 REQUEST_PUBLICATION="${EXCHANGE_ROOT}/${SERVICE}/${REQUEST_ID}/request"
 assert_exact_local_dir "$REQUEST_PUBLICATION" \
@@ -788,17 +795,17 @@ assert_idempotent response-check-idempotent
 assert_exact_local_dir "${EXCHANGE_ROOT}/${SERVICE}/${REQUEST_ID}/response" \
   artifact tls.crt ca-chain.crt fullchain.crt response response.sig
 
-LAST_STAGE='interactive activation and strict local/external validation'
+LAST_STAGE='direct automatic activation and strict local/external validation'
 zot_started_before="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
   podman inspect --format '{{.State.StartedAt}}' zot)"
-CONFIRMATION_FILE="${TEST_DIR}/activation-confirmation"
-printf '%s\n' "activate ${SERVICE} ${REQUEST_ID} ${ARTIFACT_SHA256}" > "$CONFIRMATION_FILE"
-chmod 0600 "$CONFIRMATION_FILE"
-run_playbook activate /workspace/playbooks/registry-pki-activate.yml "$CONFIRMATION_FILE"
+stage_direct_response
+EXCHANGE_MODE=direct
+write_vars
+run_playbook activate /workspace/playbooks/registry-pki-activate.yml
 DEPLOYMENT_SHA256="$(extract_coordinate "${LOG_DIR}/activate.log" deployment)"
 [[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
   podman inspect --format '{{.State.StartedAt}}' zot)" != "$zot_started_before" ]] \
-  || fail 'Interactive activation did not restart Zot'
+  || fail 'Direct automatic activation did not restart Zot'
 timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-active --quiet zot.service \
   || fail 'Zot is not active after host-local certificate activation'
 zot_tls_paths="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" python3 -c \
@@ -813,7 +820,7 @@ for key_path in "${PENDING_ROOT}/${REQUEST_ID}/tls.key" "${VERSIONS_ROOT}/${REQU
   [[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" stat -c '%U:%G:%a:%h' "$key_path")" == root:root:600:1 ]] \
     || fail "Target-local key metadata is unsafe: ${key_path}"
 done
-ZOT_CUSTODY=host-local
+EXCHANGE_MODE=controller-local
 write_vars
 run_playbook zot-host-local /workspace/tests/fixtures/pki-host-local-zot-one-runner/zot.yml
 run_playbook zot-host-local-idempotent /workspace/tests/fixtures/pki-host-local-zot-one-runner/zot.yml
@@ -833,7 +840,7 @@ assert_idempotent evidence-export-idempotent
 run_playbook exported-status /workspace/playbooks/registry-pki-status.yml
 grep -Fq 'evidence-exported' "${LOG_DIR}/exported-status.log" \
   || fail 'Authenticated lifecycle status did not report evidence-exported'
-run_playbook exported-status-check /workspace/playbooks/registry-pki-status.yml /dev/null --check
+run_playbook exported-status-check /workspace/playbooks/registry-pki-status.yml --check
 run_playbook decision-preflight /workspace/playbooks/registry-pki-decision-preflight.yml
 grep -Fq 'result=passed' "${LOG_DIR}/decision-preflight.log" \
   || fail 'Decision preflight did not publish a passed exact-coordinate summary'

@@ -30,8 +30,6 @@
       - pki_host_local_certificate_request_ttl_seconds == 0
       - pki_host_local_certificate_activation_action == 'abandon'
       - pki_host_local_certificate_activation_result == 'rolled-back'
-      - pki_host_local_certificate_interactive_confirmation is sameas false
-      - pki_host_local_certificate_unattended_authorized is sameas false
       - pki_host_local_certificate_deployment_sha256 | length == 0
     fail_msg: Rolled-back evidence publication requires one exact target and one distinct reviewed runner.
 

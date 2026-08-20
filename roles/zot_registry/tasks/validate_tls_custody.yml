@@ -1,28 +1,23 @@
 ---
-- name: Assert Zot TLS custody is supported
+- name: Reject inventory-selected Zot TLS custody
   ansible.builtin.assert:
     that:
-      - zot_registry_tls_custody | type_debug == 'str'
-      - zot_registry_tls_custody in ['managed', 'host-local']
-    fail_msg: "zot_registry_tls_custody must be managed or host-local."
+      - zot_registry_tls_custody is undefined
+    fail_msg: >-
+      zot_registry_tls_custody is no longer an inventory choice; custody is
+      derived from authenticated target lifecycle state.
 
-- name: Assert Zot host-local custody has TLS enabled
-  ansible.builtin.assert:
-    that:
-      - zot_registry_tls_custody != 'host-local' or zot_registry_tls_enabled | bool
-    fail_msg: "zot_registry_tls_custody host-local requires Zot TLS to be enabled."
-
-- name: Assert Zot TLS source files are configured
+- name: Assert Zot managed TLS recovery sources are configured
   ansible.builtin.assert:
     that:
       - zot_registry_tls_cert_src | length > 0
       - zot_registry_tls_key_src | length > 0
-    fail_msg: "zot_registry_tls_cert_src and zot_registry_tls_key_src are required when TLS is enabled."
-  when:
-    - zot_registry_tls_enabled | bool
-    - zot_registry_tls_custody == 'managed'
+    fail_msg: >-
+      zot_registry_tls_cert_src and zot_registry_tls_key_src remain required
+      for TLS bootstrap and managed recovery.
+  when: zot_registry_tls_enabled | bool
 
-- name: Assert Zot host-local TLS lookup inputs are canonical
+- name: Assert Zot TLS lifecycle and managed paths are canonical
   ansible.builtin.assert:
     that:
       - zot_registry_tls_host_local_lifecycle_helper_path | type_debug == 'str'
@@ -57,12 +52,13 @@
       - zot_registry_tls_host_local_zot_config_path == '/etc/zot/config.json'
       - zot_registry_config_path == zot_registry_tls_host_local_zot_config_path
       - zot_registry_config_dir == '/etc/zot'
+      - zot_registry_tls_dir == '/etc/zot/tls'
+      - zot_registry_tls_cert_path == '/etc/zot/tls/tls.crt'
+      - zot_registry_tls_key_path == '/etc/zot/tls/tls.key'
       - zot_registry_tls_host_local_service != 'registry-dev' or zot_registry_tls_host_local_state_root == '/var/lib/platform-config/pki/host-local/registry-dev'
       - zot_registry_tls_host_local_service != 'registry-dev' or zot_registry_tls_host_local_pending_root == '/etc/zot/tls-pending'
       - zot_registry_tls_host_local_service != 'registry-dev' or zot_registry_tls_host_local_versions_root == '/etc/zot/tls-versions'
     fail_msg: >-
-      Host-local Zot TLS lookup inputs do not satisfy the canonical lifecycle
-      contract.
-  when:
-    - zot_registry_tls_enabled | bool
-    - zot_registry_tls_custody == 'host-local'
+      Zot TLS paths and lifecycle lookup inputs do not satisfy the canonical
+      custody contract.
+  when: zot_registry_tls_enabled | bool

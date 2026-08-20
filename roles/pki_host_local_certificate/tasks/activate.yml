@@ -31,17 +31,9 @@
       - pki_host_local_certificate_request_ttl_seconds == 0
       - pki_host_local_certificate_activation_action == 'finalize'
       - pki_host_local_certificate_activation_result == 'activated'
-      - pki_host_local_certificate_interactive_confirmation is boolean
-      - pki_host_local_certificate_unattended_authorized is boolean
-      - >-
-        (pki_host_local_certificate_interactive_confirmation is sameas true
-        and pki_host_local_certificate_unattended_authorized is sameas false)
-        or
-        (pki_host_local_certificate_interactive_confirmation is sameas false
-        and pki_host_local_certificate_unattended_authorized is sameas true
-        and pki_host_local_certificate_exchange_mode == 'direct')
+      - pki_host_local_certificate_exchange_mode == 'direct'
       - pki_host_local_certificate_deployment_sha256 | length == 0
-    fail_msg: Activation requires one explicit interactive or direct unattended authorization contract.
+    fail_msg: Activation requires the explicit direct automatic route and exact lifecycle coordinates.
 - name: Load host-local certificate lifecycle helper preflight
   ansible.builtin.import_tasks: lifecycle_helper.yml
 
@@ -90,36 +82,24 @@
           '--trust-id', pki_host_local_certificate_trust_id,
           '--request-id', pki_host_local_certificate_request_id
         ]
-        + (['--check'] if ansible_check_mode or pki_host_local_certificate_exchange_mode == 'direct' else [])
+        + ['--check']
       }}
   register: pki_host_local_certificate_response_prepare_result
-  changed_when: >-
-    pki_host_local_certificate_response_prepare_result.rc == 0
-    and not ansible_check_mode
-    and pki_host_local_certificate_exchange_mode == 'controller-local'
-    and (pki_host_local_certificate_response_prepare_result.stdout | from_json).status == 'prepared'
+  changed_when: false
   check_mode: false
 
 - name: Validate exact response preparation metadata
   ansible.builtin.assert:
     that:
       - pki_host_local_certificate_response_prepare_result.stderr | length == 0
-      - pki_host_local_certificate_response_prepare.status in ['prepared', 'existing', 'installed', 'would-prepare']
-      - >-
-        pki_host_local_certificate_exchange_mode == 'controller-local'
-        or pki_host_local_certificate_response_prepare.status in ['existing', 'installed']
+      - pki_host_local_certificate_response_prepare.status in ['existing', 'installed']
       - pki_host_local_certificate_response_prepare.request_id == pki_host_local_certificate_request_id
       - >-
         (pki_host_local_certificate_response_prepare.status == 'installed'
          and pki_host_local_certificate_response_prepare.keys() | list | sort == ['ingress_dir', 'request_id', 'status']
          and pki_host_local_certificate_response_prepare.ingress_dir == 'none')
         or
-        (pki_host_local_certificate_response_prepare.status == 'would-prepare'
-         and ansible_check_mode
-         and pki_host_local_certificate_response_prepare.keys() | list | sort == ['ingress_dir', 'request_id', 'status']
-         and pki_host_local_certificate_response_prepare.ingress_dir == pki_host_local_certificate_ingress_root)
-        or
-        (pki_host_local_certificate_response_prepare.status in ['prepared', 'existing']
+        (pki_host_local_certificate_response_prepare.status == 'existing'
          and pki_host_local_certificate_response_prepare.keys() | list | sort
            == ['ingress_device', 'ingress_dir', 'ingress_inode', 'request_id', 'status']
          and pki_host_local_certificate_response_prepare.ingress_dir == pki_host_local_certificate_ingress_root
@@ -130,57 +110,6 @@
     pki_host_local_certificate_response_prepare: "{{ pki_host_local_certificate_response_prepare_result.stdout | from_json }}"
     pki_host_local_certificate_ingress_root: >-
       {{ pki_host_local_certificate_versions_root }}/.ingress-{{ pki_host_local_certificate_request_id }}
-
-- name: Transfer exact controller response into protected target ingress
-  platform_pki_response_ingress:
-    exchange_root: "{{ pki_host_local_certificate_controller_exchange_root }}"
-    service: "{{ pki_host_local_certificate_service }}"
-    request_id: "{{ pki_host_local_certificate_request_id }}"
-    ingress_root: "{{ pki_host_local_certificate_versions_root }}/.ingress-{{ pki_host_local_certificate_request_id }}"
-    artifact_sha256: "{{ pki_host_local_certificate_artifact_manifest_sha256 }}"
-  register: pki_host_local_certificate_response_ingress_result
-  when:
-    - pki_host_local_certificate_exchange_mode == 'controller-local'
-    - not ansible_check_mode
-    - (pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'
-
-- name: Validate exact response ingress metadata
-  ansible.builtin.assert:
-    that:
-      - pki_host_local_certificate_response_ingress_result.status == 'transferred'
-      - pki_host_local_certificate_response_ingress_result.request_id == pki_host_local_certificate_request_id
-      - pki_host_local_certificate_response_ingress_result.ingress_root == pki_host_local_certificate_versions_root ~ '/.ingress-' ~ pki_host_local_certificate_request_id
-      - pki_host_local_certificate_response_ingress_result.artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256
-      - pki_host_local_certificate_response_ingress_result.sha256 is mapping
-      - pki_host_local_certificate_response_ingress_result.sha256.keys() | list | sort == pki_host_local_certificate_response_names
-      - pki_host_local_certificate_response_ingress_result.sha256.artifact == pki_host_local_certificate_artifact_manifest_sha256
-    fail_msg: Response ingress action returned mismatched metadata.
-  vars:
-    pki_host_local_certificate_response_names:
-      - artifact
-      - ca-chain.crt
-      - fullchain.crt
-      - response
-      - response.sig
-      - tls.crt
-  when:
-    - pki_host_local_certificate_exchange_mode == 'controller-local'
-    - not ansible_check_mode
-    - (pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'
-
-- name: Validate derived exact response ingress digests
-  ansible.builtin.assert:
-    that:
-      - item.value | type_debug == 'str'
-      - item.value is match('^[0-9a-f]{64}$')
-    fail_msg: Response ingress returned a noncanonical derived SHA-256 digest.
-  loop: "{{ pki_host_local_certificate_response_ingress_result.sha256 | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  when:
-    - pki_host_local_certificate_exchange_mode == 'controller-local'
-    - not ansible_check_mode
-    - (pki_host_local_certificate_response_prepare_result.stdout | from_json).status != 'installed'
 
 - name: Install or preflight exact immutable certificate version
   ansible.builtin.command:
@@ -293,34 +222,6 @@
       - request_id
       - rollback_deadline_epoch
       - status
-
-- name: Confirm exact host-local certificate activation mutation
-  ansible.builtin.pause:
-    prompt: >-
-      Candidate certificate SHA-256 is
-      {{ (pki_host_local_certificate_activation_preflight_result.stdout | from_json).certificate_sha256 }};
-      rollback deadline is
-      {{ (pki_host_local_certificate_activation_preflight_result.stdout | from_json).rollback_deadline_epoch }}.
-      Type exactly activate {{ pki_host_local_certificate_service }}
-      {{ pki_host_local_certificate_request_id }}
-      {{ pki_host_local_certificate_artifact_manifest_sha256 }}
-  register: pki_host_local_certificate_activation_confirmation
-  when:
-    - not ansible_check_mode
-    - pki_host_local_certificate_interactive_confirmation
-
-- name: Require exact host-local certificate activation confirmation
-  ansible.builtin.assert:
-    that:
-      - >-
-        pki_host_local_certificate_activation_confirmation.user_input
-        == 'activate ' ~ pki_host_local_certificate_service ~ ' '
-           ~ pki_host_local_certificate_request_id ~ ' '
-           ~ pki_host_local_certificate_artifact_manifest_sha256
-    fail_msg: Exact interactive activation confirmation did not match.
-  when:
-    - not ansible_check_mode
-    - pki_host_local_certificate_interactive_confirmation
 
 - name: Activate, validate, and finalize exact host-local certificate
   when: not ansible_check_mode

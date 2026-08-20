@@ -2,12 +2,25 @@
 - name: Require the installed Zot TLS lifecycle helper
   ansible.builtin.assert:
     that:
-      - zot_registry_tls_lifecycle_helper_stat.stat.exists | default(false)
-      - zot_registry_tls_lifecycle_helper_stat.stat.isreg | default(false)
-      - not (zot_registry_tls_lifecycle_helper_stat.stat.islnk | default(false))
-      - zot_registry_tls_lifecycle_helper_stat.stat.uid | default(-1) == 0
-      - zot_registry_tls_lifecycle_helper_stat.stat.gid | default(-1) == 0
-      - zot_registry_tls_lifecycle_helper_stat.stat.mode | default('') == '0755'
+      - zot_registry_tls_lifecycle_helper_source.stat.exists
+      - zot_registry_tls_lifecycle_helper_source.stat.isreg
+      - not zot_registry_tls_lifecycle_helper_source.stat.islnk
+      - zot_registry_tls_lifecycle_helper_source.stat.checksum is match('^[0-9a-f]{64}$')
+      - >-
+        not zot_registry_tls_custody_state.helper.exists
+        or (
+          zot_registry_tls_custody_state.helper.isreg
+          and not zot_registry_tls_custody_state.helper.islnk
+          and zot_registry_tls_custody_state.helper.uid == 0
+          and zot_registry_tls_custody_state.helper.gid == 0
+          and zot_registry_tls_custody_state.helper.mode == '0755'
+          and zot_registry_tls_custody_state.helper.checksum
+              == zot_registry_tls_lifecycle_helper_source.stat.checksum
+        )
+      - >-
+        not zot_registry_tls_custody_state.state_root.exists
+        or zot_registry_tls_custody_state.helper.exists
     fail_msg: >-
-      The fixed Zot TLS lifecycle helper must exist as a root:root 0755 regular
-      file and must not be a symbolic link.
+      Initialized lifecycle state requires the exact shipped root:root 0755 Zot
+      TLS lifecycle helper; existing helper drift is never treated as managed
+      custody.

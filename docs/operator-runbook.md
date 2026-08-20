@@ -488,14 +488,16 @@ lifecycle implementation contract.
 
 The exact six-file response-check source must be protected and outside the
 controller exchange root; a GitLab download under that root must first be
-materialized into its `pki-transfer` sibling. Normal and controller-local
-activation remain interactive. Only the explicit direct-only
-`registry-pki-activate-unattended` route skips the typed pause, and it preserves
-all authentication, local/runner validation, and rollback controls. GitLab and
-direct SSH are transport only; Ansible invokes neither transport.
+materialized into its `pki-transfer` sibling. The single
+`registry-pki-activate` route is direct-only and runs automatically after its
+digest, candidate, and runner preflights pass. It preserves all authentication,
+local/runner validation, and rollback controls. GitLab and direct SSH are
+transport only; Ansible invokes neither transport.
 
-Only after authenticated activation may private inventory select host-local Zot
-custody. Require terminal `status=complete` and
+Private inventory does not select Zot TLS custody. After authenticated
+`activate-finish`, normal registry convergence automatically derives host-local
+custody and immutable TLS paths from authenticated target lifecycle state.
+Require terminal `status=complete` and
 `signer_outcome_state=finalized`; `renewal_eligible=false` remains expected.
 Never select a latest package, infer a digest, clean an ambiguous retained stage,
 or treat historical signer outcome as current target authority.

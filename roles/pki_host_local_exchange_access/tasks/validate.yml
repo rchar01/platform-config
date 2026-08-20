@@ -14,4 +14,5 @@
       - pki_host_local_exchange_access_sshd_path == '/etc/ssh/sshd_config.d/00-platform-pki-host-local-exchange.conf'
       - pki_host_local_exchange_access_sshd_validate_path == '/usr/local/libexec/platform-pki-host-local-exchange-sshd-validate'
       - pki_host_local_exchange_access_ssh_service == 'sshd'
+      - pki_host_local_exchange_access_lease_path == '/var/lib/platform-pki-exchange-access.lease'
     fail_msg: Host-local PKI exchange access requires the fixed account, group, and paths.

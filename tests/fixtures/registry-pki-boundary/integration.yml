@@ -28,7 +28,6 @@
     pki_host_local_certificate_controller_exchange_root: /tmp/platform-pki-exchange
     pki_host_local_certificate_transport: sftp
     pki_host_local_certificate_transport_host_key_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-    pki_host_local_certificate_unattended_authorized: false
     pki_host_local_certificate_trust_paths:
       policy: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/policy
       requesters.allowed_signers: /var/lib/platform-config/pki/host-local/registry-dev/trust/reviewed-v1/requesters.allowed_signers
@@ -195,60 +194,6 @@
           ansible.builtin.assert:
             that:
               - ansible_failed_result.msg is search('frozen schema-2 contract')
-
-    - name: Require a coercive unattended authorization to fail common validation
-      block:
-        - name: Run string unattended-authorization boundary
-          ansible.builtin.include_role:
-            name: pki_host_local_certificate
-            tasks_from: request
-          vars:
-            pki_host_local_certificate_unattended_authorized: 'false'
-
-        - name: Reject an accepted coercive unattended authorization
-          ansible.builtin.fail:
-            msg: String unattended authorization was accepted.
-      rescue:
-        - name: Assert string unattended authorization failed the common contract
-          ansible.builtin.assert:
-            that:
-              - ansible_failed_result.msg is search('frozen schema-2 contract')
-
-    - name: Require old direct noninteractive activation to fail authorization
-      block:
-        - name: Run unauthorized noninteractive activation boundary
-          ansible.builtin.include_role:
-            name: pki_host_local_certificate
-            tasks_from: activate
-          vars:
-            pki_host_local_certificate_request_ttl_seconds: 0
-            pki_host_local_certificate_request_id: '0123456789abcdef0123456789abcdef'
-            pki_host_local_certificate_artifact_manifest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-            pki_host_local_certificate_validation_boundary_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-            pki_host_local_certificate_validation_boundary_target_path: /tmp/reviewed-validation-boundary
-            pki_host_local_certificate_validation_boundary_runner_path: /tmp/reviewed-validation-boundary
-            pki_host_local_certificate_reviewed_ca_target_path: /tmp/reviewed-ca.crt
-            pki_host_local_certificate_reviewed_ca_runner_path: /tmp/reviewed-ca.crt
-            pki_host_local_certificate_reviewed_ca_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-            pki_host_local_certificate_reviewed_ca_mode: '0600'
-            pki_host_local_certificate_remote_validator: runner-test
-            pki_host_local_certificate_endpoint: https://registry.dev/v2/
-            pki_host_local_certificate_minimum_remaining_lifetime_seconds: 3600
-            pki_host_local_certificate_rollback_seconds: 1209600
-            pki_host_local_certificate_activation_action: finalize
-            pki_host_local_certificate_activation_result: activated
-            pki_host_local_certificate_interactive_confirmation: false
-            pki_host_local_certificate_unattended_authorized: false
-
-        - name: Reject an accepted unauthorized noninteractive activation
-          ansible.builtin.fail:
-            msg: Unauthorized noninteractive activation was accepted.
-      rescue:
-        - name: Assert old noninteractive flag failed the activation contract
-          ansible.builtin.assert:
-            that:
-              - ansible_failed_task.name == 'Validate host-local certificate activation contract'
-              - ansible_failed_result.assertion is search('pki_host_local_certificate_unattended_authorized')
 
     - name: Require a moving response path to fail exact path validation
       block:

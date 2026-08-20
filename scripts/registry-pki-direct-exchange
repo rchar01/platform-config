@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+
+usage() {
+  printf '%s\n' \
+    'Usage: registry-pki-direct-exchange --env NAME --env-file PATH --inventory PATH --limit HOST ROUTE ROUTE_ARGS...' \
+    'Routes:' \
+    '  request-pull ENDPOINT_RECORD REQUEST_ID DESTINATION_DIR' \
+    '  response-push ENDPOINT_RECORD REQUEST_ID ARTIFACT_SHA256 SOURCE_DIR' \
+    '  evidence-pull ENDPOINT_RECORD REQUEST_ID ARTIFACT_SHA256 DEPLOYMENT_SHA256 DESTINATION_DIR' \
+    '  outcome-push ENDPOINT_RECORD REQUEST_ID ARTIFACT_SHA256 DEPLOYMENT_SHA256 OUTCOME_SHA256 SOURCE_DIR' >&2
+}
+
+fail() {
+  printf 'registry-pki-direct-exchange: %s\n' "$1" >&2
+  exit 2
+}
+
+env_name=""
+env_file=""
+inventory=""
+limit=""
+operation_token=""
+cleanup_eligible=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      [[ $# -ge 2 ]] || fail "--env requires a value"
+      env_name=$2
+      shift 2
+      ;;
+    --env-file)
+      [[ $# -ge 2 ]] || fail "--env-file requires a value"
+      env_file=$2
+      shift 2
+      ;;
+    --inventory)
+      [[ $# -ge 2 ]] || fail "--inventory requires a value"
+      inventory=$2
+      shift 2
+      ;;
+    --limit)
+      [[ $# -ge 2 ]] || fail "--limit requires a value"
+      limit=$2
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      fail "unexpected option: $1"
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ -n $env_name ]] || fail "explicit --env is required"
+[[ -n $env_file ]] || fail "explicit --env-file is required"
+[[ -n $inventory ]] || fail "explicit --inventory is required"
+[[ -n $limit ]] || fail "explicit --limit is required"
+
+make_access() {
+  local target=$1
+  command make -C "$repo_root" "$target" \
+    "ENV=$env_name" \
+    "ENV_FILE=$env_file" \
+    "INVENTORY=$inventory" \
+    "LIMIT=$limit" \
+    "OPERATION_TOKEN=$operation_token" \
+    "EXTRA_ARGS="
+}
+
+cleanup() {
+  local status=$?
+  local revoke_status
+
+  trap - EXIT HUP INT TERM
+  if [[ $cleanup_eligible == true ]]; then
+    set +e
+    make_access registry-pki-exchange-access-revoke
+    revoke_status=$?
+    set -e
+    if ((revoke_status != 0)); then
+      printf 'registry-pki-direct-exchange: final access revocation failed with status %d\n' "$revoke_status" >&2
+      if ((status == 0)); then
+        status=$revoke_status
+      fi
+    fi
+  fi
+  exit "$status"
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+
+route=$1
+shift
+case "$route" in
+  request-pull) expected_arguments=3 ;;
+  response-push) expected_arguments=4 ;;
+  evidence-pull) expected_arguments=5 ;;
+  outcome-push) expected_arguments=6 ;;
+  *) fail "unsupported direct-exchange route: $route" ;;
+esac
+[[ $# -eq $expected_arguments ]] || fail "$route requires exactly $expected_arguments arguments"
+route_arguments=("$@")
+
+operation_token=$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')
+[[ $operation_token =~ ^[0-9a-f]{64}$ ]] || fail "failed to generate operation token"
+command -v platform-pki >/dev/null 2>&1 || fail "platform-pki executable not found"
+cleanup_eligible=true
+make_access registry-pki-exchange-access-claim
+make_access registry-pki-exchange-access
+platform-pki direct-exchange "$route" "${route_arguments[@]}"

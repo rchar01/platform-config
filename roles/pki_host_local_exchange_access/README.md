@@ -22,34 +22,44 @@ facade through a pinned descriptor after checking its protected ancestor chain,
 and executes it with a fixed environment. `cleanup-outcome` remains unavailable
 to the SSH identity.
 
-The absent state can safely unwind an interrupted reservation or act on a fully
-managed identity only when the root-owned marker is canonical and every present
-account or group attribute matches. A managed record must also match its exact
-UID and GID. It
+The fixed revoke entry point can safely unwind an interrupted reservation or act
+on a fully managed identity only when the root-owned marker is canonical and
+every present account or group attribute matches. A managed record must also
+match its exact UID and GID. It
 removes sudo authority first, then the key, account-wide SSH policy, account,
 home, group, dispatchers, and marker. It never adopts or removes an unmarked
-same-name identity. The role defaults to absent. Real enablement and the
-outside-Git public key reference belong in private inventory.
+same-name identity. There is no external state selector: the role's default
+entry point is revoke-only. The lease-claim playbook selects the fixed `enable`
+claim entry point, and the focused access playbook requires that owned lease
+before selecting `enable_access`. The outside-Git public key reference belongs
+in private inventory.
 
 ```yaml
-pki_host_local_exchange_access_state: present
 pki_host_local_exchange_access_authorized_key: >-
   {{ lookup('ansible.builtin.file', '/outside-git/identity.pub') }}
 ```
 
 The private identity never enters Ansible inventory or a managed-host payload.
 The target facade itself remains owned by `pki_host_local_certificate`. The
-focused access playbook and normal enabled registry convergence call that role's
-fixed lifecycle-helper and exchange-endpoint task files before enabling access;
-they do not create a request or change certificate state. Direct use of this
-access role still fails closed when the facade is absent or unsafe.
+focused access playbook calls that role's fixed lifecycle-helper and
+exchange-endpoint task files before enabling access; it does not create a
+request or change certificate state. Normal registry convergence only revokes
+access before service convergence and never re-enables it. Direct use of this
+access role is revoke-only.
 
 Direct access is temporary transport capability, not PKI or lifecycle authority.
-The canonical workflow enables it only around the Request, Activate/Evidence,
-and Complete online stages and requires fixed-absent revocation with `always`
-semantics after success, failure, interruption, or an external-gate wait. Use
-`make registry-pki-exchange-access-revoke ENV=<environment> LIMIT=<target>`; its
-structurally fixed playbook forces absent state after caller extra arguments, and
-exact absence is idempotent. Do not invent another cleanup helper or use broad
-extra variables with the ordinary access-enablement target. See
+The canonical workflow uses the config-owned direct-exchange Make routes to
+atomically claim one target-scoped operation lease, enable, run exactly one
+supported `platform-pki direct-exchange` operation, and revoke before releasing
+the lease on exit or a handled signal. The lease is a fixed empty root-owned
+mode-`0700` directory with the wrapper's random operation token in metadata.
+Concurrent wrappers fail their claim without revoking or changing the active
+operation. Token-bound cleanup refuses a missing, replaced, nonempty, or
+tampered lease before changing access. The fixed cleanup
+target remains `make registry-pki-exchange-access-revoke ENV=<environment>
+LIMIT=<target>`; it selects the structurally fixed revoke task entry point and
+exact absence is idempotent. This tokenless target and normal registry
+convergence are administrative revocation boundaries: do not run them over a
+healthy in-flight wrapper unless intentionally terminating that operation. Do
+not invoke the enable target as an unbounded operator step. See
 [Host-Local Registry PKI Workflow](../../docs/registry-host-local-pki-workflow.md#fixed-cleanup).

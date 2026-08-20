@@ -109,8 +109,6 @@
       - pki_host_local_certificate_activation_action in ['', 'finalize', 'abandon']
       - pki_host_local_certificate_activation_result | type_debug == 'str'
       - pki_host_local_certificate_activation_result in ['', 'activated', 'not-activated', 'rolled-back']
-      - pki_host_local_certificate_interactive_confirmation is boolean
-      - pki_host_local_certificate_unattended_authorized is boolean
     fail_msg: Host-local certificate inputs do not satisfy the frozen schema-2 contract.
   vars:
     pki_host_local_certificate_required_trust_names:

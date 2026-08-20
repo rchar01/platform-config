@@ -588,19 +588,17 @@ restricted endpoint only for its authorized transport window.
 
 ## Request Stage
 
-### R0. Enable Restricted Direct Access
+### R0. Prepare Wrapper-Managed Direct Access
 
 **Actor:** Lifecycle operator. **Run on:** Ansible controller and exact target.
-**Prerequisite:** Private inventory explicitly selects reviewed access state
-`present`, exact public key, and completed Bootstrap authorization. **Output and
-provenance:** Restricted account, forced command, broker, sudo policy, and fixed
-facade pass role validation. **Retry/result:** Exact convergence is idempotent;
-unsafe or unmanaged identity state fails closed. **Next actor:** Lifecycle
-operator.
-
-```bash
-make registry-pki-exchange-access ENV="$ENVIRONMENT" LIMIT="$TARGET"
-```
+**Prerequisite:** Private inventory supplies the exact reviewed public key and
+Bootstrap authorization is complete. **Output and provenance:** No access is
+enabled at this step. The fixed request-pull wrapper in R2 atomically claims the
+target operation lease, enables and validates the restricted endpoint, runs one
+route, then revokes before releasing its lease on exit or a handled signal.
+**Retry/result:** A concurrent lease claim fails without mutating the active
+operation; unsafe or unmanaged identity state fails closed. **Next actor:**
+Lifecycle operator.
 
 ### R1. Create The Target-Local Request
 
@@ -635,9 +633,10 @@ Exact existing bytes return idempotent success; a conflict is preserved and
 rejected. **Next actor:** Lifecycle operator.
 
 ```bash
-platform-pki direct-exchange request-pull \
-  "$ENDPOINT_RECORD" "$REQUEST_ID" \
-  "$EXCHANGE_ROOT/intake/request-$REQUEST_ID"
+make registry-pki-direct-request-pull \
+  ENV="$ENVIRONMENT" LIMIT="$TARGET" \
+  ENDPOINT_RECORD="$ENDPOINT_RECORD" REQUEST_ID="$REQUEST_ID" \
+  TRANSFER_DIR="$EXCHANGE_ROOT/intake/request-$REQUEST_ID"
 ```
 
 ### R3. Authenticate Request Intake
@@ -965,17 +964,14 @@ presence alone does not authorize activation.
 
 ## Activate/Evidence Stage
 
-### A0. Enable Restricted Direct Access
+### A0. Prepare Wrapper-Managed Direct Access
 
 **Actor:** Lifecycle operator. **Run on:** Ansible controller and exact target.
-**Prerequisite:** Gate 1 satisfied and private inventory explicitly selects the
-reviewed present state. **Output and provenance:** Same validated restricted
-endpoint as R0. **Retry/result:** Exact convergence is idempotent; stale or
-unsafe identity state fails closed. **Next actor:** GitLab retriever.
-
-```bash
-make registry-pki-exchange-access ENV="$ENVIRONMENT" LIMIT="$TARGET"
-```
+**Prerequisite:** Gate 1 is satisfied and private inventory supplies the
+reviewed public key. **Output and provenance:** No access is enabled at this
+step. The response-push wrapper in A3 owns the lease-bound access window.
+**Retry/result:** Stale or unsafe identity state fails closed. **Next actor:**
+GitLab retriever.
 
 ### A1. Download And Materialize The Response Outside Exchange
 
@@ -1039,27 +1035,25 @@ Exact restaging is idempotent; a first conflicting candidate requires review.
 **Next actor:** Lifecycle operator.
 
 ```bash
-platform-pki direct-exchange response-push \
-  "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
-  "$TRANSFER_ROOT/response/$REQUEST_ID"
+make registry-pki-direct-response-push \
+  ENV="$ENVIRONMENT" LIMIT="$TARGET" \
+  ENDPOINT_RECORD="$ENDPOINT_RECORD" REQUEST_ID="$REQUEST_ID" \
+  ARTIFACT_SHA256="$ARTIFACT_SHA256" \
+  TRANSFER_DIR="$TRANSFER_ROOT/response/$REQUEST_ID"
 ```
 
 ### A4. Activate And Validate
 
 **Actor:** Lifecycle operator; target producer and validation runner are delegated
 actors. **Run on:** Ansible controller, exact target, and distinct runner.
-**Prerequisite:** Authenticated staged response and separate activation
-authorization. **Output and provenance:** `status=activated-and-validated` and
-the exact target-signed `deployment` digest; record it as `DEPLOYMENT_SHA256`.
-**Retry/result:** Do not blindly rerun after failure or recovery-required status;
-use [Target Activation Recovery](#target-activation-recovery). **Next actor:**
+**Prerequisite:** Authenticated directly staged response, exact request and
+artifact digests, and one distinct reviewed runner. **Output and provenance:**
+`status=activated-and-validated` and the exact target-signed `deployment` digest;
+record it as `DEPLOYMENT_SHA256`. **Retry/result:** Activation runs automatically
+after all preflights pass. Do not blindly rerun after failure or
+recovery-required status; use
+[Target Activation Recovery](#target-activation-recovery). **Next actor:**
 Lifecycle operator.
-
-Interactive normal/controller-local activation requires the typed confirmation:
-
-```text
-activate SERVICE REQUEST_ID ARTIFACT_SHA256
-```
 
 ```bash
 make registry-pki-activate \
@@ -1067,26 +1061,11 @@ make registry-pki-activate \
   REQUEST_ID="$REQUEST_ID" ARTIFACT_SHA256="$ARTIFACT_SHA256"
 ```
 
-For an approved unattended environment, the explicit direct-only route skips
-only that typed pause:
-
-```bash
-make registry-pki-activate-unattended \
-  ENV="$ENVIRONMENT" LIMIT="$TARGET" RUNNER_LIMIT="$RUNNER" \
-  REQUEST_ID="$REQUEST_ID" ARTIFACT_SHA256="$ARTIFACT_SHA256"
-```
-
 All package authentication, target-local key matching, exact bindings, local Zot
 validation, distinct-runner validation, and journal-bound rollback remain. The
-normal and controller-local routes remain interactive; unattended activation is
-direct-only. Activation accepts only the paired interactive contract
-(`pki_host_local_certificate_interactive_confirmation=true`,
-`pki_host_local_certificate_unattended_authorized=false`) or the paired direct
-unattended contract
-(`pki_host_local_certificate_interactive_confirmation=false`,
-`pki_host_local_certificate_unattended_authorized=true`). A lone legacy
-confirmation override fails, and each Make route appends its contract after
-caller `EXTRA_ARGS`.
+single activation route appends direct mode and the exact request, artifact, and
+runner coordinates after caller `EXTRA_ARGS`. There is no controller-local or
+interactive activation route.
 
 ### A5. Export, Pull, And Intake Evidence
 
@@ -1105,10 +1084,12 @@ make registry-pki-evidence-export \
   ENV="$ENVIRONMENT" LIMIT="$TARGET" \
   REQUEST_ID="$REQUEST_ID" ARTIFACT_SHA256="$ARTIFACT_SHA256" \
   DEPLOYMENT_SHA256="$DEPLOYMENT_SHA256"
-platform-pki direct-exchange evidence-pull \
-  "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
-  "$DEPLOYMENT_SHA256" \
-  "$EXCHANGE_ROOT/intake/evidence-$DEPLOYMENT_SHA256"
+make registry-pki-direct-evidence-pull \
+  ENV="$ENVIRONMENT" LIMIT="$TARGET" \
+  ENDPOINT_RECORD="$ENDPOINT_RECORD" REQUEST_ID="$REQUEST_ID" \
+  ARTIFACT_SHA256="$ARTIFACT_SHA256" \
+  DEPLOYMENT_SHA256="$DEPLOYMENT_SHA256" \
+  TRANSFER_DIR="$EXCHANGE_ROOT/intake/evidence-$DEPLOYMENT_SHA256"
 PLATFORM_CONFIG_PKI_EXCHANGE_ROOT="$EXCHANGE_ROOT" \
 make registry-pki-evidence-intake \
   ENV="$ENVIRONMENT" LIMIT="$TARGET" REQUEST_ID="$REQUEST_ID" \
@@ -1143,21 +1124,17 @@ platform-pki gitlab-package publish \
 
 ### A7. Converge Custody And Run The Decision Preflight
 
-Only after authenticated activation, set private target inventory:
-
-```yaml
-zot_registry_tls_custody: host-local
-zot_registry_tls_host_local_target: registry-example
-```
-
 **Actor:** Lifecycle operator; validation runner performs the final read-only
 observation. **Run on:** Ansible controller, target, and distinct runner.
-**Prerequisite:** Evidence intake and publication complete; private inventory
-selects host-local custody. **Output and provenance:** Status must report
+**Prerequisite:** Evidence intake and publication complete; `activate-finish`
+has published authenticated active and rollback state. TLS custody is derived
+from that target state, not selected in inventory. **Output and provenance:** Status must report
 `evidence-exported`, `controller-exported`, and `await-signer-outcome`; second
 registry apply is idempotent; smoke passes; decision preflight reports
 `result=passed`. **Retry/result:** Status/preflight are read-only; convergence is
-repeatable. A failed fresh preflight blocks Gate 2. **Next actor:** GitLab
+repeatable. The registry apply fails closed on helper drift or error, unresolved
+journals, malformed or ambiguous lifecycle state, or configuration mismatch; it
+never falls back to managed custody. A failed fresh preflight blocks Gate 2. **Next actor:** GitLab
 retriever.
 
 ```bash
@@ -1339,17 +1316,14 @@ state.
 
 ## Complete Stage
 
-### C0. Enable Restricted Direct Access
+### C0. Prepare Wrapper-Managed Direct Access
 
 **Actor:** Lifecycle operator. **Run on:** Ansible controller and exact target.
-**Prerequisite:** Gate 2 satisfied and private inventory explicitly selects the
-reviewed present state. **Output and provenance:** Same validated restricted
-endpoint as R0. **Retry/result:** Exact convergence is idempotent; stale or
-unsafe identity state fails closed. **Next actor:** GitLab retriever.
-
-```bash
-make registry-pki-exchange-access ENV="$ENVIRONMENT" LIMIT="$TARGET"
-```
+**Prerequisite:** Gate 2 is satisfied and private inventory supplies the
+reviewed public key. **Output and provenance:** No access is enabled at this
+step. The outcome-push wrapper in C2 owns the lease-bound access window.
+**Retry/result:** Stale or unsafe identity state fails closed. **Next actor:**
+GitLab retriever.
 
 ### C1. Download And Materialize The Outcome
 
@@ -1395,10 +1369,12 @@ first candidate requires administrator review; restricted SSH cannot clean it.
 **Next actor:** Lifecycle operator.
 
 ```bash
-platform-pki direct-exchange outcome-push \
-  "$ENDPOINT_RECORD" "$REQUEST_ID" "$ARTIFACT_SHA256" \
-  "$DEPLOYMENT_SHA256" "$OUTCOME_SHA256" \
-  "$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256"
+make registry-pki-direct-outcome-push \
+  ENV="$ENVIRONMENT" LIMIT="$TARGET" \
+  ENDPOINT_RECORD="$ENDPOINT_RECORD" REQUEST_ID="$REQUEST_ID" \
+  ARTIFACT_SHA256="$ARTIFACT_SHA256" \
+  DEPLOYMENT_SHA256="$DEPLOYMENT_SHA256" OUTCOME_SHA256="$OUTCOME_SHA256" \
+  TRANSFER_DIR="$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256"
 ```
 
 ### C3. Preflight And Import The Outcome
@@ -1464,11 +1440,17 @@ wait or terminal acceptance.
 **Actor:** Lifecycle operator or protected CI cleanup job. **Run on:** Ansible
 controller and the same exact target. **Prerequisite:** Stage success, failure,
 or interruption; cleanup does not depend on PKI package state. **Output and
-provenance:** Structurally fixed playbook forces access state `absent`, removes
-sudo authority first, and validates exact managed identity ownership. Caller
-extra arguments cannot restore present state. **Retry/result:** Exact absence is
-idempotent; an unsafe marker or identity conflict is retained and fails closed.
+provenance:** Structurally fixed playbook selects only revocation, removes sudo
+authority first, validates exact managed identity ownership, and removes a safe
+empty operation lease with `rmdir` only after access is absent. Caller extra
+arguments cannot select enablement. **Retry/result:** Exact absence is
+idempotent; an unsafe, nonempty, or tampered lease, marker, or identity conflict
+is retained and fails closed.
 **Next actor:** External gate owner or terminal operator.
+
+This standalone tokenless cleanup is an administrative revocation boundary. Do
+not overlap it, or normal registry convergence, with a healthy in-flight wrapper
+unless intentionally terminating that operation.
 
 ```bash
 make registry-pki-exchange-access-revoke \
@@ -1573,16 +1555,16 @@ The explicit compatibility targets are:
 
 ```text
 registry-pki-request-controller-local
-registry-pki-activate-controller-local
 registry-pki-evidence-export-controller-local
 registry-pki-outcome-import-controller-local
 ```
 
-They set `pki_host_local_certificate_exchange_mode=controller-local`; normal
-targets set `direct`. Do not mix modes within a request unless an approved
-recovery procedure accounts for both byte paths. Normal and controller-local
-activation remain interactive. Only `registry-pki-activate-unattended` is
-unattended, and it is direct-only.
+These request, evidence, and outcome compatibility targets set
+`pki_host_local_certificate_exchange_mode=controller-local`; their normal
+counterparts set `direct`. Do not mix modes within a request unless an approved
+recovery procedure accounts for both byte paths. Activation has no compatibility
+target: `registry-pki-activate` is direct-only and automatic after its exact
+preflights pass.
 
 ## Target Activation Recovery
 

@@ -36,10 +36,9 @@ Use only these structural playbooks:
   check does not contact Zot or mutate the target.
 - `registry-pki-activate.yml` prepares and installs the response, shows the
   exact activation candidate, activates locally, validates Zot from one distinct
-  reviewed runner, and publishes signed target evidence. The normal Make target
-  requires exact interactive confirmation; the explicit direct-only
-  `registry-pki-activate-unattended` target skips only that pause while preserving
-  all authentication, validation, and rollback boundaries.
+  reviewed runner, and publishes signed target evidence. The single direct-only
+  Make target runs automatically after all exact preflights while preserving all
+  authentication, validation, and rollback boundaries.
 - `registry-pki-recover.yml` explicitly performs only the recovery encoded by
   the lifecycle journal and then reads status.
 - `registry-pki-evidence-export.yml` reports exact direct retrieval coordinates,
@@ -57,10 +56,8 @@ Use only these structural playbooks:
   preflight without a prompt or transport.
 
 Trust, request, expired-request abandonment, and recovery remain explicit
-operator actions. Activation is interactive by default and unattended only
-through the separate digest-pinned Make target. A lone
-`pki_host_local_certificate_interactive_confirmation=false` override is not
-authorization. Request lifetime defaults to
+operator actions. Activation is one automatic, direct-only, digest-pinned Make
+target with a required distinct runner. Request lifetime defaults to
 3600 seconds and may be overridden for one invocation with
 `REQUEST_TTL_SECONDS`, up to the schema-2 policy maximum of 604800 seconds.
 
@@ -82,8 +79,9 @@ Direct movement is an explicit operator command using
 `platform-pki-host-local-exchange` facade. Ansible does not run SSH package
 movement or GitLab network commands. Local request/evidence intake uses
 controller-only action plugins with no target connection and no Ansible file
-transfer. Compatibility behavior is selected only by a documented
-`*-controller-local` Make target or an explicit mode variable.
+transfer. Compatibility behavior for request, evidence, and outcome operations
+is selected only by a documented `*-controller-local` Make target or an explicit
+mode variable. Activation rejects compatibility mode.
 
 Persistent target SSH authorization is owned separately by
 `pki_host_local_exchange_access`. That role installs the locked account,
@@ -224,21 +222,12 @@ source is exactly the profiled intermediate followed by its self-signed root;
 extra, reversed, unrelated, or incorrectly profiled certificates are rejected.
 
 Before mutation, `activate-start --check` must return the exact candidate. The
-operator must then type exactly:
-
-```text
-activate SERVICE REQUEST_ID ARTIFACT_SHA256
-```
-
-Normal and controller-local activation remain interactive. The explicit
-`registry-pki-activate-unattended` Make target is direct-only and skips only the
-typed pause; candidate authentication, local activation, separate-runner
-validation, and journal-bound rollback are unchanged. The activation contract
-accepts exactly interactive confirmation with unattended authorization false,
-or direct noninteractive execution with
-`pki_host_local_certificate_unattended_authorized=true`; all other combinations
-fail. Make routes append both booleans after caller `EXTRA_ARGS`, so caller flags
-cannot change the selected route. After local activation,
+single `registry-pki-activate` Make target is direct-only and proceeds
+automatically after that preflight. It requires exact request and artifact
+digests plus one distinct runner, and appends those coordinates and direct mode
+after caller `EXTRA_ARGS`. Candidate authentication, local activation,
+separate-runner validation, and journal-bound rollback are unchanged. After
+local activation,
 the runner emits one canonical public observation. Only those bytes are copied
 under the root-owned mode-`0700` `/run/platform-pki-host-local/` directory as
 `REQUEST_ID.observation` with mode `0600`; the file is removed in `always`. Any
@@ -246,7 +235,7 @@ ordinary failure after `activate-start` dispatches
 the helper's exact `recover` action, and recovery failure is not ignored.
 
 In Ansible check mode activation runs helper `--check` preflights only. It does
-not transfer a response, prompt, restart Zot, invoke the network validator, copy
+not transfer a response, restart Zot, invoke the network validator, copy
 an observation, or clean up target state.
 
 The actor-labeled lifecycle, two external gates, transport stages, argument

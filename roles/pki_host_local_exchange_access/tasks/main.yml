@@ -1,25 +1,3 @@
 ---
-- name: Load fixed host-local PKI exchange access validation
-  ansible.builtin.import_tasks: validate.yml
-
-- name: Validate host-local PKI exchange access desired state
-  ansible.builtin.assert:
-    that:
-      - pki_host_local_exchange_access_state in ['present', 'absent']
-      - >-
-        pki_host_local_exchange_access_state == 'absent'
-        or pki_host_local_exchange_access_authorized_key
-        is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( [ -~]{1,128})?$')
-      - >-
-        pki_host_local_exchange_access_state == 'absent'
-        or pki_host_local_exchange_access_authorized_key
-        == (pki_host_local_exchange_access_authorized_key | trim)
-    fail_msg: Present host-local PKI exchange access requires one plain Ed25519 public key.
-
-- name: Converge present host-local PKI exchange access
-  ansible.builtin.import_tasks: present.yml
-  when: pki_host_local_exchange_access_state == 'present'
-
-- name: Revoke absent host-local PKI exchange access
-  ansible.builtin.import_tasks: absent.yml
-  when: pki_host_local_exchange_access_state == 'absent'
+- name: Run fixed absent host-local PKI exchange access boundary
+  ansible.builtin.import_tasks: revoke.yml

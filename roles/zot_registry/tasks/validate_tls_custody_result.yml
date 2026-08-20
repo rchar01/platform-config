@@ -1,0 +1,65 @@
+---
+- name: Require exact derived Zot TLS custody result
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_custody_result.rc | type_debug == 'int'
+      - zot_registry_tls_custody_result.rc == 0
+      - zot_registry_tls_custody_result.stderr | type_debug == 'str'
+      - zot_registry_tls_custody_result.stderr == ''
+      - zot_registry_tls_custody_result.stdout | type_debug == 'str'
+      - zot_registry_tls_custody_result.stdout | from_json | type_debug == 'dict'
+      - (zot_registry_tls_custody_result.stdout | from_json).keys() | list | sort == zot_registry_tls_custody_required_fields
+      - (zot_registry_tls_custody_result.stdout | from_json).schema == '1'
+      - (zot_registry_tls_custody_result.stdout | from_json).kind == 'platform-config-zot-tls-custody'
+      - (zot_registry_tls_custody_result.stdout | from_json).custody in ['managed', 'host-local']
+      - (zot_registry_tls_custody_result.stdout | from_json).cert_path | type_debug == 'str'
+      - (zot_registry_tls_custody_result.stdout | from_json).key_path | type_debug == 'str'
+      - >-
+        (
+          (zot_registry_tls_custody_result.stdout | from_json).custody == 'managed'
+          and (zot_registry_tls_custody_result.stdout | from_json).request_id == 'none'
+          and (zot_registry_tls_custody_result.stdout | from_json).cert_path == zot_registry_tls_cert_path
+          and (zot_registry_tls_custody_result.stdout | from_json).key_path == zot_registry_tls_key_path
+          and (zot_registry_tls_custody_result.stdout | from_json).artifact_sha256 == 'none'
+          and (zot_registry_tls_custody_result.stdout | from_json).certificate_sha256 == 'none'
+          and (zot_registry_tls_custody_result.stdout | from_json).spki_sha256 == 'none'
+          and (zot_registry_tls_custody_result.stdout | from_json).chain_sha256 == 'none'
+          and (zot_registry_tls_custody_result.stdout | from_json).fullchain_sha256 == 'none'
+          and (zot_registry_tls_custody_result.stdout | from_json).zot_config_sha256 == zot_registry_tls_managed_config_sha256
+        )
+        or
+        (
+          (zot_registry_tls_custody_result.stdout | from_json).custody == 'host-local'
+          and (zot_registry_tls_custody_result.stdout | from_json).request_id is match('^[0-9a-f]{32}$')
+          and (zot_registry_tls_custody_result.stdout | from_json).cert_path
+              == zot_registry_tls_host_local_versions_root ~ '/'
+                 ~ (zot_registry_tls_custody_result.stdout | from_json).request_id
+                 ~ '/fullchain.crt'
+          and (zot_registry_tls_custody_result.stdout | from_json).key_path
+              == zot_registry_tls_host_local_versions_root ~ '/'
+                 ~ (zot_registry_tls_custody_result.stdout | from_json).request_id
+                 ~ '/tls.key'
+          and (zot_registry_tls_custody_result.stdout | from_json).artifact_sha256 is match('^[0-9a-f]{64}$')
+          and (zot_registry_tls_custody_result.stdout | from_json).certificate_sha256 is match('^[0-9a-f]{64}$')
+          and (zot_registry_tls_custody_result.stdout | from_json).spki_sha256 is match('^[0-9a-f]{64}$')
+          and (zot_registry_tls_custody_result.stdout | from_json).chain_sha256 is match('^[0-9a-f]{64}$')
+          and (zot_registry_tls_custody_result.stdout | from_json).fullchain_sha256 is match('^[0-9a-f]{64}$')
+          and (zot_registry_tls_custody_result.stdout | from_json).zot_config_sha256 is match('^[0-9a-f]{64}$')
+        )
+    fail_msg: >-
+      The lifecycle helper did not return one exact managed or authenticated
+      host-local Zot TLS custody result.
+  vars:
+    zot_registry_tls_custody_required_fields:
+      - artifact_sha256
+      - cert_path
+      - certificate_sha256
+      - chain_sha256
+      - custody
+      - fullchain_sha256
+      - key_path
+      - kind
+      - request_id
+      - schema
+      - spki_sha256
+      - zot_config_sha256

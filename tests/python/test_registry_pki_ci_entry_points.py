@@ -381,25 +381,28 @@ def _walk_tasks(value: Any):
             yield from _walk_tasks(child)
 
 
-def test_activation_make_routes_override_conflicting_caller_modes(
+def test_activation_make_route_forces_direct_mode_after_caller_arguments(
     repo_root: Path,
 ) -> None:
     makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
-    routes = {
-        "registry-pki-activate": (
-            "pki_host_local_certificate_exchange_mode=direct",
-            "@vars/registry-pki-activation-interactive.yml",
-        ),
-        "registry-pki-activate-controller-local": (
-            "pki_host_local_certificate_exchange_mode=controller-local",
-            "@vars/registry-pki-activation-interactive.yml",
-        ),
-        "registry-pki-activate-unattended": (
-            "pki_host_local_certificate_exchange_mode=direct",
-            "@vars/registry-pki-activation-unattended.yml",
-        ),
-    }
-    for name, forced in routes.items():
-        target = _make_target(makefile, name)
-        assert all(value in target for value in forced)
-        assert all(target.index("$(EXTRA_ARGS)") < target.index(value) for value in forced)
+    target = _make_target(makefile, "registry-pki-activate")
+    forced = (
+        "pki_host_local_certificate_exchange_mode=direct",
+        "pki_host_local_certificate_request_id=$(REQUEST_ID)",
+        "pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256)",
+        "pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)",
+    )
+
+    assert all(value in target for value in forced)
+    assert all(target.index("$(EXTRA_ARGS)") < target.index(value) for value in forced)
+    assert "registry-pki-activate-controller-local" not in makefile
+    assert "registry-pki-activate-unattended" not in makefile
+    for compatibility_target in (
+        "registry-pki-request-controller-local",
+        "registry-pki-evidence-export-controller-local",
+        "registry-pki-outcome-import-controller-local",
+    ):
+        compatibility_route = _make_target(makefile, compatibility_target)
+        assert "pki_host_local_certificate_exchange_mode=controller-local" in (
+            compatibility_route
+        )

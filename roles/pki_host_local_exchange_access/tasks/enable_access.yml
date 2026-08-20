@@ -1,0 +1,139 @@
+---
+- name: Require fixed host-local PKI exchange operation lease
+  ansible.builtin.import_tasks: require_lease.yml
+
+- name: Validate fixed host-local PKI exchange access public key
+  ansible.builtin.assert:
+    that:
+      - >-
+        pki_host_local_exchange_access_authorized_key
+        is match('^ssh-ed25519 [A-Za-z0-9+/]+={0,3}( [ -~]{1,128})?$')
+      - >-
+        pki_host_local_exchange_access_authorized_key
+        == (pki_host_local_exchange_access_authorized_key | trim)
+    fail_msg: Enabling host-local PKI exchange access requires one plain Ed25519 public key.
+
+- name: Enable fixed host-local PKI exchange access
+  ansible.builtin.import_tasks: present.yml
+
+- name: Inspect fixed host-local PKI exchange paths after enablement
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - path: "{{ pki_host_local_exchange_access_marker_path }}"
+      kind: file
+      mode: "0600"
+    - path: "{{ pki_host_local_exchange_access_home }}"
+      kind: directory
+      mode: "0755"
+    - path: "{{ pki_host_local_exchange_access_home }}/.ssh"
+      kind: directory
+      mode: "0755"
+    - path: "{{ pki_host_local_exchange_access_home }}/.ssh/authorized_keys"
+      kind: file
+      mode: "0644"
+    - path: "{{ pki_host_local_exchange_access_dispatch_path }}"
+      kind: file
+      mode: "0755"
+    - path: "{{ pki_host_local_exchange_access_root_dispatch_path }}"
+      kind: file
+      mode: "0755"
+    - path: "{{ pki_host_local_exchange_access_sshd_validate_path }}"
+      kind: file
+      mode: "0755"
+    - path: "{{ pki_host_local_exchange_access_sudoers_path }}"
+      kind: file
+      mode: "0440"
+    - path: "{{ pki_host_local_exchange_access_sshd_path }}"
+      kind: file
+      mode: "0644"
+    - path: "{{ pki_host_local_exchange_access_helper_path }}"
+      kind: file
+      mode: "0755"
+  loop_control:
+    label: "{{ item.path }}"
+  register: pki_host_local_exchange_access_enabled_paths
+  when: not ansible_check_mode
+
+- name: Require fixed host-local PKI exchange paths to be enabled
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == item.item.mode
+      - >-
+        (item.item.kind == 'directory' and item.stat.isdir)
+        or (item.item.kind == 'file' and item.stat.isreg)
+    fail_msg: Fixed host-local PKI exchange access path postcondition failed.
+  loop: "{{ pki_host_local_exchange_access_enabled_paths.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  when: not ansible_check_mode
+
+- name: Read fixed host-local PKI exchange public key after enablement
+  ansible.builtin.slurp:
+    path: "{{ pki_host_local_exchange_access_home }}/.ssh/authorized_keys"
+  register: pki_host_local_exchange_access_enabled_key
+  when: not ansible_check_mode
+
+- name: Inspect fixed host-local PKI exchange account after enablement
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - passwd
+      - "{{ pki_host_local_exchange_access_user }}"
+  register: pki_host_local_exchange_access_enabled_user
+  changed_when: false
+  failed_when: pki_host_local_exchange_access_enabled_user.rc not in [0, 2]
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Inspect fixed host-local PKI exchange group after enablement
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/getent
+      - group
+      - "{{ pki_host_local_exchange_access_group }}"
+  register: pki_host_local_exchange_access_enabled_group
+  changed_when: false
+  failed_when: pki_host_local_exchange_access_enabled_group.rc not in [0, 2]
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Require fixed host-local PKI exchange access to be enabled
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_exchange_access_enabled_user.rc == 0
+      - pki_host_local_exchange_access_enabled_group.rc == 0
+      - pki_host_local_exchange_access_enabled_user.stdout.split(':') | length == 7
+      - pki_host_local_exchange_access_enabled_group.stdout.split(':') | length == 4
+      - pki_host_local_exchange_access_enabled_user.stdout.split(':')[2] | int < 1000
+      - pki_host_local_exchange_access_enabled_group.stdout.split(':')[2] | int < 1000
+      - >-
+        pki_host_local_exchange_access_enabled_user.stdout.split(':')[0]
+        == pki_host_local_exchange_access_user
+      - >-
+        pki_host_local_exchange_access_enabled_group.stdout.split(':')[0]
+        == pki_host_local_exchange_access_group
+      - >-
+        pki_host_local_exchange_access_enabled_user.stdout.split(':')[3]
+        == pki_host_local_exchange_access_enabled_group.stdout.split(':')[2]
+      - >-
+        pki_host_local_exchange_access_enabled_user.stdout.split(':')[5]
+        == pki_host_local_exchange_access_home
+      - >-
+        pki_host_local_exchange_access_enabled_user.stdout.split(':')[6]
+        == pki_host_local_exchange_access_shell
+      - pki_host_local_exchange_access_enabled_group.stdout.split(':')[3] == ''
+      - >-
+        pki_host_local_exchange_access_enabled_key.content | b64decode
+        == 'restrict,command="'
+           ~ pki_host_local_exchange_access_dispatch_path
+           ~ '" '
+           ~ pki_host_local_exchange_access_authorized_key
+           ~ '\n'
+    fail_msg: Fixed host-local PKI exchange access remains incomplete after enablement.
+  when: not ansible_check_mode

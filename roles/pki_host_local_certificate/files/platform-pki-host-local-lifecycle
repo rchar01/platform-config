@@ -5771,6 +5771,89 @@ def active_paths(args) -> None:
         state.close()
 
 
+def zot_custody(args) -> None:
+    state, lock = common_open(args, shared=True)
+    try:
+        entries = state_entries(state)
+        unresolved = entries & {
+            "activation-journal", "evidence-attempt-journal",
+            "abandonment-journal", "expired-request-abandonment-journal",
+            "expired-request-abandonment-journal.stage",
+            "pending-request-cancellation-journal",
+            "pending-request-cancellation-journal.stage", "request.journal",
+            "trust-install.journal",
+        }
+        if unresolved:
+            fail("unresolved lifecycle state blocks Zot TLS custody selection")
+
+        authenticated = authenticate_active(state, args)
+        if authenticated is None:
+            if "rollback" in entries:
+                fail("rollback state exists without an authenticated active version")
+            config_data, _ = read_path(
+                args.zot_config, "managed Zot configuration", mode=0o644
+            )
+            _config, cert_path, key_path = parse_zot_config(config_data)
+            if (
+                cert_path != args.managed_cert
+                or key_path != args.managed_key
+                or sha256(config_data) != args.managed_config_sha256
+            ):
+                fail("current Zot configuration is not the exact managed configuration")
+            json_output({
+                "schema": "1",
+                "kind": "platform-config-zot-tls-custody",
+                "custody": "managed",
+                "request_id": "none",
+                "cert_path": args.managed_cert,
+                "key_path": args.managed_key,
+                "artifact_sha256": "none",
+                "certificate_sha256": "none",
+                "spki_sha256": "none",
+                "chain_sha256": "none",
+                "fullchain_sha256": "none",
+                "zot_config_sha256": args.managed_config_sha256,
+            })
+            return
+
+        active = authenticated["record"]
+        rollback_data, _ = read_optional_state(state, "rollback")
+        if rollback_data is None:
+            fail("authenticated active state lacks its rollback record")
+        rollback = parse_rollback(rollback_data, args)
+        if (
+            rollback["activating_request_id"] != active["request_id"]
+            or rollback["activating_artifact_manifest_sha256"]
+            != active["artifact_manifest_sha256"]
+            or rollback["activating_certificate_sha256"]
+            != active["certificate_sha256"]
+            or rollback["activating_version_path"] != active["version_path"]
+            or rollback["activating_version_device"] != active["version_device"]
+            or rollback["activating_version_inode"] != active["version_inode"]
+            or rollback["activation_epoch"] != active["activation_epoch"]
+            or rollback["rollback_deadline_epoch"]
+            != active["rollback_deadline_epoch"]
+        ):
+            fail("active and rollback records do not bind one activation")
+        json_output({
+            "schema": "1",
+            "kind": "platform-config-zot-tls-custody",
+            "custody": "host-local",
+            "request_id": active["request_id"],
+            "cert_path": os.path.join(active["version_path"], "fullchain.crt"),
+            "key_path": os.path.join(active["version_path"], "tls.key"),
+            "artifact_sha256": active["artifact_manifest_sha256"],
+            "certificate_sha256": active["certificate_sha256"],
+            "spki_sha256": active["certificate_spki_sha256"],
+            "chain_sha256": active["chain_sha256"],
+            "fullchain_sha256": active["fullchain_sha256"],
+            "zot_config_sha256": active["zot_config_sha256"],
+        })
+    finally:
+        os.close(lock)
+        state.close()
+
+
 def add_common(parser: argparse.ArgumentParser, *, config: bool = False) -> None:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--pending-root", required=True)
@@ -5949,6 +6032,16 @@ def build_parser() -> argparse.ArgumentParser:
     paths = commands.add_parser("active-paths", help="authenticate active state and emit only exact Zot paths and digests")
     add_common(paths, config=True)
     paths.set_defaults(function=active_paths)
+
+    custody = commands.add_parser(
+        "zot-custody",
+        help="derive exact managed or authenticated host-local Zot TLS custody",
+    )
+    add_common(custody, config=True)
+    custody.add_argument("--managed-cert", required=True)
+    custody.add_argument("--managed-key", required=True)
+    custody.add_argument("--managed-config-sha256", required=True)
+    custody.set_defaults(function=zot_custody)
     return parser
 
 
@@ -5957,6 +6050,12 @@ def validate_arguments(args) -> None:
         require_request_id(args.request_id)
     if hasattr(args, "artifact_sha256") and args.artifact_sha256 is not None:
         require_digest(args.artifact_sha256, "artifact digest")
+    if hasattr(args, "managed_config_sha256"):
+        require_digest(args.managed_config_sha256, "managed configuration digest")
+        args.managed_cert = canonical_path(
+            args.managed_cert, "managed Zot certificate path"
+        )
+        args.managed_key = canonical_path(args.managed_key, "managed Zot key path")
     if hasattr(args, "request_sha256") and args.request_sha256 is not None:
         require_digest(args.request_sha256, "request digest")
     if hasattr(args, "deployment_sha256") and args.deployment_sha256 is not None:

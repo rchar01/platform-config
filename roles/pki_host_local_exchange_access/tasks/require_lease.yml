@@ -1,0 +1,26 @@
+---
+- name: Load fixed host-local PKI exchange access validation
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Require one fixed host-local PKI exchange operation token
+  ansible.builtin.assert:
+    that:
+      - >-
+        pki_host_local_exchange_access_operation_token
+        is match('^[0-9a-f]{64}$')
+    fail_msg: Exchange access enablement requires one exact operation token.
+
+- name: Inspect required host-local PKI exchange operation lease
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_exchange_access_lease_path }}"
+    follow: false
+  register: pki_host_local_exchange_access_required_lease
+
+- name: Require host-local PKI exchange operation lease to exist
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_exchange_access_required_lease.stat.exists
+    fail_msg: Exchange access enablement requires its claimed operation lease.
+
+- name: Validate required host-local PKI exchange operation lease ownership
+  ansible.builtin.import_tasks: validate_lease.yml
