@@ -33,10 +33,23 @@
     - not pki_host_local_certificate_helper_read_only
     - not pki_host_local_certificate_validator_helper_directory.stat.exists
 
+- name: Inspect shipped host-local certificate validator helper source
+  ansible.builtin.stat:
+    path: "{{ role_path }}/files/platform-pki-zot-read-only-validate"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: pki_host_local_certificate_validator_helper_source
+  when: ansible_check_mode or pki_host_local_certificate_helper_read_only
+
 - name: Inspect installed host-local certificate validator helper
   ansible.builtin.stat:
     path: "{{ pki_host_local_certificate_validator_helper_path }}"
     follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
   delegate_to: "{{ pki_host_local_certificate_remote_validator }}"
   register: pki_host_local_certificate_installed_validator_helper
 
@@ -49,7 +62,14 @@
       - pki_host_local_certificate_installed_validator_helper.stat.uid == 0
       - pki_host_local_certificate_installed_validator_helper.stat.gid == 0
       - pki_host_local_certificate_installed_validator_helper.stat.mode == '0755'
-    fail_msg: Read-only validation requires the existing reviewed runner helper.
+      - pki_host_local_certificate_validator_helper_source.stat.exists
+      - pki_host_local_certificate_validator_helper_source.stat.isreg
+      - not pki_host_local_certificate_validator_helper_source.stat.islnk
+      - pki_host_local_certificate_validator_helper_source.stat.checksum is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_installed_validator_helper.stat.checksum
+        == pki_host_local_certificate_validator_helper_source.stat.checksum
+    fail_msg: Read-only validation requires the exact shipped runner helper.
   when: ansible_check_mode or pki_host_local_certificate_helper_read_only
 
 - name: Install host-local certificate validator helper on reviewed runner

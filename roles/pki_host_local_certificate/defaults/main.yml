@@ -72,3 +72,4 @@ pki_host_local_certificate_served_intermediate_sha256: ""
 pki_host_local_certificate_activation_action: ""
 pki_host_local_certificate_activation_result: ""
 pki_host_local_certificate_interactive_confirmation: false
+pki_host_local_certificate_unattended_authorized: false

@@ -7,6 +7,7 @@
     pki_host_local_certificate_activation_action: finalize
     pki_host_local_certificate_activation_result: activated
     pki_host_local_certificate_interactive_confirmation: true
+    pki_host_local_certificate_unattended_authorized: false
   tasks:
     - name: Run structurally fixed registry certificate activation boundary
       ansible.builtin.include_role:

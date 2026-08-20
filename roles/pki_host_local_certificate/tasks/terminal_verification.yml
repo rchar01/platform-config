@@ -1,0 +1,33 @@
+---
+- name: Require exact terminal signer-outcome coordinate
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_outcome_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: Terminal verification requires one exact signer-outcome digest.
+
+- name: Load exact decision preflight and authenticated lifecycle status
+  ansible.builtin.import_tasks: decision_preflight.yml
+
+- name: Require exact finalized target lifecycle state
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_terminal_status.status == 'complete'
+      - pki_host_local_certificate_terminal_status.signer_outcome_state == 'finalized'
+      - pki_host_local_certificate_terminal_status.required_action == 'none'
+      - pki_host_local_certificate_terminal_status.recovery_required is sameas false
+      - pki_host_local_certificate_terminal_status.evidence_state == 'controller-exported'
+      - pki_host_local_certificate_terminal_status.service == pki_host_local_certificate_service
+      - pki_host_local_certificate_terminal_status.target == pki_host_local_certificate_target
+      - pki_host_local_certificate_terminal_status.active_request_id == pki_host_local_certificate_request_id
+      - pki_host_local_certificate_terminal_status.active_artifact_sha256 == pki_host_local_certificate_artifact_manifest_sha256
+    success_msg: >-
+      service={{ pki_host_local_certificate_service }}
+      target={{ pki_host_local_certificate_target }}
+      request={{ pki_host_local_certificate_request_id }}
+      artifact={{ pki_host_local_certificate_artifact_manifest_sha256 }}
+      deployment={{ pki_host_local_certificate_deployment_sha256 }}
+      outcome={{ pki_host_local_certificate_outcome_sha256 }}
+      status=complete
+    fail_msg: Authenticated target lifecycle status is not exact and terminal.
+  vars:
+    pki_host_local_certificate_terminal_status: "{{ pki_host_local_certificate_status_result.stdout | from_json }}"

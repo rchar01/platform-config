@@ -21,6 +21,7 @@ TEST_IN_CONTAINER ?= $(IN_CONTAINER)
 TEST_WORKERS ?= 2
 MIN_CONTROLLER_FREE_GIB ?=
 MIN_ROOT_FREE_GIB ?=
+SERVICE ?=
 REQUEST_ID ?=
 REQUEST_SHA256 ?=
 CSR_SHA256 ?=
@@ -69,6 +70,7 @@ help:
 	@printf '  %-24s %s\n' 'TEST_WORKERS' 'Parallel pytest worker count, default: 2'
 	@printf '  %-24s %s\n' 'MIN_CONTROLLER_FREE_GIB' 'Required controller/rootless-Podman free-space gate'
 	@printf '  %-24s %s\n' 'MIN_ROOT_FREE_GIB' 'Required managed-root free-space gate'
+	@printf '  %-24s %s\n' 'SERVICE' 'Exact host-local PKI service name'
 	@printf '  %-24s %s\n' 'REQUEST_ID' 'Exact host-local PKI request ID'
 	@printf '  %-24s %s\n' 'REQUEST_SHA256' 'Exact host-local PKI request digest'
 	@printf '  %-24s %s\n' 'CSR_SHA256' 'Exact host-local PKI CSR digest'
@@ -258,7 +260,7 @@ test-openbao-rocky:
 test-pki-host-local-zot-one-runner:
 	@bash tests/integration/test-pki-host-local-zot-one-runner.sh
 
-.PHONY: registry-pki-exchange-access
+.PHONY: registry-pki-bootstrap-readiness registry-pki-exchange-access registry-pki-exchange-access-revoke registry-pki-terminal-verification registry-pki-activate-unattended syntax-registry-pki-ci _guard-pki-service
 
 ## Run all local static checks
 verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test
@@ -269,6 +271,14 @@ verify-parallel: check-dev-toolchain check-test-container-profile check-containe
 ## Converge restricted host-local PKI exchange SSH access
 registry-pki-exchange-access: _guard-pki-env _guard-pki-limit
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-exchange-access.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS))
+
+## Verify one registry and distinct runner are ready without mutation
+registry-pki-bootstrap-readiness: _guard-pki-env _guard-pki-limit _guard-pki-runner _guard-pki-request-ttl
+	@$(MAKE) check PLAYBOOK=playbooks/registry-pki-bootstrap-readiness.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT) -e pki_host_local_certificate_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+
+## Revoke restricted host-local PKI exchange SSH access
+registry-pki-exchange-access-revoke: _guard-pki-env _guard-pki-limit
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-exchange-access-revoke.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_exchange_access_state=absent)
 
 ## Create or resume one exact direct host-local PKI request
 registry-pki-request: _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
@@ -304,11 +314,15 @@ registry-pki-response-check: _guard-pki-env _guard-pki-limit _guard-pki-request-
 
 ## Interactively activate one directly staged response and validate it
 registry-pki-activate: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-runner
-	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e '{"pki_host_local_certificate_interactive_confirmation":true}' -e '{"pki_host_local_certificate_unattended_authorized":false}' -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
+
+## Unattendedly activate one directly staged response and validate it
+registry-pki-activate-unattended: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-runner
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=direct -e '{"pki_host_local_certificate_interactive_confirmation":false}' -e '{"pki_host_local_certificate_unattended_authorized":true}' -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
 ## Activate one controller-transferred compatibility response
 registry-pki-activate-controller-local: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-runner
-	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=controller-local -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode=controller-local -e '{"pki_host_local_certificate_interactive_confirmation":true}' -e '{"pki_host_local_certificate_unattended_authorized":false}' -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
 ## Recover only the journal-bound host-local PKI transaction
 registry-pki-recover: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact
@@ -333,6 +347,10 @@ registry-pki-evidence-intake: _guard-pki-env _guard-pki-limit _guard-pki-request
 ## Revalidate one exported deployment before an offline signer decision
 registry-pki-decision-preflight: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-runner
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-decision-preflight.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
+
+## Verify one exact finalized registry PKI outcome without mutation
+registry-pki-terminal-verification: _guard-pki-env _guard-pki-limit _guard-pki-service _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome _guard-pki-runner
+	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-terminal-verification.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e '{"pki_host_local_certificate_helper_read_only":true}' -e pki_host_local_certificate_service=$(SERVICE) -e pki_host_local_certificate_request_id=$(REQUEST_ID) -e pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256) -e pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256) -e pki_host_local_certificate_outcome_sha256=$(OUTCOME_SHA256) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT))
 
 ## Import one exact outcome already staged in the fixed target spool
 registry-pki-outcome-import: _guard-pki-env _guard-pki-limit _guard-pki-request-id _guard-pki-artifact _guard-pki-deployment _guard-pki-outcome
@@ -370,6 +388,12 @@ deploy-bootstrap-token-issuer-staging: _guard-staging-mode
 syntax-openbao-observers:
 	@$(MAKE) syntax PLAYBOOK=playbooks/openbao-observers.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 	@$(MAKE) syntax PLAYBOOK=playbooks/openbao-observers-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Syntax-check CI-safe registry PKI entry points
+syntax-registry-pki-ci:
+	@$(MAKE) syntax PLAYBOOK=playbooks/registry-pki-bootstrap-readiness.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	@$(MAKE) syntax PLAYBOOK=playbooks/registry-pki-exchange-access-revoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+	@$(MAKE) syntax PLAYBOOK=playbooks/registry-pki-terminal-verification.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ## Converge staged or explicitly active OpenBao-hosted observers
 deploy-openbao-observers:
@@ -467,6 +491,9 @@ _guard-pki-env:
 
 _guard-pki-limit:
 	@value=$(call sh_quote,$(LIMIT)); test "$${#value}" -le 253 && case "$$value" in [a-z0-9]*) true ;; *) false ;; esac && case "$$value" in *[!a-z0-9.-]*) false ;; *) true ;; esac || { printf '%s\n' 'LIMIT must name one canonical lowercase registry inventory host.' >&2; exit 1; }
+
+_guard-pki-service:
+	@value=$(call sh_quote,$(SERVICE)); test "$${#value}" -le 63 && case "$$value" in [a-z0-9]*) true ;; *) false ;; esac && case "$$value" in *[!a-z0-9-]*) false ;; *) true ;; esac || { printf '%s\n' 'SERVICE must name one canonical lowercase PKI service.' >&2; exit 1; }
 
 _guard-pki-request-id:
 	@value=$(call sh_quote,$(REQUEST_ID)); test "$${#value}" -eq 32 && case "$$value" in *[!0-9a-f]*) false ;; *) true ;; esac || { printf '%s\n' 'REQUEST_ID must be exactly 32 lowercase hexadecimal characters.' >&2; exit 1; }

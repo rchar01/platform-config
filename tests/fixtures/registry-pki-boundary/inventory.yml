@@ -1,0 +1,11 @@
+---
+all:
+  children:
+    registry:
+      hosts:
+        localhost:
+          ansible_connection: local
+    validators:
+      hosts:
+        runner-test:
+          ansible_connection: local

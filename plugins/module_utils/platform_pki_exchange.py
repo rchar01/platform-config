@@ -1763,7 +1763,7 @@ def validate_response_snapshot(
         or not_before > now + 300
         or now >= not_after
         or not_after - now < minimum
-        or created < not_before
+        or created < not_before - 300
         or created > now + 300
         or created > not_after
     ):

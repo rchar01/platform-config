@@ -14,8 +14,8 @@ Store each input according to its authority:
 | --- | --- |
 | `platform-config` | Public helpers, Ansible roles, sanitized setup procedures, and examples |
 | `platform-private` | Real inventory, project and target references, public-key authorization policy, and non-secret environment configuration |
-| `~/.config/platform-infrastructure/` | Real project records, CA trust, SSH identities, package tokens, and exchange workspaces |
-| Offline signer storage | Approval, CA, and response-signing private keys plus controlled-media workspaces |
+| `~/.config/platform-infrastructure/` | Canonical online configuration, credentials, transfer workspaces, exchange history, and authoritative `platform-pki` state under `pki/` |
+| `~/.config/platform-pki-offline/<service>/` | Initializer-managed controlled-media ingress/egress and temporary approved work; approval/response keys remain explicit protected inputs outside this tree |
 
 Never commit a real token, private key, inventory, endpoint record, or access
 policy to this repository. The target leaf key remains target-local and never
@@ -121,9 +121,23 @@ private` with the dedicated reader project access token by default.
 The helper reads each token from an owner-only file. It never accepts token bytes
 in argv, a URL, a package, or output.
 
+Before each publication, the publisher must hold an external lock with exact
+coordinate `<project-id>:<stage>:<service>:<full-package-version>`. An
+operator-run publisher follows the reviewed protected-lock procedure and stops
+on an ambiguous or stale holder; there is no implicit helper lock and this guide
+does not invent a lock command. Protected CI uses the same coordinate:
+
+```yaml
+resource_group: "${CI_PROJECT_ID}:${PKI_STAGE}:${PKI_SERVICE}:${PKI_PACKAGE_VERSION}"
+```
+
+The four variables must equal the project and exact arguments passed to
+`gitlab-package publish`. One global protected exchange lock is also safe.
+
 Configure the dedicated publisher as a protected masked file variable so token
 bytes never need to be materialized by the job shell. Pass only the temporary
-file path and never cache or publish that file:
+file path and never cache or publish that file. This is an argument template,
+not a complete executable lifecycle step:
 
 ```bash
 test -f "$PKI_EXCHANGE_PUBLISH_TOKEN_FILE"
@@ -135,8 +149,11 @@ platform-pki gitlab-package publish \
 
 ## Transfer-Station Layout
 
-Use one owner-only namespace. Existing canonical PKI state and exchange history
-must not be moved merely to adopt this layout.
+Use one owner-only online namespace. Existing canonical PKI state and exchange
+history must not be moved merely to adopt this layout. `pki-exchange/` is the
+controller/transport workspace. Its `pki-transfer/` sibling holds reviewed
+payload-only media stages, including the response source consumed by controller
+response check.
 
 ```text
 ~/.config/platform-infrastructure/
@@ -154,6 +171,12 @@ must not be moved merely to adopt this layout.
 │       ├── identity
 │       ├── identity.pub
 │       └── known_hosts
+├── pki-transfer/
+│   ├── request/
+│   ├── approval/
+│   ├── signer-input/
+│   ├── response/
+│   └── outcome/
 └── pki-exchange/
     ├── intake/
     ├── gitlab-downloads/
@@ -172,9 +195,20 @@ must not be moved merely to adopt this layout.
         └── outcome/
 ```
 
+The signer host separately keeps authoritative state at
+`~/.config/platform-infrastructure/pki/`. A transfer-only host does not copy or
+create that signer tree merely to match this layout.
+
 Set a restrictive umask and create every intermediate protected directory
 explicitly. Creating only a deep leaf can leave an intermediate parent at the
 process default mode.
+
+**Actor:** Transfer-station administrator. **Run on:** Online transfer station.
+**Prerequisite:** Reviewed current user, service, and canonical XDG namespace.
+**Output/provenance:** Exact owner-only online directory skeleton. **Idempotent
+retry/result:** `install -d` preserves exact directories and modes them `0700`;
+stop on a conflicting non-directory or ownership. **Next actor:** GitLab/SSH
+setup administrator.
 
 ```bash
 umask 077
@@ -191,6 +225,12 @@ install -d -m 0700 -- \
   "$PI/infra/pki-exchange/gitlab" \
   "$PI/infra/pki-exchange/ssh" \
   "$PI/infra/pki-exchange/ssh/$SERVICE" \
+  "$PI/pki-transfer" \
+  "$PI/pki-transfer/request" \
+  "$PI/pki-transfer/approval" \
+  "$PI/pki-transfer/signer-input" \
+  "$PI/pki-transfer/response" \
+  "$PI/pki-transfer/outcome" \
   "$PI/pki-exchange" \
   "$PI/pki-exchange/intake" \
   "$PI/pki-exchange/gitlab-downloads" \
@@ -204,9 +244,13 @@ install -d -m 0700 -- \
 
 Directories are current-user-owned mode `0700`. Protected files are singly
 linked regular files with mode `0400` or `0600`, except a reviewed CA bundle may
-also be mode `0644`. Download destinations include `stage-manifest`; copy only
-the exact payload allowlist into a separate `intake` directory before a direct
-push.
+also be mode `0644`. Download destinations include `stage-manifest`; materialize
+only the exact payload allowlist into the separate `pki-transfer` stage with the
+canonical
+[No-Clobber Materialization](registry-host-local-pki-workflow.md#canonical-no-clobber-materialization)
+procedure. Do not use an overwrite-capable copy or `install` loop. Raw target
+request/evidence pulls remain in `pki-exchange/intake` because their controller
+intake commands authenticate and publish them from there.
 
 Map the abstract workflow paths to this namespace consistently:
 
@@ -217,22 +261,38 @@ Map the abstract workflow paths to this namespace consistently:
 | Authenticated request source | `$PI/pki-exchange/<service>/<request-id>/request` |
 | Frozen request trust | `$PI/pki-exchange/<service>/<request-id>/trust` |
 | GitLab package download | `$PI/pki-exchange/gitlab-downloads/<stage>/<full-version>` |
-| Payload-only response push | `$PI/pki-exchange/intake/response-<request-id>` |
+| Approver request staging | `$PI/pki-transfer/request/<request-id>` |
+| Approval attempt staging | `$PI/pki-transfer/approval/<request-id>-<approval-sha256>` |
+| Signer input staging | `$PI/pki-transfer/signer-input/<request-id>-<approval-sha256>` |
+| Response-check and response-push source | `$PI/pki-transfer/response/<request-id>` |
 | Raw direct evidence pull | `$PI/pki-exchange/intake/evidence-<deployment-sha256>` |
 | Authenticated evidence source | `$PI/pki-exchange/<service>/<request-id>/evidence/<deployment-sha256>` |
-| Payload-only outcome push | `$PI/pki-exchange/intake/outcome-<outcome-sha256>` |
+| Payload-only outcome push | `$PI/pki-transfer/outcome/<request-id>-<outcome-sha256>` |
 | External publication lock | `$PI/pki-exchange/locks/<reviewed-coordinate>` |
 
 In containerized Ansible commands, mount the host exchange root as
 `/platform-pki-exchange`; values such as `REQUEST_DIR` and `EVIDENCE_DIR` use
-that container path. `/outside-git` and `/secure` in the lifecycle examples are
-generic protected-host paths, not additional required top-level directories.
+that container path. The development wrapper mounts the complete
+`platform-infrastructure` namespace read-only at
+`/tmp/platform-home/.config/platform-infrastructure`, so response check uses
+`/tmp/platform-home/.config/platform-infrastructure/pki-transfer/response/<request-id>`.
+The response source must be an exact six-file protected directory that neither
+contains nor is contained by the controller exchange root. A transport download
+may remain under the exchange root, but it is never the response-check or direct
+push source.
 
 ## GitLab CA
 
 Use the public CA certificate that authenticates the GitLab HTTPS certificate.
 Do not generate a new CA for the helper. For an internal PKI, copy or directly
 reference its reviewed public root CA:
+
+**Actor:** GitLab transport administrator. **Run on:** Online transfer station.
+**Prerequisite:** Independently reviewed public GitLab trust anchor and absent
+destination. **Output/provenance:** Exact CA bytes copied from the reviewed trust
+source. **Idempotent retry/result:** The explicit absence check refuses overwrite;
+reauthenticate an existing file instead of replacing it. **Next actor:** SSH
+endpoint administrator.
 
 ```bash
 test ! -e "$PI/config/pki-exchange/gitlab/ca.pem"
@@ -249,6 +309,13 @@ CA trust anchor. A root CA private key never enters GitLab, a runner, or a targe
 Do not reuse an Ansible administrator, cloud-init, Git, or personal SSH identity.
 Generate a dedicated noninteractive Ed25519 identity directly at its final path
 with `platform-tools`:
+
+**Actor:** SSH endpoint administrator. **Run on:** Online transfer station.
+**Prerequisite:** Protected final parent and approved noninteractive custody.
+**Output/provenance:** Dedicated keypair and printed public key from
+`platform-ssh-init`; private key stays at the named path. **Idempotent
+retry/result:** Follow helper conflict handling; never replace an enrolled key as
+a retry. **Next actor:** Trusted host-key reviewer.
 
 ```bash
 platform-ssh-init \
@@ -275,10 +342,23 @@ record. For port 22, its host token exactly matches the endpoint host:
 
 Write the reviewed record with mode `0600`, then confirm its fingerprint:
 
+**Actor:** Trusted host-key reviewer. **Run on:** Online transfer station after
+independent console/channel comparison. **Prerequisite:** Exact one-record
+`known_hosts` file. **Output/provenance:** OpenSSH `SHA256:<base64>` display
+fingerprint from the stored public key blob. **Idempotent retry/result:** Read-only
+and repeatable; any mismatch blocks endpoint setup. **Next actor:** Endpoint
+record administrator.
+
 ```bash
 ssh-keygen -E sha256 -lf \
   "$PI/infra/pki-exchange/ssh/$SERVICE/known_hosts"
 ```
+
+Store that OpenSSH display fingerprint in endpoint field
+`expected_host_key_sha256`. Later, direct `request-pull` reports the lowercase
+hexadecimal SHA-256 of the same binary key blob as
+`transport_host_key_sha256`; carry the reported value forward rather than
+converting or manually hashing the display fingerprint.
 
 ## Endpoint Record
 
@@ -353,6 +433,13 @@ Use the focused entry point for initial setup or upgrades. Check mode predicts a
 missing endpoint and account hierarchy without enabling access; apply installs
 them, and a second check verifies idempotency:
 
+**Actor:** Lifecycle/access administrator. **Run on:** Ansible controller and one
+exact target. **Prerequisite:** Reviewed private public-key reference and access
+state. **Output/provenance:** Syntax result, converged restricted endpoint, and
+idempotency check from Ansible. **Idempotent retry/result:** Exact state is a
+no-op; unmanaged or unsafe identity/facade state fails closed. **Next actor:**
+Canonical workflow Bootstrap stage.
+
 ```bash
 make syntax ENV=dev PLAYBOOK=playbooks/registry-pki-exchange-access.yml
 make registry-pki-exchange-access ENV=dev LIMIT=registry-example
@@ -369,15 +456,14 @@ a broad Ansible administrator key for the restricted exchange identity.
 ## Offline Layout
 
 Keep offline command inputs separate from online receipts, manifests, package
-metadata, tokens, and endpoint records:
+metadata, tokens, and endpoint records. Follow the `platform-tools`
+[Offline PKI Workspace](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-offline-workspace.md)
+initializer contract; do not guess undocumented flags or create placeholder key
+files.
 
 ```text
 ~/.config/platform-pki-offline/<service>/
-├── offline-approver
-├── offline-approver.pub
-├── offline-response
-├── offline-response.pub
-├── transactions/
+├── README.md
 ├── media-in/
 │   ├── request/
 │   ├── signer-input/
@@ -389,16 +475,23 @@ metadata, tokens, and endpoint records:
     └── outcome/
 ```
 
-The offline root and every staging directory are mode `0700`; private keys and
-payload files are mode `0600`. Preserve existing keys, replay state, and
-transactions. Direct mode no longer writes new packages to a legacy
-controller-local outcome ingress, but historical ingress must remain until an
-explicit retention decision authorizes removal.
+The offline root and every staging directory are mode `0700`; its fixed README
+and payload files are mode `0600`. This workspace owns media custody and work
+only. It creates and owns no private keys, public keys, or secret placeholders.
+Approval and response key paths remain explicit operator inputs outside this
+tree. The workspace must not claim signer transactions, replay state,
+candidates, responses, outcomes, or accepted history. Preserve that
+authoritative state under `~/.config/platform-infrastructure/pki/`. Direct mode
+no longer writes new packages to a legacy controller-local outcome ingress, but
+historical ingress must remain until an explicit retention decision authorizes
+removal.
 
 If signer state and transfer credentials reside on the same networked host, the
 directories provide logical separation only. A genuinely offline signer keeps
-canonical `platform-pki` state, approval keys, response keys, and media workspaces
-on a disconnected host or encrypted removable storage.
+canonical `~/.config/platform-infrastructure/pki/` state, explicit external
+approval/response keys, and the separate offline media/work workspace on a
+disconnected host or encrypted removable storage. The workspace never becomes a
+second signer namespace.
 
 ## Optional GitLab Runner
 
@@ -406,8 +499,9 @@ A GitLab job executes on a runner, not on the GitLab server. A CI publisher uses
 a dedicated protected runner locked to the exchange project. It receives exact
 payloads through a reviewed ingress, receives the dedicated publisher project
 token only as a protected masked file variable, and serializes each coordinate
-with a `resource_group`. It receives no Ansible inventory, target SSH identity,
-signer key, CA private key, or target network access.
+with the exact-coordinate `resource_group` defined above. It receives no Ansible
+inventory, target SSH identity, signer key, CA private key, or target network
+access.
 
 Do not use ordinary CI artifacts as an undocumented second package transport. A
 remote runner needs a separately reviewed ingress and egress. A dedicated runner

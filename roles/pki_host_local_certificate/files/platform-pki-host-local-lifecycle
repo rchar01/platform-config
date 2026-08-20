@@ -1089,7 +1089,7 @@ def validate_response_files(files: Mapping[str, bytes], pending: Mapping[str, ob
         serial != response["serial"] or (response_before, response_after) != (not_before, not_after)
         or not_before > current + 300 or current >= not_after
         or not_after - current < args.minimum_remaining_lifetime_seconds
-        or created is None or created < not_before or created > current + 300 or created > not_after
+        or created is None or created < not_before - 300 or created > current + 300 or created > not_after
     ):
         fail("certificate validity or signed metadata is invalid")
     return {
@@ -5519,6 +5519,8 @@ def validate_evidence(
 def status(args) -> None:
     state, lock = common_open(args, shared=True)
     try:
+        if args.outcome_sha256 is not None:
+            require_digest(args.outcome_sha256, "outcome_sha256")
         entries = state_entries(state)
         validate_outcome_history_layout(state, args)
         trust, _policy = load_trust(state, args.trust_id, args.target)
@@ -5556,6 +5558,8 @@ def status(args) -> None:
         if pointer_data is None:
             if "outcomes" in entries:
                 fail("signer outcome history exists without an accepted pointer")
+            if args.outcome_sha256 is not None:
+                fail("exact accepted signer outcome is absent")
         else:
             pointer = parse_record(
                 pointer_data, ACCEPTED_OUTCOME_FIELDS, "accepted signer outcome pointer"
@@ -5596,6 +5600,11 @@ def status(args) -> None:
                 != authenticated_outcome["resulting_active_request_id"]
             ):
                 fail("accepted signer outcome pointer does not bind authenticated history")
+            if (
+                args.outcome_sha256 is not None
+                and pointer["outcome_sha256"] != args.outcome_sha256
+            ):
+                fail("accepted signer outcome differs from the exact requested coordinate")
             accepted = pointer
             if args.controller_evidence_exported and args.deployment_sha256 != pointer["deployment_sha256"]:
                 fail("controller evidence coordinate conflicts with accepted signer outcome")
@@ -5934,6 +5943,7 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--minimum-remaining-lifetime-seconds", type=int, default=1)
     status_parser.add_argument("--controller-evidence-exported", action="store_true", help="controller-proven exact target evidence export flag")
     status_parser.add_argument("--deployment-sha256")
+    status_parser.add_argument("--outcome-sha256")
     status_parser.set_defaults(function=status)
 
     paths = commands.add_parser("active-paths", help="authenticate active state and emit only exact Zot paths and digests")
@@ -5951,7 +5961,7 @@ def validate_arguments(args) -> None:
         require_digest(args.request_sha256, "request digest")
     if hasattr(args, "deployment_sha256") and args.deployment_sha256 is not None:
         require_digest(args.deployment_sha256, "deployment digest")
-    if hasattr(args, "outcome_sha256"):
+    if hasattr(args, "outcome_sha256") and args.outcome_sha256 is not None:
         require_digest(args.outcome_sha256, "outcome digest")
     if hasattr(args, "outcome_dir"):
         args.outcome_dir = canonical_path(args.outcome_dir, "signer outcome directory")

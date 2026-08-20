@@ -194,6 +194,48 @@ class LifecycleCase:
             (ingress / name).chmod(0o600)
         return ingress
 
+    def set_response_created_epoch(self, created_epoch: int) -> None:
+        source = self.root / "response-source"
+        response_path = source / "response"
+        response_values = dict(
+            line.split("=", 1)
+            for line in response_path.read_text(encoding="ascii").splitlines()
+        )
+        response_values["created_epoch"] = str(created_epoch)
+        response_bytes = record(self.module.RESPONSE_FIELDS, response_values)
+        private_file(response_path, response_bytes)
+        response_signature = source / "response.sig"
+        response_signature.unlink()
+        self.runner.run(
+            [
+                "ssh-keygen",
+                "-Y",
+                "sign",
+                "-f",
+                self.signing_key,
+                "-n",
+                self.module.RESPONSE_NAMESPACE,
+                response_path,
+            ]
+        ).assert_success()
+        response_signature.chmod(0o600)
+
+        artifact_path = source / "artifact"
+        artifact_values = dict(
+            line.split("=", 1)
+            for line in artifact_path.read_text(encoding="ascii").splitlines()
+        )
+        artifact_values["source_response_sha256"] = digest(response_bytes)
+        artifact_values["source_response_signature_sha256"] = digest(
+            response_signature
+        )
+        artifact_values["created_epoch"] = str(created_epoch)
+        private_file(
+            artifact_path,
+            record(self.module.ARTIFACT_FIELDS, artifact_values),
+        )
+        self.artifact_sha256 = digest(artifact_path)
+
     def expire_request(self) -> None:
         request_path = self.pending / "request"
         values = dict(
@@ -995,6 +1037,32 @@ def test_finalized_outcome_import_is_checkable_idempotent_and_completes_status(
     assert status["evidence_state"] == "controller-exported"
     assert status["renewal_eligible"] is False
     assert status["required_action"] == "none"
+
+
+def test_status_exact_outcome_match_and_mismatch_are_read_only(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    _activated, finished, _observation = activate_and_finish(lifecycle_case)
+    package, outcome_sha = lifecycle_case.outcome_package(
+        Path(finished["evidence_path"])
+    )
+    lifecycle_case.import_outcome(
+        package, outcome_sha, finished["deployment_sha256"]
+    ).assert_success()
+
+    before_match = tree_snapshot(lifecycle_case.state)
+    matched = result_json(
+        lifecycle_case.status("--outcome-sha256", outcome_sha)
+    )
+    assert matched["status"] == "complete"
+    assert matched["signer_outcome_state"] == "finalized"
+    assert tree_snapshot(lifecycle_case.state) == before_match
+
+    before_mismatch = tree_snapshot(lifecycle_case.state)
+    mismatch = lifecycle_case.status("--outcome-sha256", "f" * 64)
+    assert_failure(mismatch)
+    assert "differs from the exact requested coordinate" in mismatch.stderr
+    assert tree_snapshot(lifecycle_case.state) == before_mismatch
 
 
 @pytest.mark.parametrize("alteration", ("malformed", "conflicting"))
@@ -2018,6 +2086,45 @@ def test_response_install_publishes_exact_version_and_requires_local_key_match(
         assert path.stat().st_nlink == 1
     assert (version / "tls.key").read_bytes() == lifecycle_case.pending.joinpath("tls.key").read_bytes()
     assert not (lifecycle_case.versions_root / f".ingress-{REQUEST_ID}").exists()
+
+
+@pytest.mark.parametrize(
+    ("created_offset", "accepted"),
+    ((-300, True), (-301, False)),
+)
+def test_response_install_allows_only_bounded_creation_before_validity(
+    lifecycle_case: LifecycleCase,
+    created_offset: int,
+    accepted: bool,
+) -> None:
+    response = dict(
+        line.split("=", 1)
+        for line in (
+            lifecycle_case.root / "response-source/response"
+        ).read_text(encoding="ascii").splitlines()
+    )
+    lifecycle_case.set_response_created_epoch(
+        int(response["not_before_epoch"]) + created_offset
+    )
+    lifecycle_case.prepare_response()
+
+    result = lifecycle_case.install_response()
+    if accepted:
+        assert result_json(result)["status"] == "installed"
+    else:
+        assert_failure(result)
+        assert "certificate validity or signed metadata is invalid" in result.stderr
+
+
+def test_response_install_rejects_future_creation_metadata(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.set_response_created_epoch(int(time.time()) + 600)
+    lifecycle_case.prepare_response()
+
+    result = lifecycle_case.install_response()
+    assert_failure(result)
+    assert "certificate validity or signed metadata is invalid" in result.stderr
 
 
 def test_response_and_activation_check_modes_are_read_only(

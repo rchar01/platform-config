@@ -31,9 +31,17 @@
       - pki_host_local_certificate_request_ttl_seconds == 0
       - pki_host_local_certificate_activation_action == 'finalize'
       - pki_host_local_certificate_activation_result == 'activated'
-      - pki_host_local_certificate_interactive_confirmation is sameas true
+      - pki_host_local_certificate_interactive_confirmation is boolean
+      - pki_host_local_certificate_unattended_authorized is boolean
+      - >-
+        (pki_host_local_certificate_interactive_confirmation is sameas true
+        and pki_host_local_certificate_unattended_authorized is sameas false)
+        or
+        (pki_host_local_certificate_interactive_confirmation is sameas false
+        and pki_host_local_certificate_unattended_authorized is sameas true
+        and pki_host_local_certificate_exchange_mode == 'direct')
       - pki_host_local_certificate_deployment_sha256 | length == 0
-    fail_msg: Activation requires one target, one distinct reviewed runner, and exact immutable bindings.
+    fail_msg: Activation requires one explicit interactive or direct unattended authorization contract.
 - name: Load host-local certificate lifecycle helper preflight
   ansible.builtin.import_tasks: lifecycle_helper.yml
 
@@ -297,7 +305,9 @@
       {{ pki_host_local_certificate_request_id }}
       {{ pki_host_local_certificate_artifact_manifest_sha256 }}
   register: pki_host_local_certificate_activation_confirmation
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - pki_host_local_certificate_interactive_confirmation
 
 - name: Require exact host-local certificate activation confirmation
   ansible.builtin.assert:
@@ -308,7 +318,9 @@
            ~ pki_host_local_certificate_request_id ~ ' '
            ~ pki_host_local_certificate_artifact_manifest_sha256
     fail_msg: Exact interactive activation confirmation did not match.
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - pki_host_local_certificate_interactive_confirmation
 
 - name: Activate, validate, and finalize exact host-local certificate
   when: not ansible_check_mode

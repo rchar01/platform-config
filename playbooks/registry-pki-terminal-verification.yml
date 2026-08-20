@@ -1,0 +1,10 @@
+---
+- name: Verify one terminal host-local registry certificate outcome
+  hosts: registry
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run structurally fixed terminal registry certificate boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: terminal_verification

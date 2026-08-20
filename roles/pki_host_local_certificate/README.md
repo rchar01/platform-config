@@ -12,6 +12,9 @@ Use only these structural playbooks:
   `pki_host_local_validation_material` role to provision the reviewed CA and
   validation boundary on one exact target and one distinct runner. The
   certificate lifecycle role does not import that prerequisite role.
+- `registry-pki-bootstrap-readiness.yml` runs request-helper, lifecycle,
+  validator, topology, and installed validation-material checks in fixed
+  non-mutating check mode without creating a request or invoking transport.
 - `registry-pki-trust.yml` bootstraps the exact reviewed five-file target trust.
 - `registry-pki-request.yml` creates or validates a target-local request. Direct
   mode exposes only the three public files through the fixed SSH facade;
@@ -27,11 +30,16 @@ Use only these structural playbooks:
 - `registry-pki-status.yml` reads and strictly validates lifecycle status.
 - `registry-pki-response-check.yml` authenticates one exact external signer
   response entirely on the controller and publishes its immutable controller
-  snapshot. It does not contact Zot or mutate the target.
+  snapshot. Its protected exact six-file source must neither be inside nor
+  contain `pki_host_local_certificate_controller_exchange_root`; a transport
+  download beneath that root must first be materialized outside it. Response
+  check does not contact Zot or mutate the target.
 - `registry-pki-activate.yml` prepares and installs the response, shows the
-  exact activation candidate, requires an exact interactive confirmation,
-  activates locally, validates Zot from one distinct reviewed runner, and
-  publishes signed target evidence.
+  exact activation candidate, activates locally, validates Zot from one distinct
+  reviewed runner, and publishes signed target evidence. The normal Make target
+  requires exact interactive confirmation; the explicit direct-only
+  `registry-pki-activate-unattended` target skips only that pause while preserving
+  all authentication, validation, and rollback boundaries.
 - `registry-pki-recover.yml` explicitly performs only the recovery encoded by
   the lifecycle journal and then reads status.
 - `registry-pki-evidence-export.yml` reports exact direct retrieval coordinates,
@@ -43,11 +51,18 @@ Use only these structural playbooks:
 - `registry-pki-outcome-import.yml` imports one exact terminal signer package
   already staged in the fixed target spool. Compatibility mode retains the
   original controller transfer action.
+- `registry-pki-terminal-verification.yml` authenticates exact request,
+  artifact, deployment, outcome, service, target, and runner coordinates,
+  requires finalized complete status, and repeats the fresh runner decision
+  preflight without a prompt or transport.
 
-Trust, request, expired-request abandonment, activation, and recovery remain
-explicit operator actions. Request lifetime defaults to 3600 seconds and may be
-overridden for one invocation with `REQUEST_TTL_SECONDS`, up to the schema-2
-policy maximum of 604800 seconds.
+Trust, request, expired-request abandonment, and recovery remain explicit
+operator actions. Activation is interactive by default and unattended only
+through the separate digest-pinned Make target. A lone
+`pki_host_local_certificate_interactive_confirmation=false` override is not
+authorization. Request lifetime defaults to
+3600 seconds and may be overridden for one invocation with
+`REQUEST_TTL_SECONDS`, up to the schema-2 policy maximum of 604800 seconds.
 
 Migration requests bind the canonical first leaf certificate from the current
 Zot certificate file. Zot may serve a concatenated fullchain, but the digest in
@@ -215,9 +230,17 @@ operator must then type exactly:
 activate SERVICE REQUEST_ID ARTIFACT_SHA256
 ```
 
-There is no noninteractive override. After local activation, the runner emits
-one canonical public observation. Only those bytes are copied under the
-root-owned mode-`0700` `/run/platform-pki-host-local/` directory as
+Normal and controller-local activation remain interactive. The explicit
+`registry-pki-activate-unattended` Make target is direct-only and skips only the
+typed pause; candidate authentication, local activation, separate-runner
+validation, and journal-bound rollback are unchanged. The activation contract
+accepts exactly interactive confirmation with unattended authorization false,
+or direct noninteractive execution with
+`pki_host_local_certificate_unattended_authorized=true`; all other combinations
+fail. Make routes append both booleans after caller `EXTRA_ARGS`, so caller flags
+cannot change the selected route. After local activation,
+the runner emits one canonical public observation. Only those bytes are copied
+under the root-owned mode-`0700` `/run/platform-pki-host-local/` directory as
 `REQUEST_ID.observation` with mode `0600`; the file is removed in `always`. Any
 ordinary failure after `activate-start` dispatches
 the helper's exact `recover` action, and recovery failure is not ignored.
@@ -225,6 +248,10 @@ the helper's exact `recover` action, and recovery failure is not ignored.
 In Ansible check mode activation runs helper `--check` preflights only. It does
 not transfer a response, prompt, restart Zot, invoke the network validator, copy
 an observation, or clean up target state.
+
+The actor-labeled lifecycle, two external gates, transport stages, argument
+provenance, and fixed cleanup contract are canonical in
+[Host-Local Registry PKI Workflow](../../docs/registry-host-local-pki-workflow.md).
 
 Zot must reference the immutable version files under
 `/etc/zot/tls-versions/REQUEST_ID/`. Its certificate path is

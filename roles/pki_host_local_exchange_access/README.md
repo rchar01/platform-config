@@ -43,3 +43,13 @@ focused access playbook and normal enabled registry convergence call that role's
 fixed lifecycle-helper and exchange-endpoint task files before enabling access;
 they do not create a request or change certificate state. Direct use of this
 access role still fails closed when the facade is absent or unsafe.
+
+Direct access is temporary transport capability, not PKI or lifecycle authority.
+The canonical workflow enables it only around the Request, Activate/Evidence,
+and Complete online stages and requires fixed-absent revocation with `always`
+semantics after success, failure, interruption, or an external-gate wait. Use
+`make registry-pki-exchange-access-revoke ENV=<environment> LIMIT=<target>`; its
+structurally fixed playbook forces absent state after caller extra arguments, and
+exact absence is idempotent. Do not invent another cleanup helper or use broad
+extra variables with the ordinary access-enablement target. See
+[Host-Local Registry PKI Workflow](../../docs/registry-host-local-pki-workflow.md#fixed-cleanup).

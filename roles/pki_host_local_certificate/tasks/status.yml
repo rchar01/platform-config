@@ -18,6 +18,12 @@
       - >-
         pki_host_local_certificate_deployment_sha256 | length == 0
         or pki_host_local_certificate_artifact_manifest_sha256 is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_outcome_sha256 | length == 0
+        or pki_host_local_certificate_outcome_sha256 is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_outcome_sha256 | length == 0
+        or pki_host_local_certificate_deployment_sha256 is match('^[0-9a-f]{64}$')
     fail_msg: Status requires exact read-only lifecycle and optional controller evidence bindings.
 
 - name: Load host-local certificate lifecycle helper preflight
@@ -86,6 +92,11 @@
             '--deployment-sha256', pki_host_local_certificate_deployment_sha256
           ]
           if pki_host_local_certificate_deployment_sha256 | length > 0
+          else []
+        )
+        + (
+          ['--outcome-sha256', pki_host_local_certificate_outcome_sha256]
+          if pki_host_local_certificate_outcome_sha256 | length > 0
           else []
         )
       }}

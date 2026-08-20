@@ -52,81 +52,23 @@ action instead. `platform-pki gitlab-package publish` validates the
 result, creates `stage-manifest`, and publishes one exact Generic Package
 coordinate. See [GitLab PKI Package Exchange](pki-gitlab-package.md).
 
-Place an externally produced response in one protected transfer-station directory
-containing exactly `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`,
-`response`, and `response.sig`. Response check authenticates and immutably
-publishes that response entirely on the controller; it does not contact Zot or
-mutate the target. Default direct mode then requires an exact `response-push` to
-the fixed target ingress; activation never moves package bytes through Ansible.
-The explicit `controller-local` target retains the old Ansible ingress path.
-Activation requires the operator to type
-`activate SERVICE REQUEST_ID ARTIFACT_SHA256`, updates Zot transactionally, and
-validates strict HTTPS `GET /v2/` behavior from exactly one distinct reviewed
-runner. Explicit recovery acts only on a journal-bound interrupted transaction.
+Place an externally produced response in one protected exact six-file
+transfer-station directory containing `artifact`, `tls.crt`, `ca-chain.crt`,
+`fullchain.crt`, `response`, and `response.sig`. The source must neither be
+inside nor contain the controller exchange root. Response check authenticates
+and immutably publishes it entirely on the controller; it does not contact Zot
+or mutate the target. Default direct mode then requires an exact
+`response-push`; activation never moves package bytes through Ansible. The
+explicit `controller-local` target retains the old Ansible ingress path.
 
-Use these Make entry points with one exact registry `LIMIT` and carry the exact
-request, artifact, and deployment coordinates returned by each phase:
-
-```bash
-make registry-pki-validation-material ENV=dev LIMIT=registry-example \
-  RUNNER_LIMIT=registry-validator-example
-make registry-pki-request ENV=dev LIMIT=registry-example
-platform-pki direct-exchange request-pull \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  /outside-git/pki-exchange/intake/request-<request-id>
-PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
-make registry-pki-request-intake ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> REQUEST_SHA256=<request-sha256> \
-  CSR_SHA256=<csr-sha256> CSR_SPKI_SHA256=<csr-spki-sha256> \
-  TRANSPORT_HOST_KEY_SHA256=<transport-host-key-sha256> \
-  REQUEST_DIR=/platform-pki-exchange/intake/request-<request-id>
-make registry-pki-request ENV=dev LIMIT=registry-example \
-  REQUEST_TTL_SECONDS=604800
-make registry-pki-abandon-expired-request ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<expired-request-id>
-make registry-pki-cancel-request ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> REQUEST_SHA256=<request-sha256>
-make registry-pki-status ENV=dev LIMIT=registry-example
-make registry-pki-response-check ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  RESPONSE_DIR=/outside-git/protected-response
-platform-pki direct-exchange response-push \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  <artifact-sha256> /outside-git/protected-response
-make registry-pki-activate ENV=dev LIMIT=registry-example \
-  RUNNER_LIMIT=registry-validator-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
-make registry-pki-publish-rolled-back-evidence ENV=dev \
-  LIMIT=registry-example RUNNER_LIMIT=registry-validator-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
-make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256>
-platform-pki direct-exchange evidence-pull \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  <artifact-sha256> <deployment-sha256> \
-  /outside-git/pki-exchange/intake/evidence-<deployment-sha256>
-PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
-make registry-pki-evidence-intake ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256> \
-  EVIDENCE_DIR=/platform-pki-exchange/intake/evidence-<deployment-sha256>
-make registry-pki-status ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256>
-make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
-  RUNNER_LIMIT=registry-validator-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256>
-platform-pki direct-exchange outcome-push \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  <artifact-sha256> <deployment-sha256> <outcome-sha256> \
-  /outside-git/pki-exchange/intake/outcome-<outcome-sha256>
-make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256> \
-  OUTCOME_SHA256=<outcome-sha256>
-```
+Normal and controller-local activation require the operator to type
+`activate SERVICE REQUEST_ID ARTIFACT_SHA256`. The explicit direct-only
+`registry-pki-activate-unattended` target skips only that pause; it preserves
+response authentication, target-local key matching, strict local and
+distinct-runner validation, and journal-bound rollback. Follow the canonical
+[Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for every
+exact command, actor handoff, argument source, retry result, GitLab stage, and
+cleanup boundary. Do not reconstruct a partial sequence from this role reference.
 
 Request lifetime defaults to 3600 seconds. `REQUEST_TTL_SECONDS` is an explicit
 per-invocation override from 1 through the schema-2 policy maximum of 604800;
@@ -157,12 +99,9 @@ certificate lifecycle destination and digest variables. The lifecycle role does
 not import this provisioning role.
 
 Trust bootstrap remains a separate one-time action without a dedicated Make
-wrapper:
-
-```bash
-make apply ENV=dev PLAYBOOK=playbooks/registry-pki-trust.yml \
-  LIMIT=registry-example
-```
+wrapper. Use the exact actor-labeled Bootstrap command in the canonical
+[Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md#bootstrap-stage)
+rather than reconstructing it here.
 
 Trust check mode is non-mutating. Exact installed trust can be revalidated; an
 absent install requires the helper, protected state root and lock, and complete

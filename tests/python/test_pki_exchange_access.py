@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 import yaml
 
+from conftest import CommandRunner
+
 
 REQUEST_ID = "1" * 32
 ARTIFACT = "2" * 64
@@ -306,6 +308,9 @@ def test_access_role_is_fixed_owned_and_fail_closed(repo_root: Path) -> None:
     assert present.index(marker) < present.index(
         task_named(present, "Install fixed host-local PKI exchange sudo policy")
     )
+    assert present.index(marker) < present.index(
+        task_named(present, "Create root-controlled exchange account directories")
+    )
 
 
 def test_absent_role_only_revokes_owned_identity_and_removes_sudo_first(
@@ -326,6 +331,10 @@ def test_absent_role_only_revokes_owned_identity_and_removes_sudo_first(
     assert any("marker_record.gid" in check for check in ownership["that"])
     block = revoke["block"]
     assert block[0]["name"] == "Remove host-local PKI exchange sudo policy first"
+    home = task_named(block, "Remove host-local PKI exchange account home")
+    assert home["when"] == (
+        "pki_host_local_exchange_access_absent_marker_record.state == 'managed'"
+    )
     assert block[-1]["name"] == "Release host-local PKI exchange account ownership"
 
 
@@ -357,6 +366,126 @@ def test_registry_playbooks_order_exchange_access(repo_root: Path) -> None:
     assert tasks[2]["ansible.builtin.include_role"]["name"] == (
         "pki_host_local_exchange_access"
     )
+
+    revoke = yaml.safe_load(
+        (repo_root / "playbooks/registry-pki-exchange-access-revoke.yml").read_text(
+            encoding="utf-8"
+        )
+    )[0]
+    assert revoke["hosts"] == "registry"
+    assert "vars" not in revoke
+    assert revoke["tasks"][0]["ansible.builtin.assert"]["that"] == [
+        "ansible_play_hosts_all == [inventory_hostname]",
+        (
+            "groups.get('registry', []) | select('equalto', inventory_hostname) "
+            "| list | length == 1"
+        ),
+    ]
+    assert revoke["tasks"][1] == {
+        "name": "Run fixed absent host-local PKI exchange access boundary",
+        "ansible.builtin.include_role": {
+            "name": "pki_host_local_exchange_access",
+            "tasks_from": "revoke",
+        },
+    }
+
+    role = repo_root / "roles/pki_host_local_exchange_access/tasks"
+    revoke_entry = yaml.safe_load((role / "revoke.yml").read_text(encoding="utf-8"))
+    assert revoke_entry[:2] == [
+        {
+            "name": "Load fixed host-local PKI exchange access validation",
+            "ansible.builtin.import_tasks": "validate.yml",
+        },
+        {
+            "name": "Revoke fixed host-local PKI exchange access",
+            "ansible.builtin.import_tasks": "absent.yml",
+        },
+    ]
+    assert [task["name"] for task in revoke_entry[2:]] == [
+        "Inspect fixed host-local PKI exchange paths after revocation",
+        "Inspect fixed host-local PKI exchange account after revocation",
+        "Inspect fixed host-local PKI exchange group after revocation",
+        "Require fixed host-local PKI exchange access to be absent",
+    ]
+    postcondition = revoke_entry[-1]["ansible.builtin.assert"]["that"]
+    assert "pki_host_local_exchange_access_revoked_user.rc == 2" in postcondition
+    assert "pki_host_local_exchange_access_revoked_group.rc == 2" in postcondition
+    assert "pki_host_local_exchange_access_state" not in yaml.safe_dump(revoke_entry)
+    assert "pki_host_local_exchange_access_state" not in (
+        role / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "pki_host_local_exchange_access_state" not in (
+        role / "absent.yml"
+    ).read_text(encoding="utf-8")
+    main = yaml.safe_load((role / "main.yml").read_text(encoding="utf-8"))
+    assert main[0] == revoke_entry[0]
+
+
+def test_revoke_make_target_forces_absent_after_caller_arguments(
+    repo_root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("registry-pki-exchange-access-revoke:", 1)[1].split(
+        "\n\n", 1
+    )[0]
+    caller = "$(EXTRA_ARGS)"
+    forced = "-e pki_host_local_exchange_access_state=absent"
+
+    assert "_guard-pki-limit" in target
+    assert "PLAYBOOK=playbooks/registry-pki-exchange-access-revoke.yml" in target
+    assert target.index(caller) < target.index(forced)
+    playbook = yaml.safe_load(
+        (repo_root / "playbooks/registry-pki-exchange-access-revoke.yml").read_text(
+            encoding="utf-8"
+        )
+    )[0]
+    dispatch = playbook["tasks"][1]["ansible.builtin.include_role"]
+    assert dispatch["tasks_from"] == "revoke"
+    assert "pki_host_local_exchange_access_state" not in yaml.safe_dump(playbook)
+    dry_run = command_runner.run(
+        (
+            "make",
+            "-n",
+            "registry-pki-exchange-access-revoke",
+            "ENV=dev",
+            "LIMIT=registry-one.test",
+            "EXTRA_ARGS=-e pki_host_local_exchange_access_state=present",
+        ),
+        cwd=repo_root,
+    ).assert_success()
+    assert "pki_host_local_exchange_access_state=present" in dry_run.stdout
+    assert forced in dry_run.stdout
+    assert dry_run.stdout.index("pki_host_local_exchange_access_state=present") < (
+        dry_run.stdout.rindex("pki_host_local_exchange_access_state=absent")
+    )
+    assert "PLAYBOOK=playbooks/registry-pki-exchange-access-revoke.yml" in (
+        dry_run.stdout
+    )
+
+
+def test_absent_role_is_idempotent_when_managed_marker_is_absent(
+    repo_root: Path,
+) -> None:
+    absent = yaml.safe_load(
+        (
+            repo_root
+            / "roles/pki_host_local_exchange_access/tasks/absent.yml"
+        ).read_text(encoding="utf-8")
+    )
+    mutating_actions = {
+        "ansible.builtin.file",
+        "ansible.builtin.group",
+        "ansible.builtin.user",
+    }
+
+    for task in absent:
+        actions = mutating_actions.intersection(task)
+        if actions:
+            assert "marker.stat.exists" in str(task.get("when", ""))
+        for child in task.get("block", []):
+            if mutating_actions.intersection(child):
+                assert "marker.stat.exists" in str(task.get("when", ""))
 
 
 def test_dispatchers_use_no_shell_or_subprocess(repo_root: Path) -> None:

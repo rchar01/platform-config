@@ -45,8 +45,8 @@ and other secrets belong outside Git.
   first managed runner from itself with the repository container, self-SSH,
   private inventory, storage gates, and focused convergence.
 - [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
-  end-to-end request, offline signing, activation, evidence, terminal outcome,
-  recovery, backup, and local-verification procedure.
+  actor-labeled Bootstrap, Request, Gate 1, Activate/Evidence, Gate 2, Complete,
+  and fixed-cleanup sequence with exact transport and digest provenance.
 - [PKI Exchange Setup](pki-exchange-setup.md): Prepare protected transfer-station
   storage, the GitLab project and credentials, pinned target SSH, offline
   workspaces, and optional CI publication.
@@ -54,7 +54,8 @@ and other secrets belong outside Git.
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.
 - [GitLab PKI Package Exchange](pki-gitlab-package.md): Integration guidance for
-  the `platform-tools` five-family package command and remaining runtime gates.
+  the `platform-tools` five-family package command, actor-neutral coordinates,
+  publication locking, and remaining runtime gates.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
   access configuration, installation, issuer staging validation, smoke tests,
   and reconciliation.

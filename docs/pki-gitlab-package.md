@@ -17,14 +17,25 @@ target SSH preparation, offline storage, and optional runner setup.
 
 Every package name is `pki-exchange-<stage>-<service>`. The caller supplies the
 exact full version; the helper never scans for newest or a neighboring attempt.
+Actor or job names must not be added to package names. They describe custody,
+not authority: consumers authenticate the canonical payload, exact stage,
+detached signatures, frozen trust, and lifecycle coordinates.
 
-| Stage | Exact version | Payload order before `stage-manifest` |
-| --- | --- | --- |
-| `request` | `<request-id>` | `tls.csr`, `request`, `request.sig`, `collection-receipt` |
-| `approval` | `<request-id>-<sha256(approval)>` | `approval`, `approval.sig` |
-| `response` | `<request-id>` | `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, `response.sig` |
-| `evidence` | `<request-id>-<sha256(deployment)>` | `deployment`, `deployment.sig`, `validation-boundary`, `validation-result`, `validation-result.sig` |
-| `outcome` | `<request-id>-<sha256(outcome)>` | `outcome`, `outcome.sig`, `deployment`, `deployment.sig`, `deployers.allowed_signers`, `decision` |
+| Stage | Exact version | Producer or signer | Publisher | Payload order before `stage-manifest` |
+| --- | --- | --- | --- | --- |
+| `request` | `<request-id>` | Target produces request; controller produces receipt | Dedicated GitLab publisher | `tls.csr`, `request`, `request.sig`, `collection-receipt` |
+| `approval` | `<request-id>-<sha256(approval)>` | Offline approver | Dedicated GitLab publisher | `approval`, `approval.sig` |
+| `response` | `<request-id>` | Offline signer | Dedicated GitLab publisher | `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, `response.sig` |
+| `evidence` | `<request-id>-<sha256(deployment)>` | Target and validation runner | Dedicated GitLab publisher | `deployment`, `deployment.sig`, `validation-boundary`, `validation-result`, `validation-result.sig` |
+| `outcome` | `<request-id>-<sha256(outcome)>` | Offline signer | Dedicated GitLab publisher | `outcome`, `outcome.sig`, `deployment`, `deployment.sig`, `deployers.allowed_signers`, `decision` |
+
+The approval suffix comes from `offline-csr approve` JSON field
+`approval_sha256`; the evidence suffix is the successful activation's exact
+deployment-file digest; and the outcome suffix comes from `csr-outcome publish`
+JSON field `manifest_sha256`, which is the exact canonical `outcome` digest.
+Certificate export's `manifest_sha256` is the exact canonical `artifact` digest,
+not a GitLab `stage-manifest` digest. Do not manually infer these values when the
+producer reports them.
 
 Publish source directories contain payload only. The helper validates the exact
 allowlist, builds the canonical `stage-manifest`, and uploads it last. Download
@@ -109,7 +120,25 @@ and credentials without package deletion or settings authority.
 
 ## Publish
 
+Before invoking a publisher, hold an external lock keyed exactly as
+`<project-id>:<stage>:<service>:<full-package-version>`. The operator lock
+procedure must retain exclusive custody through final coordinate reinspection
+and stop on stale or ambiguous ownership; the helper provides no lock command.
+Protected GitLab CI uses:
+
+```yaml
+resource_group: "${CI_PROJECT_ID}:${PKI_STAGE}:${PKI_SERVICE}:${PKI_PACKAGE_VERSION}"
+```
+
 This template publishes one exact approval attempt:
+
+**Actor:** GitLab publisher. **Run on:** Authorized online transfer station or
+protected CI. **Prerequisite:** Exact payload-only source, publisher credential,
+project/CA records, and held exact-coordinate external lock. **Output/provenance:**
+Exact package plus helper-generated `stage-manifest`. **Idempotent retry/result:**
+Matching manifest-absent partial resumes and complete exact package succeeds;
+conflicts are retained. **Next actor:** GitLab retriever named by the canonical
+lifecycle stage.
 
 ```bash
 platform-pki gitlab-package publish \
@@ -150,6 +179,13 @@ applies the same full request validation. New integrations should use generic
 
 This template downloads one exact response coordinate:
 
+**Actor:** GitLab retriever. **Run on:** Authorized online retrieval station.
+**Prerequisite:** Operator-supplied exact coordinate, reader credential, and
+project/CA records. **Output/provenance:** Validated payload plus
+`stage-manifest` at the exact destination. **Idempotent retry/result:** Exact
+existing destination succeeds; conflicts remain untouched and fail. **Next
+actor:** Lifecycle actor named by the canonical workflow.
+
 ```bash
 platform-pki gitlab-package download \
   --stage response \
@@ -176,6 +212,17 @@ Redirects, changed origins, malformed pagination, uncertain HTTP results,
 coordinate mutation, and over-limit responses fail closed. No operation uses
 `DELETE` or fuzzy/newest selection.
 
+Transport downloads may live under the controller exchange root. Before
+response check, `response-push`, or `outcome-push`, materialize only the exact
+payload allowlist into the protected `pki-transfer` sibling using the single
+canonical
+[No-Clobber Materialization](registry-host-local-pki-workflow.md#canonical-no-clobber-materialization)
+procedure. [PKI Exchange Setup](pki-exchange-setup.md#transfer-station-layout)
+defines the immutable request, approval, signer-input, response, and outcome
+destinations. Do not use an overwrite-capable copy or `install` loop. Response
+check rejects a source that contains or is contained by its controller exchange
+root.
+
 ## Remaining Gates
 
 The `platform-tools` `make test-pki-gitlab-package` fake HTTPS tests cover every
@@ -184,7 +231,8 @@ idempotency, conflicts, extras, malformed manifests, download mutation,
 redirects, and token redaction. They do not qualify live GitLab behavior.
 Before production use, still require:
 
-- protected CI `resource_group` serialization for each exact coordinate;
+- protected CI `resource_group` serialization using the exact coordinate shape
+  above, or the equivalent reviewed operator lock;
 - disposable runtime qualification against exact GitLab `18.11.3-ce.0`;
 - reviewed private inventory, trust, credentials, project controls, and token
   scopes;

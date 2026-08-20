@@ -1,0 +1,59 @@
+---
+- name: Revoke restricted registry PKI exchange access
+  hosts: registry
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Require one exact registry target for exchange access revocation
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - groups.get('registry', []) | select('equalto', inventory_hostname) | list | length == 1
+        fail_msg: Exchange access revocation requires one exact registry target.
+
+    - name: Run fixed absent host-local PKI exchange access boundary
+      ansible.builtin.include_role:
+        name: pki_host_local_exchange_access
+        tasks_from: revoke
+
+    - name: Inspect fixed host-local PKI exchange paths after revocation
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /var/lib/platform-config/pki-exchange-operator.managed
+        - /var/lib/platform-config/pki-exchange-operator
+        - /usr/local/libexec/platform-pki-host-local-exchange-ssh-dispatch
+        - /usr/local/libexec/platform-pki-host-local-exchange-root-dispatch
+        - /usr/local/libexec/platform-pki-host-local-exchange-sshd-validate
+        - /etc/sudoers.d/platform-pki-host-local-exchange
+        - /etc/ssh/sshd_config.d/00-platform-pki-host-local-exchange.conf
+      register: registry_pki_exchange_revoked_paths
+
+    - name: Inspect fixed host-local PKI exchange account after revocation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/getent
+          - passwd
+          - exchange-operator
+      register: registry_pki_exchange_revoked_user
+      changed_when: false
+      failed_when: registry_pki_exchange_revoked_user.rc not in [0, 2]
+
+    - name: Inspect fixed host-local PKI exchange group after revocation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/getent
+          - group
+          - exchange-operator
+      register: registry_pki_exchange_revoked_group
+      changed_when: false
+      failed_when: registry_pki_exchange_revoked_group.rc not in [0, 2]
+
+    - name: Require fixed host-local PKI exchange access to be absent
+      ansible.builtin.assert:
+        that:
+          - registry_pki_exchange_revoked_paths.results | selectattr('stat.exists') | list | length == 0
+          - registry_pki_exchange_revoked_user.rc == 2
+          - registry_pki_exchange_revoked_group.rc == 2
+        fail_msg: Fixed host-local PKI exchange access remains after revocation.

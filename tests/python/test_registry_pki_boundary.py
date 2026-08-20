@@ -100,6 +100,7 @@ METADATA_BY_ACTION = {
         "become",
         "delegate_to",
         "register",
+        "when",
     },
     "platform_pki_evidence_collection": {"name", "register", "when"},
     "platform_pki_evidence_intake": {
@@ -133,6 +134,18 @@ METADATA_BY_ACTION = {
     "platform_pki_trust_ingress": {"name", "when"},
 }
 ALLOWED_CONDITIONS = {
+    (
+        "ansible.builtin.stat",
+        "Inspect shipped host-local certificate request helper source",
+    ): "ansible_check_mode",
+    (
+        "ansible.builtin.stat",
+        "Inspect shipped host-local certificate lifecycle helper source",
+    ): "ansible_check_mode or pki_host_local_certificate_helper_read_only",
+    (
+        "ansible.builtin.stat",
+        "Inspect shipped host-local certificate validator helper source",
+    ): "ansible_check_mode or pki_host_local_certificate_helper_read_only",
     (
         "ansible.builtin.assert",
         "Require installed helper for non-mutating request preflight",
@@ -286,11 +299,17 @@ ALLOWED_CONDITIONS = {
     (
         "ansible.builtin.pause",
         "Confirm exact host-local certificate activation mutation",
-    ): "not ansible_check_mode",
+    ): [
+        "not ansible_check_mode",
+        "pki_host_local_certificate_interactive_confirmation",
+    ],
     (
         "ansible.builtin.assert",
         "Require exact host-local certificate activation confirmation",
-    ): "not ansible_check_mode",
+    ): [
+        "not ansible_check_mode",
+        "pki_host_local_certificate_interactive_confirmation",
+    ],
     (
         "ansible.builtin.pause",
         "Wait bounded interval before external Zot validation",
@@ -830,6 +849,7 @@ def _validate_task(task: Any, source: str | Path) -> None:
             f"host-local boundary contains an unexpected conditional in {source}"
         )
     if action == "ansible.builtin.import_tasks" and task[action] not in {
+        "decision_preflight.yml",
         "lifecycle_helper.yml",
         "exchange_helper.yml",
         "status.yml",
@@ -1037,6 +1057,7 @@ def _validate_operator_playbook(
         "pki_host_local_certificate_activation_action": "finalize",
         "pki_host_local_certificate_activation_result": "activated",
         "pki_host_local_certificate_interactive_confirmation": True,
+        "pki_host_local_certificate_unattended_authorized": False,
     }:
         raise BoundaryViolation(
             f"{source} does not pin exact activation-phase values"
@@ -1045,6 +1066,7 @@ def _validate_operator_playbook(
         "pki_host_local_certificate_activation_action": "abandon",
         "pki_host_local_certificate_activation_result": "rolled-back",
         "pki_host_local_certificate_interactive_confirmation": False,
+        "pki_host_local_certificate_unattended_authorized": False,
     }:
         raise BoundaryViolation(
             f"{source} does not pin exact rolled-back evidence values"
@@ -1104,6 +1126,7 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         == "platform-pki-csr-outcome-v1"
     )
     assert defaults["pki_host_local_certificate_helper_read_only"] is False
+    assert defaults["pki_host_local_certificate_unattended_authorized"] is False
     assert (
         defaults["pki_host_local_certificate_lifecycle_helper_path"]
         == "/usr/local/libexec/platform-pki-host-local-lifecycle"
@@ -1135,6 +1158,7 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         "pki_host_local_certificate_pending_root is not search('(^|/)(latest|current)(/|$)')",
         "pki_host_local_certificate_versions_root is not search('(^|/)(latest|current)(/|$)')",
         "pki_host_local_certificate_controller_exchange_root is not search('(^|/)(latest|current)(/|$)')",
+        "pki_host_local_certificate_unattended_authorized is boolean",
     }
     missing = required.difference(common_assertions)
     if missing:
@@ -1169,6 +1193,10 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     operator_playbooks = (
         (repo_root / "playbooks/registry-pki-request.yml", "request"),
         (
+            repo_root / "playbooks/registry-pki-bootstrap-readiness.yml",
+            "bootstrap_readiness",
+        ),
+        (
             repo_root / "playbooks/registry-pki-request-intake.yml",
             "request_intake",
         ),
@@ -1198,6 +1226,10 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         (
             repo_root / "playbooks/registry-pki-decision-preflight.yml",
             "decision_preflight",
+        ),
+        (
+            repo_root / "playbooks/registry-pki-terminal-verification.yml",
+            "terminal_verification",
         ),
     )
     registry = (repo_root / "playbooks/registry.yml").read_text(encoding="utf-8")
@@ -1342,9 +1374,31 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
     if not {
         "pki_host_local_certificate_activation_action == 'finalize'",
         "pki_host_local_certificate_activation_result == 'activated'",
-        "pki_host_local_certificate_interactive_confirmation is sameas true",
+        "pki_host_local_certificate_interactive_confirmation is boolean",
+        "pki_host_local_certificate_unattended_authorized is boolean",
+        (
+            "(pki_host_local_certificate_interactive_confirmation is sameas true "
+            "and pki_host_local_certificate_unattended_authorized is sameas false) "
+            "or (pki_host_local_certificate_interactive_confirmation is sameas false "
+            "and pki_host_local_certificate_unattended_authorized is sameas true "
+            "and pki_host_local_certificate_exchange_mode == 'direct')"
+        ),
     }.issubset(activation_contract):
-        raise BoundaryViolation("activation dispatch is overrideable")
+        raise BoundaryViolation("activation decision is overrideable")
+    activation_confirmation_conditions = [
+        "not ansible_check_mode",
+        "pki_host_local_certificate_interactive_confirmation",
+    ]
+    for task_name in (
+        "Confirm exact host-local certificate activation mutation",
+        "Require exact host-local certificate activation confirmation",
+    ):
+        if _task_named(activation_tasks, task_name).get("when") != (
+            activation_confirmation_conditions
+        ):
+            raise BoundaryViolation(
+                f"{task_name} is not pinned to the interactive activation route"
+            )
     activation_block = _task_named(
         activation_tasks,
         "Activate, validate, and finalize exact host-local certificate",
@@ -1364,6 +1418,7 @@ def assert_registry_pki_boundary(repo_root: Path) -> None:
         "pki_host_local_certificate_activation_action == 'abandon'",
         "pki_host_local_certificate_activation_result == 'rolled-back'",
         "pki_host_local_certificate_interactive_confirmation is sameas false",
+        "pki_host_local_certificate_unattended_authorized is sameas false",
     }.issubset(rolled_back_contract):
         raise BoundaryViolation("rolled-back evidence dispatch is overrideable")
 
@@ -1869,6 +1924,63 @@ def test_registry_pki_make_guards_reject_shell_input_without_execution(
     assert "canonical lowercase registry inventory host" in result.stderr
 
 
+def test_registry_pki_unattended_activation_is_explicit_and_digest_pinned(
+    repo_root: Path,
+) -> None:
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("registry-pki-activate-unattended:", 1)[1].split(
+        "\n\n", 1
+    )[0]
+
+    for contract in (
+        "_guard-pki-env",
+        "_guard-pki-limit",
+        "_guard-pki-request-id",
+        "_guard-pki-artifact",
+        "_guard-pki-runner",
+        "pki_host_local_certificate_exchange_mode=direct",
+        '\"pki_host_local_certificate_interactive_confirmation\":false',
+        '\"pki_host_local_certificate_unattended_authorized\":true',
+        "pki_host_local_certificate_request_id=$(REQUEST_ID)",
+        "pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256)",
+        "pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)",
+    ):
+        assert contract in target
+
+    for target_name in (
+        "registry-pki-activate:",
+        "registry-pki-activate-controller-local:",
+    ):
+        interactive_target = makefile.split(target_name, 1)[1].split("\n\n", 1)[0]
+        assert (
+            "$(EXTRA_ARGS) -e pki_host_local_certificate_exchange_mode="
+            in interactive_target
+        )
+        assert (
+            '\"pki_host_local_certificate_interactive_confirmation\":true'
+            in interactive_target
+        )
+        assert (
+            '\"pki_host_local_certificate_unattended_authorized\":false'
+            in interactive_target
+        )
+        for forced_value in (
+            "pki_host_local_certificate_exchange_mode=",
+            '\"pki_host_local_certificate_interactive_confirmation\":true',
+            '\"pki_host_local_certificate_unattended_authorized\":false',
+        ):
+            assert interactive_target.index(
+                "$(EXTRA_ARGS)"
+            ) < interactive_target.index(forced_value)
+
+    assert target.index("$(EXTRA_ARGS)") < target.index(
+        '\"pki_host_local_certificate_interactive_confirmation\":false'
+    )
+    assert target.index("$(EXTRA_ARGS)") < target.index(
+        '\"pki_host_local_certificate_unattended_authorized\":true'
+    )
+
+
 def test_registry_pki_wrapper_rejects_shell_env_without_execution(
     repo_root: Path,
     isolated_test_dir: Path,
@@ -2223,7 +2335,7 @@ def test_registry_pki_check_mode_boundaries(
             "ansible-playbook",
             "--check",
             "-i",
-            "localhost,",
+            str(repo_root / "tests/fixtures/registry-pki-boundary/inventory.yml"),
             str(repo_root / "tests/fixtures/registry-pki-boundary/integration.yml"),
         ],
         timeout=120,

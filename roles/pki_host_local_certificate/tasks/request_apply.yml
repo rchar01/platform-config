@@ -29,10 +29,23 @@
     mode: "0755"
   when: not pki_host_local_certificate_helper_directory.stat.exists
 
+- name: Inspect shipped host-local certificate request helper source
+  ansible.builtin.stat:
+    path: "{{ role_path }}/files/platform-pki-host-local-request"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: pki_host_local_certificate_request_helper_source
+  when: ansible_check_mode
+
 - name: Inspect installed host-local certificate request helper
   ansible.builtin.stat:
     path: "{{ pki_host_local_certificate_request_helper_path }}"
     follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
   register: pki_host_local_certificate_installed_helper
 
 - name: Require installed helper for non-mutating request preflight
@@ -44,7 +57,14 @@
       - pki_host_local_certificate_installed_helper.stat.uid == 0
       - pki_host_local_certificate_installed_helper.stat.gid == 0
       - pki_host_local_certificate_installed_helper.stat.mode == '0755'
-    fail_msg: Install the reviewed request helper before using check mode.
+      - pki_host_local_certificate_request_helper_source.stat.exists
+      - pki_host_local_certificate_request_helper_source.stat.isreg
+      - not pki_host_local_certificate_request_helper_source.stat.islnk
+      - pki_host_local_certificate_request_helper_source.stat.checksum is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_installed_helper.stat.checksum
+        == pki_host_local_certificate_request_helper_source.stat.checksum
+    fail_msg: Read-only request preflight requires the exact shipped helper.
   when: ansible_check_mode
 
 - name: Install host-local certificate request helper

@@ -447,6 +447,7 @@ write_vars() {
       pki_host_local_certificate_pending_root: $pending_root,
       pki_host_local_certificate_versions_root: $versions_root,
       pki_host_local_certificate_controller_exchange_root: $exchange_root,
+      pki_host_local_certificate_exchange_mode: "controller-local",
       pki_host_local_certificate_transport: "ssh",
       pki_host_local_certificate_transport_host_key_sha256: $transport_sha,
       pki_host_local_certificate_request_id: $request_id,
@@ -470,6 +471,7 @@ write_vars() {
       pki_host_local_certificate_activation_action: (if $artifact_sha == "" then "" else "finalize" end),
       pki_host_local_certificate_activation_result: (if $artifact_sha == "" then "" else "activated" end),
       pki_host_local_certificate_interactive_confirmation: ($artifact_sha != ""),
+      pki_host_local_certificate_unattended_authorized: false,
       pki_host_local_certificate_trust_sources: {
         "policy": $policy,
         "requesters.allowed_signers": $requesters,
@@ -534,6 +536,7 @@ controller_command() {
     --env "HOME=${CONTROLLER_HOME}"
     --env ANSIBLE_CONFIG=/workspace/ansible.cfg
     --env "ANSIBLE_LOCAL_TEMP=${CONTROLLER_HOME}/.ansible/tmp"
+    --env "ANSIBLE_REMOTE_TEMP=/tmp/${RUN_ID}-ansible"
     --env ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections
     --env PYTHONPATH=/workspace
     --volume "${ROOT_DIR}:/workspace:ro"
@@ -586,7 +589,7 @@ assert_exact_local_dir() {
   entries=("$directory"/*)
   shopt -u nullglob dotglob
   [[ "${#entries[@]}" -eq "$#" ]] \
-    || fail "Unexpected file count in exact directory: ${directory}"
+    || fail "Unexpected entries in exact directory ${directory}: ${entries[*]##*/}"
   for entry in "${entries[@]}"; do
     [[ -f "$entry" && ! -L "$entry" && -n "${expected[${entry##*/}]:-}" ]] \
       || fail "Unexpected entry in exact directory: ${entry}"

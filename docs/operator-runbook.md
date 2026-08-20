@@ -478,145 +478,27 @@ Configure the real one-host inventory, reviewed five-file trust, reviewed CA,
 validation boundary, protected controller exchange root, and a distinct
 read-only runner in private or outside-Git configuration. See
 [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for the
-complete request, controlled-media approval/signing, response activation,
-evidence, signer decision, outcome import, recovery, backup, and verification
-sequence. See [Registry](registry.md#host-local-pki-development) for the detailed
-trust and lifecycle contract.
+complete actor-labeled sequence: Bootstrap, Request, Gate 1 offline approval and
+signing, Activate/Evidence, Gate 2 offline finalization and outcome signing,
+Complete, and fixed access cleanup. It is also authoritative for response source
+paths, digest provenance, GitLab package versions, publication locks, retry
+semantics, recovery, backups, and verification. See
+[Registry](registry.md#host-local-pki-development) for the detailed trust and
+lifecycle implementation contract.
 
-Bootstrap target trust once, then create or resume the target-local request. The
-default direct mode publishes coordinates but moves no bytes through Ansible:
+The exact six-file response-check source must be protected and outside the
+controller exchange root; a GitLab download under that root must first be
+materialized into its `pki-transfer` sibling. Normal and controller-local
+activation remain interactive. Only the explicit direct-only
+`registry-pki-activate-unattended` route skips the typed pause, and it preserves
+all authentication, local/runner validation, and rollback controls. GitLab and
+direct SSH are transport only; Ansible invokes neither transport.
 
-```bash
-make apply ENV=dev PLAYBOOK=playbooks/registry-pki-trust.yml \
-  LIMIT=registry-example
-make registry-pki-request ENV=dev LIMIT=registry-example
-platform-pki direct-exchange request-pull \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  /outside-git/pki-exchange/intake/request-<request-id>
-PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
-make registry-pki-request-intake ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> REQUEST_SHA256=<request-sha256> \
-  CSR_SHA256=<csr-sha256> CSR_SPKI_SHA256=<csr-spki-sha256> \
-  TRANSPORT_HOST_KEY_SHA256=<transport-host-key-sha256> \
-  REQUEST_DIR=/platform-pki-exchange/intake/request-<request-id>
-make registry-pki-status ENV=dev LIMIT=registry-example
-```
-
-Move the public request through the separately approved controlled-media and
-offline-signing process. Place the returned exact six-file response in a
-protected controller directory, authenticate it without target mutation, and
-push it to the fixed direct ingress before activating it with one separate
-runner:
-
-```bash
-make registry-pki-response-check ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  RESPONSE_DIR=/outside-git/protected-response
-platform-pki direct-exchange response-push \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  <artifact-sha256> /outside-git/protected-response
-make registry-pki-activate ENV=dev LIMIT=registry-example \
-  RUNNER_LIMIT=registry-validator-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
-```
-
-Activation prompts for exactly:
-
-```text
-activate SERVICE REQUEST_ID ARTIFACT_SHA256
-```
-
-If authenticated status reports recovery is required, run only the explicit
-journal-bound recovery action:
-
-```bash
-make registry-pki-recover ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
-```
-
-If recovery reports `publish-rolled-back-evidence`, validate the restored
-predecessor locally and from the reviewed runner and publish its exact evidence:
-
-```bash
-make registry-pki-publish-rolled-back-evidence ENV=dev \
-  LIMIT=registry-example RUNNER_LIMIT=registry-validator-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256>
-```
-
-After successful activation, prepare, pull, and authenticate the exact evidence,
-then perform a fresh separate-runner decision preflight. After the offline
-decision, push the exact outcome before importing it:
-
-```bash
-make registry-pki-evidence-export ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256>
-platform-pki direct-exchange evidence-pull \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  <artifact-sha256> <deployment-sha256> \
-  /outside-git/pki-exchange/intake/evidence-<deployment-sha256>
-PLATFORM_CONFIG_PKI_EXCHANGE_ROOT=/outside-git/pki-exchange \
-make registry-pki-evidence-intake ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256> \
-  EVIDENCE_DIR=/platform-pki-exchange/intake/evidence-<deployment-sha256>
-make registry-pki-status ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256>
-make registry-pki-decision-preflight ENV=dev LIMIT=registry-example \
-  RUNNER_LIMIT=registry-validator-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256>
-platform-pki direct-exchange outcome-push \
-  /outside-git/pki-endpoints/registry-example.json <request-id> \
-  <artifact-sha256> <deployment-sha256> <outcome-sha256> \
-  /outside-git/pki-exchange/intake/outcome-<outcome-sha256>
-make registry-pki-outcome-import ENV=dev LIMIT=registry-example \
-  REQUEST_ID=<request-id> ARTIFACT_SHA256=<artifact-sha256> \
-  DEPLOYMENT_SHA256=<deployment-sha256> \
-  OUTCOME_SHA256=<outcome-sha256>
-```
-
-Only after an active version authenticates successfully, change the target's
-private Zot inventory to `zot_registry_tls_custody: host-local`, set
-`zot_registry_tls_host_local_target` to the exact inventory hostname, and run
-normal registry convergence. Signing, response and outcome retrieval from
-external media, renewal, and live enablement remain separate operations. Outcome
-import is the explicit command above; never select a latest package or infer its
-coordinates. Require status `complete` and `signer_outcome_state=finalized` for
-a finalized active candidate. An authenticated abandoned outcome is terminal
-history but never authority for selecting the abandoned candidate as active;
-current import supports that terminal status for no predecessor and authenticated
-managed-migration rollback. Finalized managed predecessors must exactly match
-rollback certificate/SPKI/public-chain state and use `none` for unavailable
-managed history fields. Managed rollback abandonment must also match signed
-served identity evidence to the restored Zot-selected public chain. Host-local
-predecessors remain unsupported until target history records all required
-predecessor evidence.
-The current workflow always reports `renewal_eligible=false`; authenticated
-renewal completion remains unsupported.
-
-Direct outcome import never transfers the package through Ansible. It consumes
-only the exact fixed-spool package created by `outcome-push` and never stats,
-opens, reads, hashes, stages, or transfers a
-candidate/version/restored-managed private-key file. Managed rollback validation
-parses the restored Zot TLS path object but accesses only its public certificate
-chain. In Ansible check mode the controller still authenticates the complete
-six-file package, but only canonical scalar coordinates reach the target's
-read-only preflight over Ansible's safely quoted, become-aware low-level
-connection path; no module payload, temporary transfer, or package copy is
-created. The target authenticates active state from public version,
-signed request/response, artifact/certificate, and available signed evidence
-without enumerating or accessing the version private key. If an interruption
-leaves immutable outcome
-history without `accepted-outcome`, status fails closed; rerun the same command
-with the same exact pins to complete no-clobber pointer publication. If the
-action reports a retained `/var/tmp/.platform-pki-outcome-*` stage, preserve it
-as failure evidence, verify no import remains active, and inspect it through the
-approved host-local PKI recovery procedure. Remove only the exact reported
-canonical path after attribution; never use wildcard cleanup. A retained
-`.accepted-outcome-stage-*` under the lifecycle state root also blocks import as
-ambiguous state and requires the same exact-path review before recovery.
+Only after authenticated activation may private inventory select host-local Zot
+custody. Require terminal `status=complete` and
+`signer_outcome_state=finalized`; `renewal_eligible=false` remains expected.
+Never select a latest package, infer a digest, clean an ambiguous retained stage,
+or treat historical signer outcome as current target authority.
 
 ## Make Targets
 
@@ -641,11 +523,11 @@ PLAYBOOK   Playbook to run, default playbooks/site.yml
 LIMIT      Optional Ansible --limit value
 EXTRA_ARGS Extra flags passed to Ansible
 REQUEST_ID Exact 32-character host-local PKI request ID
-ARTIFACT_SHA256 Exact host-local PKI artifact digest
-DEPLOYMENT_SHA256 Exact host-local PKI deployment digest
+ARTIFACT_SHA256 Exact canonical artifact digest reported as export manifest_sha256
+DEPLOYMENT_SHA256 Exact target-signed canonical deployment digest
 OUTCOME_DIR Exact protected six-file signer-outcome directory
-OUTCOME_SHA256 Exact host-local PKI outcome manifest digest
-RESPONSE_DIR Exact protected six-file response directory
+OUTCOME_SHA256 Exact canonical outcome digest reported as export manifest_sha256
+RESPONSE_DIR Exact protected six-file response directory outside exchange root
 RUNNER_LIMIT Exact separate read-only validation runner host
 ```
 

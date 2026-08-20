@@ -263,10 +263,13 @@ def _response_material(
     response_key: Path,
     leaf_key: ec.EllipticCurvePrivateKey,
     request_files: dict[str, bytes],
+    *,
+    not_before_offset: int = -60,
+    created_offset: int = 0,
 ) -> tuple[Path, dict[str, object]]:
     request = parse_record(request_files["request"], REQUEST_FIELDS, "fixture request")
     now = int(time.time())
-    before = datetime.fromtimestamp(now - 60, UTC)
+    before = datetime.fromtimestamp(now + not_before_offset, UTC)
     after = datetime.fromtimestamp(now + 86400, UTC)
     root_key = ec.generate_private_key(ec.SECP384R1())
     root_name = x509.Name((x509.NameAttribute(NameOID.COMMON_NAME, "Test Root"),))
@@ -375,7 +378,7 @@ def _response_material(
             "not_after_epoch": str(now + 86400),
             "candidate_state": "pending",
             "response_principal": RESPONSE_PRINCIPAL,
-            "created_epoch": str(now),
+            "created_epoch": str(now + created_offset),
         },
         "response",
     )
@@ -407,7 +410,7 @@ def _response_material(
             "candidate_state": "pending",
             "deployment_state": "unfinalized",
             "response_principal": RESPONSE_PRINCIPAL,
-            "created_epoch": str(now),
+            "created_epoch": str(now + created_offset),
         },
         "artifact",
     )
@@ -436,6 +439,9 @@ def _response_material(
 
 def _response_scenario(
     root: Path,
+    *,
+    not_before_offset: int = -60,
+    created_offset: int = 0,
 ) -> tuple[Path, Path, dict[str, str], dict[str, str], dict[str, object]]:
     (
         files,
@@ -473,7 +479,12 @@ def _response_scenario(
         for item in trust.values():
             item.close()
     response_dir, bindings = _response_material(
-        root, response_key, leaf_key, files
+        root,
+        response_key,
+        leaf_key,
+        files,
+        not_before_offset=not_before_offset,
+        created_offset=created_offset,
     )
     bindings.update(
         {
@@ -2982,6 +2993,38 @@ def test_response_action_authenticates_published_request_and_snapshots_real_cryp
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in published.iterdir())
     assert not list(published.rglob("*.key"))
     assert response_dir != published
+
+
+@pytest.mark.parametrize(
+    ("created_offset", "accepted"),
+    ((-61, True), (-361, False)),
+)
+def test_response_allows_only_bounded_creation_before_certificate_validity(
+    isolated_test_dir: Path,
+    created_offset: int,
+    accepted: bool,
+) -> None:
+    root = _private_dir(isolated_test_dir / f"response-created-{created_offset}")
+    response_dir, exchange, trust_paths, trust_digests, bindings = _response_scenario(
+        root,
+        not_before_offset=-60,
+        created_offset=created_offset,
+    )
+
+    if accepted:
+        result = _validate_response_scenario(
+            response_dir, exchange, trust_paths, trust_digests, bindings
+        )
+        assert result["certificate_sha256"] == sha256(
+            (response_dir / "tls.crt").read_bytes()
+        )
+    else:
+        with pytest.raises(
+            ExchangeError, match="certificate validity or signed metadata"
+        ):
+            _validate_response_scenario(
+                response_dir, exchange, trust_paths, trust_digests, bindings
+            )
 
 
 def test_response_rejects_wrong_artifact_pin_without_publishing(
