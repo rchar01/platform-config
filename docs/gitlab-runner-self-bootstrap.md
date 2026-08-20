@@ -179,6 +179,26 @@ bootstrap/
 +-- platform-private/
 ```
 
+When the VM cannot clone the repositories, create one plaintext archive on the
+source host:
+
+```bash
+tar -C "$HOME/Projects/public" -czf "$HOME/platform-bootstrap.tgz" \
+  platform-config platform-private
+scp "$HOME/platform-bootstrap.tgz" example-user@192.0.2.50:/tmp/
+```
+
+Then extract it as the bootstrap user on the target VM:
+
+```bash
+mkdir -p "$HOME/bootstrap"
+tar -C "$HOME/bootstrap" -xzf /tmp/platform-bootstrap.tgz
+```
+
+The archive includes everything currently inside both repository directories.
+Transfer it only through an approved channel, and do not add the outside-Git
+secret store to it.
+
 The wrapper discovers the sibling private repository and mounts it read-only
 inside the development container. The private environment file and inventory
 remain under:
