@@ -7,6 +7,16 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-20
+
+### Fixed
+
+- Fixed controller-local host-local PKI source inspection, direct intake,
+  response authentication, and evidence-status actions when inventory enables
+  connection-level privilege escalation for managed hosts. Controller tasks now
+  explicitly disable both become controls without changing target or runner
+  privilege behavior.
+
 ## [2.0.0] - 2026-08-20
 
 ### Breaking Changes

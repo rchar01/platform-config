@@ -6,6 +6,18 @@ This file gives a short, release-oriented view of what changed between versions.
 
 No user-visible changes yet.
 
+## v2.0.1 - 2026-08-20
+
+This patch fixes controller-local PKI operations when inventory enables Ansible
+privilege escalation for managed hosts.
+
+### Fixes
+
+- Prevent controller-local helper source inspection, direct intake, response
+  authentication, and evidence-status actions from inheriting the inventory
+  connection-level become setting. Target and runner privilege behavior is
+  unchanged.
+
 ## v2.0.0 - 2026-08-20
 
 This release adds staged HA service operations, complete host-local registry PKI,
