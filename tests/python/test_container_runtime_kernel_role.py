@@ -188,3 +188,28 @@ def test_bastion_uses_shared_podman_foundation(repo_root: Path) -> None:
         "k8s_bastion_access",
     ]
     assert "podman" not in defaults["k8s_bastion_os_packages"]
+
+
+def test_bastion_podman_maintenance_playbook_is_focused(repo_root: Path) -> None:
+    playbook = load_yaml(repo_root / "playbooks/k8s-bastion-podman.yml")
+
+    assert len(playbook) == 1
+    assert set(playbook[0]) == {"name", "hosts", "become", "pre_tasks", "roles"}
+    assert playbook[0]["hosts"] == "k8s_bastion"
+    assert playbook[0]["become"] is True
+    assert playbook[0]["pre_tasks"] == [
+        {
+            "name": "Require one explicitly limited bastion",
+            "ansible.builtin.assert": {
+                "that": [
+                    "ansible_limit | default('') == inventory_hostname",
+                    "ansible_play_hosts_all | length == 1",
+                ],
+                "fail_msg": (
+                    "Set LIMIT to one exact k8s_bastion inventory hostname before "
+                    "converging Podman."
+                ),
+            },
+        }
+    ]
+    assert playbook[0]["roles"] == ["podman_host"]

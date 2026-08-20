@@ -1,0 +1,15 @@
+---
+- name: Configure Kubernetes bastion Podman runtime
+  hosts: k8s_bastion
+  become: true
+  pre_tasks:
+    - name: Require one explicitly limited bastion
+      ansible.builtin.assert:
+        that:
+          - ansible_limit | default('') == inventory_hostname
+          - ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          Set LIMIT to one exact k8s_bastion inventory hostname before
+          converging Podman.
+  roles:
+    - podman_host

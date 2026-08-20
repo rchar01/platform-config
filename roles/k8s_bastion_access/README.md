@@ -13,6 +13,21 @@ role. `podman_host` owns Podman packages and the shared container-runtime kernel
 prerequisite; this role owns the remaining bastion OS packages and runtime
 configuration.
 
+Use `playbooks/k8s-bastion-podman.yml` for a focused Podman package pin or
+versionlock maintenance window when the broader bastion access contract is not
+being converged. The focused playbook does not manage bastion policy, RBAC,
+kubeconfigs, runtime commands, or timers. It does reconcile the
+`container_runtime_kernel` dependency, exact Podman package and versionlock,
+system Quadlet directory, and configured Podman socket state on the selected
+`k8s_bastion` host. The playbook requires `LIMIT` to equal one exact inventory
+hostname and fails before convergence when the limit is absent, a pattern, or
+selects multiple hosts:
+
+```bash
+make check ENV=dev PLAYBOOK=playbooks/k8s-bastion-podman.yml LIMIT=dev-bastion-01
+make apply ENV=dev PLAYBOOK=playbooks/k8s-bastion-podman.yml LIMIT=dev-bastion-01
+```
+
 The role targets a clean Rocky host. It does not provision VMs, manage Proxmox/OpenTofu resources, or clean up existing Kubernetes node state.
 
 Real kubeconfigs, final rendered policy files, CA files, and tokens belong in `platform-private`, not this public repository.
