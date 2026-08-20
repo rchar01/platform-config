@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import os
 import re
@@ -95,6 +96,7 @@ METADATA_BY_ACTION = {
     "ansible.builtin.pause": {"name", "register", "when"},
     "ansible.builtin.stat": {
         "name",
+        "vars",
         "loop",
         "loop_control",
         "become",
@@ -105,12 +107,14 @@ METADATA_BY_ACTION = {
     "platform_pki_evidence_collection": {"name", "register", "when"},
     "platform_pki_evidence_intake": {
         "name",
+        "vars",
         "delegate_to",
         "become",
         "register",
     },
     "platform_pki_evidence_status": {
         "name",
+        "vars",
         "delegate_to",
         "become",
         "register",
@@ -120,6 +124,7 @@ METADATA_BY_ACTION = {
     "platform_pki_request_collection": {"name", "register", "when"},
     "platform_pki_request_intake": {
         "name",
+        "vars",
         "delegate_to",
         "become",
         "register",
@@ -127,6 +132,7 @@ METADATA_BY_ACTION = {
     "platform_pki_response_ingress": {"name", "register", "when"},
     "platform_pki_response_intake": {
         "name",
+        "vars",
         "delegate_to",
         "become",
         "register",
@@ -838,6 +844,24 @@ def _validate_task(task: Any, source: str | Path) -> None:
             f"in {source}"
         )
     task_name = str(task.get("name", ""))
+    if action == "ansible.builtin.stat":
+        controller_source_tasks = {
+            "Inspect shipped host-local certificate request helper source",
+            "Inspect shipped host-local certificate lifecycle helper source",
+            "Inspect shipped host-local certificate validator helper source",
+        }
+        if task_name in controller_source_tasks:
+            valid_controller_source = (
+                task.get("delegate_to") == "localhost"
+                and task.get("become") is False
+                and task.get("vars") == {"ansible_become": False}
+            )
+        else:
+            valid_controller_source = "vars" not in task
+        if not valid_controller_source:
+            raise BoundaryViolation(
+                f"host-local boundary stat has unexpected execution bindings in {source}"
+            )
     condition_key = (action, task_name)
     if condition_key in ALLOWED_CONDITIONS:
         if task.get("when") != ALLOWED_CONDITIONS[condition_key]:
@@ -957,8 +981,17 @@ def _validate_task(task: Any, source: str | Path) -> None:
             raise BoundaryViolation(
                 f"host-local custom action has unexpected options in {source}"
             )
-        if action in {"platform_pki_response_intake", "platform_pki_evidence_status"}:
-            if task.get("delegate_to") != "localhost" or task.get("become") is not False:
+        if action in {
+            "platform_pki_evidence_intake",
+            "platform_pki_evidence_status",
+            "platform_pki_request_intake",
+            "platform_pki_response_intake",
+        }:
+            if (
+                task.get("delegate_to") != "localhost"
+                or task.get("become") is not False
+                or task.get("vars") != {"ansible_become": False}
+            ):
                 raise BoundaryViolation(
                     f"controller-only custom action escaped localhost in {source}"
                 )
@@ -2260,6 +2293,11 @@ def test_registry_pki_fetch_allowlists_reject_private_key(remote_path: Any) -> N
             "ansible.builtin.assert": {"that": [True]},
             "when": False,
         },
+        {
+            "name": "target stat with controller privilege override",
+            "ansible.builtin.stat": {"path": "/tmp/example"},
+            "vars": {"ansible_become": False},
+        },
     ],
     ids=lambda task: str(task["name"]),
 )
@@ -2268,6 +2306,65 @@ def test_registry_pki_task_scanner_rejects_unsafe_examples(
 ) -> None:
     with pytest.raises(BoundaryViolation):
         _validate_task(bad_task, "scanner self-test")
+
+
+@pytest.mark.parametrize(
+    ("filename", "task_name"),
+    [
+        (
+            "request_apply.yml",
+            "Inspect shipped host-local certificate request helper source",
+        ),
+        (
+            "lifecycle_helper.yml",
+            "Inspect shipped host-local certificate lifecycle helper source",
+        ),
+        (
+            "validator_helper.yml",
+            "Inspect shipped host-local certificate validator helper source",
+        ),
+        (
+            "request_intake.yml",
+            "Authenticate and publish exact direct request intake",
+        ),
+        (
+            "evidence_intake.yml",
+            "Authenticate and publish exact direct evidence intake",
+        ),
+        (
+            "response_check.yml",
+            "Authenticate and snapshot exact controller-side certificate response",
+        ),
+        ("status.yml", "Authenticate exact controller evidence publication"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("delegate_to", None),
+        ("delegate_to", "{{ inventory_hostname }}"),
+        ("become", True),
+        ("vars", {}),
+        ("vars", {"ansible_become": True}),
+    ],
+)
+def test_registry_pki_task_scanner_rejects_controller_execution_drift(
+    repo_root: Path,
+    filename: str,
+    task_name: str,
+    field: str,
+    value: Any,
+) -> None:
+    tasks = _load_yaml(
+        repo_root / "roles/pki_host_local_certificate/tasks" / filename
+    )
+    task = copy.deepcopy(next(item for item in tasks if item["name"] == task_name))
+    if value is None:
+        task.pop(field)
+    else:
+        task[field] = value
+    with pytest.raises(BoundaryViolation):
+        _validate_task(task, "scanner self-test")
 
 
 @pytest.mark.parametrize(

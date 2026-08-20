@@ -131,6 +131,7 @@ def test_readiness_authenticates_all_helpers_against_fixed_role_sources(
         assert source_stat["checksum_algorithm"] == "sha256"
         assert source["delegate_to"] == "localhost"
         assert source["become"] is False
+        assert source["vars"] == {"ansible_become": False}
         assert installed_stat["get_checksum"] is True
         assert installed_stat["checksum_algorithm"] == "sha256"
         assert installed.get("delegate_to") == installed_delegate
@@ -141,6 +142,22 @@ def test_readiness_authenticates_all_helpers_against_fixed_role_sources(
         if execution_name is not None:
             execution = next(task for task in tasks if task["name"] == execution_name)
             assert tasks.index(assertion) < tasks.index(execution)
+
+
+def test_controller_local_pki_tasks_override_inventory_become(repo_root: Path) -> None:
+    root = repo_root / "roles/pki_host_local_certificate/tasks"
+    task_files = sorted(
+        path for path in root.rglob("*") if path.suffix in {".yml", ".yaml"}
+    )
+    for path in task_files:
+        pending = list(_load(path))
+        while pending:
+            task = pending.pop()
+            if task.get("delegate_to") == "localhost":
+                assert task.get("become") is False
+                assert task.get("vars") == {"ansible_become": False}
+            for section in ("block", "rescue", "always"):
+                pending.extend(task.get(section, []))
 
 
 def test_terminal_verification_requires_all_exact_coordinates_and_final_state(

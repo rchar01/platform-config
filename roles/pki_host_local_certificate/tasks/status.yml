@@ -41,6 +41,8 @@
     deployment_sha256: "{{ pki_host_local_certificate_deployment_sha256 }}"
   delegate_to: localhost
   become: false
+  vars:
+    ansible_become: false
   register: pki_host_local_certificate_controller_evidence_status
   when: pki_host_local_certificate_deployment_sha256 | length > 0
 

@@ -37,6 +37,8 @@
     checksum_algorithm: sha256
   delegate_to: localhost
   become: false
+  vars:
+    ansible_become: false
   register: pki_host_local_certificate_request_helper_source
   when: ansible_check_mode
 

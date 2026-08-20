@@ -41,6 +41,8 @@
     minimum_remaining_lifetime_seconds: "{{ pki_host_local_certificate_minimum_remaining_lifetime_seconds }}"
   delegate_to: localhost
   become: false
+  vars:
+    ansible_become: false
   register: pki_host_local_certificate_response_intake_result
 
 - name: Validate exact controller response intake metadata

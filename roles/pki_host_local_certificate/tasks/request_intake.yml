@@ -36,6 +36,8 @@
     request_id: "{{ pki_host_local_certificate_request_id }}"
   delegate_to: localhost
   become: false
+  vars:
+    ansible_become: false
   register: pki_host_local_certificate_request_intake_result
 
 - name: Validate exact direct request intake metadata
