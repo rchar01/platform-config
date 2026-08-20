@@ -62,9 +62,49 @@
   register: zot_registry_tls_lifecycle_helper_source
   when: zot_registry_tls_enabled | bool
 
-- name: Validate exact Zot TLS lifecycle helper
+- name: Validate trusted Zot TLS lifecycle helper upgrade state
   ansible.builtin.import_tasks: validate_tls_lifecycle_helper.yml
   when: zot_registry_tls_enabled | bool
+
+- name: Upgrade trusted predecessor Zot TLS lifecycle helper
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
+    dest: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - zot_registry_tls_enabled | bool
+    - not ansible_check_mode
+    - zot_registry_tls_custody_state.helper.exists
+    - zot_registry_tls_custody_state.helper.checksum == '3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280'
+
+- name: Refresh installed Zot TLS lifecycle helper state
+  ansible.builtin.stat:
+    path: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+    get_mime: false
+  register: zot_registry_tls_lifecycle_helper_refreshed
+  when: zot_registry_tls_enabled | bool
+
+- name: Require exact current Zot TLS lifecycle helper before custody selection
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.exists
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.isreg
+      - not zot_registry_tls_lifecycle_helper_refreshed.stat.islnk
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.uid == 0
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.gid == 0
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.mode == '0755'
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.checksum == '9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3'
+    fail_msg: >-
+      Initialized Zot TLS lifecycle state requires the exact current shipped
+      root:root 0755 helper before custody selection.
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_custody_state.state_root.exists
 
 - name: Require unambiguous fresh Zot TLS bootstrap state
   ansible.builtin.assert:

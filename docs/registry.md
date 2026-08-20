@@ -178,7 +178,18 @@ role-rendered managed configuration. After `activate-finish`, normal registry
 convergence resolves the authenticated immutable `fullchain.crt` and `tls.key`
 paths through the exact shipped lifecycle helper under its shared lock.
 
-Helper drift or error, unresolved journals, malformed or ambiguous lifecycle
+The v3 role recognizes only the exact root-owned `0755` helper shipped by
+v2.0.0 through v2.0.2, SHA-256
+`3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280`, as an
+upgrade predecessor. Normal convergence replaces it with the shipped v3 helper,
+refreshes the installed file state, and requires SHA-256
+`9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3` before
+running custody selection. Check mode remains non-mutating and refuses the old
+helper; apply normal `playbooks/registry.yml` convergence to perform this one
+pinned upgrade. This is role-internal migration policy, not an inventory input.
+
+Unknown helper or shipped-source drift, unsafe helper metadata, helper absence
+with initialized state, unresolved journals, malformed or ambiguous lifecycle
 state, and any configuration mismatch fail closed; none is interpreted as a
 managed fallback. The role refuses host-local rendered configuration drift
 rather than invalidating the authenticated active record. Do not run a live request,

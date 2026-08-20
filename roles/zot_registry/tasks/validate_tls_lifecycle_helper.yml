@@ -1,11 +1,11 @@
 ---
-- name: Require the installed Zot TLS lifecycle helper
+- name: Require a trusted Zot TLS lifecycle helper upgrade state
   ansible.builtin.assert:
     that:
       - zot_registry_tls_lifecycle_helper_source.stat.exists
       - zot_registry_tls_lifecycle_helper_source.stat.isreg
       - not zot_registry_tls_lifecycle_helper_source.stat.islnk
-      - zot_registry_tls_lifecycle_helper_source.stat.checksum is match('^[0-9a-f]{64}$')
+      - zot_registry_tls_lifecycle_helper_source.stat.checksum == '9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3'
       - >-
         not zot_registry_tls_custody_state.helper.exists
         or (
@@ -14,13 +14,21 @@
           and zot_registry_tls_custody_state.helper.uid == 0
           and zot_registry_tls_custody_state.helper.gid == 0
           and zot_registry_tls_custody_state.helper.mode == '0755'
-          and zot_registry_tls_custody_state.helper.checksum
+          and (
+            zot_registry_tls_custody_state.helper.checksum
               == zot_registry_tls_lifecycle_helper_source.stat.checksum
+            or (
+              not ansible_check_mode
+              and zot_registry_tls_custody_state.helper.checksum
+                == '3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280'
+            )
+          )
         )
       - >-
         not zot_registry_tls_custody_state.state_root.exists
         or zot_registry_tls_custody_state.helper.exists
     fail_msg: >-
-      Initialized lifecycle state requires the exact shipped root:root 0755 Zot
-      TLS lifecycle helper; existing helper drift is never treated as managed
-      custody.
+      Zot TLS custody requires the exact shipped root:root 0755 lifecycle helper.
+      Normal convergence may replace only the exact trusted v2 predecessor;
+      check mode, source drift, unsafe metadata, unknown helper drift, and an
+      absent helper with initialized state fail closed.

@@ -33,6 +33,8 @@ TARGET = "test-target"
 RESPONSE_PRINCIPAL = "test-response"
 REMOTE_VALIDATOR = "test-runner"
 ENDPOINT = "https://registry.test/v2/"
+V2_HELPER_SHA256 = "3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280"
+V3_HELPER_SHA256 = "9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3"
 
 
 def private_dir(path: Path) -> Path:
@@ -989,6 +991,124 @@ def test_zot_custody_selects_only_finished_authenticated_active_version(
     assert selected["certificate_sha256"] == lifecycle_case.certificate_sha256
     assert selected["spki_sha256"] == lifecycle_case.certificate_spki_sha256
     assert selected["zot_config_sha256"] == digest(lifecycle_case.zot_config)
+
+
+def test_zot_registry_migrates_exact_v2_helper_before_authenticated_custody(
+    repo_root: Path,
+    lifecycle_case: LifecycleCase,
+) -> None:
+    activate_and_finish(lifecycle_case)
+    installed_helper = lifecycle_case.root / "installed-lifecycle-helper"
+    v3_source = lifecycle_case.helper.read_text(encoding="ascii")
+    assert digest(v3_source.encode("ascii")) == V3_HELPER_SHA256
+
+    def remove_v3_section(value: str, start: str, end: str) -> str:
+        first = value.index(start)
+        last = value.index(end, first)
+        return value[:first] + value[last:]
+
+    v2_source = remove_v3_section(
+        v3_source, "\n\ndef zot_custody", "\n\ndef add_common"
+    )
+    v2_source = remove_v3_section(
+        v2_source,
+        "\n\n    custody = commands.add_parser(",
+        "\n    return parser",
+    )
+    v2_source = remove_v3_section(
+        v2_source,
+        '\n    if hasattr(args, "managed_config_sha256"):',
+        '\n    if hasattr(args, "request_sha256")',
+    )
+    v2_bytes = v2_source.encode("ascii")
+    assert digest(v2_bytes) == V2_HELPER_SHA256
+    private_file(installed_helper, v2_bytes, 0o755)
+
+    expected_version = lifecycle_case.versions_root / REQUEST_ID
+    variables = {
+        "zot_registry_tls_enabled": True,
+        "zot_registry_tls_host_local_lifecycle_helper_path": str(installed_helper),
+        "zot_registry_tls_host_local_state_root": str(lifecycle_case.state),
+        "zot_registry_tls_host_local_pending_root": str(lifecycle_case.pending_root),
+        "zot_registry_tls_host_local_versions_root": str(lifecycle_case.versions_root),
+        "zot_registry_tls_host_local_service": SERVICE,
+        "zot_registry_tls_host_local_target": TARGET,
+        "zot_registry_tls_host_local_zot_config_path": str(lifecycle_case.zot_config),
+        "zot_registry_config_path": str(lifecycle_case.zot_config),
+        "zot_registry_tls_cert_path": str(lifecycle_case.root / "zot/managed.crt"),
+        "zot_registry_tls_key_path": str(lifecycle_case.root / "zot/managed.key"),
+        "zot_registry_test_expected_cert_path": str(expected_version / "fullchain.crt"),
+        "zot_registry_test_expected_key_path": str(expected_version / "tls.key"),
+        "zot_registry_test_request_id": REQUEST_ID,
+    }
+    playbook = (
+        repo_root
+        / "tests/fixtures/pki-host-local-zot-one-runner/custody-upgrade.yml"
+    )
+
+    def converge(*, check: bool = False) -> CommandResult:
+        argv: list[str | Path] = [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            playbook,
+            "--extra-vars",
+            json.dumps(variables, separators=(",", ":"), sort_keys=True),
+        ]
+        if check:
+            argv.append("--check")
+        return lifecycle_case.runner.run(argv, timeout=120)
+
+    def helper_snapshot() -> tuple[Any, ...]:
+        metadata = installed_helper.lstat()
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_nlink,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+            installed_helper.read_bytes(),
+        )
+
+    first = converge().assert_success()
+    assert digest(installed_helper) == V3_HELPER_SHA256
+    assert installed_helper.read_bytes() == lifecycle_case.helper.read_bytes()
+    assert "Derive Zot TLS custody from initialized lifecycle state" in first.stdout
+    assert "Require exact derived Zot TLS custody result" in first.stdout
+    assert "Require authenticated custody after helper migration" in first.stdout
+    first_recap = next(line for line in first.stdout.splitlines() if "failed=" in line)
+    assert "changed=1" in first_recap
+    assert "failed=0" in first_recap
+
+    migrated_snapshot = helper_snapshot()
+    second = converge().assert_success()
+    assert digest(installed_helper) == V3_HELPER_SHA256
+    assert installed_helper.read_bytes() == lifecycle_case.helper.read_bytes()
+    assert helper_snapshot() == migrated_snapshot
+    second_recap = next(line for line in second.stdout.splitlines() if "failed=" in line)
+    assert "changed=0" in second_recap
+    assert "failed=0" in second_recap
+
+    private_file(installed_helper, v2_bytes, 0o755)
+    predecessor_snapshot = helper_snapshot()
+    check_result = converge(check=True)
+    check_result.assert_failure()
+    assert digest(installed_helper) == V2_HELPER_SHA256
+    assert helper_snapshot() == predecessor_snapshot
+    assert "Derive Zot TLS custody from initialized lifecycle state" not in check_result.stdout
+
+    unknown_bytes = b"unknown helper drift\n"
+    private_file(installed_helper, unknown_bytes, 0o755)
+    unknown_snapshot = helper_snapshot()
+    unknown_result = converge()
+    unknown_result.assert_failure()
+    assert installed_helper.read_bytes() == unknown_bytes
+    assert helper_snapshot() == unknown_snapshot
+    assert "Derive Zot TLS custody from initialized lifecycle state" not in unknown_result.stdout
 
 
 @pytest.mark.parametrize(
