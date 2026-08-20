@@ -7,6 +7,31 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-20
+
+### Breaking Changes
+
+- Removed the `pki_host_local_exchange_access_state` and
+  `zot_registry_tls_custody` inventory interfaces. Exchange access is now
+  operation-bound, and Zot derives effective custody from authenticated target
+  lifecycle state.
+- Removed interactive, unattended, and controller-local activation variants.
+  `registry-pki-activate` is now the single automatic direct activation route.
+
+### Added
+
+- Added four narrow direct-exchange targets that claim an atomic target-side
+  lease, enable restricted SSH access, run one fixed transfer, and revoke access
+  on completion or handled failure.
+- Added a read-only lifecycle custody selector that distinguishes exact managed
+  bootstrap or recovery state from authenticated immutable host-local state.
+
+### Changed
+
+- Made normal registry convergence enforce absent exchange access before service
+  roles and fail closed on unresolved lifecycle journals, malformed state,
+  helper drift, and Zot configuration mismatch.
+
 ## [2.0.2] - 2026-08-20
 
 ### Fixed

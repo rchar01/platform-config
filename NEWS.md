@@ -6,6 +6,36 @@ This file gives a short, release-oriented view of what changed between versions.
 
 No user-visible changes yet.
 
+## v3.0.0 - 2026-08-20
+
+This release removes workflow-state inventory edits from registry host-local PKI
+operations and makes activation and Zot custody selection automatic.
+
+### Upgrade Notes
+
+- Remove `pki_host_local_exchange_access_state` and
+  `zot_registry_tls_custody` from inventory. Keep the reviewed exchange public
+  key, managed bootstrap sources, and host-local lifecycle coordinates.
+- Replace manual direct-exchange access toggles with the fixed
+  `registry-pki-direct-request-pull`, `registry-pki-direct-response-push`,
+  `registry-pki-direct-evidence-pull`, and
+  `registry-pki-direct-outcome-push` targets.
+- Replace `registry-pki-activate-unattended` and
+  `registry-pki-activate-controller-local` with the single automatic,
+  direct-only `registry-pki-activate` target.
+
+### Changes
+
+- Bound every direct-exchange operation to an atomic target-side lease and
+  always revoke its restricted SSH account after the synchronous transfer.
+- Derive Zot TLS custody from authenticated target lifecycle state. Fresh or
+  authenticated restored state uses managed bootstrap paths, successful
+  activation uses immutable host-local paths, and journals, corruption, helper
+  drift, or configuration ambiguity fail closed.
+- Preserve exact request and artifact binding, target-local private keys,
+  separate-runner validation, rollback, signed deployment evidence, and signer
+  outcome verification while removing the activation prompt.
+
 ## v2.0.2 - 2026-08-20
 
 This patch fixes unattended host-local registry certificate activation through
