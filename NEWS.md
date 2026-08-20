@@ -6,6 +6,16 @@ This file gives a short, release-oriented view of what changed between versions.
 
 No user-visible changes yet.
 
+## v2.0.2 - 2026-08-20
+
+This patch fixes unattended host-local registry certificate activation through
+the public Make target.
+
+### Fixes
+
+- Preserve native boolean activation controls across recursive Make and shell
+  boundaries so `registry-pki-activate-unattended` no longer prompts for input.
+
 ## v2.0.1 - 2026-08-20
 
 This patch fixes controller-local PKI operations when inventory enables Ansible

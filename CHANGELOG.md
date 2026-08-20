@@ -7,6 +7,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-08-20
+
+### Fixed
+
+- Fixed activation-mode propagation through recursive Make and shell boundaries
+  by loading native YAML booleans from route-specific extra-vars files. The
+  unattended host-local registry PKI target no longer falls back to its
+  interactive playbook defaults.
+
 ## [2.0.1] - 2026-08-20
 
 ### Fixed
