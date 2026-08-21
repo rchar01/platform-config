@@ -2,6 +2,24 @@
 
 This file gives a short, release-oriented view of what changed between versions.
 
+## v3.1.0 - 2026-08-21
+
+This release adds predecessor-free host-local certificate issuance for fresh Zot
+registry hosts without a temporary certificate or plaintext listener.
+
+### Changes
+
+- Derive dormant Zot TLS custody from `operation=issue` when no authenticated
+  active version exists. Dormant convergence renders the canonical TLS
+  configuration and Quadlet while requiring certificate and key files to remain
+  absent and keeping Zot masked and stopped.
+- Unmask and start Zot only after first activation publishes an authenticated
+  immutable certificate version. Handled activation failure restores dormant
+  state and records `not-activated` rather than claiming rollback.
+- Preserve managed migration and authenticated host-local behavior, fail closed
+  on ambiguous operation or rollback state, and upgrade only exact v2 or v3
+  lifecycle helper predecessors.
+
 ## v3.0.2 - 2026-08-21
 
 - Document the approved same-workstation PKI layout, including exact-service

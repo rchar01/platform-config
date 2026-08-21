@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-08-21
+
+### Added
+
+- Added derived dormant Zot TLS custody for predecessor-free
+  `pki_host_local_certificate_operation: issue`, allowing a fresh registry host
+  to stage canonical TLS configuration without controller certificate or key
+  sources, managed destination material, or a temporary listener.
+- Added first-issuance activation and recovery semantics that unmask and start
+  Zot only after publishing an authenticated immutable certificate version and
+  restore masked dormant state as `not-activated` after handled failure.
+
+### Changed
+
+- Extended lifecycle status, activation, trust bootstrap, and Zot custody
+  convergence to carry the existing certificate operation while preserving
+  managed migration and authenticated host-local behavior.
+- Extended the pinned lifecycle-helper upgrade boundary to accept exact v2 and
+  v3 predecessors before requiring the current helper.
+
+### Fixed
+
+- Rejected partial managed TLS source pairs, renewal without an authenticated
+  active version, issue activation over an existing active version, orphan
+  rollback state, stale dormant TLS material, and ambiguous lifecycle state.
+
 ## [3.0.2] - 2026-08-21
 
 ### Added
