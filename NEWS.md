@@ -2,9 +2,16 @@
 
 This file gives a short, release-oriented view of what changed between versions.
 
-## Unreleased
+## v3.0.2 - 2026-08-21
 
-No user-visible changes yet.
+- Document the approved same-workstation PKI layout, including exact-service
+  offline workspaces, stable key domains, retired transfer/ingress paths,
+  compatibility boundaries, backup and retention rules, and the security
+  tradeoff of keeping separated roles on one host.
+- Document operator-key loss and replacement, canonical-path isolated restore,
+  and node-specific registry service identities. The first prepared target uses
+  `registry-dev-01`; historical `registry-dev`, `registry-dev-g2`, and
+  `registry-dev-g3` service coordinates remain immutable.
 
 ## v3.0.1 - 2026-08-20
 

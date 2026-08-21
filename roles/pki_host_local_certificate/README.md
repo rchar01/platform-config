@@ -36,7 +36,9 @@ Use only these structural playbooks:
   check does not contact Zot or mutate the target.
 - `registry-pki-activate.yml` prepares and installs the response, shows the
   exact activation candidate, activates locally, validates Zot from one distinct
-  reviewed runner, and publishes signed target evidence. The single direct-only
+  reviewed runner, consumes that runner's unsigned canonical observation, and
+  publishes target evidence whose `deployment` and `validation-result` records
+  are both signed with the target host key. The single direct-only
   Make target runs automatically after all exact preflights while preserving all
   authentication, validation, and rollback boundaries.
 - `registry-pki-recover.yml` explicitly performs only the recovery encoded by
@@ -227,12 +229,15 @@ automatically after that preflight. It requires exact request and artifact
 digests plus one distinct runner, and appends those coordinates and direct mode
 after caller `EXTRA_ARGS`. Candidate authentication, local activation,
 separate-runner validation, and journal-bound rollback are unchanged. After
-local activation,
-the runner emits one canonical public observation. Only those bytes are copied
+local activation, the runner emits one canonical unsigned public observation.
+Only those bytes are copied
 under the root-owned mode-`0700` `/run/platform-pki-host-local/` directory as
 `REQUEST_ID.observation` with mode `0600`; the file is removed in `always`. Any
 ordinary failure after `activate-start` dispatches
 the helper's exact `recover` action, and recovery failure is not ignored.
+The target helper authenticates the observation, derives both canonical evidence
+records, and signs `deployment` and `validation-result` with the same target
+deployment-signing key.
 
 In Ansible check mode activation runs helper `--check` preflights only. It does
 not transfer a response, restart Zot, invoke the network validator, copy

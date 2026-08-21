@@ -126,6 +126,7 @@ platform-docs documents the design and operations across all repositories.
 
 - [Documentation index](docs/README.md)
 - [Operator runbook](docs/operator-runbook.md)
+- [Same-workstation PKI layout](docs/pki-local-layout.md)
 - [Private workflow](docs/private-workflow.md)
 - [Kubernetes bastion and issuer staging validation](docs/k8s-bastion.md)
 - [Storage volume acceptance fixture](docs/storage-volume-test.md)

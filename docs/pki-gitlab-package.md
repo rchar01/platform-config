@@ -12,6 +12,8 @@ Stop if that contract and this integration guide disagree.
 Complete [PKI Exchange Setup](pki-exchange-setup.md) before using this helper.
 That guide owns transfer-station paths, project controls, credential separation,
 target SSH preparation, offline storage, and optional runner setup.
+The [Same-Workstation PKI Layout](pki-local-layout.md) is authoritative for the
+active roots, exact-service workspaces, stable key domains, and retired paths.
 
 ## Package Families
 
@@ -26,7 +28,7 @@ detached signatures, frozen trust, and lifecycle coordinates.
 | `request` | `<request-id>` | Target produces request; controller produces receipt | Dedicated GitLab publisher | `tls.csr`, `request`, `request.sig`, `collection-receipt` |
 | `approval` | `<request-id>-<sha256(approval)>` | Offline approver | Dedicated GitLab publisher | `approval`, `approval.sig` |
 | `response` | `<request-id>` | Offline signer | Dedicated GitLab publisher | `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, `response.sig` |
-| `evidence` | `<request-id>-<sha256(deployment)>` | Target and validation runner | Dedicated GitLab publisher | `deployment`, `deployment.sig`, `validation-boundary`, `validation-result`, `validation-result.sig` |
+| `evidence` | `<request-id>-<sha256(deployment)>` | Target derives evidence from the runner's unsigned observation and signs both records | Dedicated GitLab publisher | `deployment`, `deployment.sig`, `validation-boundary`, `validation-result`, `validation-result.sig` |
 | `outcome` | `<request-id>-<sha256(outcome)>` | Offline signer | Dedicated GitLab publisher | `outcome`, `outcome.sig`, `deployment`, `deployment.sig`, `deployers.allowed_signers`, `decision` |
 
 The approval suffix comes from `offline-csr approve` JSON field
@@ -59,8 +61,9 @@ checks these stage-specific bindings:
   digests, certificate SPKI, exact `fullchain.crt` construction, states,
   issuer generations, and SSH signature container.
 - Evidence deployment, validation-boundary, and validation-result coordinates
-  and cross-bindings, digest-suffixed version, and both SSH signature
-  containers.
+  and cross-bindings, digest-suffixed version, and both target-host SSH signature
+  containers. The runner observation consumed by the target is unsigned and is
+  not a package payload.
 - Outcome, deployment, and decision coordinates and cross-bindings, exact
   deployment/signature/deployer-trust/decision digests, canonical deployer
   trust, terminal state, digest-suffixed version, and SSH signature containers.
@@ -143,7 +146,7 @@ lifecycle stage.
 ```bash
 platform-pki gitlab-package publish \
   --stage approval \
-  --service registry-dev \
+  --service registry-dev-01 \
   --target dev-registry-01 \
   --request-id 0123456789abcdef0123456789abcdef \
   --package-version 0123456789abcdef0123456789abcdef-<approval-sha256> \
@@ -189,7 +192,7 @@ actor:** Lifecycle actor named by the canonical workflow.
 ```bash
 platform-pki gitlab-package download \
   --stage response \
-  --service registry-dev \
+  --service registry-dev-01 \
   --target dev-registry-01 \
   --request-id 0123456789abcdef0123456789abcdef \
   --package-version 0123456789abcdef0123456789abcdef \
@@ -214,14 +217,15 @@ coordinate mutation, and over-limit responses fail closed. No operation uses
 
 Transport downloads may live under the controller exchange root. Before
 response check, `response-push`, or `outcome-push`, materialize only the exact
-payload allowlist into the protected `pki-transfer` sibling using the single
-canonical
+payload allowlist into the protected exact-service offline workspace using the
+single canonical
 [No-Clobber Materialization](registry-host-local-pki-workflow.md#canonical-no-clobber-materialization)
 procedure. [PKI Exchange Setup](pki-exchange-setup.md#transfer-station-layout)
-defines the immutable request, approval, signer-input, response, and outcome
-destinations. Do not use an overwrite-capable copy or `install` loop. Response
-check rejects a source that contains or is contained by its controller exchange
-root.
+defines the immutable request, approval, signer-input, response, evidence, and
+outcome destinations beneath `OFFLINE_WORKSPACE`. `pki-transfer` is retired for
+same-workstation operation. Do not use an overwrite-capable copy or `install`
+loop. Response check rejects a source that contains or is contained by its
+controller exchange root.
 
 ## Remaining Gates
 

@@ -477,6 +477,9 @@ This operator-only workflow keeps the leaf private key on one registry target.
 Configure the real one-host inventory, reviewed five-file trust, reviewed CA,
 validation boundary, protected controller exchange root, and a distinct
 read-only runner in private or outside-Git configuration. See
+[Same-Workstation PKI Layout](pki-local-layout.md) for the canonical signer,
+exchange, exact-service workspace, stable key-domain, backup, retention, and
+retired-path map. See
 [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for the
 complete actor-labeled sequence: Bootstrap, Request, Gate 1 offline approval and
 signing, Activate/Evidence, Gate 2 offline finalization and outcome signing,
@@ -488,11 +491,17 @@ lifecycle implementation contract.
 
 The exact six-file response-check source must be protected and outside the
 controller exchange root; a GitLab download under that root must first be
-materialized into its `pki-transfer` sibling. The single
+materialized into
+`$OFFLINE_WORKSPACE/media-out/response/<request-id>`. `pki-transfer` is retired
+for same-workstation operation. The single
 `registry-pki-activate` route is direct-only and runs automatically after its
 digest, candidate, and runner preflights pass. It preserves all authentication,
 local/runner validation, and rollback controls. GitLab and direct SSH are
 transport only; Ansible invokes neither transport.
+
+The validation runner emits an unsigned canonical observation. The target
+authenticates that observation, derives `deployment` and `validation-result`,
+and signs both records with the target host key before evidence export.
 
 Private inventory does not select Zot TLS custody. After authenticated
 `activate-finish`, normal registry convergence automatically derives host-local

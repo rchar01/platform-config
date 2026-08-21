@@ -7,6 +7,8 @@ The dev registry is a Zot OCI registry deployed by `zot_registry` on hosts in th
 Use [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) as
 the canonical step-by-step operator procedure. This page defines the detailed
 role boundaries, status semantics, and registry behavior behind that runbook.
+Use [Same-Workstation PKI Layout](pki-local-layout.md) for canonical local roots,
+backup/retention boundaries, and retired compatibility paths.
 
 The certificate lifecycle `playbooks/registry-pki-*.yml` playbooks are
 operator-only entry points and are not imported by `site.yml`. The persistent
@@ -68,6 +70,9 @@ The single `registry-pki-activate` route is direct-only and runs automatically
 after its exact request digest, artifact digest, distinct runner, response
 authentication, target-local key matching, and candidate preflights pass. It
 preserves strict local and distinct-runner validation and journal-bound rollback.
+The runner emits a canonical unsigned observation. The target authenticates it,
+derives `deployment` and `validation-result`, and signs both with the target host
+key; the runner does not sign an evidence payload.
 Follow the canonical
 [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for every
 exact command, actor handoff, argument source, retry result, GitLab stage, and
@@ -129,6 +134,14 @@ compatibility target accepts an exact protected controller directory,
 authenticates it locally, and uses the separately guarded legacy ingress path.
 Neither mode enumerates or accesses the private-key version entry, and no private
 key crosses either boundary.
+
+The historical controller path
+`~/.config/platform-infrastructure/pki-outcome-ingress/` is retired. No current
+operation writes or defaults to it. Controller-local import remains available
+only through the explicit compatibility target and its operator-supplied exact
+`OUTCOME_DIR`; direct mode consumes only the fixed target spool. Preserve any
+historical ingress until its classification and retention decision is complete.
+
 More strictly, the importer never stats, opens, reads, hashes, stages, or
 transfers candidate/version/restored-managed private-key files. Managed rollback
 validation parses the restored Zot TLS path object but accesses only its selected

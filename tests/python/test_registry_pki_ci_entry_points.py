@@ -293,7 +293,7 @@ def test_fixed_cleanup_ci_example_is_protected_required_and_ordered(
     assert config["stages"] == ["pki-online", "pki-cleanup", "pki-gate"]
     assert config["variables"] == {
         "PKI_ENVIRONMENT": "dev",
-        "PKI_TARGET": "registry-example",
+        "PKI_TARGET": "dev-registry-01",
     }
     protected = config[".pki-protected-job"]
     assert protected["tags"] == ["pki-protected"]

@@ -60,13 +60,13 @@ credential and execution host named for the role.
 | Actor | Responsibility |
 | --- | --- |
 | Lifecycle operator | Runs exact `platform-config` lifecycle commands from the Ansible controller and records their public coordinates. |
-| Target producer | Target helper creates the request, retains the leaf key, activates the response, and signs deployment evidence. This is a delegated machine role, not a shell login. |
-| Validation runner | Distinct reviewed host performs strict read-only Zot validation and signs the validation result. |
+| Target producer | Target helper creates the request, retains the leaf key, activates the response, consumes the runner observation, and signs `deployment` and `validation-result`. This is a delegated machine role, not a shell login. |
+| Validation runner | Distinct reviewed host performs strict read-only Zot validation and emits one canonical unsigned observation. |
 | Transport operator | Runs pinned direct SSH movement and maintains controlled-media custody; does not approve, sign, publish, or infer authority. |
 | GitLab publisher | Uses the dedicated publisher credential to publish one exact package coordinate while holding its external lock. |
 | GitLab retriever | Uses the dedicated retrieval credential to download and validate one operator-supplied exact coordinate. |
-| Offline approver | Reviews and signs one exact request while disconnected. |
-| Offline signer | Holds CA/response keys, signs the approved CSR, records candidate decisions, and exports response/outcome payloads while disconnected. |
+| Offline approver | Uses the offline approval facade and approval key to review and sign one exact request; physical disconnection applies only in separate-station mode. |
+| Offline signer | Holds CA/response keys, signs the approved CSR, records candidate decisions, and exports response/outcome payloads through offline facades; physical disconnection applies only in separate-station mode. |
 
 `platform-config` owns target request generation, controller intake, response
 authentication, transactional activation and rollback, runner validation,
@@ -89,39 +89,44 @@ signatures, frozen trust, and exact lifecycle coordinates are authoritative.
 | `request` | `<request-id>` | Target produces three request files; controller intake produces `collection-receipt` | GitLab publisher |
 | `approval` | `<request-id>-<approval-sha256>` | Offline approver signs `approval` | GitLab publisher |
 | `response` | `<request-id>` | Offline signer signs the response and publishes the local certificate export | GitLab publisher |
-| `evidence` | `<request-id>-<deployment-sha256>` | Target signs `deployment`; validation runner signs `validation-result` | GitLab publisher |
+| `evidence` | `<request-id>-<deployment-sha256>` | Target consumes the runner's unsigned observation, then signs `deployment` and `validation-result` with the target host key | GitLab publisher |
 | `outcome` | `<request-id>-<outcome-sha256>` | Offline signer accepts evidence and signs `outcome` | GitLab publisher |
 
 The publisher may be protected CI or an operator-run transfer station. The
 retriever is a separate responsibility even if the same reviewed workstation is
 used. Neither role becomes the payload producer or signer by moving bytes.
 
-## Service Identity During A Clean Reset
+## Node-Specific Service Identity
 
-Keep `SERVICE` stable during ordinary renewal or key rotation; request ID,
-certificate serial, and digests identify each generation. If target-local key
-and lifecycle state are intentionally destroyed while finalized signer history
-is retained and same-service replacement is unavailable, use an exceptional
-internal generation such as `registry-dev-g2`. Preserve the old service and
-signer history, never reuse a suffix, and choose the next number from reviewed
-retained inventory. The exact generation value is used consistently by signer
-inventory, controller paths, and all five actor-neutral package names.
+Use one stable service identity per registry target, such as `registry-dev-01`
+for `dev-registry-01`. Keep that `SERVICE` stable during ordinary renewal or key
+rotation; request ID, certificate serial, and digests identify each generation.
+This permits a later `registry-dev-02` target without sharing target-local state,
+request/deployment signing keys, controller coordinates, or immutable trust
+directories.
 
-In a genuinely fresh PKI namespace with no signer state for the service, use the
-unsuffixed `registry-dev`. That is a new PKI epoch; rebuild CA hierarchy and
-trust explicitly rather than adding `-g2` only because the VM is new.
+Historical `registry-dev`, `registry-dev-g2`, and `registry-dev-g3` services are
+retained signer history of the former unsuffixed target lineage; never rename
+them to `registry-dev-01`. If target-local key and lifecycle state for
+`registry-dev-01` are later intentionally destroyed while finalized signer
+history is retained and same-service replacement is unavailable, use an
+exceptional internal generation such as `registry-dev-01-g2`. Preserve old
+history, never reuse a suffix, and choose the next number from reviewed retained
+inventory. Do not continue the historical unsuffixed sequence with
+`registry-dev-g4`.
 
 ## Protected Paths
 
-Use `~/.config/platform-infrastructure` as the canonical online namespace. Its
-`pki/` tree remains authoritative PKI and signer state. Use the separate
-`~/.config/platform-pki-offline/<service>/` workspace only for controlled-media
-ingress/egress and temporary approved work. Approval and response keys remain
-explicit protected inputs outside the initializer-managed tree. Together those
-keys and the media/work workspace form the offline custody boundary; neither
-owns or replaces signer transactions, replay state, candidates, responses,
-outcomes, or accepted history. Those remain under the authoritative PKI
-namespace.
+Use the canonical [Same-Workstation PKI Layout](pki-local-layout.md).
+`~/.config/platform-infrastructure/pki/` remains authoritative PKI and signer
+state; `pki-exchange/` contains raw transport and authenticated controller
+history. The exact-service
+`~/.config/platform-pki-offline/<service>/` workspace contains reviewed command
+inputs/outputs and temporary approved work. Approval and response keys use the
+stable trust domain under `~/.config/platform-pki-keys/` and remain explicit
+protected inputs outside the initializer-managed workspace. Neither keys nor
+workspace replace signer transactions, replay state, candidates, responses,
+outcomes, or accepted history.
 
 Follow the `platform-tools`
 [Offline PKI Workspace](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-offline-workspace.md)
@@ -129,9 +134,11 @@ documentation for its initializer contract; do not guess flags not documented
 there. The initializer creates no keys or secret placeholders. Existing safe
 keys and authoritative state must be preserved.
 
-The examples use these reviewed paths. **Actor:** Lifecycle operator for online
-values and offline signer for the disconnected copy. **Run on:** Each actor's
-own reviewed shell. **Prerequisite:** Completed setup and protected canonical
+The examples use the approved same-workstation paths. Actor labels still identify
+responsibility and key use, but do not claim independent people or physical
+offline isolation. **Actor:** Lifecycle operator, approver, signer, and transport
+operator in their reviewed shells. **Run on:** The reviewed workstation.
+**Prerequisite:** Completed setup and protected canonical
 directories. **Output and provenance:** Shell variables map already reviewed
 inventory and paths; they produce no authority or digest. **Retry/result:**
 Reassignment is non-mutating; stop if an existing path maps to a different
@@ -139,39 +146,201 @@ purpose. **Next actor:** Bootstrap actors.
 
 ```bash
 ENVIRONMENT=dev
-SERVICE=registry-dev
-TARGET=registry-example
-RUNNER=registry-validator-example
+SERVICE=registry-dev-01
+STABLE_TRUST_DOMAIN=registry-dev
+TARGET=dev-registry-01
+RUNNER=dev-registry-runner-01
 PI="${XDG_CONFIG_HOME:-$HOME/.config}/platform-infrastructure"
-PKI_NAMESPACE="$PI/pki"
+PKI_NAMESPACE="$PI"
+PKI_ROOT="$PKI_NAMESPACE/pki"
 EXCHANGE_ROOT="$PI/pki-exchange"
-TRANSFER_ROOT="$PI/pki-transfer"
-CONTAINER_TRANSFER_ROOT=/tmp/platform-home/.config/platform-infrastructure/pki-transfer
-OFFLINE_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/platform-pki-offline/$SERVICE"
-APPROVAL_KEY=/secure/offline-approval
-RESPONSE_KEY=/secure/offline-response
-SIGNER_EVIDENCE_ROOT=/secure/evidence
-CONTROLLED_MEDIA_IN=/media/platform-pki-in
-ENDPOINT_RECORD="$PI/config/pki-exchange/endpoints/registry-example.json"
+OFFLINE_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/platform-pki-offline"
+OFFLINE_WORKSPACE="$OFFLINE_ROOT/$SERVICE"
+KEY_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/platform-pki-keys"
+KEY_DOMAIN="$KEY_ROOT/$STABLE_TRUST_DOMAIN"
+APPROVAL_KEY="$KEY_DOMAIN/offline-approver"
+RESPONSE_KEY="$KEY_DOMAIN/offline-response"
+SIGNER_EVIDENCE_ROOT="$OFFLINE_WORKSPACE/media-in/evidence"
+CONTAINER_OFFLINE_ROOT=/tmp/platform-home/.config/platform-infrastructure
+CONTAINER_OFFLINE_WORKSPACE="$CONTAINER_OFFLINE_ROOT/$SERVICE"
+ENDPOINT_RECORD="$PI/config/pki-exchange/endpoints/registry-dev-01.json"
 PROJECT_RECORD="$PI/config/pki-exchange/gitlab/project-record"
 GITLAB_CA="$PI/config/pki-exchange/gitlab/ca.pem"
 PUBLISH_TOKEN=/run/secrets/gitlab-package-publisher-token
 READ_TOKEN=/run/secrets/gitlab-package-reader-token
 ```
 
-`CONTROLLED_MEDIA_IN` is the reviewed read-only mount of incoming controlled
-media on whichever online or offline station is performing the next explicit
-materialization. It is never a publication destination.
+`SERVICE`, `TARGET`, and `STABLE_TRUST_DOMAIN` are distinct reviewed coordinates:
+the exact lifecycle service is `registry-dev-01`, its Ansible inventory target is
+`dev-registry-01`, and its approval/response keys remain under the stable
+`registry-dev` trust domain. Do not normalize one coordinate to another.
 
 `EXCHANGE_ROOT` contains controller exchange history and transport downloads.
-`TRANSFER_ROOT` is its protected sibling for reviewed payload-only media stages.
-For response check, the exact six-file source must be under `TRANSFER_ROOT` and
-must neither be inside nor contain `EXCHANGE_ROOT`. In the development
-container, the same source is read-only beneath `CONTAINER_TRANSFER_ROOT` while
-the separately mounted controller exchange is `/platform-pki-exchange`.
+`OFFLINE_WORKSPACE` contains reviewed payload-only command stages and is disjoint
+from signer state, exchange history, and keys. For response check, the exact
+six-file source is the response leaf under `OFFLINE_WORKSPACE` and must neither
+be inside nor contain `EXCHANGE_ROOT`. The response-check invocation explicitly
+mounts `OFFLINE_ROOT` read-only through the current development wrapper; inside
+that one invocation it is visible beneath `CONTAINER_OFFLINE_ROOT`, while the
+separately mounted controller exchange is `/platform-pki-exchange`.
+
+`PKI_NAMESPACE` intentionally names the namespace root. Every
+`platform-pki --namespace` command below derives signer state at `PKI_ROOT`; do
+not append `pki` to the value passed to `--namespace`.
 
 Do not turn this page into one unattended script. Review and authorize one stage
 at a time.
+
+## Operator Key Loss And Replacement
+
+The registry target stores no approval or response private key. It stores the
+complete reviewed public trust tree at
+`$STATE_ROOT/trust/$TRUST_ID/`, including `approvers.allowed_signers` and
+`responses.allowed_signers`. The target trust helper treats that directory as
+immutable and digest-pinned. Do not copy a `.pub` file to the VM, edit an
+existing allowed-signer file, or reuse an existing trust ID for changed bytes.
+
+The stable operator key domain is outside `platform-pki backup`. Include the
+complete `~/.config/platform-pki-keys/<stable-trust-domain>/` directory in the
+separate encrypted operator-key backup procedure after key creation and every
+rotation. Keep the recovery credential separately and test restoration by
+matching public-key fingerprints to reviewed trust.
+
+Use these loss cases:
+
+- Missing `.pub` with the private key intact: rerun `platform-ssh-init` with the
+  exact private-key path, then compare its fingerprint with reviewed trust. Do
+  not change signer or target trust.
+- Missing private key with a verified recovery copy: restore the original key
+  owner-only, derive or restore `.pub`, and compare its fingerprint. Do not
+  change signer or target trust when the identity matches.
+- Missing private key with no recovery copy: perform the replacement procedure
+  below. A public key cannot recover the private key.
+
+For irreversible replacement:
+
+1. Stop new request, approval, signing, activation, finalization, abandonment,
+   and recovery operations for the trust domain.
+2. Classify every dependent request before attempting rotation. If a signed
+   approval already exists, preserve it; it remains verifiable. Complete that
+   request with its frozen trust when the remaining required key is available,
+   or exactly cancel it while it is still unconsumed. Do not try to approve an
+   unapproved frozen request with a replacement key. Cancel an exact unconsumed
+   request through
+   [Expired Or Cancelled Requests](#expired-or-cancelled-requests) before
+   rotating a key that request still depends on. If the response key is lost
+   before signer candidate/response state exists, exact cancellation can clear
+   that request before rotation.
+3. Once signer candidate/response state depends on the lost response identity,
+   require the original private key or an already authenticated signed outcome.
+   A replacement key is rejected by retained response trust. If neither exists,
+   stop: normal finalization, abandonment, and trust rotation cannot complete
+   that request. Preserve signer, controller, transport, and target state; make
+   no manual target change; and escalate to a separately designed
+   disaster-recovery or new-PKI-epoch decision.
+4. After every dependent request is terminal or exactly cancelled, prove that
+   the target has no pending or recovery state:
+
+   ```bash
+   make registry-pki-status ENV="$ENVIRONMENT" LIMIT="$TARGET"
+   ```
+
+   Accept only a reviewed no-pending status such as
+   `managed-migration-needed/create-migration-request`, `complete/none`, or
+   `signer-outcome-abandoned/none`, with `recovery_required=false`. Stop on
+   `request-pending`, `request-expired`, `response-ready`, any nonterminal
+   evidence state, recovery-required state, or conflict.
+5. Build an explicit clearance table from the controller exchange records,
+   transport records, and operator-recorded request IDs. Map every known request
+   coordinate to either its exact target cancellation result or an authenticated
+   terminal signer outcome. For a terminal outcome, reauthenticate its exact
+   recorded digest:
+
+   ```bash
+   platform-pki csr-outcome resolve "$SERVICE" \
+     --namespace "$PKI_NAMESPACE" \
+     --request-id "$REQUEST_ID" \
+     --manifest-sha256 "$OUTCOME_SHA256" \
+     --format json
+   ```
+
+   Require `state=finalized` or `state=abandoned` and the expected action. A
+   retained transport package is history, not pending authority, but every
+   package coordinate must be accounted for. Do not delete packages to create
+   apparent absence. There is no global external newest-request discovery
+   command; if the complete coordinate set or a cancellation/terminal mapping
+   cannot be established, rotation remains blocked.
+6. Generate the replacement with `platform-ssh-init` at a fresh explicit path
+   under the stable key-domain directory. Set `KEY_ROLE` to exactly
+   `offline-approver` or `offline-response` for the lost key:
+
+   ```bash
+   ROTATION_ID=reviewed-rotation-id
+   KEY_ROLE=offline-response
+   REPLACEMENT_DIR="$KEY_DOMAIN/rotations/$ROTATION_ID"
+   REPLACEMENT_KEY="$REPLACEMENT_DIR/$KEY_ROLE"
+
+   install -d -m 0700 -- "$KEY_DOMAIN/rotations" "$REPLACEMENT_DIR"
+   platform-ssh-init \
+     --key-path "$REPLACEMENT_KEY" \
+     --comment "$STABLE_TRUST_DOMAIN $KEY_ROLE $ROTATION_ID"
+   ```
+
+   Do not use `--empty-passphrase`, overwrite a surviving private key, `.pub`
+   file, or retained public-key evidence. Back up and restore-test the
+   replacement before enrollment.
+7. Replace only the corresponding reviewed key record in
+   `approvers.allowed_signers` or `responses.allowed_signers`. Preserve the
+   policy principal unless changing the principal is a separately reviewed
+   policy decision. Review and record all five schema-2 trust-file digests.
+8. Select a fresh immutable target trust ID, for example the next reviewed
+   `schema2-vN` value. Update private inventory with that ID, the five canonical
+   target paths, the five reviewed digests, and the five outside-Git source
+   paths. Never use `latest` or `current`.
+9. Install the reviewed signer trust atomically. This is the final authoritative
+   signer-side gate: `csr-trust-install` rejects a schema-2 change while any
+   retained candidate lacks an authenticated finalized or abandoned outcome.
+
+   ```bash
+   platform-pki csr-trust-install \
+     --namespace "$PKI_NAMESPACE" \
+     --private-repo /absolute/path/to/platform-private
+   ```
+
+10. Install the new immutable public trust snapshot through Ansible rather than
+   manual target changes:
+
+   ```bash
+   make apply ENV="$ENVIRONMENT" \
+     PLAYBOOK=playbooks/registry-pki-trust.yml LIMIT="$TARGET"
+   ```
+
+11. Run the trust playbook in check mode and require an unchanged successful
+    result. The role rechecks the expected trust ID, all five canonical target
+    paths, and all five reviewed digests:
+
+    ```bash
+    make check ENV="$ENVIRONMENT" \
+      PLAYBOOK=playbooks/registry-pki-trust.yml LIMIT="$TARGET"
+    ```
+
+    Select the replacement private-key path explicitly before starting any new
+    request:
+
+    ```bash
+    case "$KEY_ROLE" in
+      offline-approver) APPROVAL_KEY="$REPLACEMENT_KEY" ;;
+      offline-response) RESPONSE_KEY="$REPLACEMENT_KEY" ;;
+      *) printf 'Unsupported replacement key role: %s\n' "$KEY_ROLE" >&2; exit 1 ;;
+    esac
+    ```
+
+    Start only new requests with the new trust ID and the reassigned key
+    variable. Do not replace either canonical old-key path in place.
+12. Retain the old target trust directory, signer transaction snapshots, public
+    keys, signed packages, and finalized history through their approved
+    retention periods. Removing obsolete private or public material is a later
+    exact-path retention decision.
 
 ## Canonical No-Clobber Materialization
 
@@ -522,7 +691,8 @@ Trust rotation is forbidden while a request is pending.
 
 ### B1. Install And Verify Signer State
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Reviewed private inventory/trust and short-lived passphrase files. **Output and
 provenance:** Installed inventory/trust, rollover status, successful passphrase
 verification, and encrypted backup path from `platform-pki`. **Retry/result:**
@@ -546,6 +716,9 @@ platform-pki backup \
   --namespace "$PKI_NAMESPACE" \
   --age-recipient '<reviewed-age-recipient>'
 ```
+
+Before any cleanup depends on this backup, follow the canonical-path,
+network-disabled [backup and isolated restore contract](pki-local-layout.md#backup-and-isolated-restore).
 
 ### B2. Provision Validation Material And Bootstrap Trust
 
@@ -714,7 +887,7 @@ to GitLab.
 Operator-supplied exact request coordinate, reader token, reviewed request
 inventory/trust, and host-key digest. **Output and provenance:** Validated
 transport package under `gitlab-downloads` and exact three-file approver input
-under `TRANSFER_ROOT/request/$REQUEST_ID`. **Retry/result:** Exact destinations
+under `$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID`. **Retry/result:** Exact destinations
 are idempotent; conflicts fail without replacement. **Next actor:** Transport
 operator, then offline approver.
 
@@ -729,24 +902,28 @@ platform-pki gitlab-package download \
   --inventory-record /outside-git/pki/request-inventory \
   --trust-dir "$EXCHANGE_ROOT/$SERVICE/$REQUEST_ID/trust" \
   --transport-host-key-sha256 "$TRANSPORT_HOST_KEY_SHA256"
-materialize_exact_tree "$TRANSFER_ROOT/request/$REQUEST_ID" \
+materialize_exact_tree "$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID" \
   tls.csr "$EXCHANGE_ROOT/gitlab-downloads/request/$REQUEST_ID/tls.csr" \
   request "$EXCHANGE_ROOT/gitlab-downloads/request/$REQUEST_ID/request" \
   request.sig "$EXCHANGE_ROOT/gitlab-downloads/request/$REQUEST_ID/request.sig"
 ```
 
-Retain `collection-receipt` and `stage-manifest` as online transport evidence.
-The transport operator moves only the exact three-file directory through
-controlled media to `$OFFLINE_ROOT/media-in/request/$REQUEST_ID`.
+Retain `collection-receipt` and `stage-manifest` as exchange transport evidence.
+The exact three-file materialization above is the same-workstation approver
+input. Separate-station mode instead moves only that allowlist through reviewed
+controlled media to the same exact-service leaf on the approver station.
 
 ### G1.2. Approve The Exact Request
 
-**Actor:** Offline approver. **Run on:** Disconnected approver host. **Prerequisite:**
-Exact three-file controlled-media input, independently installed policy/trust,
+**Actor:** Offline approver. **Run on:** Reviewed same-workstation approver shell.
+**Prerequisite:**
+Exact three-file reviewed workspace input, independently installed policy/trust,
 approval key, and live human review. **Output and provenance:** JSON field
 `approval_sha256` and exact five-file approved directory; record that field as
-`APPROVAL_SHA256`. **Retry/result:** Review the displayed request and type the
-exact confirmation; do not use `--yes`. Preserve conflicts and expired attempts.
+`APPROVAL_SHA256`. **Retry/result:** Review the displayed request, verify the
+service, request ID, and operation in the confirmation block, then answer
+`Do you want to approve? [y/N]` with `y`; do not use `--yes`. Preserve conflicts
+and expired attempts.
 **Next actor:** Transport operator, then GitLab publisher.
 
 ```bash
@@ -754,16 +931,16 @@ platform-pki offline-csr approve "$SERVICE" \
   --namespace "$PKI_NAMESPACE" \
   --operation migrate \
   --request-id "$REQUEST_ID" \
-  --input-dir "$OFFLINE_ROOT/media-in/request/$REQUEST_ID" \
+  --input-dir "$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID" \
   --approval-key "$APPROVAL_KEY" \
-  --output-dir "$OFFLINE_ROOT/work/approved/$REQUEST_ID"
+  --output-dir "$OFFLINE_WORKSPACE/work/approved/$REQUEST_ID"
 ```
 
 The approved directory contains exactly mode-`0600` `tls.csr`, `request`,
 `request.sig`, `approval`, and `approval.sig`. After recording
 `APPROVAL_SHA256`, materialize only `approval` and `approval.sig` at the exact
 approval attempt coordinate
-`$OFFLINE_ROOT/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256`:
+`$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256`:
 
 `--output-dir` above is a fresh absent command work stage because the approval
 digest does not exist until `approve` returns. It is not a retained or transport
@@ -773,33 +950,24 @@ attempt.
 
 ```bash
 materialize_exact_tree \
-  "$OFFLINE_ROOT/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256" \
-  approval "$OFFLINE_ROOT/work/approved/$REQUEST_ID/approval" \
-  approval.sig "$OFFLINE_ROOT/work/approved/$REQUEST_ID/approval.sig"
+  "$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256" \
+  approval "$OFFLINE_WORKSPACE/work/approved/$REQUEST_ID/approval" \
+  approval.sig "$OFFLINE_WORKSPACE/work/approved/$REQUEST_ID/approval.sig"
 ```
 
-Move that exact two-file directory through controlled media; G1.3 materializes
-the received files into the matching online digest-qualified coordinate.
+The same-workstation publisher consumes that exact two-file directory. In
+separate-station mode, move only that directory through controlled media and
+materialize it at the same exact-service path on the publishing station.
 
-### G1.3. Materialize The Received Approval Attempt
+### G1.3. Confirm The Approval Publication Source
 
-**Actor:** Transport operator. **Run on:** Online transfer station with the
-reviewed controlled medium mounted read-only at `CONTROLLED_MEDIA_IN`. **Prerequisite:**
-Exact digest-qualified two-file media directory from G1.2. **Output and
-provenance:** Exact online approval attempt at
-`$TRANSFER_ROOT/approval/$REQUEST_ID-$APPROVAL_SHA256`. **Retry/result:** The
-canonical no-clobber procedure reports `created` or exact `existing`; all other
-results preserve both media input and destination and block publication. **Next
-actor:** GitLab publisher.
-
-```bash
-materialize_exact_tree \
-  "$TRANSFER_ROOT/approval/$REQUEST_ID-$APPROVAL_SHA256" \
-  approval \
-  "$CONTROLLED_MEDIA_IN/approval/$REQUEST_ID-$APPROVAL_SHA256/approval" \
-  approval.sig \
-  "$CONTROLLED_MEDIA_IN/approval/$REQUEST_ID-$APPROVAL_SHA256/approval.sig"
-```
+**Actor:** Offline approver, then GitLab publisher. **Run on:** Reviewed
+same-workstation shell. **Prerequisite:** Exact G1.2 digest and successful
+no-clobber publication. **Output and provenance:** The exact two-file source is
+`$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256`; no second
+copy or inferred coordinate is created. **Retry/result:** Reauthenticate or
+repeat the exact no-clobber materialization from G1.2; preserve any conflict.
+**Next actor:** GitLab publisher.
 
 ### G1.4. Publish The Approval Attempt
 
@@ -817,7 +985,7 @@ platform-pki gitlab-package publish \
   --stage approval --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$APPROVAL_SHA256" \
-  --source-dir "$TRANSFER_ROOT/approval/$REQUEST_ID-$APPROVAL_SHA256" \
+  --source-dir "$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256" \
   --project-record "$PROJECT_RECORD" \
   --token-type private --token-file "$PUBLISH_TOKEN" \
   --ca-file "$GITLAB_CA"
@@ -842,36 +1010,40 @@ platform-pki gitlab-package download \
   --token-type private --token-file "$READ_TOKEN" \
   --ca-file "$GITLAB_CA"
 materialize_exact_tree \
-  "$TRANSFER_ROOT/approval/$REQUEST_ID-$APPROVAL_SHA256" \
+  "$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256" \
   approval \
   "$EXCHANGE_ROOT/gitlab-downloads/approval/$REQUEST_ID-$APPROVAL_SHA256/approval" \
   approval.sig \
   "$EXCHANGE_ROOT/gitlab-downloads/approval/$REQUEST_ID-$APPROVAL_SHA256/approval.sig"
 materialize_exact_tree \
-  "$TRANSFER_ROOT/signer-input/$REQUEST_ID-$APPROVAL_SHA256" \
-  tls.csr "$TRANSFER_ROOT/request/$REQUEST_ID/tls.csr" \
-  request "$TRANSFER_ROOT/request/$REQUEST_ID/request" \
-  request.sig "$TRANSFER_ROOT/request/$REQUEST_ID/request.sig" \
-  approval "$TRANSFER_ROOT/approval/$REQUEST_ID-$APPROVAL_SHA256/approval" \
+  "$OFFLINE_WORKSPACE/media-in/signer-input/$REQUEST_ID-$APPROVAL_SHA256" \
+  tls.csr "$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID/tls.csr" \
+  request "$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID/request" \
+  request.sig "$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID/request.sig" \
+  approval "$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256/approval" \
   approval.sig \
-  "$TRANSFER_ROOT/approval/$REQUEST_ID-$APPROVAL_SHA256/approval.sig"
+  "$OFFLINE_WORKSPACE/media-out/approval/$REQUEST_ID-$APPROVAL_SHA256/approval.sig"
 ```
 
-Move only the exact digest-qualified five-file signer-input directory through
-controlled media to
-`$OFFLINE_ROOT/media-in/signer-input/$REQUEST_ID-$APPROVAL_SHA256`. Neither
+The exact digest-qualified five-file signer input is already at
+`$OFFLINE_WORKSPACE/media-in/signer-input/$REQUEST_ID-$APPROVAL_SHA256`. In
+separate-station mode, move only that allowlist through controlled media to the
+same leaf on the signer station. Neither
 `stage-manifest`, `collection-receipt`, package metadata, GitLab checksums, nor
 transport credentials enter signer command input.
 
 ### G1.6. Sign And Publish The Local Certificate Export
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Exact five-file input, authoritative signer state, response key, and intermediate
 passphrase file. **Output and provenance:** Sign creates immutable signer
 candidate/response state; certificate export JSON reports `manifest_sha256`,
 recorded as `ARTIFACT_SHA256`; resolve prints the exact authenticated six-file
 path. **Retry/result:** Signing obeys replay and recovery journals; stop on
-recovery-required. Export is exact-idempotent and resolve is read-only.
+recovery-required. Review the displayed signer summary and coordinates, then
+answer `Do you want to sign? [y/N]` with `y`; do not use `--yes`. Export is
+exact-idempotent and resolve is read-only.
 **Next actor:** Transport operator, then GitLab publisher.
 
 ```bash
@@ -879,7 +1051,7 @@ platform-pki offline-csr sign "$SERVICE" \
   --namespace "$PKI_NAMESPACE" \
   --operation migrate \
   --request-id "$REQUEST_ID" \
-  --input-dir "$OFFLINE_ROOT/media-in/signer-input/$REQUEST_ID-$APPROVAL_SHA256" \
+  --input-dir "$OFFLINE_WORKSPACE/media-in/signer-input/$REQUEST_ID-$APPROVAL_SHA256" \
   --response-key "$RESPONSE_KEY" \
   --intermediate-pass-file /run/secrets/platform-pki-intermediate-pass
 ```
@@ -904,7 +1076,7 @@ platform-pki certificate-export resolve "$SERVICE" \
   --format path
 RESPONSE_EXPORT_DIR=/absolute/path/reported-by-certificate-export-resolve
 materialize_exact_tree \
-  "$OFFLINE_ROOT/media-out/response/$REQUEST_ID" \
+  "$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID" \
   artifact "$RESPONSE_EXPORT_DIR/artifact" \
   tls.crt "$RESPONSE_EXPORT_DIR/tls.crt" \
   ca-chain.crt "$RESPONSE_EXPORT_DIR/ca-chain.crt" \
@@ -915,30 +1087,21 @@ materialize_exact_tree \
 
 The resolved directory contains exactly `artifact`, `tls.crt`, `ca-chain.crt`,
 `fullchain.crt`, `response`, and `response.sig`. Stage those exact public files
-under `$OFFLINE_ROOT/media-out/response/$REQUEST_ID`, then move them through
-controlled media to `$CONTROLLED_MEDIA_IN/response/$REQUEST_ID` on the online
-transfer station. Preserve mode `0700` on the directory, mode `0600` on each
-singly linked file, and the resolved bytes.
+under `$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID`. That is the
+same-workstation publication and direct-push source. Separate-station mode moves
+only these files through reviewed controlled media to the same exact-service
+leaf on the transfer station. Preserve mode `0700` on the directory, mode `0600`
+on each singly linked file, and the resolved bytes.
 
-### G1.7. Materialize The Received Response
+### G1.7. Confirm The Response Publication Source
 
-**Actor:** Transport operator. **Run on:** Online transfer station with reviewed
-controlled media mounted read-only. **Prerequisite:** Exact six-file response at immutable
-request coordinate `$REQUEST_ID`. **Output and provenance:** Exact online
-response source at `$TRANSFER_ROOT/response/$REQUEST_ID`, still outside
-`EXCHANGE_ROOT`. **Retry/result:** Canonical no-clobber `created` or exact
-`existing`; any other result preserves inputs and blocks publication. **Next
-actor:** GitLab publisher.
-
-```bash
-materialize_exact_tree "$TRANSFER_ROOT/response/$REQUEST_ID" \
-  artifact "$CONTROLLED_MEDIA_IN/response/$REQUEST_ID/artifact" \
-  tls.crt "$CONTROLLED_MEDIA_IN/response/$REQUEST_ID/tls.crt" \
-  ca-chain.crt "$CONTROLLED_MEDIA_IN/response/$REQUEST_ID/ca-chain.crt" \
-  fullchain.crt "$CONTROLLED_MEDIA_IN/response/$REQUEST_ID/fullchain.crt" \
-  response "$CONTROLLED_MEDIA_IN/response/$REQUEST_ID/response" \
-  response.sig "$CONTROLLED_MEDIA_IN/response/$REQUEST_ID/response.sig"
-```
+**Actor:** Offline signer, then GitLab publisher. **Run on:** Reviewed
+same-workstation shell. **Prerequisite:** Exact six-file response at immutable
+request coordinate `$REQUEST_ID`. **Output and provenance:** Exact source at
+`$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID`, outside `EXCHANGE_ROOT`.
+**Retry/result:** Reauthenticate the digest-pinned export or repeat G1.6's exact
+no-clobber materialization; preserve any conflict. **Next actor:** GitLab
+publisher.
 
 ### G1.8. Publish The Response
 
@@ -953,7 +1116,7 @@ partial resume and complete-package idempotency only; preserve conflicts.
 platform-pki gitlab-package publish \
   --stage response --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" --package-version "$REQUEST_ID" \
-  --source-dir "$TRANSFER_ROOT/response/$REQUEST_ID" \
+  --source-dir "$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID" \
   --project-record "$PROJECT_RECORD" \
   --token-type private --token-file "$PUBLISH_TOKEN" \
   --ca-file "$GITLAB_CA"
@@ -978,7 +1141,7 @@ GitLab retriever.
 **Actor:** GitLab retriever. **Run on:** Online retrieval station. **Prerequisite:**
 Exact response version and artifact digest from Gate 1. **Output and provenance:**
 Transport download beneath `EXCHANGE_ROOT`, then a separate exact six-file
-directory at `$TRANSFER_ROOT/response/$REQUEST_ID`. **Retry/result:** Download is
+directory at `$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID`. **Retry/result:** Download is
 idempotent for exact bytes. Materialization must target an absent or already
 exact reviewed directory; never merge conflicting content. **Next actor:**
 Lifecycle operator.
@@ -991,7 +1154,7 @@ platform-pki gitlab-package download \
   --project-record "$PROJECT_RECORD" \
   --token-type private --token-file "$READ_TOKEN" \
   --ca-file "$GITLAB_CA"
-materialize_exact_tree "$TRANSFER_ROOT/response/$REQUEST_ID" \
+materialize_exact_tree "$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID" \
   artifact "$EXCHANGE_ROOT/gitlab-downloads/response/$REQUEST_ID/artifact" \
   tls.crt "$EXCHANGE_ROOT/gitlab-downloads/response/$REQUEST_ID/tls.crt" \
   ca-chain.crt \
@@ -1018,11 +1181,12 @@ overlap or any conflict fails. No Zot or target mutation occurs. **Next actor:**
 Transport operator.
 
 ```bash
+PLATFORM_CONFIG_SECRET_ROOT="$OFFLINE_ROOT" \
 PLATFORM_CONFIG_PKI_EXCHANGE_ROOT="$EXCHANGE_ROOT" \
 make registry-pki-response-check \
   ENV="$ENVIRONMENT" LIMIT="$TARGET" \
   REQUEST_ID="$REQUEST_ID" ARTIFACT_SHA256="$ARTIFACT_SHA256" \
-  RESPONSE_DIR="$CONTAINER_TRANSFER_ROOT/response/$REQUEST_ID"
+  RESPONSE_DIR="$CONTAINER_OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID"
 ```
 
 ### A3. Push The Exact Response
@@ -1039,7 +1203,7 @@ make registry-pki-direct-response-push \
   ENV="$ENVIRONMENT" LIMIT="$TARGET" \
   ENDPOINT_RECORD="$ENDPOINT_RECORD" REQUEST_ID="$REQUEST_ID" \
   ARTIFACT_SHA256="$ARTIFACT_SHA256" \
-  TRANSFER_DIR="$TRANSFER_ROOT/response/$REQUEST_ID"
+  TRANSFER_DIR="$OFFLINE_WORKSPACE/media-out/response/$REQUEST_ID"
 ```
 
 ### A4. Activate And Validate
@@ -1048,8 +1212,9 @@ make registry-pki-direct-response-push \
 actors. **Run on:** Ansible controller, exact target, and distinct runner.
 **Prerequisite:** Authenticated directly staged response, exact request and
 artifact digests, and one distinct reviewed runner. **Output and provenance:**
-`status=activated-and-validated` and the exact target-signed `deployment` digest;
-record it as `DEPLOYMENT_SHA256`. **Retry/result:** Activation runs automatically
+`status=activated-and-validated`, the runner's unsigned observation consumed by
+the target, and the exact target-signed `deployment` and `validation-result`;
+record the deployment digest as `DEPLOYMENT_SHA256`. **Retry/result:** Activation runs automatically
 after all preflights pass. Do not blindly rerun after failure or
 recovery-required status; use
 [Target Activation Recovery](#target-activation-recovery). **Next actor:**
@@ -1070,7 +1235,8 @@ interactive activation route.
 ### A5. Export, Pull, And Intake Evidence
 
 **Actor:** Lifecycle operator for export/intake; transport operator for pull;
-payload producers are target and runner. **Run on:** Ansible controller and
+the target is the signed payload producer and the runner supplied the unsigned
+observation. **Run on:** Ansible controller and
 online transfer station, with read-only target operations. **Prerequisite:**
 Exact successful activation coordinates. **Output and provenance:** Export
 reports exact direct coordinates; pull JSON reports `destination_dir`; intake
@@ -1172,23 +1338,40 @@ platform-pki gitlab-package download \
   --project-record "$PROJECT_RECORD" \
   --token-type private --token-file "$READ_TOKEN" \
   --ca-file "$GITLAB_CA"
+materialize_exact_tree \
+  "$OFFLINE_WORKSPACE/media-in/evidence/$DEPLOYMENT_SHA256" \
+  deployment \
+  "$EXCHANGE_ROOT/gitlab-downloads/evidence/$REQUEST_ID-$DEPLOYMENT_SHA256/deployment" \
+  deployment.sig \
+  "$EXCHANGE_ROOT/gitlab-downloads/evidence/$REQUEST_ID-$DEPLOYMENT_SHA256/deployment.sig" \
+  validation-boundary \
+  "$EXCHANGE_ROOT/gitlab-downloads/evidence/$REQUEST_ID-$DEPLOYMENT_SHA256/validation-boundary" \
+  validation-result \
+  "$EXCHANGE_ROOT/gitlab-downloads/evidence/$REQUEST_ID-$DEPLOYMENT_SHA256/validation-result" \
+  validation-result.sig \
+  "$EXCHANGE_ROOT/gitlab-downloads/evidence/$REQUEST_ID-$DEPLOYMENT_SHA256/validation-result.sig"
 ```
 
-Move the exact five evidence payload files, not `stage-manifest`, through
-controlled media to `$OFFLINE_ROOT/media-in/evidence/$DEPLOYMENT_SHA256`.
-After offline review, materialize only exact `deployment` and `deployment.sig`
-as signer command input under `$SIGNER_EVIDENCE_ROOT/$DEPLOYMENT_SHA256`; keep
-the supplemental evidence and media-custody copy separate.
+The exact five evidence payload files, not `stage-manifest`, are now at
+`$OFFLINE_WORKSPACE/media-in/evidence/$DEPLOYMENT_SHA256`. The runner emitted
+the unsigned observation consumed during activation; the target produced and
+signed both `deployment` and `validation-result` with its host key. The signer
+command below opens only the explicitly named deployment files while the full
+evidence package remains preserved. Separate-station mode moves the five-file
+allowlist through reviewed controlled media to the same leaf.
 
 ### G2.2. Verify And Finalize The Candidate
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Exact evidence package, authoritative signer history, and separate finalization
 authorization based on the fresh target/runner preflight. **Output and
 provenance:** Verify reports historical signer state with
 `live_state_claimed=false`; finalize records authenticated deployment evidence.
-**Retry/result:** Review and type the exact finalize confirmation. Finalization
-is journaled; stop for signer recovery rather than changing evidence or action.
+**Retry/result:** Verify the service and request ID in the confirmation block,
+then answer `Do you want to finalize? [y/N]` with `y`; do not use `--yes`.
+Finalization is journaled; stop for signer recovery rather than changing evidence
+or action.
 **Next actor:** Offline signer.
 
 ```bash
@@ -1205,7 +1388,8 @@ platform-pki csr-candidate finalize "$SERVICE" \
 
 ### G2.3. Publish And Resolve The Local Outcome Export
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Finalized candidate and the same dedicated response key frozen into signer
 trust. **Output and provenance:** Publish JSON field `manifest_sha256`, recorded
 as `OUTCOME_SHA256`; resolve prints the exact authenticated six-file path.
@@ -1232,7 +1416,7 @@ platform-pki csr-outcome resolve "$SERVICE" \
   --format path
 OUTCOME_EXPORT_DIR=/absolute/path/reported-by-csr-outcome-resolve
 materialize_exact_tree \
-  "$OFFLINE_ROOT/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
+  "$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
   outcome "$OUTCOME_EXPORT_DIR/outcome" \
   outcome.sig "$OUTCOME_EXPORT_DIR/outcome.sig" \
   deployment "$OUTCOME_EXPORT_DIR/deployment" \
@@ -1244,15 +1428,16 @@ materialize_exact_tree \
 The exact outcome payload is `outcome`, `outcome.sig`, `deployment`,
 `deployment.sig`, `deployers.allowed_signers`, and `decision`. Materialize those
 six public files under the exact immutable coordinate
-`$OFFLINE_ROOT/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256`, then move that
-directory through controlled media. G2.5 materializes the received payload at
-the matching online coordinate.
+`$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256`. That is the
+same-workstation publication and direct-push source. Separate-station mode moves
+only that directory through controlled media to the matching exact-service leaf.
 
 ### G2.4. Back Up Finalized Signer State
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Successful finalization and outcome export. **Output and provenance:** New
-encrypted backup path from authoritative `$PKI_NAMESPACE` state. **Retry/result:**
+encrypted backup path from authoritative `$PKI_ROOT` state. **Retry/result:**
 Each successful invocation creates reviewed backup material; retain prior
 backups. **Next actor:** GitLab publisher.
 
@@ -1262,31 +1447,18 @@ platform-pki backup \
   --age-recipient '<reviewed-age-recipient>'
 ```
 
-### G2.5. Materialize The Received Outcome
+Before any cleanup depends on this backup, follow the canonical-path,
+network-disabled [backup and isolated restore contract](pki-local-layout.md#backup-and-isolated-restore).
 
-**Actor:** Transport operator. **Run on:** Online transfer station with reviewed
-controlled media mounted read-only. **Prerequisite:** Exact digest-qualified six-file
-outcome from G2.3. **Output and provenance:** Exact online outcome source at
-`$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256`. **Retry/result:** Canonical
-no-clobber `created` or exact `existing`; any other result preserves inputs and
-blocks publication. **Next actor:** GitLab publisher.
+### G2.5. Confirm The Outcome Publication Source
 
-```bash
-materialize_exact_tree \
-  "$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
-  outcome \
-  "$CONTROLLED_MEDIA_IN/outcome/$REQUEST_ID-$OUTCOME_SHA256/outcome" \
-  outcome.sig \
-  "$CONTROLLED_MEDIA_IN/outcome/$REQUEST_ID-$OUTCOME_SHA256/outcome.sig" \
-  deployment \
-  "$CONTROLLED_MEDIA_IN/outcome/$REQUEST_ID-$OUTCOME_SHA256/deployment" \
-  deployment.sig \
-  "$CONTROLLED_MEDIA_IN/outcome/$REQUEST_ID-$OUTCOME_SHA256/deployment.sig" \
-  deployers.allowed_signers \
-  "$CONTROLLED_MEDIA_IN/outcome/$REQUEST_ID-$OUTCOME_SHA256/deployers.allowed_signers" \
-  decision \
-  "$CONTROLLED_MEDIA_IN/outcome/$REQUEST_ID-$OUTCOME_SHA256/decision"
-```
+**Actor:** Offline signer, then GitLab publisher. **Run on:** Reviewed
+same-workstation shell. **Prerequisite:** Exact digest-qualified six-file outcome
+from G2.3. **Output and provenance:** Exact source at
+`$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256`.
+**Retry/result:** Reauthenticate the digest-pinned export or repeat G2.3's exact
+no-clobber materialization; preserve any conflict. **Next actor:** GitLab
+publisher.
 
 ### G2.6. Publish The Outcome
 
@@ -1304,7 +1476,7 @@ platform-pki gitlab-package publish \
   --stage outcome --service "$SERVICE" --target "$TARGET" \
   --request-id "$REQUEST_ID" \
   --package-version "$REQUEST_ID-$OUTCOME_SHA256" \
-  --source-dir "$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
+  --source-dir "$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
   --project-record "$PROJECT_RECORD" \
   --token-type private --token-file "$PUBLISH_TOKEN" \
   --ca-file "$GITLAB_CA"
@@ -1330,7 +1502,7 @@ GitLab retriever.
 **Actor:** GitLab retriever. **Run on:** Online retrieval station. **Prerequisite:**
 Exact outcome version and all prior lifecycle pins. **Output and provenance:**
 Validated transport package and separate exact six-file payload directory at
-`$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256`. **Retry/result:** Exact destinations
+`$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256`. **Retry/result:** Exact destinations
 are idempotent; never merge or replace a conflict. **Next actor:** Transport
 operator.
 
@@ -1344,7 +1516,7 @@ platform-pki gitlab-package download \
   --token-type private --token-file "$READ_TOKEN" \
   --ca-file "$GITLAB_CA"
 materialize_exact_tree \
-  "$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
+  "$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256" \
   outcome \
   "$EXCHANGE_ROOT/gitlab-downloads/outcome/$REQUEST_ID-$OUTCOME_SHA256/outcome" \
   outcome.sig \
@@ -1374,7 +1546,7 @@ make registry-pki-direct-outcome-push \
   ENDPOINT_RECORD="$ENDPOINT_RECORD" REQUEST_ID="$REQUEST_ID" \
   ARTIFACT_SHA256="$ARTIFACT_SHA256" \
   DEPLOYMENT_SHA256="$DEPLOYMENT_SHA256" OUTCOME_SHA256="$OUTCOME_SHA256" \
-  TRANSFER_DIR="$TRANSFER_ROOT/outcome/$REQUEST_ID-$OUTCOME_SHA256"
+  TRANSFER_DIR="$OFFLINE_WORKSPACE/media-out/outcome/$REQUEST_ID-$OUTCOME_SHA256"
 ```
 
 ### C3. Preflight And Import The Outcome
@@ -1472,7 +1644,7 @@ stages:
 
 variables:
   PKI_ENVIRONMENT: "dev"
-  PKI_TARGET: "registry-example"
+  PKI_TARGET: "dev-registry-01"
 
 .pki-protected-job:
   tags:
@@ -1566,6 +1738,13 @@ recovery procedure accounts for both byte paths. Activation has no compatibility
 target: `registry-pki-activate` is direct-only and automatic after its exact
 preflights pass.
 
+`~/.config/platform-infrastructure/pki-outcome-ingress/` is retired historical
+compatibility storage. No current route writes or defaults to it. The
+controller-local outcome target runs only with an explicit operator-supplied
+protected `OUTCOME_DIR`; direct outcome import uses the fixed target spool.
+Preserve historical ingress until its classification and retention decision is
+complete.
+
 ## Target Activation Recovery
 
 If status reports `activation-recovery-required`, do not retry activation.
@@ -1597,12 +1776,15 @@ make registry-pki-evidence-export \
 After exact evidence transport and signer review, abandon with the digest-pinned
 evidence.
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Authenticated rolled-back evidence and exact artifact pin. **Output and
 provenance:** Terminal decision `action=abandon`, `result=rolled-back`,
 `state=abandoned`. **Retry/result:** Interactive, journaled, and exact; never
-change the action or evidence to bypass recovery. **Next actor:** Follow the same
-outcome publish, transport, import, and terminal verification sequence.
+change the action or evidence to bypass recovery. Verify the service and request
+ID, then answer `Do you want to abandon? [y/N]` with `y`; do not use `--yes`.
+**Next actor:** Follow the same outcome publish, transport, import, and terminal
+verification sequence.
 
 ```bash
 platform-pki csr-candidate abandon "$SERVICE" \
@@ -1622,7 +1804,8 @@ host-local-predecessor abandonment remains fail-closed.
 
 ### Recover An Interrupted Signing Transaction
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Exact signer recovery journal and request ID. **Output and provenance:** Recovered
 journaled transaction or explicit retained recovery state. **Retry/result:**
 Resume only the journaled operation; omit `--response-key` only when its response
@@ -1638,7 +1821,8 @@ platform-pki csr-recover \
 
 ### Recover An Interrupted Finalization
 
-**Actor:** Offline signer. **Run on:** Disconnected signer host. **Prerequisite:**
+**Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
+**Prerequisite:**
 Finalization recovery journal. **Output and provenance:** Resume-only completion
 of exact journaled finalization. **Retry/result:** Repeat only this recovery; it
 does not invert the decision. **Next actor:** Resume Gate 2 at outcome export.
@@ -1686,7 +1870,7 @@ coordinates so the no-clobber importer can authenticate history and complete
 pointer publication.
 
 Retain signer replay, transactions, candidates, responses, exports, trust,
-decisions, outcomes, and accepted history under `$PKI_NAMESPACE`; controller
+decisions, outcomes, and accepted history under `$PKI_ROOT`; controller
 request/trust/response/evidence/outcome history under `EXCHANGE_ROOT`; all
 GitLab package attempts and manifests; target pending/version/active/rollback/
 evidence/outcome state and journals; the managed predecessor; encrypted signer

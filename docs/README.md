@@ -35,6 +35,9 @@ and other secrets belong outside Git.
 
 - [Firewalld Readiness And Enablement](firewalld.md): Inactive baseline, rule
   ownership, offline staging, canary activation, validation, rollout, and rollback.
+- [Same-Workstation PKI Layout](pki-local-layout.md): Canonical signer,
+  exchange, offline-workspace, key-custody, retention, compatibility, and legacy
+  path map.
 
 ## Services
 

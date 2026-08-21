@@ -14,8 +14,10 @@ Store each input according to its authority:
 | --- | --- |
 | `platform-config` | Public helpers, Ansible roles, sanitized setup procedures, and examples |
 | `platform-private` | Real inventory, project and target references, public-key authorization policy, and non-secret environment configuration |
-| `~/.config/platform-infrastructure/` | Canonical online configuration, credentials, transfer workspaces, exchange history, and authoritative `platform-pki` state under `pki/` |
-| `~/.config/platform-pki-offline/<service>/` | Initializer-managed controlled-media ingress/egress and temporary approved work; approval/response keys remain explicit protected inputs outside this tree |
+| `~/.config/platform-infrastructure/pki/` | Authoritative `platform-pki` signer state |
+| `~/.config/platform-infrastructure/pki-exchange/` | Raw transport and authenticated controller exchange history |
+| `~/.config/platform-pki-offline/<exact-service>/` | Initializer-managed reviewed request, approval, signer-input, response, evidence, outcome, and temporary approved work |
+| `~/.config/platform-pki-keys/<stable-trust-domain>/` | Explicit approval and response private-key custody |
 
 Never commit a real token, private key, inventory, endpoint record, or access
 policy to this repository. The target leaf key remains target-local and never
@@ -149,11 +151,11 @@ platform-pki gitlab-package publish \
 
 ## Transfer-Station Layout
 
-Use one owner-only online namespace. Existing canonical PKI state and exchange
-history must not be moved merely to adopt this layout. `pki-exchange/` is the
-controller/transport workspace. Its `pki-transfer/` sibling holds reviewed
-payload-only media stages, including the response source consumed by controller
-response check.
+Use the canonical [Same-Workstation PKI Layout](pki-local-layout.md). Existing
+canonical PKI state and exchange history must not be moved merely to adopt this
+layout. `pki-exchange/` is the controller/transport workspace. The disjoint
+exact-service offline workspace holds reviewed payload-only command stages,
+including the response source consumed by controller response check.
 
 ```text
 ~/.config/platform-infrastructure/
@@ -162,21 +164,15 @@ response check.
 │   │   ├── project-record
 │   │   └── ca.pem
 │   └── endpoints/
-│       └── registry-example.json
+│       └── registry-dev-01.json
 ├── infra/pki-exchange/
 │   ├── gitlab/
 │   │   ├── publisher.token
 │   │   └── reader.token
-│   └── ssh/registry-example/
+│   └── ssh/registry-dev-01/
 │       ├── identity
 │       ├── identity.pub
 │       └── known_hosts
-├── pki-transfer/
-│   ├── request/
-│   ├── approval/
-│   ├── signer-input/
-│   ├── response/
-│   └── outcome/
 └── pki-exchange/
     ├── intake/
     ├── gitlab-downloads/
@@ -186,7 +182,7 @@ response check.
     │   ├── evidence/
     │   └── outcome/
     ├── locks/
-    └── registry-example/<request-id>/
+    └── registry-dev-01/<request-id>/
         ├── trust/
         ├── request/
         ├── approval/
@@ -195,9 +191,11 @@ response check.
         └── outcome/
 ```
 
-The signer host separately keeps authoritative state at
-`~/.config/platform-infrastructure/pki/`. A transfer-only host does not copy or
-create that signer tree merely to match this layout.
+The same workstation separately keeps authoritative state at
+`~/.config/platform-infrastructure/pki/`, reviewed command work at
+`~/.config/platform-pki-offline/<exact-service>/`, and approval/response keys at
+`~/.config/platform-pki-keys/<stable-trust-domain>/`. On a transfer-only host,
+do not copy or create signer state or keys merely to match the map.
 
 Set a restrictive umask and create every intermediate protected directory
 explicitly. Creating only a deep leaf can leave an intermediate parent at the
@@ -212,8 +210,12 @@ setup administrator.
 
 ```bash
 umask 077
-PI="$HOME/.config/platform-infrastructure"
-SERVICE=registry-example
+PI="${XDG_CONFIG_HOME:-$HOME/.config}/platform-infrastructure"
+SERVICE=registry-dev-01
+TARGET=dev-registry-01
+EXCHANGE_IDENTITY=registry-dev-01
+OFFLINE_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/platform-pki-offline"
+OFFLINE_WORKSPACE="$OFFLINE_ROOT/$SERVICE"
 install -d -m 0700 -- \
   "$PI" \
   "$PI/config" \
@@ -224,13 +226,7 @@ install -d -m 0700 -- \
   "$PI/infra/pki-exchange" \
   "$PI/infra/pki-exchange/gitlab" \
   "$PI/infra/pki-exchange/ssh" \
-  "$PI/infra/pki-exchange/ssh/$SERVICE" \
-  "$PI/pki-transfer" \
-  "$PI/pki-transfer/request" \
-  "$PI/pki-transfer/approval" \
-  "$PI/pki-transfer/signer-input" \
-  "$PI/pki-transfer/response" \
-  "$PI/pki-transfer/outcome" \
+  "$PI/infra/pki-exchange/ssh/$EXCHANGE_IDENTITY" \
   "$PI/pki-exchange" \
   "$PI/pki-exchange/intake" \
   "$PI/pki-exchange/gitlab-downloads" \
@@ -240,13 +236,14 @@ install -d -m 0700 -- \
   "$PI/pki-exchange/gitlab-downloads/evidence" \
   "$PI/pki-exchange/gitlab-downloads/outcome" \
   "$PI/pki-exchange/locks"
+platform-pki offline-workspace init "$SERVICE" --root "$OFFLINE_ROOT"
 ```
 
 Directories are current-user-owned mode `0700`. Protected files are singly
 linked regular files with mode `0400` or `0600`, except a reviewed CA bundle may
 also be mode `0644`. Download destinations include `stage-manifest`; materialize
-only the exact payload allowlist into the separate `pki-transfer` stage with the
-canonical
+only the exact payload allowlist into the separate exact-service offline
+workspace with the canonical
 [No-Clobber Materialization](registry-host-local-pki-workflow.md#canonical-no-clobber-materialization)
 procedure. Do not use an overwrite-capable copy or `install` loop. Raw target
 request/evidence pulls remain in `pki-exchange/intake` because their controller
@@ -261,25 +258,24 @@ Map the abstract workflow paths to this namespace consistently:
 | Authenticated request source | `$PI/pki-exchange/<service>/<request-id>/request` |
 | Frozen request trust | `$PI/pki-exchange/<service>/<request-id>/trust` |
 | GitLab package download | `$PI/pki-exchange/gitlab-downloads/<stage>/<full-version>` |
-| Approver request staging | `$PI/pki-transfer/request/<request-id>` |
-| Approval attempt staging | `$PI/pki-transfer/approval/<request-id>-<approval-sha256>` |
-| Signer input staging | `$PI/pki-transfer/signer-input/<request-id>-<approval-sha256>` |
-| Response-check and response-push source | `$PI/pki-transfer/response/<request-id>` |
+| Approver request staging | `$OFFLINE_WORKSPACE/media-in/request/<request-id>` |
+| Approval attempt staging | `$OFFLINE_WORKSPACE/media-out/approval/<request-id>-<approval-sha256>` |
+| Signer input staging | `$OFFLINE_WORKSPACE/media-in/signer-input/<request-id>-<approval-sha256>` |
+| Response-check and response-push source | `$OFFLINE_WORKSPACE/media-out/response/<request-id>` |
 | Raw direct evidence pull | `$PI/pki-exchange/intake/evidence-<deployment-sha256>` |
 | Authenticated evidence source | `$PI/pki-exchange/<service>/<request-id>/evidence/<deployment-sha256>` |
-| Payload-only outcome push | `$PI/pki-transfer/outcome/<request-id>-<outcome-sha256>` |
+| Reviewed evidence custody | `$OFFLINE_WORKSPACE/media-in/evidence/<deployment-sha256>` |
+| Payload-only outcome push | `$OFFLINE_WORKSPACE/media-out/outcome/<request-id>-<outcome-sha256>` |
 | External publication lock | `$PI/pki-exchange/locks/<reviewed-coordinate>` |
 
 In containerized Ansible commands, mount the host exchange root as
 `/platform-pki-exchange`; values such as `REQUEST_DIR` and `EVIDENCE_DIR` use
-that container path. The development wrapper mounts the complete
-`platform-infrastructure` namespace read-only at
-`/tmp/platform-home/.config/platform-infrastructure`, so response check uses
-`/tmp/platform-home/.config/platform-infrastructure/pki-transfer/response/<request-id>`.
-The response source must be an exact six-file protected directory that neither
-contains nor is contained by the controller exchange root. A transport download
-may remain under the exchange root, but it is never the response-check or direct
-push source.
+that container path. Response check also requires its host offline root to be
+mounted read-only and an explicit container-visible `RESPONSE_DIR`; the canonical
+workflow shows the current wrapper invocation. The response source must be an
+exact six-file protected directory that neither contains nor is contained by the
+controller exchange root. A transport download may remain under the exchange
+root, but it is never the response-check or direct push source.
 
 ## GitLab CA
 
@@ -319,8 +315,8 @@ a retry. **Next actor:** Trusted host-key reviewer.
 
 ```bash
 platform-ssh-init \
-  --key-path "$PI/infra/pki-exchange/ssh/$SERVICE/identity" \
-  --comment "platform PKI exchange $SERVICE" \
+  --key-path "$PI/infra/pki-exchange/ssh/$EXCHANGE_IDENTITY/identity" \
+  --comment "platform PKI exchange $EXCHANGE_IDENTITY" \
   --empty-passphrase \
   --print-public-key
 ```
@@ -351,7 +347,7 @@ record administrator.
 
 ```bash
 ssh-keygen -E sha256 -lf \
-  "$PI/infra/pki-exchange/ssh/$SERVICE/known_hosts"
+  "$PI/infra/pki-exchange/ssh/$EXCHANGE_IDENTITY/known_hosts"
 ```
 
 Store that OpenSSH display fingerprint in endpoint field
@@ -367,7 +363,7 @@ Create one canonical JSON line with an absolute identity path, absolute
 remote helper, and restricted account:
 
 ```json
-{"expected_host_key_sha256":"SHA256:REVIEWED_OPENSSH_FINGERPRINT","host":"192.0.2.61","identity_path":"/home/operator/.config/platform-infrastructure/infra/pki-exchange/ssh/registry-example/identity","known_hosts_path":"/home/operator/.config/platform-infrastructure/infra/pki-exchange/ssh/registry-example/known_hosts","port":22,"remote_helper_path":"/usr/local/libexec/platform-pki-host-local-exchange","schema":1,"user":"exchange-operator"}
+{"expected_host_key_sha256":"SHA256:REVIEWED_OPENSSH_FINGERPRINT","host":"192.0.2.61","identity_path":"/home/operator/.config/platform-infrastructure/infra/pki-exchange/ssh/registry-dev-01/identity","known_hosts_path":"/home/operator/.config/platform-infrastructure/infra/pki-exchange/ssh/registry-dev-01/known_hosts","port":22,"remote_helper_path":"/usr/local/libexec/platform-pki-host-local-exchange","schema":1,"user":"exchange-operator"}
 ```
 
 Store it as
@@ -411,7 +407,7 @@ pki_host_local_exchange_access_authorized_key: >-
         lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR')
         | dirname
       )
-      ~ '/infra/pki-exchange/ssh/registry-example/identity.pub'
+      ~ '/infra/pki-exchange/ssh/registry-dev-01/identity.pub'
     )
   }}
 ```
@@ -453,14 +449,15 @@ a broad Ansible administrator key for the restricted exchange identity.
 
 ## Offline Layout
 
-Keep offline command inputs separate from online receipts, manifests, package
-metadata, tokens, and endpoint records. Follow the `platform-tools`
+Keep reviewed command inputs separate from exchange receipts, manifests, package
+metadata, tokens, endpoint records, authoritative signer state, and private
+keys. Follow the `platform-tools`
 [Offline PKI Workspace](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-offline-workspace.md)
 initializer contract; do not guess undocumented flags or create placeholder key
 files.
 
 ```text
-~/.config/platform-pki-offline/<service>/
+~/.config/platform-pki-offline/<exact-service>/
 ├── README.md
 ├── media-in/
 │   ├── request/
@@ -476,16 +473,27 @@ files.
 The offline root and every staging directory are mode `0700`; its fixed README
 and payload files are mode `0600`. This workspace owns media custody and work
 only. It creates and owns no private keys, public keys, or secret placeholders.
-Approval and response key paths remain explicit operator inputs outside this
-tree. The workspace must not claim signer transactions, replay state,
+Approval and response key paths remain explicit operator inputs beneath the
+separate `~/.config/platform-pki-keys/<stable-trust-domain>/` root. The
+workspace must not claim signer transactions, replay state,
 candidates, responses, outcomes, or accepted history. Preserve that
-authoritative state under `~/.config/platform-infrastructure/pki/`. Direct mode
-no longer writes new packages to a legacy controller-local outcome ingress, but
-historical ingress must remain until an explicit retention decision authorizes
-removal.
+authoritative state under `~/.config/platform-infrastructure/pki/`.
 
-If signer state and transfer credentials reside on the same networked host, the
-directories provide logical separation only. A genuinely offline signer keeps
+For same-workstation operation, `pki-transfer` is retired and its former leaves
+map to the initialized offline workspace as documented in
+[Retired And Historical Paths](pki-local-layout.md#retired-and-historical-paths).
+`pki-outcome-ingress` is also retired historical compatibility storage: direct
+mode has no write or default there, and controller-local import uses only an
+explicit operator-supplied `OUTCOME_DIR`. Preserve existing historical content
+until an explicit classification and retention decision.
+
+If signer state, transfer credentials, and approval/response keys reside on the
+same networked host, the directories provide logical separation only. There is
+no physical offline isolation and one host compromise has a larger blast radius;
+the actor separation is only key and namespace separation unless distinct
+people or systems are actually used. Cryptographic authentication, exact digest
+binding, replay protection, no-clobber publication, and target-local leaf-key
+custody still apply. A genuinely offline signer keeps
 canonical `~/.config/platform-infrastructure/pki/` state, explicit external
 approval/response keys, and the separate offline media/work workspace on a
 disconnected host or encrypted removable storage. The workspace never becomes a

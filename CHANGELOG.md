@@ -5,7 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.2] - 2026-08-21
+
+### Added
+
+- Added a canonical same-workstation PKI operator map covering authoritative
+  signer state, exchange history, exact-service offline workspaces, stable trust
+  key domains, backup/retention boundaries, and one-station security tradeoffs.
+- Added fail-closed operator-key backup/loss/rotation and canonical-path isolated
+  restore procedures, plus a node-specific registry service naming contract
+  beginning with `registry-dev-01` while retaining historical `registry-dev`,
+  `registry-dev-g2`, and `registry-dev-g3` services.
+
+### Changed
+
+- Retired `pki-transfer` and `pki-outcome-ingress` from current same-workstation
+  documentation while preserving explicit controller-local compatibility paths
+  and historical retention requirements.
+
+### Fixed
+
+- Corrected `platform-pki --namespace` examples to pass the namespace root and
+  corrected evidence ownership: the runner emits an unsigned observation, then
+  the target signs deployment and validation-result records.
 
 ## [3.0.1] - 2026-08-20
 
