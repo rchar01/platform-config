@@ -11,12 +11,12 @@
       - (zot_registry_tls_custody_result.stdout | from_json).keys() | list | sort == zot_registry_tls_custody_required_fields
       - (zot_registry_tls_custody_result.stdout | from_json).schema == '1'
       - (zot_registry_tls_custody_result.stdout | from_json).kind == 'platform-config-zot-tls-custody'
-      - (zot_registry_tls_custody_result.stdout | from_json).custody in ['managed', 'host-local']
+      - (zot_registry_tls_custody_result.stdout | from_json).custody in ['dormant', 'managed', 'host-local']
       - (zot_registry_tls_custody_result.stdout | from_json).cert_path | type_debug == 'str'
       - (zot_registry_tls_custody_result.stdout | from_json).key_path | type_debug == 'str'
       - >-
         (
-          (zot_registry_tls_custody_result.stdout | from_json).custody == 'managed'
+          (zot_registry_tls_custody_result.stdout | from_json).custody in ['dormant', 'managed']
           and (zot_registry_tls_custody_result.stdout | from_json).request_id == 'none'
           and (zot_registry_tls_custody_result.stdout | from_json).cert_path == zot_registry_tls_cert_path
           and (zot_registry_tls_custody_result.stdout | from_json).key_path == zot_registry_tls_key_path
@@ -47,8 +47,8 @@
           and (zot_registry_tls_custody_result.stdout | from_json).zot_config_sha256 is match('^[0-9a-f]{64}$')
         )
     fail_msg: >-
-      The lifecycle helper did not return one exact managed or authenticated
-      host-local Zot TLS custody result.
+      The lifecycle helper did not return one exact dormant, managed, or
+      authenticated host-local Zot TLS custody result.
   vars:
     zot_registry_tls_custody_required_fields:
       - artifact_sha256

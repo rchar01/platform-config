@@ -23,6 +23,9 @@ V2_HELPER_SHA256 = (
 V3_HELPER_SHA256 = (
     "9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3"
 )
+V4_HELPER_SHA256 = (
+    "3d446de2d3e56314ca70e881b5354a2c341566f17a6e4472f58faced92daa7c0"
+)
 MANAGED_RESULT = {
     "schema": "1",
     "kind": "platform-config-zot-tls-custody",
@@ -37,6 +40,7 @@ MANAGED_RESULT = {
     "fullchain_sha256": "none",
     "zot_config_sha256": DIGEST,
 }
+DORMANT_RESULT = {**MANAGED_RESULT, "custody": "dormant"}
 HOST_LOCAL_RESULT = {
     **MANAGED_RESULT,
     "custody": "host-local",
@@ -141,7 +145,7 @@ def _helper_stat(checksum: str, *, mode: str = "0755") -> dict[str, Any]:
     }
 
 
-def _source_stat(checksum: str = V3_HELPER_SHA256) -> dict[str, Any]:
+def _source_stat(checksum: str = V4_HELPER_SHA256) -> dict[str, Any]:
     return {
         "exists": True,
         "isreg": True,
@@ -177,7 +181,7 @@ def test_zot_tls_defaults_remove_inventory_custody_and_pin_lifecycle_inputs(
         repo_root
         / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
     )
-    assert hashlib.sha256(helper.read_bytes()).hexdigest() == V3_HELPER_SHA256
+    assert hashlib.sha256(helper.read_bytes()).hexdigest() == V4_HELPER_SHA256
 
 
 def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) -> None:
@@ -193,13 +197,26 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
         "Preview the authenticated host-local Zot configuration"
     )
     assert main_by_name["Write Zot configuration"]["when"] == (
-        "zot_registry_tls_effective_custody == 'managed'"
+        "zot_registry_tls_effective_custody in ['dormant', 'managed']"
     )
     for name in ("Copy Zot TLS certificate", "Copy Zot TLS private key"):
         assert main_by_name[name]["when"] == [
             "zot_registry_tls_enabled | bool",
             "zot_registry_tls_effective_custody == 'managed'",
         ]
+    service = main_by_name["Manage Zot registry service"][
+        "ansible.builtin.systemd_service"
+    ]
+    assert "omit if zot_registry_tls_effective_custody == 'dormant'" in service[
+        "enabled"
+    ]
+    assert service["masked"] == (
+        "{{ zot_registry_tls_effective_custody == 'dormant' }}"
+    )
+    assert service["state"] == (
+        "{{ 'stopped' if zot_registry_tls_effective_custody == 'dormant' else "
+        "zot_registry_service_state }}"
+    )
 
     command = resolve_by_name[
         "Derive Zot TLS custody from initialized lifecycle state"
@@ -217,6 +234,8 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
         "{{ zot_registry_tls_host_local_service }}",
         "--target",
         "{{ zot_registry_tls_host_local_target }}",
+        "--operation",
+        "{{ pki_host_local_certificate_operation | default('migrate', true) }}",
         "--zot-config",
         "{{ zot_registry_tls_host_local_zot_config_path }}",
         "--managed-cert",
@@ -269,12 +288,14 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
         "group": "root",
         "mode": "0755",
     }
-    assert upgrade["when"] == [
+    assert upgrade["when"][:3] == [
         "zot_registry_tls_enabled | bool",
         "not ansible_check_mode",
         "zot_registry_tls_custody_state.helper.exists",
-        f"zot_registry_tls_custody_state.helper.checksum == '{V2_HELPER_SHA256}'",
     ]
+    assert len(upgrade["when"]) == 4
+    assert V2_HELPER_SHA256 in upgrade["when"][3]
+    assert V3_HELPER_SHA256 in upgrade["when"][3]
 
     refreshed = resolve_by_name["Refresh installed Zot TLS lifecycle helper state"]
     assert refreshed["ansible.builtin.stat"]["checksum_algorithm"] == "sha256"
@@ -283,7 +304,7 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
     ]
     current_contract = "\n".join(current["ansible.builtin.assert"]["that"])
     assert "root:root 0755" in current["ansible.builtin.assert"]["fail_msg"]
-    assert V3_HELPER_SHA256 in current_contract
+    assert V4_HELPER_SHA256 in current_contract
     assert current["when"] == [
         "zot_registry_tls_enabled | bool",
         "zot_registry_tls_custody_state.state_root.exists",
@@ -306,12 +327,14 @@ def test_zot_tls_custody_result_contract_is_exact(repo_root: Path) -> None:
 
     assert fields == sorted(MANAGED_RESULT)
     assert any("stderr == ''" in expression for expression in expressions)
-    assert any("custody in ['managed', 'host-local']" in expression for expression in expressions)
+    assert any("custody in ['dormant', 'managed', 'host-local']" in expression for expression in expressions)
     assert any("/fullchain.crt" in expression for expression in expressions)
     assert any("/tls.key" in expression for expression in expressions)
 
 
-def test_zot_tls_input_validation_accepts_required_bootstrap_sources(
+@pytest.mark.parametrize("extra_vars", (MANAGED_SOURCES, {}), ids=("complete", "empty"))
+def test_zot_tls_input_validation_accepts_complete_or_empty_bootstrap_sources(
+    extra_vars: dict[str, Any],
     command_runner: CommandRunner,
     isolated_test_dir: Path,
 ) -> None:
@@ -319,14 +342,18 @@ def test_zot_tls_input_validation_accepts_required_bootstrap_sources(
     _role_tasks_playbook(playbook, "validate_tls_custody")
 
     run_playbook(
-        command_runner, playbook, extra_vars=(MANAGED_SOURCES,)
+        command_runner, playbook, extra_vars=(extra_vars,)
     ).assert_success()
 
 
 @pytest.mark.parametrize(
     ("case_id", "extra_vars", "message"),
     [
-        ("missing-sources", {}, "remain required"),
+        (
+            "partial-sources",
+            {"zot_registry_tls_cert_src": "/controller/tls.crt"},
+            "must both be set or both be empty",
+        ),
         (
             "inventory-custody",
             {**MANAGED_SOURCES, "zot_registry_tls_custody": "managed"},
@@ -401,14 +428,14 @@ def test_zot_tls_input_validation_fails_closed(
         "valid",
     ),
     [
-        ("fresh-absent", False, None, "0755", V3_HELPER_SHA256, True),
-        ("initialized-absent", True, None, "0755", V3_HELPER_SHA256, False),
+        ("fresh-absent", False, None, "0755", V4_HELPER_SHA256, True),
+        ("initialized-absent", True, None, "0755", V4_HELPER_SHA256, False),
         (
             "unknown-checksum",
             True,
             "b" * 64,
             "0755",
-            V3_HELPER_SHA256,
+            V4_HELPER_SHA256,
             False,
         ),
         (
@@ -416,15 +443,23 @@ def test_zot_tls_input_validation_fails_closed(
             True,
             V2_HELPER_SHA256,
             "0775",
-            V3_HELPER_SHA256,
+            V4_HELPER_SHA256,
             False,
         ),
         (
             "initialized-current",
             True,
+            V4_HELPER_SHA256,
+            "0755",
+            V4_HELPER_SHA256,
+            True,
+        ),
+        (
+            "initialized-v3-predecessor",
+            True,
             V3_HELPER_SHA256,
             "0755",
-            V3_HELPER_SHA256,
+            V4_HELPER_SHA256,
             True,
         ),
         (
@@ -432,7 +467,7 @@ def test_zot_tls_input_validation_fails_closed(
             True,
             V2_HELPER_SHA256,
             "0755",
-            V3_HELPER_SHA256,
+            V4_HELPER_SHA256,
             True,
         ),
         (
@@ -486,8 +521,12 @@ def test_zot_tls_helper_absence_and_drift_are_state_sensitive(
 
 @pytest.mark.parametrize(
     ("checksum", "valid"),
-    ((V3_HELPER_SHA256, True), (V2_HELPER_SHA256, False)),
-    ids=("current", "predecessor"),
+    (
+        (V4_HELPER_SHA256, True),
+        (V3_HELPER_SHA256, False),
+        (V2_HELPER_SHA256, False),
+    ),
+    ids=("current", "v3-predecessor", "v2-predecessor"),
 )
 def test_zot_tls_helper_check_mode_requires_current_without_mutation(
     checksum: str,
@@ -534,12 +573,17 @@ def test_zot_read_only_helper_validation_remains_exact(repo_root: Path) -> None:
     assert "installed_lifecycle_helper.stat.checksum" in contract
     assert "lifecycle_helper_source.stat.checksum" in contract
     assert V2_HELPER_SHA256 not in contract
+    assert V3_HELPER_SHA256 not in contract
     assert read_only["when"] == (
         "ansible_check_mode or pki_host_local_certificate_helper_read_only"
     )
 
 
-@pytest.mark.parametrize("result", (MANAGED_RESULT, HOST_LOCAL_RESULT), ids=("managed", "host-local"))
+@pytest.mark.parametrize(
+    "result",
+    (DORMANT_RESULT, MANAGED_RESULT, HOST_LOCAL_RESULT),
+    ids=("dormant", "managed", "host-local"),
+)
 def test_zot_tls_custody_result_accepts_exact_schemas(
     result: dict[str, Any],
     command_runner: CommandRunner,

@@ -7,14 +7,15 @@
       zot_registry_tls_custody is no longer an inventory choice; custody is
       derived from authenticated target lifecycle state.
 
-- name: Assert Zot managed TLS recovery sources are configured
+- name: Assert Zot TLS recovery sources form a complete or empty pair
   ansible.builtin.assert:
     that:
-      - zot_registry_tls_cert_src | length > 0
-      - zot_registry_tls_key_src | length > 0
+      - >-
+        (zot_registry_tls_cert_src | length == 0)
+        == (zot_registry_tls_key_src | length == 0)
     fail_msg: >-
-      zot_registry_tls_cert_src and zot_registry_tls_key_src remain required
-      for TLS bootstrap and managed recovery.
+      zot_registry_tls_cert_src and zot_registry_tls_key_src must both be set or
+      both be empty.
   when: zot_registry_tls_enabled | bool
 
 - name: Assert Zot TLS lifecycle and managed paths are canonical
@@ -48,6 +49,8 @@
       - zot_registry_tls_host_local_target | type_debug == 'str'
       - zot_registry_tls_host_local_target is match('^[a-z0-9][a-z0-9.-]{0,252}$')
       - zot_registry_tls_host_local_target == inventory_hostname
+      - (pki_host_local_certificate_operation | default('migrate', true)) | type_debug == 'str'
+      - (pki_host_local_certificate_operation | default('migrate', true)) in ['issue', 'migrate', 'renew']
       - zot_registry_tls_host_local_zot_config_path | type_debug == 'str'
       - zot_registry_tls_host_local_zot_config_path == '/etc/zot/config.json'
       - zot_registry_config_path == zot_registry_tls_host_local_zot_config_path

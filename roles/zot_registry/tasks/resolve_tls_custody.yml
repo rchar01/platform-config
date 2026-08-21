@@ -1,7 +1,8 @@
 ---
 - name: Initialize Zot TLS custody to exact managed paths
   ansible.builtin.set_fact:
-    zot_registry_tls_effective_custody: managed
+    zot_registry_tls_effective_custody: >-
+      {{ 'dormant' if (pki_host_local_certificate_operation | default('migrate', true)) == 'issue' else 'managed' }}
     zot_registry_tls_effective_cert_path: "{{ zot_registry_tls_cert_path }}"
     zot_registry_tls_effective_key_path: "{{ zot_registry_tls_key_path }}"
 
@@ -34,6 +35,12 @@
     - name: helper
       path: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
       checksum: true
+    - name: managed_cert
+      path: "{{ zot_registry_tls_cert_path }}"
+      checksum: false
+    - name: managed_key
+      path: "{{ zot_registry_tls_key_path }}"
+      checksum: false
   loop_control:
     label: "{{ item.name }}"
   register: zot_registry_tls_custody_state_stats
@@ -77,7 +84,12 @@
     - zot_registry_tls_enabled | bool
     - not ansible_check_mode
     - zot_registry_tls_custody_state.helper.exists
-    - zot_registry_tls_custody_state.helper.checksum == '3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280'
+    - >-
+      zot_registry_tls_custody_state.helper.checksum in
+      [
+        '3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280',
+        '9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3'
+      ]
 
 - name: Refresh installed Zot TLS lifecycle helper state
   ansible.builtin.stat:
@@ -98,7 +110,7 @@
       - zot_registry_tls_lifecycle_helper_refreshed.stat.uid == 0
       - zot_registry_tls_lifecycle_helper_refreshed.stat.gid == 0
       - zot_registry_tls_lifecycle_helper_refreshed.stat.mode == '0755'
-      - zot_registry_tls_lifecycle_helper_refreshed.stat.checksum == '9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3'
+      - zot_registry_tls_lifecycle_helper_refreshed.stat.checksum == '3d446de2d3e56314ca70e881b5354a2c341566f17a6e4472f58faced92daa7c0'
     fail_msg: >-
       Initialized Zot TLS lifecycle state requires the exact current shipped
       root:root 0755 helper before custody selection.
@@ -122,10 +134,17 @@
           and zot_registry_tls_custody_state.config.checksum
               == zot_registry_tls_managed_config_sha256
         )
+      - >-
+        (pki_host_local_certificate_operation | default('migrate', true)) != 'issue'
+        or (
+          not zot_registry_tls_custody_state.managed_cert.exists
+          and not zot_registry_tls_custody_state.managed_key.exists
+        )
+      - (pki_host_local_certificate_operation | default('migrate', true)) != 'renew'
     fail_msg: >-
-      An absent lifecycle root selects managed bootstrap only when lifecycle data
-      roots are also absent and any existing Zot configuration is exact managed
-      configuration.
+      An absent lifecycle root requires issue or migrate, absent lifecycle data
+      roots, exact staged configuration when present, and no TLS destination
+      material for fresh issue.
   when:
     - zot_registry_tls_enabled | bool
     - not zot_registry_tls_custody_state.state_root.exists
@@ -145,6 +164,8 @@
       - "{{ zot_registry_tls_host_local_service }}"
       - --target
       - "{{ zot_registry_tls_host_local_target }}"
+      - --operation
+      - "{{ pki_host_local_certificate_operation | default('migrate', true) }}"
       - --zot-config
       - "{{ zot_registry_tls_host_local_zot_config_path }}"
       - --managed-cert
@@ -177,3 +198,27 @@
   when:
     - zot_registry_tls_enabled | bool
     - zot_registry_tls_custody_state.state_root.exists
+
+- name: Require managed Zot TLS recovery sources after custody selection
+  ansible.builtin.assert:
+    that:
+      - zot_registry_tls_cert_src | length > 0
+      - zot_registry_tls_key_src | length > 0
+    fail_msg: >-
+      Managed Zot TLS custody requires both controller certificate and key
+      sources.
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_effective_custody == 'managed'
+
+- name: Require absent dormant Zot TLS destination material
+  ansible.builtin.assert:
+    that:
+      - not zot_registry_tls_custody_state.managed_cert.exists
+      - not zot_registry_tls_custody_state.managed_key.exists
+    fail_msg: >-
+      Dormant Zot TLS custody requires absent certificate and key destination
+      files.
+  when:
+    - zot_registry_tls_enabled | bool
+    - zot_registry_tls_effective_custody == 'dormant'

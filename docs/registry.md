@@ -46,6 +46,17 @@ canonical `active`, `rollback`, `validation-boundary`, and `evidence` lifecycle
 siblings but rejects unresolved journals and unknown state. It does not
 implement trust rotation.
 
+For predecessor-free initial issuance, private inventory sets
+`pki_host_local_certificate_operation: issue`, uses `none` and an empty path for
+the current certificate digest and path, and leaves both Zot controller TLS
+sources empty. Normal registry convergence then renders the canonical TLS Zot
+configuration and Quadlet in derived `dormant` custody while requiring the
+managed certificate and key destinations to remain absent and Zot to remain
+masked and stopped. Trust bootstrap installs the lifecycle helper, and the
+request stage creates the target-local key. The first authenticated activation
+is the only step that enables and starts Zot. This path does not create a
+temporary certificate or listener.
+
 The request entry point validates preinstalled frozen target trust, installs the
 reviewed request helper, and generates or revalidates one root-owned local P-384
 key, CSR, canonical request, and SSH signature. In default direct mode it
@@ -184,22 +195,27 @@ import as ambiguous lifecycle state until that exact root-owned stage is reviewe
 and recovered. Never use wildcard stage cleanup.
 
 Zot TLS custody is derived from target lifecycle state and cannot be selected by
-inventory. Fresh state uses the exact managed paths and required controller
-sources. Initialized state without an active version remains managed only while
-there is no unresolved journal and the current Zot configuration is the exact
-role-rendered managed configuration. After `activate-finish`, normal registry
-convergence resolves the authenticated immutable `fullchain.crt` and `tls.key`
-paths through the exact shipped lifecycle helper under its shared lock.
+inventory. With no authenticated active version, `issue` derives dormant
+custody, `migrate` derives managed custody, and `renew` fails closed. Managed
+custody requires both controller TLS sources; dormant custody requires those
+sources and their managed destinations to be absent. Initialized state without
+an active version additionally requires no unresolved journal and the exact
+role-rendered configuration for the derived custody. After `activate-finish`,
+normal registry convergence resolves the authenticated immutable
+`fullchain.crt` and `tls.key` paths through the exact shipped lifecycle helper
+under its shared lock.
 
-The v3 role recognizes only the exact root-owned `0755` helper shipped by
+The v4 role recognizes only the exact root-owned `0755` helpers shipped by
 v2.0.0 through v2.0.2, SHA-256
-`3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280`, as an
-upgrade predecessor. Normal convergence replaces it with the shipped v3 helper,
-refreshes the installed file state, and requires SHA-256
-`9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3` before
-running custody selection. Check mode remains non-mutating and refuses the old
-helper; apply normal `playbooks/registry.yml` convergence to perform this one
-pinned upgrade. This is role-internal migration policy, not an inventory input.
+`3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280`, and v3,
+SHA-256 `9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3`, as
+upgrade predecessors. Normal convergence replaces either with the shipped v4
+helper, refreshes the installed file state, and requires SHA-256
+`3d446de2d3e56314ca70e881b5354a2c341566f17a6e4472f58faced92daa7c0` before
+running custody selection. Check mode remains non-mutating and refuses a
+predecessor helper; apply normal `playbooks/registry.yml` convergence to perform
+this pinned upgrade. This is role-internal migration policy, not an inventory
+input.
 
 Unknown helper or shipped-source drift, unsafe helper metadata, helper absence
 with initialized state, unresolved journals, malformed or ambiguous lifecycle

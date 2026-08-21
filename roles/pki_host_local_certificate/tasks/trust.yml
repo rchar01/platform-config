@@ -2,6 +2,9 @@
 - name: Load host-local certificate trust bootstrap validation
   ansible.builtin.import_tasks: validate_trust.yml
 
+- name: Install host-local certificate lifecycle helper during trust bootstrap
+  ansible.builtin.import_tasks: lifecycle_helper.yml
+
 - name: Inspect host-local certificate helper directory
   ansible.builtin.stat:
     path: "{{ pki_host_local_certificate_trust_helper_path | dirname }}"

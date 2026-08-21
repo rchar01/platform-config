@@ -81,6 +81,7 @@
           '--versions-root', pki_host_local_certificate_versions_root,
           '--service', pki_host_local_certificate_service,
           '--target', pki_host_local_certificate_target,
+          '--operation', pki_host_local_certificate_operation,
           '--zot-config', pki_host_local_certificate_zot_config_path,
           '--trust-id', pki_host_local_certificate_trust_id,
           '--common-name', pki_host_local_certificate_common_name,
@@ -215,6 +216,7 @@
       - [conflict, resolve-conflict]
       - [complete, none]
       - [evidence-exported, await-signer-outcome]
+      - [initial-issuance-needed, create-issuance-request]
       - [activated-and-validated, export-evidence]
       - [response-ready, activate-response]
       - [request-expired, abandon-expired-request]

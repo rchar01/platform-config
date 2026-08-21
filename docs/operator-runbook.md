@@ -506,6 +506,9 @@ and signs both records with the target host key before evidence export.
 Private inventory does not select Zot TLS custody. After authenticated
 `activate-finish`, normal registry convergence automatically derives host-local
 custody and immutable TLS paths from authenticated target lifecycle state.
+Before predecessor-free first issuance, inventory uses `operation: issue`, no
+current certificate, and empty Zot controller TLS sources; registry convergence
+derives dormant custody and keeps Zot masked and stopped until activation.
 Require terminal `status=complete` and
 `signer_outcome_state=finalized`; `renewal_eligible=false` remains expected.
 Never select a latest package, infer a digest, clean an ambiguous retained stage,

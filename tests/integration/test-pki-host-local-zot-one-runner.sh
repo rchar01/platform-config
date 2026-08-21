@@ -51,7 +51,6 @@ INVENTORY_IDENTITY="${TEST_DIR}/inventory.identity"
 VARS_FILE="${TEST_DIR}/vars.json"
 KNOWN_HOSTS="${TEST_DIR}/known_hosts"
 CONTROLLER_KEY="${TEST_DIR}/controller-ssh"
-INITIAL_DIR="${TEST_DIR}/initial-managed"
 HTPASSWD_FILE="${TEST_DIR}/zot.htpasswd"
 RESPONSE_KEY="${SIGNER_ROOT}/response-signing-key"
 APPROVER_KEY="${SIGNER_ROOT}/approver-signing-key"
@@ -74,7 +73,7 @@ RUNNER_BOUNDARY=
 TARGET_CA=
 RUNNER_CA=
 INVENTORY_SHA256=
-CURRENT_CERT_SHA256=
+CURRENT_CERT_SHA256=none
 TRANSPORT_HOST_KEY_SHA256=
 ZOT_IMAGE=
 EXCHANGE_MODE=controller-local
@@ -195,22 +194,14 @@ done < "${ROOT_DIR}/roles/zot_registry/defaults/main.yml"
   || fail "Unexpected Zot role image: ${ZOT_IMAGE:-missing}"
 
 mkdir -p "$EXCHANGE_ROOT" "$SIGNER_MEDIA" "$LOG_DIR" \
-  "$CONTROLLER_HOME/.ansible/tmp" "$INITIAL_DIR"
+  "$CONTROLLER_HOME/.ansible/tmp"
 chmod 0700 "$EXCHANGE_ROOT" "$SIGNER_ROOT" "$SIGNER_MEDIA" "$LOG_DIR" \
-  "$CONTROLLER_HOME" "$CONTROLLER_HOME/.ansible" "$CONTROLLER_HOME/.ansible/tmp" \
-  "$INITIAL_DIR"
+  "$CONTROLLER_HOME" "$CONTROLLER_HOME/.ansible" "$CONTROLLER_HOME/.ansible/tmp"
 
 LAST_STAGE='synthetic bootstrap material'
 ssh-keygen -q -t ed25519 -N '' -f "$CONTROLLER_KEY"
 ssh-keygen -q -t ed25519 -N '' -f "$RESPONSE_KEY"
 ssh-keygen -q -t ed25519 -N '' -f "$APPROVER_KEY"
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 \
-  -nodes -sha384 -days 7 -subj "/CN=${TARGET}" \
-  -addext "subjectAltName=DNS:${TARGET}" \
-  -keyout "${INITIAL_DIR}/managed.key" \
-  -out "${INITIAL_DIR}/managed.crt" >/dev/null 2>&1
-chmod 0600 "${INITIAL_DIR}/managed.key" "${INITIAL_DIR}/managed.crt"
-
 LAST_STAGE='container and network creation'
 timeout "$PULL_TIMEOUT" podman pull --quiet "$ROCKY_IMAGE" >/dev/null
 timeout "$OPERATION_TIMEOUT" podman network create \
@@ -412,8 +403,6 @@ write_vars() {
     --arg endpoint "$ENDPOINT" \
     --arg deployment_sha "$DEPLOYMENT_SHA256" \
     --arg intermediate_sha "$SERVED_INTERMEDIATE_SHA256" \
-    --arg initial_cert "${INITIAL_DIR}/managed.crt" \
-    --arg initial_key "${INITIAL_DIR}/managed.key" \
     --arg htpasswd "$HTPASSWD_FILE" \
     --arg policy "${TRUST_SOURCE}/policy" \
     --arg requesters "${TRUST_SOURCE}/requesters.allowed_signers" \
@@ -429,11 +418,11 @@ write_vars() {
     '{
       pki_host_local_certificate_service: $service,
       pki_host_local_certificate_target: $target,
-      pki_host_local_certificate_operation: "migrate",
+      pki_host_local_certificate_operation: "issue",
       pki_host_local_certificate_profile: "server-p384-sha384-v1",
       pki_host_local_certificate_inventory_sha256: $inventory_sha,
       pki_host_local_certificate_current_cert_sha256: $current_sha,
-      pki_host_local_certificate_current_cert_path: "/etc/zot/tls/tls.crt",
+      pki_host_local_certificate_current_cert_path: "",
       pki_host_local_certificate_requester_principal: $target,
       pki_host_local_certificate_response_principal: $response_principal,
       pki_host_local_certificate_common_name: $common_name,
@@ -491,8 +480,8 @@ write_vars() {
         "deployers.allowed_signers": $deployers_sha
       },
       zot_registry_tls_host_local_target: $target,
-      zot_registry_tls_cert_src: $initial_cert,
-      zot_registry_tls_key_src: $initial_key,
+      zot_registry_tls_cert_src: "",
+      zot_registry_tls_key_src: "",
       zot_registry_auth_enabled: false,
       zot_registry_auth_htpasswd_src: $htpasswd,
       zot_registry_allow_insecure_anonymous_access: true,
@@ -634,7 +623,7 @@ extract_coordinate() {
 
 write_vars
 
-LAST_STAGE='Zot role check mode and initial convergence'
+LAST_STAGE='Zot role check mode and dormant convergence'
 run_playbook zot-check "$ZOT_PLAYBOOK" --check
 if timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" test -e /etc/zot/config.json; then
   fail 'Zot role check mode created its configuration'
@@ -642,24 +631,23 @@ fi
 run_playbook zot-initial "$ZOT_PLAYBOOK"
 run_playbook zot-idempotent "$ZOT_PLAYBOOK"
 assert_idempotent zot-idempotent
-timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-active --quiet zot.service \
-  || fail 'Role-selected Zot service is not active'
+if timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-active --quiet zot.service; then
+  fail 'Dormant Zot service is unexpectedly active'
+fi
+[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-enabled zot.service)" == masked ]] \
+  || fail 'Dormant Zot service is not masked'
+for dormant_path in /etc/zot/tls/tls.crt /etc/zot/tls/tls.key; do
+  if timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" test -e "$dormant_path"; then
+    fail "Dormant Zot TLS material exists: ${dormant_path}"
+  fi
+done
 quadlet_image="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
   bash -c 'while IFS= read -r line; do case "$line" in Image=*) printf "%s" "${line#Image=}";; esac; done < /etc/containers/systemd/zot.container')"
 [[ "$quadlet_image" == "$ZOT_IMAGE" ]] \
   || fail "Zot Quadlet image differs from the role default: ${quadlet_image}"
-zot_container_image="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
-  podman inspect --format '{{.ImageName}}' zot)"
-[[ "$zot_container_image" == "$ZOT_IMAGE" ]] \
-  || fail "Running Zot did not use the exact role-selected image: ${zot_container_image}"
-zot_image_id="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
-  podman image inspect --format '{{.Id}}' "$ZOT_IMAGE")"
-[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
-  podman inspect --format '{{.Image}}' zot)" == "$zot_image_id" ]] \
-  || fail 'Running Zot image ID differs from the role-selected image ID'
-CURRENT_CERT_SHA256="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
-  sha256sum /etc/zot/tls/tls.crt | while read -r value _; do printf '%s' "$value"; done)"
-write_vars
+if timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" podman container exists zot; then
+  fail 'Dormant convergence created a Zot container'
+fi
 
 LAST_STAGE='real trust bootstrap and request collection'
 run_playbook trust /workspace/playbooks/registry-pki-trust.yml
@@ -671,6 +659,7 @@ status_json="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
   /usr/local/libexec/platform-pki-host-local-lifecycle status \
   --state-root "$STATE_ROOT" --pending-root "$PENDING_ROOT" \
   --versions-root "$VERSIONS_ROOT" --service "$SERVICE" --target "$TARGET" \
+  --operation issue \
   --zot-config /etc/zot/config.json --trust-id "$TRUST_ID" \
   --common-name "$COMMON_NAME" --dns-san "$TARGET" \
   --minimum-remaining-lifetime-seconds 3600)"
@@ -683,9 +672,14 @@ run_playbook request-idempotent /workspace/playbooks/registry-pki-request.yml
 assert_idempotent request-idempotent
 write_vars
 
-LAST_STAGE='initialized lifecycle managed Zot custody'
-run_playbook zot-initialized-managed "$ZOT_PLAYBOOK"
-assert_idempotent zot-initialized-managed
+LAST_STAGE='initialized lifecycle dormant Zot custody'
+run_playbook zot-initialized-dormant "$ZOT_PLAYBOOK"
+assert_idempotent zot-initialized-dormant
+if timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-active --quiet zot.service; then
+  fail 'Initialized dormant Zot service is unexpectedly active'
+fi
+[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-enabled zot.service)" == masked ]] \
+  || fail 'Initialized dormant Zot service is not masked'
 
 REQUEST_PUBLICATION="${EXCHANGE_ROOT}/${SERVICE}/${REQUEST_ID}/request"
 assert_exact_local_dir "$REQUEST_PUBLICATION" \
@@ -795,19 +789,25 @@ assert_idempotent response-check-idempotent
 assert_exact_local_dir "${EXCHANGE_ROOT}/${SERVICE}/${REQUEST_ID}/response" \
   artifact tls.crt ca-chain.crt fullchain.crt response response.sig
 
-LAST_STAGE='direct automatic activation and strict local/external validation'
-zot_started_before="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
-  podman inspect --format '{{.State.StartedAt}}' zot)"
+LAST_STAGE='direct first activation and strict local/external validation'
 stage_direct_response
 EXCHANGE_MODE=direct
 write_vars
 run_playbook activate /workspace/playbooks/registry-pki-activate.yml
 DEPLOYMENT_SHA256="$(extract_coordinate "${LOG_DIR}/activate.log" deployment)"
-[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
-  podman inspect --format '{{.State.StartedAt}}' zot)" != "$zot_started_before" ]] \
-  || fail 'Direct automatic activation did not restart Zot'
 timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-active --quiet zot.service \
   || fail 'Zot is not active after host-local certificate activation'
+timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" systemctl is-enabled --quiet zot.service \
+  || fail 'Zot is not enabled after first host-local certificate activation'
+zot_container_image="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
+  podman inspect --format '{{.ImageName}}' zot)"
+[[ "$zot_container_image" == "$ZOT_IMAGE" ]] \
+  || fail "Running Zot did not use the exact role-selected image: ${zot_container_image}"
+zot_image_id="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
+  podman image inspect --format '{{.Id}}' "$ZOT_IMAGE")"
+[[ "$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" \
+  podman inspect --format '{{.Image}}' zot)" == "$zot_image_id" ]] \
+  || fail 'Running Zot image ID differs from the role-selected image ID'
 zot_tls_paths="$(timeout "$OPERATION_TIMEOUT" podman exec "$TARGET_CONTAINER" python3 -c \
   'import json; value=json.load(open("/etc/zot/config.json", encoding="ascii")); print(value["http"]["tls"]["cert"]); print(value["http"]["tls"]["key"])')"
 expected_tls_paths="${VERSIONS_ROOT}/${REQUEST_ID}/fullchain.crt

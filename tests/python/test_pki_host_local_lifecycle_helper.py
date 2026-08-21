@@ -35,6 +35,7 @@ REMOTE_VALIDATOR = "test-runner"
 ENDPOINT = "https://registry.test/v2/"
 V2_HELPER_SHA256 = "3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280"
 V3_HELPER_SHA256 = "9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3"
+V4_HELPER_SHA256 = "3d446de2d3e56314ca70e881b5354a2c341566f17a6e4472f58faced92daa7c0"
 
 
 def private_dir(path: Path) -> Path:
@@ -128,6 +129,7 @@ class LifecycleCase:
     local_observation: Path
     systemctl: Path
     service_log: Path
+    operation: str
     artifact_sha256: str
     certificate_sha256: str
     certificate_spki_sha256: str
@@ -357,6 +359,7 @@ class LifecycleCase:
     def activate(self, *, check: bool = False, environment: dict[str, str] | None = None) -> CommandResult:
         argv = [
             *self.common("activate-start", config=True), *self.candidate(),
+            "--operation", self.operation,
             *self.boundary_args(),
             "--validation-boundary", self.boundary,
             "--reviewed-ca", self.reviewed_ca,
@@ -481,6 +484,7 @@ class LifecycleCase:
     def status(self, *extra: str | Path) -> CommandResult:
         return self.run([
             *self.common("status", config=True),
+            "--operation", self.operation,
             "--trust-id", "reviewed-v1",
             "--common-name", "registry.test",
             "--dns-san", "registry.test",
@@ -494,10 +498,72 @@ class LifecycleCase:
         managed_key = self.root / "zot/managed.key"
         return self.run([
             *self.common("zot-custody", config=True),
+            "--operation", self.operation,
             "--managed-cert", managed_cert,
             "--managed-key", managed_key,
             "--managed-config-sha256", managed_config_sha256 or digest(self.zot_config),
         ])
+
+    def make_dormant_issue(self) -> None:
+        request_path = self.pending / "request"
+        request_values = self.module.parse_record(
+            request_path.read_bytes(), self.module.REQUEST_FIELDS, "fixture request"
+        )
+        request_values.update(operation="issue", current_cert_sha256="none")
+        request_bytes = record(self.module.REQUEST_FIELDS, request_values)
+        private_file(request_path, request_bytes)
+        request_signature = self.pending / "request.sig"
+        request_signature.unlink()
+        self.runner.run([
+            "ssh-keygen", "-Y", "sign", "-f", self.signing_key,
+            "-n", self.module.REQUEST_NAMESPACE, request_path,
+        ]).assert_success()
+        request_signature.chmod(0o600)
+
+        source = self.root / "response-source"
+        response_path = source / "response"
+        response_values = self.module.parse_record(
+            response_path.read_bytes(), self.module.RESPONSE_FIELDS, "fixture response"
+        )
+        response_values.update(
+            operation="issue", request_sha256=digest(request_bytes)
+        )
+        response_bytes = record(self.module.RESPONSE_FIELDS, response_values)
+        private_file(response_path, response_bytes)
+        response_signature = source / "response.sig"
+        response_signature.unlink()
+        self.runner.run([
+            "ssh-keygen", "-Y", "sign", "-f", self.signing_key,
+            "-n", self.module.RESPONSE_NAMESPACE, response_path,
+        ]).assert_success()
+        response_signature.chmod(0o600)
+
+        artifact_path = source / "artifact"
+        artifact_values = self.module.parse_record(
+            artifact_path.read_bytes(), self.module.ARTIFACT_FIELDS, "fixture artifact"
+        )
+        artifact_values.update(
+            operation="issue",
+            source_response_sha256=digest(response_bytes),
+            source_response_signature_sha256=digest(response_signature),
+        )
+        private_file(
+            artifact_path, record(self.module.ARTIFACT_FIELDS, artifact_values)
+        )
+        self.artifact_sha256 = digest(artifact_path)
+        self.operation = "issue"
+
+        (self.root / "zot/managed.crt").unlink()
+        (self.root / "zot/managed.key").unlink()
+        private_file(
+            self.systemctl,
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "if [ \"$1\" = is-active ]; then printf 'inactive\\n'; exit 3; fi\n"
+            "if [ \"$1\" = is-enabled ]; then printf 'masked\\n'; exit 1; fi\n"
+            "printf '%s\\n' \"$*\" >>\"$PLATFORM_PKI_LIFECYCLE_TEST_SERVICE_LOG\"\n",
+            0o755,
+        )
 
     def outcome_package(self, evidence_path: Path) -> tuple[Path, str]:
         package = private_dir(self.root / "outcome-package")
@@ -851,7 +917,8 @@ def lifecycle_case(
         "#!/bin/sh\n"
         "set -eu\n"
         "if [ \"$1\" = is-active ]; then printf 'active\\n'; exit 0; fi\n"
-        "printf '%s\\n' \"$1 $2\" >>\"$PLATFORM_PKI_LIFECYCLE_TEST_SERVICE_LOG\"\n",
+        "if [ \"$1\" = is-enabled ]; then printf 'enabled\\n'; exit 0; fi\n"
+        "printf '%s\\n' \"$*\" >>\"$PLATFORM_PKI_LIFECYCLE_TEST_SERVICE_LOG\"\n",
         0o755,
     )
     zot_config = private_file(
@@ -865,7 +932,7 @@ def lifecycle_case(
         pending=pending, zot_config=zot_config, signing_key=signing_key,
         boundary=boundary, boundary_sha256=digest(boundary),
         reviewed_ca=reviewed_ca, local_observation=local_observation,
-        systemctl=systemctl, service_log=service_log,
+        systemctl=systemctl, service_log=service_log, operation="migrate",
         artifact_sha256=digest(artifact), certificate_sha256=digest(leaf),
         certificate_spki_sha256=digest(spki),
         intermediate_sha256=intermediate_sha256, private_key_bytes=key_bytes,
@@ -967,6 +1034,110 @@ def test_zot_custody_selects_exact_managed_config_before_activation(
     }
 
 
+def test_fresh_issue_reports_dormant_custody_and_initial_status(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.make_dormant_issue()
+
+    selected = result_json(lifecycle_case.zot_custody())
+    assert selected["custody"] == "dormant"
+    assert selected["request_id"] == "none"
+    assert selected["cert_path"] == str(lifecycle_case.root / "zot/managed.crt")
+    assert selected["key_path"] == str(lifecycle_case.root / "zot/managed.key")
+    assert result_json(lifecycle_case.status())["status"] == "request-pending"
+
+    shutil.rmtree(lifecycle_case.pending)
+    initial = result_json(lifecycle_case.status())
+    assert initial["status"] == "initial-issuance-needed"
+    assert initial["required_action"] == "create-issuance-request"
+
+
+def test_fresh_issue_activation_enables_zot_and_selects_host_local_custody(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.make_dormant_issue()
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    before = tree_snapshot(lifecycle_case.root)
+
+    preview = result_json(lifecycle_case.activate(check=True))
+    assert preview["status"] == "would-activate"
+    assert tree_snapshot(lifecycle_case.root) == before
+
+    activated = result_json(lifecycle_case.activate())
+    assert lifecycle_case.service_log.read_text(encoding="ascii").splitlines() == [
+        "unmask zot.service",
+        "start zot.service",
+    ]
+    rollback = lifecycle_case.module.parse_rollback(
+        lifecycle_case.state.joinpath("rollback").read_bytes(),
+        type("Args", (), {"service": SERVICE, "target": TARGET})(),
+    )
+    assert rollback["predecessor_kind"] == "none"
+
+    observation = lifecycle_case.observation(activated["activation_epoch"] + 1)
+    result_json(lifecycle_case.finish(observation))
+    assert_failure(lifecycle_case.activate())
+    selected = result_json(lifecycle_case.zot_custody())
+    assert selected["custody"] == "host-local"
+    assert selected["request_id"] == REQUEST_ID
+
+
+def test_fresh_issue_activation_failure_restores_dormant_not_activated_state(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.make_dormant_issue()
+    lifecycle_case.prepare_response()
+    result_json(lifecycle_case.install_response())
+    dormant_config = lifecycle_case.zot_config.read_bytes()
+
+    failed = lifecycle_case.activate(
+        environment={"PLATFORM_PKI_LIFECYCLE_FAIL_AT": "after-restart"}
+    )
+    assert_failure(failed)
+    assert lifecycle_case.zot_config.read_bytes() == dormant_config
+    assert not lifecycle_case.state.joinpath("active").exists()
+    assert not lifecycle_case.state.joinpath("rollback").exists()
+    journal = lifecycle_case.module.parse_record(
+        lifecycle_case.state.joinpath("activation-journal").read_bytes(),
+        lifecycle_case.module.ACTIVATION_JOURNAL_FIELDS,
+        "activation journal",
+    )
+    assert journal["checkpoint"] == "not-activated"
+    assert lifecycle_case.service_log.read_text(encoding="ascii").splitlines() == [
+        "unmask zot.service",
+        "start zot.service",
+        "stop zot.service",
+        "mask zot.service",
+    ]
+    status = result_json(lifecycle_case.status())
+    assert status["status"] == "abandonment-evidence-required"
+    assert status["required_action"] == "publish-not-activated-evidence"
+
+
+def test_no_active_renew_fails_closed(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    lifecycle_case.operation = "renew"
+
+    assert_failure(lifecycle_case.zot_custody())
+    shutil.rmtree(lifecycle_case.pending)
+    assert_failure(lifecycle_case.status())
+
+
+@pytest.mark.parametrize("operation", ["issue", "migrate"])
+def test_status_rejects_rollback_without_authenticated_active(
+    lifecycle_case: LifecycleCase,
+    operation: str,
+) -> None:
+    activate_and_finish(lifecycle_case)
+    lifecycle_case.state.joinpath("active").unlink()
+    shutil.rmtree(lifecycle_case.pending_root)
+    lifecycle_case.operation = operation
+
+    assert_failure(lifecycle_case.status())
+
+
 def test_zot_custody_selects_only_finished_authenticated_active_version(
     lifecycle_case: LifecycleCase,
 ) -> None:
@@ -999,7 +1170,149 @@ def test_zot_registry_migrates_exact_v2_helper_before_authenticated_custody(
 ) -> None:
     activate_and_finish(lifecycle_case)
     installed_helper = lifecycle_case.root / "installed-lifecycle-helper"
-    v3_source = lifecycle_case.helper.read_text(encoding="ascii")
+    v4_source = lifecycle_case.helper.read_text(encoding="ascii")
+    assert digest(v4_source.encode("ascii")) == V4_HELPER_SHA256
+
+    def replace_once(value: str, current: str, predecessor: str) -> str:
+        assert value.count(current) == 1
+        return value.replace(current, predecessor, 1)
+
+    v3_source = v4_source
+    v3_source = replace_once(
+        v3_source,
+        '''def service_enabled_state() -> str:
+    result = run((systemctl_path(), "is-enabled", "zot.service"), "Zot service enablement query", accepted=frozenset((0, 1)))
+    try:
+        value = result.stdout.decode("ascii").strip()
+    except UnicodeDecodeError:
+        fail("Zot service enablement state is not ASCII")
+    if value not in {"enabled", "disabled", "generated", "masked"}:
+        fail("Zot service enablement state is not canonical")
+    return value
+
+
+def service_action(action: str) -> None:
+    if action not in {"restart", "stop", "enable-start", "disable-stop"}:
+        fail("service recovery action is invalid")
+    commands = {
+        "restart": (("restart", "zot.service"),),
+        "stop": (("stop", "zot.service"),),
+        "enable-start": (("unmask", "zot.service"), ("start", "zot.service")),
+        "disable-stop": (("stop", "zot.service"), ("mask", "zot.service")),
+    }[action]
+    for command in commands:
+        run((systemctl_path(), *command), f"systemctl {' '.join(command)}")
+''',
+        '''def service_action(action: str) -> None:
+    if action not in {"restart", "stop"}:
+        fail("service recovery action is invalid")
+    run((systemctl_path(), action, "zot.service"), f"systemctl {action} zot.service")
+''',
+    )
+    for current, predecessor in (
+        (
+            '''    rollback = parse_rollback(new_rollback, args)
+    predecessor_free = rollback["predecessor_kind"] == "none"
+    if record["prior_service_state"] == "active":
+        service_action("restart")
+    elif predecessor_free:
+        service_action("disable-stop")
+    else:
+        service_action("stop")
+''',
+            '''    if record["prior_service_state"] == "active":
+        service_action("restart")
+    else:
+        service_action("stop")
+''',
+        ),
+        ('        terminal = "not-activated" if predecessor_free else (\n', '        terminal = (\n'),
+        (
+            '''        if validated["request"]["operation"] != args.operation:
+            fail("candidate operation differs from the requested lifecycle operation")
+''',
+            "",
+        ),
+        (
+            '''        if prior_active is not None:
+            authenticate_active(state, args)
+            if args.operation == "issue":
+                fail("issue activation requires no authenticated active version")
+        elif prior_rollback is not None:
+            fail("rollback state exists without an authenticated active version")
+        prior_state = service_state()
+        initial_issue = prior_active is None and args.operation == "issue"
+        if initial_issue:
+            if prior_state != "inactive" or service_enabled_state() != "masked":
+                fail("predecessor-free issue requires masked and inactive Zot")
+            if os.path.lexists(prior_cert) or os.path.lexists(prior_key):
+                fail("predecessor-free issue requires absent dormant TLS material")
+        elif prior_state != "active":
+            fail("Zot must be active before certificate activation")
+        if prior_active is None and args.operation == "renew":
+            fail("renew requires an authenticated active version")
+''',
+            '''        if prior_active is not None:
+            authenticate_active(state, args)
+        prior_state = service_state()
+        if prior_state != "active":
+            fail("Zot must be active before certificate activation")
+''',
+        ),
+        ('            service_action("enable-start" if initial_issue else "restart")\n', '            service_action("restart")\n'),
+        (
+            '''                    if pending_state["record"]["operation"] != args.operation:
+                        fail("pending request operation differs from lifecycle operation")
+''',
+            "",
+        ),
+        (
+            '''        rollback_data, _ = read_optional_state(state, "rollback")
+        if active_auth is None and rollback_data is not None:
+            fail("rollback state exists without an authenticated active version")
+''',
+            "",
+        ),
+        (
+            '''        if active_auth is not None:
+            active = active_auth["record"]
+            if rollback_data is None:
+''',
+            '''        if active_auth is not None:
+            active = active_auth["record"]
+            rollback_data, _ = read_optional_state(state, "rollback")
+            if rollback_data is None:
+''',
+        ),
+        (
+            '''        elif args.operation == "issue":
+            selected = ("initial-issuance-needed", "create-issuance-request")
+        elif args.operation == "renew":
+            fail("renew requires an authenticated active version")
+''',
+            "",
+        ),
+        (
+            '''            if args.operation == "renew":
+                fail("renew requires an authenticated active version")
+            custody = "dormant" if args.operation == "issue" else "managed"
+            if custody == "dormant" and (
+                os.path.lexists(args.managed_cert) or os.path.lexists(args.managed_key)
+            ):
+                fail("dormant Zot TLS destination material must be absent")
+''',
+            "",
+        ),
+        ('                "custody": custody,\n', '                "custody": "managed",\n'),
+        ('    start.add_argument("--operation", choices=("issue", "migrate", "renew"), required=True)\n', ""),
+        ('    status_parser.add_argument("--operation", choices=("issue", "migrate", "renew"), required=True)\n', ""),
+        (
+            '        help="derive exact dormant, managed, or authenticated host-local Zot TLS custody",\n',
+            '        help="derive exact managed or authenticated host-local Zot TLS custody",\n',
+        ),
+        ('    custody.add_argument("--operation", choices=("issue", "migrate", "renew"), required=True)\n', ""),
+    ):
+        v3_source = replace_once(v3_source, current, predecessor)
     assert digest(v3_source.encode("ascii")) == V3_HELPER_SHA256
 
     def remove_v3_section(value: str, start: str, end: str) -> str:
@@ -1075,7 +1388,7 @@ def test_zot_registry_migrates_exact_v2_helper_before_authenticated_custody(
         )
 
     first = converge().assert_success()
-    assert digest(installed_helper) == V3_HELPER_SHA256
+    assert digest(installed_helper) == V4_HELPER_SHA256
     assert installed_helper.read_bytes() == lifecycle_case.helper.read_bytes()
     assert "Derive Zot TLS custody from initialized lifecycle state" in first.stdout
     assert "Require exact derived Zot TLS custody result" in first.stdout
@@ -1086,7 +1399,7 @@ def test_zot_registry_migrates_exact_v2_helper_before_authenticated_custody(
 
     migrated_snapshot = helper_snapshot()
     second = converge().assert_success()
-    assert digest(installed_helper) == V3_HELPER_SHA256
+    assert digest(installed_helper) == V4_HELPER_SHA256
     assert installed_helper.read_bytes() == lifecycle_case.helper.read_bytes()
     assert helper_snapshot() == migrated_snapshot
     second_recap = next(line for line in second.stdout.splitlines() if "failed=" in line)

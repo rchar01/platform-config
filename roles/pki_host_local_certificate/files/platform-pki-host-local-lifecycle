@@ -2185,10 +2185,28 @@ def service_state() -> str:
     return value
 
 
+def service_enabled_state() -> str:
+    result = run((systemctl_path(), "is-enabled", "zot.service"), "Zot service enablement query", accepted=frozenset((0, 1)))
+    try:
+        value = result.stdout.decode("ascii").strip()
+    except UnicodeDecodeError:
+        fail("Zot service enablement state is not ASCII")
+    if value not in {"enabled", "disabled", "generated", "masked"}:
+        fail("Zot service enablement state is not canonical")
+    return value
+
+
 def service_action(action: str) -> None:
-    if action not in {"restart", "stop"}:
+    if action not in {"restart", "stop", "enable-start", "disable-stop"}:
         fail("service recovery action is invalid")
-    run((systemctl_path(), action, "zot.service"), f"systemctl {action} zot.service")
+    commands = {
+        "restart": (("restart", "zot.service"),),
+        "stop": (("stop", "zot.service"),),
+        "enable-start": (("unmask", "zot.service"), ("start", "zot.service")),
+        "disable-stop": (("stop", "zot.service"), ("mask", "zot.service")),
+    }[action]
+    for command in commands:
+        run((systemctl_path(), *command), f"systemctl {' '.join(command)}")
 
 
 def wait_for_tls_listener(
@@ -2629,8 +2647,12 @@ def restore_from_journal(state: PinnedDirectory, data: bytes, identity: tuple[in
     replace_config_bytes(args.zot_config, target_config, prior_config)
     replace_state_bytes(state, "active", new_active, prior_active, "active record")
     replace_state_bytes(state, "rollback", new_rollback, prior_rollback, "rollback record")
+    rollback = parse_rollback(new_rollback, args)
+    predecessor_free = rollback["predecessor_kind"] == "none"
     if record["prior_service_state"] == "active":
         service_action("restart")
+    elif predecessor_free:
+        service_action("disable-stop")
     else:
         service_action("stop")
     if remove:
@@ -2638,7 +2660,7 @@ def restore_from_journal(state: PinnedDirectory, data: bytes, identity: tuple[in
         current_record = journal_record(current, args)
         if current != data and current_record["transaction_id"] != record["transaction_id"]:
             fail("activation journal changed before recovery completion")
-        terminal = (
+        terminal = "not-activated" if predecessor_free else (
             "not-activated"
             if record["checkpoint"] in {"prepared", "records-written", "not-activated"}
             or record["evidence_result"] == "not-activated"
@@ -2752,6 +2774,8 @@ def activate_start(args) -> None:
         version, version_files, _ = validate_version(os.path.join(args.versions_root, request_id), request_id)
         response_files = {name: version_files[name] for name in RESPONSE_NAMES}
         validated = validate_response_files(response_files, pending, trust, args)
+        if validated["request"]["operation"] != args.operation:
+            fail("candidate operation differs from the requested lifecycle operation")
         if pending["record"]["service"] != args.service or pending["record"]["target"] != args.target:
             fail("candidate does not match activation service and target")
         boundary_data, _ = read_path(args.validation_boundary, "reviewed validation boundary")
@@ -2767,9 +2791,21 @@ def activate_start(args) -> None:
         prior_rollback, _prior_rollback_identity = read_optional_state(state, "rollback")
         if prior_active is not None:
             authenticate_active(state, args)
+            if args.operation == "issue":
+                fail("issue activation requires no authenticated active version")
+        elif prior_rollback is not None:
+            fail("rollback state exists without an authenticated active version")
         prior_state = service_state()
-        if prior_state != "active":
+        initial_issue = prior_active is None and args.operation == "issue"
+        if initial_issue:
+            if prior_state != "inactive" or service_enabled_state() != "masked":
+                fail("predecessor-free issue requires masked and inactive Zot")
+            if os.path.lexists(prior_cert) or os.path.lexists(prior_key):
+                fail("predecessor-free issue requires absent dormant TLS material")
+        elif prior_state != "active":
             fail("Zot must be active before certificate activation")
+        if prior_active is None and args.operation == "renew":
+            fail("renew requires an authenticated active version")
         target_config_value = copy.deepcopy(config)
         target_config_value["http"]["tls"] = {"cert": os.path.join(version.path, "fullchain.crt"), "key": os.path.join(version.path, "tls.key")}
         target_config = canonical_json(target_config_value)
@@ -2818,7 +2854,7 @@ def activate_start(args) -> None:
             replace_config_bytes(args.zot_config, prior_config, target_config)
             journal_data, journal_identity = set_journal_checkpoint(state, journal_data, journal_identity, "config-written", args)
             fault("after-config")
-            service_action("restart")
+            service_action("enable-start" if initial_issue else "restart")
             journal_data, journal_identity = set_journal_checkpoint(state, journal_data, journal_identity, "restarted", args)
             fault("after-restart")
             local = strict_local_validation(args, str(validated["certificate_sha256"]), str(validated["intermediate_sha256"]))
@@ -5622,6 +5658,8 @@ def status(args) -> None:
                     if REQUEST_ID_RE.fullmatch(name) is None or not stat.S_ISDIR(metadata.st_mode):
                         fail("pending root contains an invalid request entry")
                     pending_state = validate_pending(os.path.join(args.pending_root, name), trust)
+                    if pending_state["record"]["operation"] != args.operation:
+                        fail("pending request operation differs from lifecycle operation")
                     pending_id = name
                     pending_expires = pending_state["expires"]
             finally:
@@ -5629,6 +5667,9 @@ def status(args) -> None:
         active_auth = authenticate_active(
             state, args, require_config=activation_checkpoint != "records-written"
         )
+        rollback_data, _ = read_optional_state(state, "rollback")
+        if active_auth is None and rollback_data is not None:
+            fail("rollback state exists without an authenticated active version")
         now = int(time.time())
         active_values: dict[str, object] = {
             "active_request_id": "none", "active_artifact_sha256": "none",
@@ -5640,7 +5681,6 @@ def status(args) -> None:
         evidence_digests: frozenset[str] = frozenset()
         if active_auth is not None:
             active = active_auth["record"]
-            rollback_data, _ = read_optional_state(state, "rollback")
             if rollback_data is None:
                 fail("active state lacks its rollback record")
             rollback = parse_rollback(rollback_data, args)
@@ -5733,6 +5773,10 @@ def status(args) -> None:
             selected = ("request-expired", "abandon-expired-request")
         elif pending_state is not None:
             selected = ("request-pending", "collect-or-await-response")
+        elif args.operation == "issue":
+            selected = ("initial-issuance-needed", "create-issuance-request")
+        elif args.operation == "renew":
+            fail("renew requires an authenticated active version")
         else:
             selected = ("managed-migration-needed", "create-migration-request")
         result = {
@@ -5800,10 +5844,17 @@ def zot_custody(args) -> None:
                 or sha256(config_data) != args.managed_config_sha256
             ):
                 fail("current Zot configuration is not the exact managed configuration")
+            if args.operation == "renew":
+                fail("renew requires an authenticated active version")
+            custody = "dormant" if args.operation == "issue" else "managed"
+            if custody == "dormant" and (
+                os.path.lexists(args.managed_cert) or os.path.lexists(args.managed_key)
+            ):
+                fail("dormant Zot TLS destination material must be absent")
             json_output({
                 "schema": "1",
                 "kind": "platform-config-zot-tls-custody",
-                "custody": "managed",
+                "custody": custody,
                 "request_id": "none",
                 "cert_path": args.managed_cert,
                 "key_path": args.managed_key,
@@ -5982,6 +6033,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     start = commands.add_parser("activate-start", help="journal, activate, restart, and strictly validate one exact version locally")
     add_common(start, config=True)
+    start.add_argument("--operation", choices=("issue", "migrate", "renew"), required=True)
     add_candidate(start)
     add_boundary(start)
     start.add_argument("--validation-boundary", required=True)
@@ -6019,6 +6071,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = commands.add_parser("status", help="authenticate lifecycle state and emit the fixed schema-1 status object")
     add_common(status_parser, config=True)
+    status_parser.add_argument("--operation", choices=("issue", "migrate", "renew"), required=True)
     status_parser.add_argument("--trust-id", required=True)
     status_parser.add_argument("--common-name", required=True)
     status_parser.add_argument("--dns-san", action="append", default=[])
@@ -6035,9 +6088,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     custody = commands.add_parser(
         "zot-custody",
-        help="derive exact managed or authenticated host-local Zot TLS custody",
+        help="derive exact dormant, managed, or authenticated host-local Zot TLS custody",
     )
     add_common(custody, config=True)
+    custody.add_argument("--operation", choices=("issue", "migrate", "renew"), required=True)
     custody.add_argument("--managed-cert", required=True)
     custody.add_argument("--managed-key", required=True)
     custody.add_argument("--managed-config-sha256", required=True)

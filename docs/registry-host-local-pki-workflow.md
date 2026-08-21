@@ -4,11 +4,13 @@ Complete [PKI Exchange Setup](pki-exchange-setup.md) before this workflow. It
 prepares protected online and offline storage, the GitLab project and
 credentials, the pinned target endpoint, and the restricted SSH identity.
 
-This runbook moves one Zot registry from a managed certificate to a certificate
-whose leaf private key never leaves the registry host. The examples are
-sanitized. Real inventory, trust policy, hostnames, CA files, and non-secret
-environment configuration belong in `../platform-private`; passphrases, private
-keys, tokens, and other secrets remain outside Git.
+This runbook issues or migrates one Zot registry to a certificate whose leaf
+private key never leaves the registry host. A predecessor-free issuance keeps
+Zot dormant until first activation; migration preserves the managed predecessor
+for rollback. The examples are sanitized. Real inventory, trust policy,
+hostnames, CA files, and non-secret environment configuration belong in
+`../platform-private`; passphrases, private keys, tokens, and other secrets
+remain outside Git.
 
 The lifecycle is deliberately staged:
 
@@ -48,8 +50,9 @@ controlled-media transport.
   namespace, lifecycle state, or recovery journal.
 - Preserve ambiguous stages and journals as evidence. Never use wildcard
   cleanup.
-- Keep the managed predecessor, signer history, target history, exchange
-  packages, and backups until a separate retention decision is approved.
+- When a managed predecessor exists, keep it until a separate retention decision
+  is approved. Keep signer history, target history, exchange packages, and
+  backups under their separate retention decisions.
 
 ## Responsibilities And Actors
 
@@ -246,6 +249,7 @@ For irreversible replacement:
    ```
 
    Accept only a reviewed no-pending status such as
+   `initial-issuance-needed/create-issuance-request`,
    `managed-migration-needed/create-migration-request`, `complete/none`, or
    `signer-outcome-abandoned/none`, with `recovery_required=false`. Stop on
    `request-pending`, `request-expired`, `response-ready`, any nonterminal
@@ -685,7 +689,7 @@ external lock.
 ## Bootstrap Stage
 
 Review private signer inventory, schema-2 five-file trust, target and runner
-validation material, managed predecessor state, rollback hold, unresolved
+validation material, any managed predecessor state, rollback hold, unresolved
 recovery state, GitLab controls, endpoint pin, and backup/restore procedures.
 Trust rotation is forbidden while a request is pending.
 
@@ -724,22 +728,44 @@ network-disabled [backup and isolated restore contract](pki-local-layout.md#back
 
 **Actor:** Lifecycle operator. **Run on:** Ansible controller; delegated to the
 exact target and distinct runner. **Prerequisite:** Reviewed outside-Git CA,
-validation boundary, five-file trust, and exact inventory selection. **Output
-and provenance:** Ansible success for installed validation inputs and target
-trust. **Retry/result:** Exact reinstallation is an authenticated no-op; no trust
+validation boundary, five-file trust, exact inventory selection, and an
+operation matching target state. **Output and provenance:** Ansible success for
+the safe registry baseline, installed validation inputs, and target trust.
+**Retry/result:** Exact reinstallation is an authenticated no-op; no trust
 rotation occurs. **Next actor:** Lifecycle operator.
 
+For predecessor-free initial issuance, private inventory must use this exact
+shape before the first registry convergence:
+
+```yaml
+pki_host_local_certificate_operation: issue
+pki_host_local_certificate_current_cert_sha256: none
+pki_host_local_certificate_current_cert_path: ""
+zot_registry_tls_cert_src: ""
+zot_registry_tls_key_src: ""
+```
+
+Converge the registry before installing trust. This derives dormant custody,
+renders the canonical TLS configuration and Quadlet, leaves managed certificate
+and key destinations absent, and keeps Zot masked and stopped without a
+listener. Do not substitute a temporary certificate, self-signed certificate,
+or HTTP listener. A migration instead uses `operation: migrate`, the reviewed
+current managed certificate identity, and both controller TLS sources.
+
 ```bash
+make apply ENV="$ENVIRONMENT" PLAYBOOK=playbooks/registry.yml LIMIT="$TARGET"
 make registry-pki-validation-material \
   ENV="$ENVIRONMENT" LIMIT="$TARGET" RUNNER_LIMIT="$RUNNER"
 make apply ENV="$ENVIRONMENT" \
   PLAYBOOK=playbooks/registry-pki-trust.yml LIMIT="$TARGET"
 ```
 
-On an initialized target, status may report `managed-migration-needed` with
-`required_action=create-migration-request`. Status is not a fresh-install
-bootstrap command; the mutable request stage installs the lifecycle helper and
-independently proves the managed predecessor.
+On an initialized target, status reports
+`initial-issuance-needed/create-issuance-request` for predecessor-free issuance
+or `managed-migration-needed/create-migration-request` for migration. Status is
+not a fresh-install bootstrap command. Trust bootstrap installs the lifecycle
+helper; the mutable request stage independently validates dormant state or proves
+the managed predecessor before creating target-local key material.
 
 ### B3. Verify Bootstrap Readiness Without Creating A Request
 
@@ -777,11 +803,12 @@ Lifecycle operator.
 
 **Actor:** Lifecycle operator; payload producer is the target. **Run on:**
 Ansible controller, delegated to the exact target. **Prerequisite:** Bootstrap
-complete, normal Zot smoke healthy, no unresolved lifecycle state. **Output and
-provenance:** Target helper reports `REQUEST_ID`, `REQUEST_SHA256`, `CSR_SHA256`,
-and `CSR_SPKI_SHA256`; record those exact fields. **Retry/result:** Exact pending
-state is revalidated; conflicts or expired state fail closed. **Next actor:**
-Transport operator.
+complete, no unresolved lifecycle state, and either healthy managed Zot for
+migration or verified masked/stopped dormant Zot with absent managed TLS
+material for initial issuance. **Output and provenance:** Target helper reports
+`REQUEST_ID`, `REQUEST_SHA256`, `CSR_SHA256`, and `CSR_SPKI_SHA256`; record those
+exact fields. **Retry/result:** Exact pending state is revalidated; conflicts or
+expired state fail closed. **Next actor:** Transport operator.
 
 ```bash
 make registry-pki-request ENV="$ENVIRONMENT" LIMIT="$TARGET"
@@ -1708,6 +1735,7 @@ exact identity recovery.
 
 | Status | Required action | Meaning |
 | --- | --- | --- |
+| `initial-issuance-needed` | `create-issuance-request` | Dormant Zot has no predecessor and is ready for first issuance. |
 | `managed-migration-needed` | `create-migration-request` | Managed Zot certificate is ready for migration. |
 | `request-pending` | `collect-or-await-response` | Target key/request exists; no active response. |
 | `request-expired` | `abandon-expired-request` | Pending request expired before response acceptance. |

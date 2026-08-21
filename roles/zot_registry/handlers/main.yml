@@ -9,4 +9,5 @@
     state: restarted
   when:
     - zot_registry_service_enabled | bool
+    - zot_registry_tls_effective_custody != 'dormant'
     - not ansible_check_mode
