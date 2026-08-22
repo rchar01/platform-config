@@ -8,6 +8,15 @@ By default the role derives the LVM PV partition as `<device>-part1`, which matc
 
 First-time disk initialization is guarded by `initialize: true`. If the target disk already has child devices, filesystem signatures, or partition signatures, the role fails instead of formatting it.
 
+`initialize: true` grants permission to initialize a verified blank disk; it is
+not a request to format on every run. After the expected partition, LVM, and
+filesystem exist, repeated convergence is idempotent and does not reformat the
+volume. Keep it enabled for disposable or automatically rebuildable data disks,
+where a blank replacement should initialize automatically. Use
+`initialize: false` for persistent or sensitive data disks that require a
+separate reviewed initialization decision after replacement. Unexpected disk
+content fails closed under either policy.
+
 For several bounded logical volumes on one disk, define one
 `storage_volume_layouts` entry and reference it from each volume. The layout owns
 the stable device, VG, capacity, required unallocated headroom, and one explicit
