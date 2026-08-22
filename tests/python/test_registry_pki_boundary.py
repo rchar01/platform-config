@@ -843,6 +843,7 @@ def _validate_task(task: Any, source: str | Path) -> None:
         "validate_validator_result.yml",
         "validator_helper.yml",
         "request_apply.yml",
+        "request_helper.yml",
     }:
         raise BoundaryViolation(
             f"host-local boundary imports an unexpected task file in {source}"
@@ -1004,6 +1005,7 @@ def _validate_operator_playbook(
     required_play_keys = {"name", "hosts", "become", "gather_facts", "tasks"}
     if expected_tasks_from in {
         "request",
+        "bootstrap_readiness",
         "abandon_expired_request",
         "cancel_pending_request",
         "activate",
@@ -1031,6 +1033,15 @@ def _validate_operator_playbook(
         }
         if play["vars"] != expected_vars:
             raise BoundaryViolation(f"{source} does not pin exact request-phase values")
+    if expected_tasks_from == "bootstrap_readiness" and play["vars"] != {
+        "registry_pki_request_ttl_seconds": 3600,
+        "pki_host_local_certificate_request_ttl_seconds": (
+            "{{ registry_pki_request_ttl_seconds | int }}"
+        ),
+    }:
+        raise BoundaryViolation(
+            f"{source} does not pin exact bootstrap-readiness values"
+        )
     if expected_tasks_from == "abandon_expired_request" and play["vars"] != {
         "pki_host_local_certificate_request_ttl_seconds": 0,
         "pki_host_local_certificate_validation_boundary_sha256": "",
@@ -2192,7 +2203,7 @@ def test_registry_pki_task_scanner_rejects_unsafe_examples(
     ("filename", "task_name"),
     [
         (
-            "request_apply.yml",
+            "request_helper.yml",
             "Inspect shipped host-local certificate request helper source",
         ),
         (

@@ -52,14 +52,14 @@ the current certificate digest and path, and leaves both Zot controller TLS
 sources empty. Normal registry convergence then renders the canonical TLS Zot
 configuration and Quadlet in derived `dormant` custody while requiring the
 managed certificate and key destinations to remain absent and Zot to remain
-masked and stopped. Trust bootstrap installs the lifecycle helper, and the
-request stage creates the target-local key. The first authenticated activation
-is the only step that enables and starts Zot. This path does not create a
-temporary certificate or listener.
+masked and stopped. Trust bootstrap installs the lifecycle and request helpers
+without creating request state; the request stage creates the target-local key.
+The first authenticated activation is the only step that enables and starts Zot.
+This path does not create a temporary certificate or listener.
 
-The request entry point validates preinstalled frozen target trust, installs the
-reviewed request helper, and generates or revalidates one root-owned local P-384
-key, CSR, canonical request, and SSH signature. In default direct mode it
+The request entry point validates preinstalled frozen target trust, revalidates
+the reviewed request helper, and generates or revalidates one root-owned local
+P-384 key, CSR, canonical request, and SSH signature. In default direct mode it
 publishes only exact coordinates. An authorized transfer station uses
 `platform-pki direct-exchange request-pull`, then the separate
 controller-only request-intake playbook verifies and publishes `tls.csr`,

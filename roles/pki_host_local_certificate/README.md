@@ -15,7 +15,9 @@ Use only these structural playbooks:
 - `registry-pki-bootstrap-readiness.yml` runs request-helper, lifecycle,
   validator, topology, and installed validation-material checks in fixed
   non-mutating check mode without creating a request or invoking transport.
-- `registry-pki-trust.yml` bootstraps the exact reviewed five-file target trust.
+- `registry-pki-trust.yml` installs the lifecycle and request helpers and
+  bootstraps the exact reviewed five-file target trust without creating a key or
+  request.
 - `registry-pki-request.yml` creates or validates a target-local request. Direct
   mode exposes only the three public files through the fixed SSH facade;
   controller-local compatibility mode uses the original Ansible collection.

@@ -284,7 +284,7 @@ registry-pki-exchange-access-claim: _guard-pki-env _guard-pki-limit _guard-pki-o
 
 ## Verify one registry and distinct runner are ready without mutation
 registry-pki-bootstrap-readiness: _guard-pki-env _guard-pki-limit _guard-pki-runner _guard-pki-request-ttl
-	@$(MAKE) check PLAYBOOK=playbooks/registry-pki-bootstrap-readiness.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT) -e pki_host_local_certificate_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+	@$(MAKE) check PLAYBOOK=playbooks/registry-pki-bootstrap-readiness.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,$(EXTRA_ARGS) -e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT) -e registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
 
 ## Revoke restricted host-local PKI exchange SSH access
 registry-pki-exchange-access-revoke: _guard-pki-env _guard-pki-limit _guard-pki-operation-token-optional

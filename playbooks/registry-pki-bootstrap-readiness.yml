@@ -3,6 +3,10 @@
   hosts: registry
   become: true
   gather_facts: false
+  vars:
+    registry_pki_request_ttl_seconds: 3600
+    pki_host_local_certificate_request_ttl_seconds: >-
+      {{ registry_pki_request_ttl_seconds | int }}
   tasks:
     - name: Run structurally fixed registry PKI bootstrap readiness boundary
       ansible.builtin.include_role:

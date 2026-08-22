@@ -15,6 +15,8 @@
       - pki_host_local_certificate_state_root is not search('(^|/)\.\.?(/|$)')
       - pki_host_local_certificate_trust_helper_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
       - pki_host_local_certificate_trust_helper_path is not search('(^|/)\.\.?(/|$)')
+      - pki_host_local_certificate_request_helper_path is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - pki_host_local_certificate_request_helper_path is not search('(^|/)\.\.?(/|$)')
     fail_msg: Trust bootstrap inputs do not satisfy the frozen schema-2 target contract.
   vars:
     pki_host_local_certificate_required_trust_names:

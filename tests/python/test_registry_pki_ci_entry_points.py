@@ -39,6 +39,12 @@ def test_bootstrap_readiness_is_check_mode_exact_and_transport_free(
     play = _load(repo_root / "playbooks/registry-pki-bootstrap-readiness.yml")[0]
 
     assert play["hosts"] == "registry"
+    assert play["vars"] == {
+        "registry_pki_request_ttl_seconds": 3600,
+        "pki_host_local_certificate_request_ttl_seconds": (
+            "{{ registry_pki_request_ttl_seconds | int }}"
+        ),
+    }
     assert play["tasks"][0]["ansible.builtin.include_role"] == {
         "name": "pki_host_local_certificate",
         "tasks_from": "bootstrap_readiness",
@@ -50,6 +56,8 @@ def test_bootstrap_readiness_is_check_mode_exact_and_transport_free(
     assert target.index("$(EXTRA_ARGS)") < target.index(
         "-e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)"
     )
+    assert "-e registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS)" in target
+    assert "-e pki_host_local_certificate_request_ttl_seconds=" not in target
     assert tasks[0]["ansible.builtin.assert"]["that"][0] == "ansible_check_mode"
     topology = tasks[0]["ansible.builtin.assert"]["that"]
     assert "ansible_play_hosts_all == [inventory_hostname]" in topology
@@ -82,11 +90,11 @@ def test_readiness_authenticates_all_helpers_against_fixed_role_sources(
 ) -> None:
     cases = (
         (
-            "request_apply.yml",
+            "request_helper.yml",
             "Inspect shipped host-local certificate request helper source",
             "Inspect installed host-local certificate request helper",
             "Require installed helper for non-mutating request preflight",
-            "Create or validate the target-local certificate request",
+            None,
             "platform-pki-host-local-request",
             None,
         ),
@@ -142,6 +150,34 @@ def test_readiness_authenticates_all_helpers_against_fixed_role_sources(
         if execution_name is not None:
             execution = next(task for task in tasks if task["name"] == execution_name)
             assert tasks.index(assertion) < tasks.index(execution)
+
+
+def test_trust_bootstrap_installs_request_helper_without_running_request(
+    repo_root: Path,
+) -> None:
+    role_tasks = repo_root / "roles/pki_host_local_certificate/tasks"
+    trust_tasks = _load(role_tasks / "trust.yml")
+    request_apply_tasks = _load(role_tasks / "request_apply.yml")
+    request_helper_tasks = _load(role_tasks / "request_helper.yml")
+    trust_validation = _load(role_tasks / "validate_trust.yml")
+    trust_names = _task_names(trust_tasks)
+
+    helper_import = trust_tasks[
+        trust_names.index(
+            "Install host-local certificate request helper during trust bootstrap"
+        )
+    ]
+    assert helper_import["ansible.builtin.import_tasks"] == "request_helper.yml"
+    assert request_apply_tasks[0]["ansible.builtin.import_tasks"] == (
+        "request_helper.yml"
+    )
+    assert _task_names(request_helper_tasks).count(
+        "Install host-local certificate request helper"
+    ) == 1
+    assert "Create or validate the target-local certificate request" not in trust_names
+    trust_checks = trust_validation[0]["ansible.builtin.assert"]["that"]
+    assert any("request_helper_path is match" in check for check in trust_checks)
+    assert any("request_helper_path is not search" in check for check in trust_checks)
 
 
 def test_controller_local_pki_tasks_override_inventory_become(repo_root: Path) -> None:

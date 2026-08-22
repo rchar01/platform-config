@@ -1,0 +1,78 @@
+---
+- name: Inspect host-local certificate helper directory
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_request_helper_path | dirname }}"
+    follow: false
+  register: pki_host_local_certificate_helper_directory
+
+- name: Validate existing host-local certificate helper directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pki_host_local_certificate_helper_directory.stat.exists
+        or (
+          pki_host_local_certificate_helper_directory.stat.isdir
+          and not pki_host_local_certificate_helper_directory.stat.islnk
+          and pki_host_local_certificate_helper_directory.stat.uid == 0
+          and pki_host_local_certificate_helper_directory.stat.gid == 0
+          and pki_host_local_certificate_helper_directory.stat.mode == '0755'
+        )
+    fail_msg: Existing host-local certificate helper directory metadata is unsafe.
+
+- name: Create absent host-local certificate helper directory
+  ansible.builtin.file:
+    path: "{{ pki_host_local_certificate_request_helper_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not pki_host_local_certificate_helper_directory.stat.exists
+
+- name: Inspect shipped host-local certificate request helper source
+  ansible.builtin.stat:
+    path: "{{ role_path }}/files/platform-pki-host-local-request"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: pki_host_local_certificate_request_helper_source
+  when: ansible_check_mode
+
+- name: Inspect installed host-local certificate request helper
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_request_helper_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: pki_host_local_certificate_installed_helper
+
+- name: Require installed helper for non-mutating request preflight
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_installed_helper.stat.exists
+      - pki_host_local_certificate_installed_helper.stat.isreg
+      - not pki_host_local_certificate_installed_helper.stat.islnk
+      - pki_host_local_certificate_installed_helper.stat.uid == 0
+      - pki_host_local_certificate_installed_helper.stat.gid == 0
+      - pki_host_local_certificate_installed_helper.stat.mode == '0755'
+      - pki_host_local_certificate_request_helper_source.stat.exists
+      - pki_host_local_certificate_request_helper_source.stat.isreg
+      - not pki_host_local_certificate_request_helper_source.stat.islnk
+      - pki_host_local_certificate_request_helper_source.stat.checksum is match('^[0-9a-f]{64}$')
+      - >-
+        pki_host_local_certificate_installed_helper.stat.checksum
+        == pki_host_local_certificate_request_helper_source.stat.checksum
+    fail_msg: Read-only request preflight requires the exact shipped helper.
+  when: ansible_check_mode
+
+- name: Install host-local certificate request helper
+  ansible.builtin.copy:
+    src: platform-pki-host-local-request
+    dest: "{{ pki_host_local_certificate_request_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: not ansible_check_mode
