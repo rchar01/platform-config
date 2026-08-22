@@ -336,6 +336,28 @@ def test_absent_role_only_revokes_owned_identity_and_removes_sudo_first(
     assert any("marker_record.gid" in check for check in ownership["that"])
     block = revoke["block"]
     assert block[0]["name"] == "Remove host-local PKI exchange sudo policy first"
+    terminate = task_named(
+        block, "Terminate managed host-local PKI exchange account processes"
+    )
+    assert terminate["ansible.builtin.command"]["argv"] == [
+        "/usr/bin/pkill",
+        "--signal",
+        "KILL",
+        "--uid",
+        "{{ pki_host_local_exchange_access_absent_marker_record.uid }}",
+    ]
+    assert terminate["failed_when"].endswith("rc not in [0, 1]")
+    assert terminate["when"] == (
+        "pki_host_local_exchange_access_absent_marker_record.state == 'managed'"
+    )
+    account = task_named(block, "Remove host-local PKI exchange account")
+    assert block.index(terminate) < block.index(account)
+    assert account["register"] == "pki_host_local_exchange_access_user_removal"
+    assert account["retries"] == 5
+    assert account["delay"] == 1
+    assert account["until"] == (
+        "pki_host_local_exchange_access_user_removal is succeeded"
+    )
     home = task_named(block, "Remove host-local PKI exchange account home")
     assert home["when"] == (
         "pki_host_local_exchange_access_absent_marker_record.state == 'managed'"

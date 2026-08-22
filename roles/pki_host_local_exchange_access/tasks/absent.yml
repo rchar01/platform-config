@@ -153,11 +153,28 @@
         state: absent
       notify: Reload host-local PKI exchange sshd
 
+    - name: Terminate managed host-local PKI exchange account processes
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/pkill
+          - --signal
+          - KILL
+          - --uid
+          - "{{ pki_host_local_exchange_access_absent_marker_record.uid }}"
+      register: pki_host_local_exchange_access_process_termination
+      changed_when: pki_host_local_exchange_access_process_termination.rc == 0
+      failed_when: pki_host_local_exchange_access_process_termination.rc not in [0, 1]
+      when: pki_host_local_exchange_access_absent_marker_record.state == 'managed'
+
     - name: Remove host-local PKI exchange account
       ansible.builtin.user:
         name: "{{ pki_host_local_exchange_access_user }}"
         state: absent
         remove: false
+      register: pki_host_local_exchange_access_user_removal
+      retries: 5
+      delay: 1
+      until: pki_host_local_exchange_access_user_removal is succeeded
       when: pki_host_local_exchange_access_absent_user.rc == 0
 
     - name: Remove host-local PKI exchange account home

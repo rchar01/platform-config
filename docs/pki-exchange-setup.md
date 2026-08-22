@@ -405,7 +405,8 @@ role:
   facade by descriptor, and never authorizes `cleanup-outcome`.
 - Uses the reservation marker to recover a run interrupted during account or
   group creation; later failures retain the exact managed UID/GID record.
-- Removes sudo authority first and removes the account only when that safe
+- Removes sudo, key, and SSH authority first; terminates processes owned by the
+  exact recorded temporary UID; and removes the account only when that safe
   root-owned marker still matches every recorded identity attribute.
 
 Configure the outside-Git public key reference in private inventory:

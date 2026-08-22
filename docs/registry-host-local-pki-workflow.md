@@ -776,8 +776,9 @@ On an initialized target, status reports
 `initial-issuance-needed/create-issuance-request` for predecessor-free issuance
 or `managed-migration-needed/create-migration-request` for migration. Status is
 not a fresh-install bootstrap command. Trust bootstrap installs the lifecycle
-helper; the mutable request stage independently validates dormant state or proves
-the managed predecessor before creating target-local key material.
+and request helpers without creating request state; the mutable request stage
+independently validates dormant state or proves the managed predecessor before
+creating target-local key material.
 
 ### B3. Verify Bootstrap Readiness Without Creating A Request
 
@@ -1725,10 +1726,11 @@ pki-next-gate:
 In this excerpt, `pki-online-stage` is the existing protected job containing the
 exact commands from the applicable Request, Activate/Evidence, or Complete stage
 above; the commands are not replaced by a generic dispatcher script. The cleanup
-target runs the structurally fixed `tasks_from: revoke` boundary and
-then verifies the fixed paths, account, and group are absent. The next gate job
-independently reruns that idempotent revocation and absence verification before
-the external gate owner permits an offline wait or terminal acceptance. Any CI
+target runs the structurally fixed `tasks_from: revoke` boundary, removes
+authority before terminating processes owned by the exact marker-bound temporary
+UID, and then verifies the fixed paths, account, and group are absent. The next
+gate job independently reruns that idempotent revocation and absence verification
+before the external gate owner permits an offline wait or terminal acceptance. Any CI
 terminal-acceptance job must likewise `need` `pki-fixed-cleanup`, run only on
 success, and begin by rerunning the same fixed target; it must not rely only on
 an earlier job's status.
