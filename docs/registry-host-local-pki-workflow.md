@@ -151,6 +151,7 @@ purpose. **Next actor:** Bootstrap actors.
 ENVIRONMENT=dev
 SERVICE=registry-dev-01
 STABLE_TRUST_DOMAIN=registry-dev
+OPERATION=issue
 TARGET=dev-registry-01
 RUNNER=dev-registry-runner-01
 PI="${XDG_CONFIG_HOME:-$HOME/.config}/platform-infrastructure"
@@ -173,10 +174,12 @@ PUBLISH_TOKEN=/run/secrets/gitlab-package-publisher-token
 READ_TOKEN=/run/secrets/gitlab-package-reader-token
 ```
 
-`SERVICE`, `TARGET`, and `STABLE_TRUST_DOMAIN` are distinct reviewed coordinates:
-the exact lifecycle service is `registry-dev-01`, its Ansible inventory target is
-`dev-registry-01`, and its approval/response keys remain under the stable
-`registry-dev` trust domain. Do not normalize one coordinate to another.
+`SERVICE`, `TARGET`, `STABLE_TRUST_DOMAIN`, and `OPERATION` are distinct reviewed
+coordinates: the exact lifecycle service is `registry-dev-01`, its Ansible
+inventory target is `dev-registry-01`, its approval/response keys remain under
+the stable `registry-dev` trust domain, and predecessor-free issuance uses
+`issue`. A managed predecessor instead requires the reviewed `migrate` operation.
+Do not normalize or infer one coordinate from another.
 
 `EXCHANGE_ROOT` contains controller exchange history and transport downloads.
 `OFFLINE_WORKSPACE` contains reviewed payload-only command stages and is disjoint
@@ -641,6 +644,15 @@ does not authorize removal of old immutable coordinates.
 Fill an outside-Git operator record only from authenticated output. Do not
 manually recompute or infer a digest when the producing command reports it.
 
+The first request is the narrow bootstrap exception: target inventory needs a
+64-hex transport pin before the first direct pull can produce its authenticated
+field. Use only the `transport_host_key_sha256` reported by `platform-pki
+direct-exchange endpoint-init` from the independently reviewed Ed25519 host key.
+Do not derive it from the OpenSSH display fingerprint or recompute it manually.
+Require the first pull's reported `transport_host_key_sha256` to equal that
+enrollment value, then use only the reported field for all downstream protocol
+coordinates.
+
 | Coordinate | Exact provenance and meaning |
 | --- | --- |
 | `REQUEST_ID` | Request creation output; exact 32-lowercase-hex lifecycle ID. |
@@ -648,7 +660,7 @@ manually recompute or infer a digest when the producing command reports it.
 | `CSR_SHA256` | Request creation output; SHA-256 of exact `tls.csr` bytes. |
 | `CSR_SPKI_SHA256` | Request creation output; digest of the CSR public-key SPKI. |
 | `TRANSPORT_HOST_KEY_SHA256` | Direct `request-pull` JSON field; 64-lowercase-hex SHA-256 of the binary SSH host public-key blob signed into `collection-receipt`. |
-| Endpoint `expected_host_key_sha256` | Independently reviewed OpenSSH display fingerprint in `SHA256:<base64>` form. It identifies the same host-key blob but is not the raw hexadecimal transport digest. |
+| Endpoint `expected_host_key_sha256` | `direct-exchange endpoint-init` JSON field derived from the independently reviewed key in OpenSSH `SHA256:<base64>` form. It identifies the same host-key blob but is not the raw hexadecimal transport digest. |
 | `APPROVAL_SHA256` | `offline-csr approve` JSON field `approval_sha256`; SHA-256 of exact canonical `approval` bytes and the approval-version suffix. Do not hash the signature or derive it manually. |
 | `ARTIFACT_SHA256` | `certificate-export publish` JSON field `manifest_sha256`; SHA-256 of exact canonical `artifact` bytes, used as the artifact pin. It is not the GitLab `stage-manifest` digest. |
 | `DEPLOYMENT_SHA256` | Successful activation output; SHA-256 of exact target-signed canonical `deployment` bytes and the evidence-version suffix. |
@@ -805,10 +817,12 @@ Lifecycle operator.
 Ansible controller, delegated to the exact target. **Prerequisite:** Bootstrap
 complete, no unresolved lifecycle state, and either healthy managed Zot for
 migration or verified masked/stopped dormant Zot with absent managed TLS
-material for initial issuance. **Output and provenance:** Target helper reports
-`REQUEST_ID`, `REQUEST_SHA256`, `CSR_SHA256`, and `CSR_SPKI_SHA256`; record those
-exact fields. **Retry/result:** Exact pending state is revalidated; conflicts or
-expired state fail closed. **Next actor:** Transport operator.
+material for initial issuance. The pre-enrolled transport pin is derived from
+the independently authenticated key blob as described under Argument
+Provenance. **Output and provenance:** Target helper reports `REQUEST_ID`,
+`REQUEST_SHA256`, `CSR_SHA256`, and `CSR_SPKI_SHA256`; record those exact fields.
+**Retry/result:** Exact pending state is revalidated; conflicts or expired state
+fail closed. **Next actor:** Transport operator.
 
 ```bash
 make registry-pki-request ENV="$ENVIRONMENT" LIMIT="$TARGET"
@@ -956,7 +970,7 @@ and expired attempts.
 ```bash
 platform-pki offline-csr approve "$SERVICE" \
   --namespace "$PKI_NAMESPACE" \
-  --operation migrate \
+  --operation "$OPERATION" \
   --request-id "$REQUEST_ID" \
   --input-dir "$OFFLINE_WORKSPACE/media-in/request/$REQUEST_ID" \
   --approval-key "$APPROVAL_KEY" \
@@ -1076,7 +1090,7 @@ exact-idempotent and resolve is read-only.
 ```bash
 platform-pki offline-csr sign "$SERVICE" \
   --namespace "$PKI_NAMESPACE" \
-  --operation migrate \
+  --operation "$OPERATION" \
   --request-id "$REQUEST_ID" \
   --input-dir "$OFFLINE_WORKSPACE/media-in/signer-input/$REQUEST_ID-$APPROVAL_SHA256" \
   --response-key "$RESPONSE_KEY" \

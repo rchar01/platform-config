@@ -327,47 +327,59 @@ two-layer dispatcher, fixed facade, and target policy form the runtime boundary.
 
 ## Target Host Pin
 
-Obtain the target's Ed25519 host-key fingerprint through a trusted console or
-another independently authenticated channel. Do not trust `ssh-keyscan` output
-by itself. The dedicated `known_hosts` file contains exactly one unhashed
-record. For port 22, its host token exactly matches the endpoint host:
+Obtain the target's complete two-field Ed25519 host public key through a trusted
+console or another independently authenticated channel. Do not trust
+`ssh-keyscan` output by itself. Preserve the reviewed key as one shell argument;
+do not add a comment or source it through command substitution.
 
-```text
-192.0.2.61 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEPUBLICHOSTKEY
-```
-
-Write the reviewed record with mode `0600`, then confirm its fingerprint:
+Create both local trust files with `platform-pki`. The protected endpoint and
+SSH parent directories and the dedicated mode-`0600` identity from the previous
+step must already exist:
 
 **Actor:** Trusted host-key reviewer. **Run on:** Online transfer station after
-independent console/channel comparison. **Prerequisite:** Exact one-record
-`known_hosts` file. **Output/provenance:** OpenSSH `SHA256:<base64>` display
-fingerprint from the stored public key blob. **Idempotent retry/result:** Read-only
-and repeatable; any mismatch blocks endpoint setup. **Next actor:** Endpoint
-record administrator.
+independent console/channel comparison. **Prerequisite:** Exact reviewed
+two-field Ed25519 public key, protected identity, and owner-only parents.
+**Output/provenance:** Owner-only one-record `known_hosts`, canonical endpoint
+record, OpenSSH `SHA256:<base64>` display fingerprint, and lowercase hexadecimal
+binary-key-blob SHA-256 from the same reviewed key. **Idempotent retry/result:**
+An exact rerun reports `status` `existing`; byte-different or unsafe existing
+state blocks setup without replacement. **Next actor:** Private inventory
+administrator.
 
 ```bash
-ssh-keygen -E sha256 -lf \
-  "$PI/infra/pki-exchange/ssh/$EXCHANGE_IDENTITY/known_hosts"
+REVIEWED_HOST_PUBLIC_KEY='ssh-ed25519 <reviewed-base64-key>'
+platform-pki direct-exchange endpoint-init \
+  "$PI/config/pki-exchange/endpoints/$SERVICE.json" \
+  --host 192.0.2.61 \
+  --host-public-key "$REVIEWED_HOST_PUBLIC_KEY" \
+  --identity-path "$PI/infra/pki-exchange/ssh/$EXCHANGE_IDENTITY/identity" \
+  --known-hosts-path "$PI/infra/pki-exchange/ssh/$EXCHANGE_IDENTITY/known_hosts" \
+  --user exchange-operator
 ```
 
-Store that OpenSSH display fingerprint in endpoint field
-`expected_host_key_sha256`. Later, direct `request-pull` reports the lowercase
-hexadecimal SHA-256 of the same binary key blob as
-`transport_host_key_sha256`; carry the reported value forward rather than
-converting or manually hashing the display fingerprint.
+The initializer performs no host discovery, network access, SSH identity
+generation, or target mutation. It writes the exact `known_hosts` record first
+and the endpoint activation record last, then reloads both through the normal
+direct-exchange validation path. Record its JSON fields
+`expected_host_key_sha256` and `transport_host_key_sha256`. The latter is the
+provisional inventory enrollment value required before `request-pull`; never
+convert the display fingerprint or recompute this value manually. The first
+direct `request-pull` reports the authenticated protocol value as
+`transport_host_key_sha256`; require equality with the enrollment value and
+carry the reported value forward for intake and package coordinates.
 
 ## Endpoint Record
 
-Create one canonical JSON line with an absolute identity path, absolute
-`known_hosts` path, reviewed OpenSSH fingerprint, exact network endpoint, fixed
-remote helper, and restricted account:
+`endpoint-init` creates one canonical JSON line with an absolute identity path,
+absolute `known_hosts` path, reviewed OpenSSH fingerprint, exact network
+endpoint, fixed remote helper, and restricted account:
 
 ```json
 {"expected_host_key_sha256":"SHA256:REVIEWED_OPENSSH_FINGERPRINT","host":"192.0.2.61","identity_path":"/home/operator/.config/platform-infrastructure/infra/pki-exchange/ssh/registry-dev-01/identity","known_hosts_path":"/home/operator/.config/platform-infrastructure/infra/pki-exchange/ssh/registry-dev-01/known_hosts","port":22,"remote_helper_path":"/usr/local/libexec/platform-pki-host-local-exchange","schema":1,"user":"exchange-operator"}
 ```
 
-Store it as
-`config/pki-exchange/endpoints/<service>.json` with mode `0600`. The endpoint
+It stores the record as `config/pki-exchange/endpoints/<service>.json` with mode
+`0600`. The endpoint
 host and the `known_hosts` token must refer to the same exact endpoint. Port 22
 uses the bare host token. A non-default port uses `[host]:port`; IPv6 addresses
 are also bracketed. Do not mix an IP address in one with a DNS name in the other.
