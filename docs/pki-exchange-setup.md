@@ -377,10 +377,14 @@ maintained source editor without `--write` first:
 
 **Actor:** Private inventory administrator. **Run on:** Reviewed configuration
 workstation. **Prerequisite:** Exact reviewed two-field Ed25519 public key,
-private repository, and selected relative host-vars path. **Output/provenance:**
-Deterministic three-file source diff with locally derived transport and complete
-signer-file digests. **Idempotent retry/result:** Dry-run changes nothing; an
-exact applied state prints no diff. **Next actor:** Repository reviewer.
+current-user-owned private repository without group- or world-writable source
+paths, and selected relative host-vars path. The metadata policy covers both
+signer sources and the complete inventory YAML consumer scan. Use a separate
+owner-controlled checkout when shared group-write access is intentional.
+**Output/provenance:** Deterministic three-file source diff with locally derived
+transport and complete signer-file digests. **Idempotent retry/result:** Dry-run
+changes nothing; an exact applied state prints no diff. **Next actor:**
+Repository reviewer.
 
 ```bash
 PRIVATE_REPO=/absolute/path/to/platform-private
@@ -419,7 +423,8 @@ If it reports that inspection is required, stop before installation and resolve
 the complete Git-visible source state. Signer-side `platform-pki
 csr-trust-install` and target-side Ansible trust bootstrap are later, separately
 authorized steps. The equivalent manual digest and review procedure is
-documented in [CSR Trust Source Host Updates](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-csr-trust-source.md).
+documented with the exact source metadata requirements in
+[CSR Trust Source Host Updates](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-csr-trust-source.md).
 
 ## Endpoint Record
 
