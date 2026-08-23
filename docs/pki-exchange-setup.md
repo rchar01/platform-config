@@ -368,6 +368,59 @@ direct `request-pull` reports the authenticated protocol value as
 `transport_host_key_sha256`; require equality with the enrollment value and
 carry the reported value forward for intake and package coordinates.
 
+## CSR Trust Source Preparation
+
+After endpoint enrollment and independent host-key review, prepare the matching
+requester, deployer, and host-vars source change before installing signer or
+target trust. This workflow requires platform-tools v3.2.0 or later. Run the
+maintained source editor without `--write` first:
+
+**Actor:** Private inventory administrator. **Run on:** Reviewed configuration
+workstation. **Prerequisite:** Exact reviewed two-field Ed25519 public key,
+private repository, and selected relative host-vars path. **Output/provenance:**
+Deterministic three-file source diff with locally derived transport and complete
+signer-file digests. **Idempotent retry/result:** Dry-run changes nothing; an
+exact applied state prints no diff. **Next actor:** Repository reviewer.
+
+```bash
+PRIVATE_REPO=/absolute/path/to/platform-private
+HOST_VARS=config/inventories/dev/host_vars/registry.example.yml
+HOST_PRINCIPAL=registry.example
+platform-pki csr-trust-source update-host "$HOST_PRINCIPAL" \
+  --private-repo "$PRIVATE_REPO" \
+  --host-vars "$HOST_VARS" \
+  --host-public-key "$REVIEWED_HOST_PUBLIC_KEY"
+```
+
+Review that only the selected principal in
+`pki/csr-trust/requesters.allowed_signers` and
+`pki/csr-trust/deployers.allowed_signers`, the transport digest, and the two
+matching host-vars trust digests change. Apply the same source edit only after
+that review:
+
+```bash
+platform-pki csr-trust-source update-host "$HOST_PRINCIPAL" \
+  --private-repo "$PRIVATE_REPO" \
+  --host-vars "$HOST_VARS" \
+  --host-public-key "$REVIEWED_HOST_PUBLIC_KEY" \
+  --write
+git -C "$PRIVATE_REPO" status --short
+git -C "$PRIVATE_REPO" diff HEAD --check
+git -C "$PRIVATE_REPO" diff HEAD -- \
+  pki/csr-trust/requesters.allowed_signers \
+  pki/csr-trust/deployers.allowed_signers \
+  "$HOST_VARS"
+```
+
+The command rejects another inventory consumer of either outgoing shared trust
+digest rather than leaving it stale. It performs no network access, endpoint
+change, trust installation, Ansible action, target mutation, or Git staging.
+If it reports that inspection is required, stop before installation and resolve
+the complete Git-visible source state. Signer-side `platform-pki
+csr-trust-install` and target-side Ansible trust bootstrap are later, separately
+authorized steps. The equivalent manual digest and review procedure is
+documented in [CSR Trust Source Host Updates](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-csr-trust-source.md).
+
 ## Endpoint Record
 
 `endpoint-init` creates one canonical JSON line with an absolute identity path,
