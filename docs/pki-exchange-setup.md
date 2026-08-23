@@ -1,10 +1,12 @@
 # PKI Exchange Setup
 
 Prepare one online transfer station, one private GitLab Generic Package project,
-and one restricted target SSH endpoint before running the
+one protected CSR trust publication, and one restricted target SSH endpoint
+before running the
 [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md). This
-guide prepares transport only. It authorizes no live request, publication,
-signing, activation, decision, cleanup, or target mutation.
+guide prepares transport and reviewed trust sources only. It authorizes no live
+request, package publication, signer trust installation, Ansible action, signing,
+activation, decision, cleanup, or target mutation.
 
 ## Ownership Boundary
 
@@ -14,6 +16,7 @@ Store each input according to its authority:
 | --- | --- |
 | `platform-config` | Public helpers, Ansible roles, sanitized setup procedures, and examples |
 | `platform-private` | Real inventory, project and target references, public-key authorization policy, and non-secret environment configuration |
+| `~/.config/platform-infrastructure/config/pki-source/` | Protected publication of reviewed five-file public CSR trust for signer and Ansible consumption |
 | `~/.config/platform-infrastructure/pki/` | Authoritative `platform-pki` signer state |
 | `~/.config/platform-infrastructure/pki-exchange/` | Raw transport and authenticated controller exchange history |
 | `~/.config/platform-pki-offline/<exact-service>/` | Initializer-managed reviewed request, approval, signer-input, response, evidence, outcome, and temporary approved work |
@@ -165,6 +168,8 @@ including the response source consumed by controller response check.
 │   │   └── ca.pem
 │   └── endpoints/
 │       └── registry-dev-01.json
+├── config/pki-source/
+│   └── pki/csr-trust/
 ├── infra/pki-exchange/
 │   ├── gitlab/
 │   │   ├── publisher.token
@@ -222,6 +227,7 @@ install -d -m 0700 -- \
   "$PI/config/pki-exchange" \
   "$PI/config/pki-exchange/gitlab" \
   "$PI/config/pki-exchange/endpoints" \
+  "$PI/config/pki-source" \
   "$PI/infra" \
   "$PI/infra/pki-exchange" \
   "$PI/infra/pki-exchange/gitlab" \
@@ -368,11 +374,11 @@ direct `request-pull` reports the authenticated protocol value as
 `transport_host_key_sha256`; require equality with the enrollment value and
 carry the reported value forward for intake and package coordinates.
 
-## CSR Trust Source Preparation
+## CSR Trust Source Preparation And Publication
 
 After endpoint enrollment and independent host-key review, prepare the matching
 requester, deployer, and host-vars source change before installing signer or
-target trust. This workflow requires platform-tools v3.2.0 or later. Run the
+target trust. This workflow requires platform-tools v3.3.0 or later. Run the
 maintained source editor without `--write` first:
 
 **Actor:** Private inventory administrator. **Run on:** Reviewed configuration
@@ -420,10 +426,39 @@ The command rejects another inventory consumer of either outgoing shared trust
 digest rather than leaving it stale. It performs no network access, endpoint
 change, trust installation, Ansible action, target mutation, or Git staging.
 If it reports that inspection is required, stop before installation and resolve
-the complete Git-visible source state. Signer-side `platform-pki
-csr-trust-install` and target-side Ansible trust bootstrap are later, separately
-authorized steps. The equivalent manual digest and review procedure is
-documented with the exact source metadata requirements in
+the complete Git-visible source state.
+
+After the durable private source has passed repository review and has been
+recorded under the private repository's policy, publish its exact trust tree to
+the protected outside-Git source. Source the matching reviewed
+`config/<environment>.ansible.env` first so
+`PLATFORM_INFRASTRUCTURE_CONFIG_DIR` follows the public environment convention.
+
+**Actor:** Private trust publisher. **Run on:** Reviewed configuration
+workstation. **Prerequisite:** Reviewed durable private source, protected
+existing `$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source` destination root, and
+matching sourced environment. **Output/provenance:** Validated schema-2
+five-file publication at
+`$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source/pki/csr-trust`, with mode `0700`
+directories and mode `0600` files. **Idempotent retry/result:** An exact tree is
+reported explicitly as already current and is not replaced; a changed valid
+tree is atomically published. **Next actor:** Offline signer, under separate
+signer-install authorization.
+
+```bash
+platform-pki csr-trust-source publish \
+  --private-repo "$PRIVATE_REPO" \
+  --destination-root "$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source"
+```
+
+Do not manually copy trust from the private repository. The publisher validates
+the fixed five-file source and destination metadata. It does not edit source,
+install signer runtime trust, run Ansible, mutate a target, use the network, or
+access secrets. The canonical workflow separately installs signer trust with
+`csr-trust-install` from the protected publication and then installs target
+trust with `playbooks/registry-pki-trust.yml`; neither installation may read the
+durable repository trust files directly. The manual digest and review procedure
+is documented with the exact source metadata requirements in
 [CSR Trust Source Host Updates](https://codeberg.org/rch/platform-tools/src/branch/main/docs/pki-csr-trust-source.md).
 
 ## Endpoint Record

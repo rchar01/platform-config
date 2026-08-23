@@ -162,11 +162,14 @@ command. If that inventory cannot be established, rotation remains blocked.
 The signer trust installer supplies the final signer-side retained-candidate
 gate before it publishes replacement trust.
 
-For an irrecoverable key, retain old public trust and signed history, publish the
-replacement public key through the reviewed private trust source, atomically
-install signer trust, and install a new immutable target trust ID. Update
-controller digests and start only new requests with that trust ID. The exact
-registry procedure is in [Operator Key Loss And Replacement](registry-host-local-pki-workflow.md#operator-key-loss-and-replacement).
+For an irrecoverable key, retain old public trust and signed history, record the
+replacement public key in the reviewed durable private trust source, publish the
+fixed five-file tree with `platform-pki csr-trust-source publish` to
+`$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source`, atomically install signer trust
+from that protected publication, and install a new immutable target trust ID
+through the owning Ansible playbook. Update controller digests and start only new
+requests with that trust ID. The exact registry procedure is in
+[Operator Key Loss And Replacement](registry-host-local-pki-workflow.md#operator-key-loss-and-replacement).
 
 ## Offline Workspace Leaves
 

@@ -148,7 +148,9 @@ Reassignment is non-mutating; stop if an existing path maps to a different
 purpose. **Next actor:** Bootstrap actors.
 
 ```bash
+source ../platform-private/config/dev.ansible.env
 ENVIRONMENT=dev
+PRIVATE_REPO=/absolute/path/to/platform-private
 SERVICE=registry-dev-01
 STABLE_TRUST_DOMAIN=registry-dev
 OPERATION=issue
@@ -172,7 +174,15 @@ PROJECT_RECORD="$PI/config/pki-exchange/gitlab/project-record"
 GITLAB_CA="$PI/config/pki-exchange/gitlab/ca.pem"
 PUBLISH_TOKEN=/run/secrets/gitlab-package-publisher-token
 READ_TOKEN=/run/secrets/gitlab-package-reader-token
+: "${PLATFORM_INFRASTRUCTURE_CONFIG_DIR:?source the reviewed environment file first}"
 ```
+
+The sourced environment file must export
+`PLATFORM_INFRASTRUCTURE_CONFIG_DIR` as the reviewed
+`.../platform-infrastructure/config` directory documented in
+[Private Workflow](private-workflow.md#environment-files). Do not derive the
+protected publication path from `PLATFORM_PRIVATE_CONFIG_ROOT` or bypass the
+environment-specific selection.
 
 `SERVICE`, `TARGET`, `STABLE_TRUST_DOMAIN`, and `OPERATION` are distinct reviewed
 coordinates: the exact lifecycle service is `registry-dev-01`, its Ansible
@@ -304,25 +314,38 @@ For irreversible replacement:
    `schema2-vN` value. Update private inventory with that ID, the five canonical
    target paths, the five reviewed digests, and the five outside-Git source
    paths. Never use `latest` or `current`.
-9. Install the reviewed signer trust atomically. This is the final authoritative
-   signer-side gate: `csr-trust-install` rejects a schema-2 change while any
-   retained candidate lacks an authenticated finalized or abandoned outcome.
+9. Publish the reviewed durable private trust source to the protected outside-Git
+   source. Do not manually copy the trust files. An exact protected tree is an
+   explicit no-op; a changed valid five-file tree is published atomically.
 
    ```bash
-   platform-pki csr-trust-install \
-     --namespace "$PKI_NAMESPACE" \
-     --private-repo /absolute/path/to/platform-private
+   platform-pki csr-trust-source publish \
+     --private-repo "$PRIVATE_REPO" \
+     --destination-root "$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source"
    ```
 
-10. Install the new immutable public trust snapshot through Ansible rather than
-   manual target changes:
+10. Install the reviewed signer trust atomically from that protected publication.
+    This is the final authoritative signer-side gate: `csr-trust-install` rejects
+    a schema-2 change while any retained candidate lacks an authenticated
+    finalized or abandoned outcome.
 
-   ```bash
-   make apply ENV="$ENVIRONMENT" \
-     PLAYBOOK=playbooks/registry-pki-trust.yml LIMIT="$TARGET"
-   ```
+    ```bash
+    platform-pki csr-trust-install \
+      --namespace "$PKI_NAMESPACE" \
+      --private-repo "$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source"
+    ```
 
-11. Run the trust playbook in check mode and require an unchanged successful
+11. Install the new immutable public trust snapshot through Ansible rather than
+    manual target changes. Private inventory source paths must select the same
+    protected publication under
+    `$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source/pki/csr-trust`:
+
+    ```bash
+    make apply ENV="$ENVIRONMENT" \
+      PLAYBOOK=playbooks/registry-pki-trust.yml LIMIT="$TARGET"
+    ```
+
+12. Run the trust playbook in check mode and require an unchanged successful
     result. The role rechecks the expected trust ID, all five canonical target
     paths, and all five reviewed digests:
 
@@ -344,7 +367,7 @@ For irreversible replacement:
 
     Start only new requests with the new trust ID and the reassigned key
     variable. Do not replace either canonical old-key path in place.
-12. Retain the old target trust directory, signer transaction snapshots, public
+13. Retain the old target trust directory, signer transaction snapshots, public
     keys, signed packages, and finalized history through their approved
     retention periods. Removing obsolete private or public material is a later
     exact-path retention decision.
@@ -705,11 +728,34 @@ validation material, any managed predecessor state, rollback hold, unresolved
 recovery state, GitLab controls, endpoint pin, and backup/restore procedures.
 Trust rotation is forbidden while a request is pending.
 
-### B1. Install And Verify Signer State
+### B1. Publish The Protected Trust Source
+
+**Actor:** Private trust publisher. **Run on:** Reviewed configuration
+workstation. **Prerequisite:** Reviewed durable private source, matching sourced
+environment, and protected existing
+`$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source` destination root. **Output and
+provenance:** Validated fixed schema-2 five-file trust at
+`$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source/pki/csr-trust`; publication does
+not install signer or target trust. **Retry/result:** Exact content reports an
+explicit already-current no-op; a changed valid tree is published atomically.
+**Next actor:** Offline signer.
+
+```bash
+platform-pki csr-trust-source publish \
+  --private-repo "$PRIVATE_REPO" \
+  --destination-root "$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source"
+```
+
+The command does not edit the durable source, install signer runtime trust, run
+Ansible, mutate targets, use the network, or access secrets. Do not replace it
+with a manual copy.
+
+### B2. Install And Verify Signer State
 
 **Actor:** Offline signer. **Run on:** Reviewed same-workstation signer shell.
 **Prerequisite:**
-Reviewed private inventory/trust and short-lived passphrase files. **Output and
+Reviewed private inventory, B1 protected trust publication, and short-lived
+passphrase files. **Output and
 provenance:** Installed inventory/trust, rollover status, successful passphrase
 verification, and encrypted backup path from `platform-pki`. **Retry/result:**
 Exact installs and verification are idempotent; stop on recovery state or a
@@ -718,10 +764,10 @@ conflict. **Next actor:** Lifecycle operator.
 ```bash
 platform-pki inventory-install \
   --namespace "$PKI_NAMESPACE" \
-  --private-repo /absolute/path/to/platform-private
+  --private-repo "$PRIVATE_REPO"
 platform-pki csr-trust-install \
   --namespace "$PKI_NAMESPACE" \
-  --private-repo /absolute/path/to/platform-private
+  --private-repo "$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/pki-source"
 platform-pki ca-rollover status \
   --namespace "$PKI_NAMESPACE" --format json
 platform-pki ca-passphrase-verify \
@@ -736,11 +782,12 @@ platform-pki backup \
 Before any cleanup depends on this backup, follow the canonical-path,
 network-disabled [backup and isolated restore contract](pki-local-layout.md#backup-and-isolated-restore).
 
-### B2. Provision Validation Material And Bootstrap Trust
+### B3. Provision Validation Material And Bootstrap Trust
 
 **Actor:** Lifecycle operator. **Run on:** Ansible controller; delegated to the
 exact target and distinct runner. **Prerequisite:** Reviewed outside-Git CA,
-validation boundary, five-file trust, exact inventory selection, and an
+validation boundary, B1 protected five-file trust publication, private inventory
+source paths selecting that publication, exact inventory selection, and an
 operation matching target state. **Output and provenance:** Ansible success for
 the safe registry baseline, installed validation inputs, and target trust.
 **Retry/result:** Exact reinstallation is an authenticated no-op; no trust
@@ -780,10 +827,10 @@ and request helpers without creating request state; the mutable request stage
 independently validates dormant state or proves the managed predecessor before
 creating target-local key material.
 
-### B3. Verify Bootstrap Readiness Without Creating A Request
+### B4. Verify Bootstrap Readiness Without Creating A Request
 
 **Actor:** Lifecycle operator. **Run on:** Ansible controller in check mode,
-delegated to the exact target and distinct runner. **Prerequisite:** B1/B2 and
+delegated to the exact target and distinct runner. **Prerequisite:** B2/B3 and
 reviewed private lifecycle inputs. **Output and provenance:** Fixed readiness
 preflight validates topology, request helper, lifecycle/runner helpers, and exact
 target validation-material metadata/digests without transport or request state.
