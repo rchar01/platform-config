@@ -27,12 +27,18 @@ DEFAULT_TRANSITION = "rocky-10.1-to-10.2"
 TRANSITIONS = {
     DEFAULT_TRANSITION: {
         "migration_id": "2026-08-rocky-10.1-to-10.2",
+        "repository_origins": "official",
+        "signing_key_sha256": None,
         "source": "10.1",
         "source_releasever": "10.1",
         "target": "10.2",
     },
     "rocky-10.0-to-10.2": {
         "migration_id": "2026-08-rocky-10.0-to-10.2",
+        "repository_origins": "reviewed-https",
+        "signing_key_sha256": (
+            "be8c4f070b696e64d8ce40e59a95a57e8b5c776f0015c2fd64e14b896622bdb4"  # gitleaks:allow - Public key digest.
+        ),
         "source": "10.0",
         "source_releasever": None,
         "target": "10.2",
@@ -76,6 +82,7 @@ DNF_QUALIFICATIONS = {
 }
 DNF_VERSION = "4.20.0"
 DOWNLOAD_FREE_MARGIN = 1024 * 1024 * 1024
+SIGNING_KEY_PATH = pathlib.Path("/etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-10")
 MARKER_FIELDS = {
     "completed_at",
     "manifest_sha256",
@@ -180,7 +187,40 @@ def repo_record(repo: Any) -> dict[str, Any]:
     }
 
 
-def validate_repositories(base: Any, policy: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def validate_repository_url(
+    repo_id: str, key: str, value: str, profile: dict[str, Any]
+) -> None:
+    if any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value):
+        raise AlignmentError(f"repository {repo_id} has an unapproved {key} origin")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        parsed.port
+    except ValueError as error:
+        raise AlignmentError(
+            f"repository {repo_id} has an unapproved {key} origin"
+        ) from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise AlignmentError(f"repository {repo_id} has an unapproved {key} origin")
+    if profile["repository_origins"] == "official" and parsed.hostname not in {
+        "dl.rockylinux.org",
+        "mirrors.rockylinux.org",
+    }:
+        raise AlignmentError(f"repository {repo_id} has an unapproved {key} origin")
+
+
+def validate_repositories(
+    base: Any,
+    policy: dict[str, dict[str, Any]],
+    profile: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    if profile is None:
+        profile = transition(DEFAULT_TRANSITION)
     actual = {repo.id: repo_record(repo) for repo in base.repos.values() if repo.enabled}
     if actual != policy:
         raise AlignmentError("enabled repository identities or origins differ from the reviewed policy")
@@ -204,15 +244,27 @@ def validate_repositories(base: Any, policy: dict[str, dict[str, Any]]) -> dict[
             for value in values:
                 if not value:
                     continue
-                parsed = urllib.parse.urlsplit(value)
-                if parsed.scheme != "https" or parsed.hostname not in {
-                    "dl.rockylinux.org",
-                    "mirrors.rockylinux.org",
-                }:
-                    raise AlignmentError(f"repository {repo_id} has an unapproved {key} origin")
-                if parsed.username or parsed.password:
-                    raise AlignmentError(f"repository {repo_id} embeds URL credentials")
+                validate_repository_url(repo_id, key, value, profile)
     return actual
+
+
+def validate_signing_key(
+    profile: dict[str, Any], path: pathlib.Path = SIGNING_KEY_PATH
+) -> None:
+    expected_digest = profile["signing_key_sha256"]
+    if expected_digest is None:
+        return
+    key_stat = path.lstat()
+    if (
+        not stat.S_ISREG(key_stat.st_mode)
+        or path.is_symlink()
+        or key_stat.st_uid != 0
+        or key_stat.st_gid != 0
+        or key_stat.st_mode & 0o022
+    ):
+        raise AlignmentError("Rocky signing key ownership or mode is invalid")
+    if sha256_file(path) != expected_digest:
+        raise AlignmentError("Rocky signing key digest differs from the qualified key")
 
 
 def qualified_dnf_packages(
@@ -267,7 +319,13 @@ def load_dnf(
     return dnf, dnf.transaction
 
 
-def configure_base(dnf: Any, policy: dict[str, dict[str, Any]], *, available: bool) -> Any:
+def configure_base(
+    dnf: Any,
+    policy: dict[str, dict[str, Any]],
+    profile: dict[str, Any],
+    *,
+    available: bool,
+) -> Any:
     base = dnf.Base()
     base.conf.read()
     base.conf.substitutions.update_from_etc("/etc/dnf/vars", "/etc/yum/vars")
@@ -284,7 +342,7 @@ def configure_base(dnf: Any, policy: dict[str, dict[str, Any]], *, available: bo
             repo.metadata_expire = 0
         else:
             repo.disable()
-    validate_repositories(base, policy)
+    validate_repositories(base, policy, profile)
     try:
         base.fill_sack(load_system_repo=True, load_available_repos=available)
     except Exception as error:
@@ -346,11 +404,12 @@ def resolve_upgrade(
     dnf: Any,
     transaction_module: Any,
     policy: dict[str, dict[str, Any]],
+    profile: dict[str, Any],
     *,
     require_changes: bool,
     target: str,
 ) -> tuple[Any, list[dict[str, str]]]:
-    base = configure_base(dnf, policy, available=True)
+    base = configure_base(dnf, policy, profile, available=True)
     base.upgrade_all()
     if not base.resolve(allow_erasing=False):
         if require_changes:
@@ -586,12 +645,14 @@ def qualified_rpmdb_lock(dnf: Any, base: Any) -> Iterator[None]:
 def command_inspect(args: argparse.Namespace) -> dict[str, Any]:
     profile = transition(args.transition)
     policy = decode_policy(args.policy_b64)
+    validate_signing_key(profile)
     current_release = os_release_version(profile)
     dnf, transaction_module = load_dnf(current_release, profile)
     base, rows = resolve_upgrade(
         dnf,
         transaction_module,
         policy,
+        profile,
         require_changes=current_release == profile["source"],
         target=profile["target"],
     )
@@ -599,7 +660,7 @@ def command_inspect(args: argparse.Namespace) -> dict[str, Any]:
         _, installed_digest = installed_state()
         return {
             "installed_state_sha256": installed_digest,
-            "repositories": validate_repositories(base, policy),
+            "repositories": validate_repositories(base, policy, profile),
             "transaction": rows,
             "transaction_sha256": sha256_bytes(canonical_json(rows)),
         }
@@ -610,6 +671,7 @@ def command_inspect(args: argparse.Namespace) -> dict[str, Any]:
 def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
     profile = transition(args.transition)
     policy = decode_policy(args.policy_b64)
+    validate_signing_key(profile)
     current_release = os_release_version(profile)
     if current_release != profile["source"]:
         raise AlignmentError(
@@ -623,6 +685,7 @@ def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
             dnf,
             transaction_module,
             policy,
+            profile,
             require_changes=True,
             target=profile["target"],
         )
@@ -643,7 +706,7 @@ def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
                 "installed_state_sha256": installed_digest,
                 "migration_id": profile["migration_id"],
                 "payloads": payloads,
-                "repositories": validate_repositories(base, policy),
+                "repositories": validate_repositories(base, policy, profile),
                 "schema": 1,
                 "source": profile["source"],
                 "target": profile["target"],
@@ -721,6 +784,7 @@ def command_apply(args: argparse.Namespace) -> dict[str, Any]:
             base.close()
             raise AlignmentError("local-only DNF action set differs from the approved transaction")
         try:
+            validate_signing_key(profile)
             releasever = source_releasever_path(profile)
         except AlignmentError:
             base.close()

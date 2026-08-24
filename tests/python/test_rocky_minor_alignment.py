@@ -396,6 +396,169 @@ def test_rocky_alignment_repository_policy_binds_origins(repo_root: Path) -> Non
         helper.validate_repositories(unqualified_base, {"baseos": unqualified_key})
 
 
+def test_rocky_10_0_alignment_accepts_only_reviewed_credential_free_https(
+    repo_root: Path,
+) -> None:
+    helper = _helper(repo_root)
+    profile = helper.transition("rocky-10.0-to-10.2")
+    record = {
+        "baseurl": ["https://rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/"],
+        "gpgcheck": True,
+        "gpgkey": ["file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-10"],
+        "metalink": None,
+        "mirrorlist": None,
+        "repo_gpgcheck": False,
+    }
+
+    def base(value: dict[str, object]) -> SimpleNamespace:
+        repo = SimpleNamespace(id="baseos", enabled=True, **value)
+        return SimpleNamespace(repos=SimpleNamespace(values=lambda: [repo]))
+
+    assert helper.validate_repositories(base(record), {"baseos": record}, profile) == {
+        "baseos": record
+    }
+    with pytest.raises(helper.AlignmentError, match="unapproved baseurl origin"):
+        helper.validate_repositories(base(record), {"baseos": record})
+    for origin in (
+        "http://rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/",
+        "https://user:password@rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/",
+        "https://@rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/",
+        "https://:@rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/",
+        "https://rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/\n",
+        "https://rocky-mirror.example.test:invalid/rocky/10/BaseOS/x86_64/os/",
+        "https://rocky-mirror.example.test/rocky/10/BaseOS/x86_64/os/#fragment",
+        "https://[broken/rocky/10/BaseOS/x86_64/os/",
+    ):
+        unsafe = dict(record, baseurl=[origin])
+        with pytest.raises(helper.AlignmentError, match="unapproved"):
+            helper.validate_repositories(base(unsafe), {"baseos": unsafe}, profile)
+
+
+def test_rocky_10_0_alignment_qualifies_local_signing_key(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = _helper(repo_root)
+    profile = helper.transition("rocky-10.0-to-10.2")
+    key = SimpleNamespace(
+        is_symlink=lambda: False,
+        lstat=lambda: SimpleNamespace(
+            st_gid=0,
+            st_mode=helper.stat.S_IFREG | 0o644,
+            st_uid=0,
+        ),
+    )
+    expected = profile["signing_key_sha256"]
+    monkeypatch.setattr(helper, "sha256_file", lambda path: expected)
+
+    helper.validate_signing_key(profile, key)
+    monkeypatch.setattr(helper, "sha256_file", lambda path: "0" * 64)
+    with pytest.raises(helper.AlignmentError, match="digest differs"):
+        helper.validate_signing_key(profile, key)
+    with pytest.raises(FileNotFoundError):
+        helper.validate_signing_key(profile, isolated_test_dir / "missing-key")
+    unsafe_metadata = (
+        (helper.stat.S_IFDIR | 0o755, 0, 0, False),
+        (helper.stat.S_IFREG | 0o644, 1, 0, False),
+        (helper.stat.S_IFREG | 0o644, 0, 1, False),
+        (helper.stat.S_IFREG | 0o666, 0, 0, False),
+        (helper.stat.S_IFREG | 0o644, 0, 0, True),
+    )
+    for mode, uid, gid, symlink in unsafe_metadata:
+        unsafe_key = SimpleNamespace(
+            is_symlink=lambda value=symlink: value,
+            lstat=lambda value=(mode, uid, gid): SimpleNamespace(
+                st_gid=value[2],
+                st_mode=value[0],
+                st_uid=value[1],
+            ),
+        )
+        with pytest.raises(helper.AlignmentError, match="ownership or mode"):
+            helper.validate_signing_key(profile, unsafe_key)
+
+    helper.validate_signing_key(
+        helper.transition("rocky-10.1-to-10.2"), unsafe_key
+    )
+
+
+def test_rocky_10_0_apply_revalidates_signing_key_before_mutation(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = _helper(repo_root)
+    events: list[str] = []
+    profile = helper.transition("rocky-10.0-to-10.2")
+    manifest = {
+        "dnf_version": "4.20.0",
+        "download_size": 1,
+        "install_size": 1,
+        "installed_state_sha256": "a" * 64,
+        "migration_id": profile["migration_id"],
+        "payloads": [],
+        "repositories": {"baseos": {}},
+        "schema": 1,
+        "source": profile["source"],
+        "target": profile["target"],
+        "transaction": [],
+    }
+    lock_base = SimpleNamespace(
+        close=lambda: None,
+        conf=SimpleNamespace(read=lambda: None, exit_on_lock=False),
+    )
+    local_base = SimpleNamespace(
+        close=lambda: None,
+        do_transaction=lambda: events.append("transaction"),
+    )
+    dnf = SimpleNamespace(Base=lambda: lock_base)
+    monkeypatch.setattr(helper, "os_release_version", lambda selected: "10.0")
+    monkeypatch.setattr(helper, "load_dnf", lambda release, selected: (dnf, object()))
+    monkeypatch.setattr(helper, "load_manifest", lambda staging, digest: manifest)
+    monkeypatch.setattr(helper, "installed_state", lambda: ([], "a" * 64))
+    monkeypatch.setattr(helper, "verify_payloads", lambda staging, payloads: [])
+    monkeypatch.setattr(
+        helper,
+        "local_transaction",
+        lambda loaded_dnf, transaction_module, paths: (local_base, []),
+    )
+    monkeypatch.setattr(
+        helper,
+        "qualified_rpmdb_lock",
+        lambda loaded_dnf, base: helper.contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        helper,
+        "validate_signing_key",
+        lambda selected: events.append("key"),
+    )
+    monkeypatch.setattr(helper, "source_releasever_path", lambda selected: None)
+    monkeypatch.setattr(
+        helper,
+        "write_exclusive",
+        lambda path, payload, mode: events.append("phase"),
+    )
+    args = SimpleNamespace(
+        installed_state_sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        staging=str(isolated_test_dir),
+        transition="rocky-10.0-to-10.2",
+    )
+
+    assert helper.command_apply(args)["applied"] is True
+    assert events == ["key", "phase", "transaction", "phase"]
+
+    events.clear()
+
+    def fail_signing_key(selected: dict[str, object]) -> None:
+        raise helper.AlignmentError("signing key changed")
+
+    monkeypatch.setattr(helper, "validate_signing_key", fail_signing_key)
+    with pytest.raises(helper.AlignmentError, match="signing key changed"):
+        helper.command_apply(args)
+    assert events == []
+
+
 def test_rocky_alignment_rejects_unqualified_dnf_packages(
     repo_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

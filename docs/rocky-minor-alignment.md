@@ -28,7 +28,7 @@ SSH identity is authenticated. Create a private isolated inventory at:
 
 That inventory must contain exactly one `rocky_alignment_hosts` member. Its host
 variables must explicitly enable this transition and record the exact reviewed
-standard Rocky repository origins and signature policy:
+Rocky repository origins and signature policy:
 
 ```yaml
 ansible_connection: ansible.builtin.ssh
@@ -60,6 +60,13 @@ not copy the partial BaseOS example without inspection. Every repository must
 use `file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-10`. Vault, `ptb-*`, testing,
 development, local, non-HTTPS package origins, alternate signing keys, and
 disabled package-signature checks are prohibited.
+
+The historical 10.1 profile retains its official Rocky hostname allowlist. The
+explicit 10.0 profile permits internal mirrors only when their complete enabled
+repository records exactly match private policy, every package origin uses
+credential-free HTTPS, and the local Rocky 10 signing key is a root-owned,
+non-group/world-writable regular file with SHA-256
+`be8c4f070b696e64d8ce40e59a95a57e8b5c776f0015c2fd64e14b896622bdb4`.
 
 Rocky repository substitution remains on the supported major stream
 (`releasever=10`), not a forced `10.2` repository path. The migration separately
