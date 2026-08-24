@@ -111,11 +111,16 @@ Do not import migrations from `playbooks/site.yml`.
 
 ## Available Migrations
 
+- `2026-08-rocky-10.0-to-10.2.yml` aligns one explicitly eligible Rocky Linux
+  10.0 host directly to 10.2. Select it with the supported launcher's
+  `--transition rocky-10.0-to-10.2` option.
 - `2026-08-rocky-10.1-to-10.2.yml` aligns one explicitly eligible Rocky Linux
-  10.1 host to 10.2 through reviewed standard Rocky repositories. Use only the
-  supported `scripts/rocky-minor-alignment` launcher and the private isolated
-  `<env>-rocky-alignment` inventory. See
-  [Rocky Linux Minor Alignment](../docs/rocky-minor-alignment.md).
+  10.1 host to 10.2. It remains the launcher's default transition.
+
+Both transitions use reviewed standard Rocky repositories. Use only the
+supported `scripts/rocky-minor-alignment` launcher and the private isolated
+`<env>-rocky-alignment` inventory. See
+[Rocky Linux Minor Alignment](../docs/rocky-minor-alignment.md).
 
 ## Documentation Checklist
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -34,16 +35,20 @@ def _write_executable(path: Path, content: str) -> None:
 def test_rocky_alignment_playbook_syntax_and_isolation(
     repo_root: Path, command_runner: CommandRunner
 ) -> None:
-    migration = repo_root / "migrations/2026-08-rocky-10.1-to-10.2.yml"
-    run_playbook(
-        command_runner,
-        migration,
-        inventory=repo_root / "tests/fixtures/rocky-minor-alignment/inventory.yml",
-        syntax_check=True,
-    ).assert_success()
+    for name in (
+        "2026-08-rocky-10.0-to-10.2.yml",
+        "2026-08-rocky-10.1-to-10.2.yml",
+    ):
+        run_playbook(
+            command_runner,
+            repo_root / "migrations" / name,
+            inventory=repo_root / "tests/fixtures/rocky-minor-alignment/inventory.yml",
+            syntax_check=True,
+        ).assert_success()
 
     for path in (repo_root / "playbooks").rglob("*.yml"):
         assert "2026-08-rocky-10.1-to-10.2" not in path.read_text(encoding="utf-8")
+        assert "2026-08-rocky-10.0-to-10.2" not in path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -58,6 +63,10 @@ def test_rocky_alignment_playbook_syntax_and_isolation(
         (["preflight", "--env", "dev", "--limit", "group:host"], "one literal"),
         (["preflight", "--env", "dev", "--limit", "host,other"], "one literal"),
         (["preflight", "--env", "dev", "--limit", "-host"], "one literal"),
+        (
+            ["preflight", "--env", "dev", "--limit", "host", "--transition", "rocky-10.0-to-10.1"],
+            "unsupported Rocky transition",
+        ),
     ],
 )
 def test_rocky_alignment_launcher_rejects_unsafe_arguments(
@@ -86,10 +95,29 @@ def test_rocky_alignment_has_fixed_transition_and_private_gate(repo_root: Path) 
     assert "--allowerasing" not in preflight
     assert "distro-sync" not in preflight
 
+    migration_10_0 = (
+        repo_root / "migrations/2026-08-rocky-10.0-to-10.2.yml"
+    ).read_text(encoding="utf-8")
+    preflight_10_0 = (
+        repo_root / "migrations/tasks/rocky-10.0-to-10.2-preflight.yml"
+    ).read_text(encoding="utf-8")
+    assert 'rocky_alignment_source_version: "10.0"' in migration_10_0
+    assert "rocky_alignment_transition | default('') == 'rocky-10.0-to-10.2'" in migration_10_0
+    assert "rocky_10_0_to_10_2_enabled | default(false) | bool" in migration_10_0
+    assert "/etc/dnf/vars/releasever" in preflight_10_0
+    assert "/etc/yum/vars/releasever" in preflight_10_0
+    assert "Rocky 10.1 and every other release fail closed" in preflight_10_0
+    verify = (
+        repo_root / "migrations/tasks/rocky-minor-alignment-verify.yml"
+    ).read_text(encoding="utf-8")
+    assert "/etc/dnf/vars/releasever" in verify
+    assert "/etc/yum/vars/releasever" in verify
+    assert "rocky_alignment_transition == 'rocky-10.0-to-10.2'" in verify
+
 
 def test_rocky_alignment_capacity_matches_qualified_template(repo_root: Path) -> None:
     preflight = (
-        repo_root / "migrations/tasks/rocky-10.1-to-10.2-preflight.yml"
+        repo_root / "migrations/tasks/rocky-minor-alignment-preflight.yml"
     ).read_text(encoding="utf-8")
 
     assert "/boot: 536870912" in preflight
@@ -99,7 +127,7 @@ def test_rocky_alignment_capacity_matches_qualified_template(repo_root: Path) ->
 
 def test_rocky_alignment_binds_transaction_and_installed_state(repo_root: Path) -> None:
     upgrade = (
-        repo_root / "migrations/tasks/rocky-10.1-to-10.2-upgrade.yml"
+        repo_root / "migrations/tasks/rocky-minor-alignment-upgrade.yml"
     ).read_text(encoding="utf-8")
 
     helper = (
@@ -124,7 +152,7 @@ def test_rocky_alignment_binds_transaction_and_installed_state(repo_root: Path) 
 
 def test_rocky_alignment_marker_follows_verification(repo_root: Path) -> None:
     verify = (
-        repo_root / "migrations/tasks/rocky-10.1-to-10.2-verify.yml"
+        repo_root / "migrations/tasks/rocky-minor-alignment-verify.yml"
     ).read_text(encoding="utf-8")
 
     marker = verify.index("Publish and validate the migration completion marker exclusively")
@@ -151,12 +179,25 @@ def test_rocky_alignment_launcher_uses_isolated_inventory(repo_root: Path) -> No
     assert "HOST_KEY_CHECKING must be true" in launcher
     assert "accept-new" in launcher
     assert "ssh_g_output=" in launcher
+    assert "eligibility_var=rocky_10_1_to_10_2_enabled" in launcher
+    assert "eligibility_var=rocky_10_0_to_10_2_enabled" in launcher
+    assert "repositories_var=rocky_10_1_to_10_2_repositories" in launcher
+    assert "repositories_var=rocky_10_0_to_10_2_repositories" in launcher
 
 
+@pytest.mark.parametrize(
+    ("transition", "playbook_name"),
+    [
+        (None, "2026-08-rocky-10.1-to-10.2.yml"),
+        ("rocky-10.0-to-10.2", "2026-08-rocky-10.0-to-10.2.yml"),
+    ],
+)
 def test_rocky_alignment_launcher_passes_effective_ssh_arguments(
     repo_root: Path,
     command_runner: CommandRunner,
     isolated_test_dir: Path,
+    transition: str | None,
+    playbook_name: str,
 ) -> None:
     private_root = isolated_test_dir / "platform-private"
     inventory = private_root / "config/inventories/dev-rocky-alignment/hosts.yml"
@@ -167,6 +208,16 @@ def test_rocky_alignment_launcher_passes_effective_ssh_arguments(
     bin_dir = isolated_test_dir / "bin"
     bin_dir.mkdir()
     playbook_log = isolated_test_dir / "playbook.log"
+    if transition is None:
+        transition_vars = {
+            "rocky_10_1_to_10_2_enabled": True,
+            "rocky_10_1_to_10_2_repositories": {"baseos": {}},
+        }
+    else:
+        transition_vars = {
+            "rocky_10_0_to_10_2_enabled": True,
+            "rocky_10_0_to_10_2_repositories": {"baseos": {}},
+        }
     inventory_data = {
         "rocky_alignment_hosts": {"hosts": ["rocky-alignment-example"]},
         "_meta": {
@@ -182,8 +233,7 @@ def test_rocky_alignment_launcher_passes_effective_ssh_arguments(
                         "-o StrictHostKeyChecking=yes "
                         "-o UserKnownHostsFile=/tmp/known_hosts"
                     ),
-                    "rocky_10_1_to_10_2_enabled": True,
-                    "rocky_10_1_to_10_2_repositories": {"baseos": {}},
+                    **transition_vars,
                 }
             }
         },
@@ -219,21 +269,23 @@ printf '%s\n' '  hosts (1):' '    rocky-alignment-example'
         "ROCKY_PLAYBOOK_LOG": str(playbook_log),
     }
 
-    result = command_runner.run(
-        [
-            repo_root / "scripts/rocky-minor-alignment",
-            "preflight",
-            "--env",
-            "dev",
-            "--limit",
-            "rocky-alignment-example",
-        ],
-        environment=environment,
-    )
+    argv = [
+        repo_root / "scripts/rocky-minor-alignment",
+        "preflight",
+        "--env",
+        "dev",
+        "--limit",
+        "rocky-alignment-example",
+    ]
+    if transition is not None:
+        argv.extend(["--transition", transition])
+    result = command_runner.run(argv, environment=environment)
     result.assert_success()
     playbook_arguments = playbook_log.read_text(encoding="utf-8").splitlines()
     assert str(inventory) in playbook_arguments
+    assert str(repo_root / "migrations" / playbook_name) in playbook_arguments
     assert "rocky_alignment_target_host=rocky-alignment-example" in playbook_arguments
+    assert f"rocky_alignment_transition={transition or 'rocky-10.1-to-10.2'}" in playbook_arguments
 
 
 @pytest.mark.parametrize(
@@ -357,7 +409,14 @@ libdnf-0:0.73.1-12.el10.rocky.0.1.x86_64
         "run",
         lambda *args, **kwargs: SimpleNamespace(stdout=qualified),
     )
-    assert helper.qualified_dnf_packages() == helper.QUALIFIED_DNF_PACKAGES[0]
+    profile = helper.transition("rocky-10.1-to-10.2")
+    expected = frozenset(qualified.splitlines())
+    assert helper.qualified_dnf_packages("10.1", profile) == expected
+    assert helper.qualified_dnf_packages("10.2", profile) == expected
+    with pytest.raises(helper.AlignmentError, match="current Rocky release"):
+        helper.qualified_dnf_packages(
+            "10.2", helper.transition("rocky-10.0-to-10.2")
+        )
 
     unqualified = qualified.replace("libdnf-0:0.73.1-12", "libdnf-0:0.73.1-13")
     monkeypatch.setattr(
@@ -366,7 +425,68 @@ libdnf-0:0.73.1-12.el10.rocky.0.1.x86_64
         lambda *args, **kwargs: SimpleNamespace(stdout=unqualified),
     )
     with pytest.raises(helper.AlignmentError, match="differ from the qualified"):
-        helper.qualified_dnf_packages()
+        helper.qualified_dnf_packages("10.1", profile)
+
+
+def test_rocky_alignment_qualifies_exact_10_0_dnf_packages(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _helper(repo_root)
+    qualified = """dnf-0:4.20.0-14.el10_0.rocky.0.1.noarch
+python3-dnf-0:4.20.0-14.el10_0.rocky.0.1.noarch
+libdnf-0:0.73.1-9.el10_0.rocky.0.1.x86_64
+"""
+    monkeypatch.setattr(
+        helper.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=qualified),
+    )
+
+    profile = helper.transition("rocky-10.0-to-10.2")
+    packages = helper.qualified_dnf_packages("10.0", profile)
+    assert packages == frozenset(qualified.splitlines())
+    assert helper.DNF_QUALIFICATIONS[packages]["do_transaction_sha256"] == (
+        "046c279ebcc9f7fc207fa513300889dd6be5cd1c2583b4041900c89b602a278c"
+    )
+    with pytest.raises(helper.AlignmentError, match="current Rocky release"):
+        helper.qualified_dnf_packages("10.1", profile)
+
+
+def test_rocky_alignment_enforces_10_0_dnf_source_digest(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _helper(repo_root)
+    qualified = """dnf-0:4.20.0-14.el10_0.rocky.0.1.noarch
+python3-dnf-0:4.20.0-14.el10_0.rocky.0.1.noarch
+libdnf-0:0.73.1-9.el10_0.rocky.0.1.x86_64
+"""
+    monkeypatch.setattr(
+        helper.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=qualified),
+    )
+    dnf = ModuleType("dnf")
+    dnf.__path__ = []
+    dnf.VERSION = "4.20.0"
+    dnf.Base = type("Base", (), {"do_transaction": lambda self: None})
+    lock = ModuleType("dnf.lock")
+    transaction = ModuleType("dnf.transaction")
+    dnf.lock = lock
+    dnf.transaction = transaction
+    monkeypatch.setitem(sys.modules, "dnf", dnf)
+    monkeypatch.setitem(sys.modules, "dnf.lock", lock)
+    monkeypatch.setitem(sys.modules, "dnf.transaction", transaction)
+    monkeypatch.setattr(helper.inspect, "getsource", lambda function: "qualified")
+    expected_digest = (
+        "046c279ebcc9f7fc207fa513300889dd6be5cd1c2583b4041900c89b602a278c"
+    )
+    monkeypatch.setattr(helper, "sha256_bytes", lambda payload: expected_digest)
+    profile = helper.transition("rocky-10.0-to-10.2")
+
+    assert helper.load_dnf("10.0", profile) == (dnf, transaction)
+    monkeypatch.setattr(helper, "sha256_bytes", lambda payload: "0" * 64)
+    with pytest.raises(helper.AlignmentError, match="implementation differs"):
+        helper.load_dnf("10.0", profile)
 
 
 def test_rocky_alignment_rejects_duplicate_dnf_packages(
@@ -383,7 +503,59 @@ libdnf-0:0.73.1-12.el10.rocky.0.1.x86_64
         lambda *args, **kwargs: SimpleNamespace(stdout=duplicate),
     )
     with pytest.raises(helper.AlignmentError, match="exactly one installed build"):
-        helper.qualified_dnf_packages()
+        helper.qualified_dnf_packages(
+            "10.1", helper.transition("rocky-10.1-to-10.2")
+        )
+
+
+def test_rocky_alignment_manifest_is_bound_to_selected_transition(
+    repo_root: Path,
+) -> None:
+    helper = _helper(repo_root)
+    profile = helper.transition("rocky-10.0-to-10.2")
+    manifest = {
+        "dnf_version": "4.20.0",
+        "download_size": 1,
+        "install_size": 1,
+        "installed_state_sha256": "a" * 64,
+        "migration_id": "2026-08-rocky-10.0-to-10.2",
+        "payloads": [],
+        "repositories": {"baseos": {}},
+        "schema": 1,
+        "source": "10.0",
+        "target": "10.2",
+        "transaction": [],
+    }
+
+    helper.validate_manifest_identity(manifest, profile)
+    with pytest.raises(helper.AlignmentError, match="transition identity"):
+        helper.validate_manifest_identity(
+            manifest,
+            helper.transition("rocky-10.1-to-10.2"),
+        )
+
+
+def test_rocky_alignment_marker_is_bound_to_selected_transition(
+    repo_root: Path,
+) -> None:
+    helper = _helper(repo_root)
+    marker = {
+        "completed_at": "2026-08-24T12:00:00Z",
+        "manifest_sha256": "a" * 64,
+        "migration_id": "2026-08-rocky-10.0-to-10.2",
+        "running_kernel": "6.12.0-test",
+        "schema": 1,
+        "source": "10.0",
+        "target": "10.2",
+    }
+
+    helper.validate_marker_identity(
+        marker, helper.transition("rocky-10.0-to-10.2")
+    )
+    with pytest.raises(helper.AlignmentError, match="transition identity"):
+        helper.validate_marker_identity(
+            marker, helper.transition("rocky-10.1-to-10.2")
+        )
 
 
 def test_rocky_alignment_checks_capacity_before_download(

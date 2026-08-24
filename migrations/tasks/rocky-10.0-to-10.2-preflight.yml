@@ -1,0 +1,57 @@
+---
+- name: Establish observed Rocky release
+  ansible.builtin.set_fact:
+    rocky_alignment_current_version: "{{ ansible_distribution_version }}"
+    rocky_alignment_migration_applied: false
+
+- name: Require the fixed Rocky release boundary
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'Rocky'
+      - rocky_alignment_current_version in [rocky_alignment_source_version, rocky_alignment_target_version]
+    fail_msg: >-
+      This migration accepts only Rocky Linux 10.0 or an already aligned Rocky
+      Linux 10.2 host. Rocky 10.1 and every other release fail closed.
+
+- name: Inspect possible release overrides
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /etc/dnf/vars/releasever
+    - /etc/yum/vars/releasever
+  register: rocky_alignment_releasever_stats
+
+- name: Require release overrides to be absent
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+      - not (item.stat.islnk | default(false))
+    fail_msg: >-
+      Rocky 10.0 and 10.2 require both DNF and YUM release overrides to be
+      absent for this transition.
+  loop: "{{ rocky_alignment_releasever_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect the migration marker
+  ansible.builtin.stat:
+    path: "{{ rocky_alignment_marker_path }}"
+    follow: false
+  register: rocky_alignment_marker_stat
+
+- name: Reject a source host with a completion marker
+  ansible.builtin.assert:
+    that:
+      - >-
+        rocky_alignment_current_version != rocky_alignment_source_version
+        or not rocky_alignment_marker_stat.stat.exists
+    fail_msg: A Rocky 10.0 source with a completion marker is inconsistent.
+
+- name: Encode the reviewed Rocky repository policy
+  ansible.builtin.set_fact:
+    rocky_alignment_repository_policy_b64: >-
+      {{ rocky_10_0_to_10_2_repositories | to_json | b64encode }}
+
+- name: Run the shared Rocky minor alignment preflight
+  ansible.builtin.include_tasks: rocky-minor-alignment-preflight.yml

@@ -33,11 +33,11 @@
           rocky_alignment_current_version == rocky_alignment_source_version
           and rocky_alignment_releasever_stat.stat.exists
           and rocky_alignment_releasever_stat.stat.isreg
-           and not rocky_alignment_releasever_stat.stat.islnk
-           and rocky_alignment_releasever_stat.stat.pw_name == 'root'
-           and rocky_alignment_releasever_stat.stat.gr_name == 'root'
-           and rocky_alignment_releasever_stat.stat.mode[-2:] is not search('[2367]')
-           and (rocky_alignment_releasever_data.content | b64decode | trim) == rocky_alignment_source_version
+          and not rocky_alignment_releasever_stat.stat.islnk
+          and rocky_alignment_releasever_stat.stat.pw_name == 'root'
+          and rocky_alignment_releasever_stat.stat.gr_name == 'root'
+          and rocky_alignment_releasever_stat.stat.mode[-2:] is not search('[2367]')
+          and (rocky_alignment_releasever_data.content | b64decode | trim) == rocky_alignment_source_version
         )
         or
         (
@@ -67,87 +67,5 @@
     rocky_alignment_repository_policy_b64: >-
       {{ rocky_10_1_to_10_2_repositories | to_json | b64encode }}
 
-- name: Resolve the canonical target-release transaction
-  ansible.builtin.script:
-    cmd: >-
-      files/platform-rocky-minor-alignment inspect
-      --policy-b64 {{ rocky_alignment_repository_policy_b64 }}
-    executable: /usr/bin/python3
-  register: rocky_alignment_inspection_command
-  changed_when: false
-
-- name: Parse the canonical target-release transaction
-  ansible.builtin.set_fact:
-    rocky_alignment_inspection: "{{ rocky_alignment_inspection_command.stdout | from_json }}"
-
-- name: Check installed RPM dependency state  # noqa command-instead-of-module
-  ansible.builtin.command:
-    argv:
-      - dnf
-      - -q
-      - check
-  register: rocky_alignment_dnf_check
-  changed_when: false
-
-- name: Check failed systemd units
-  ansible.builtin.command:
-    argv:
-      - systemctl
-      - --failed
-      - --no-legend
-      - --plain
-  register: rocky_alignment_failed_units_before
-  changed_when: false
-
-- name: Require an empty failed-unit baseline
-  ansible.builtin.assert:
-    that:
-      - rocky_alignment_failed_units_before.stdout | trim | length == 0
-    fail_msg: Rocky alignment requires an empty failed-unit baseline.
-
-- name: Require conservative filesystem capacity
-  ansible.builtin.assert:
-    that:
-      - item.size_available | int >= rocky_alignment_minimum_free_bytes[item.mount] | default(1073741824)
-      - item.inode_available | int * 100 >= item.inode_total | int * 10
-    fail_msg: >-
-      Rocky alignment requires the configured free-byte margin and at least ten
-      percent free inodes on every relevant filesystem.
-  loop: >-
-    {{
-      ansible_mounts
-      | selectattr('mount', 'in', ['/', '/usr', '/var', '/boot', '/boot/efi'])
-      | unique(attribute='device')
-      | list
-    }}
-  loop_control:
-    label: "{{ item.mount }}"
-  vars:
-    rocky_alignment_minimum_free_bytes:
-      /: 1073741824
-      /usr: 1073741824
-      /var: 1073741824
-      /boot: 536870912
-      /boot/efi: 134217728
-
-- name: Require the canonical transaction contract
-  ansible.builtin.assert:
-    that:
-      - >-
-        rocky_alignment_current_version == rocky_alignment_target_version
-        or rocky_alignment_inspection.transaction | length > 0
-      - rocky_alignment_inspection.transaction_sha256 is match('^[0-9a-f]{64}$')
-      - rocky_alignment_inspection.installed_state_sha256 is match('^[0-9a-f]{64}$')
-    fail_msg: The canonical target-release transaction is incomplete.
-
-- name: Report the reviewed Rocky transaction
-  ansible.builtin.debug:
-    var: rocky_alignment_inspection.transaction
-
-- name: Report preflight completion
-  ansible.builtin.debug:
-    msg: >-
-      Rocky alignment preflight passed for {{ inventory_hostname }} at
-      {{ rocky_alignment_current_version }}. No release file, package, service,
-      or reboot state was changed.
-  when: rocky_alignment_operation == 'preflight'
+- name: Run the shared Rocky minor alignment preflight
+  ansible.builtin.include_tasks: rocky-minor-alignment-preflight.yml

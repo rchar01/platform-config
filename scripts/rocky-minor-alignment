@@ -6,7 +6,7 @@ repo_root=$(cd -- "$script_dir/.." && pwd -P)
 
 usage() {
   printf '%s\n' \
-    'Usage: rocky-minor-alignment {preflight|apply} --env ENV --limit HOST' >&2
+    'Usage: rocky-minor-alignment {preflight|apply} --env ENV --limit HOST [--transition TRANSITION]' >&2
 }
 
 fail() {
@@ -24,6 +24,7 @@ esac
 
 environment=""
 limit=""
+transition=rocky-10.1-to-10.2
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env)
@@ -36,12 +37,30 @@ while [[ $# -gt 0 ]]; do
       limit=$2
       shift 2
       ;;
+    --transition)
+      [[ $# -ge 2 ]] || fail "--transition requires a value"
+      transition=$2
+      shift 2
+      ;;
     *) fail "unexpected argument: $1" ;;
   esac
 done
 
 [[ $environment =~ ^[a-z][a-z0-9-]*$ ]] || fail "--env must be a literal environment name"
 [[ $limit =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "--limit must be one literal inventory hostname"
+case "$transition" in
+  rocky-10.1-to-10.2)
+    playbook="$repo_root/migrations/2026-08-rocky-10.1-to-10.2.yml"
+    eligibility_var=rocky_10_1_to_10_2_enabled
+    repositories_var=rocky_10_1_to_10_2_repositories
+    ;;
+  rocky-10.0-to-10.2)
+    playbook="$repo_root/migrations/2026-08-rocky-10.0-to-10.2.yml"
+    eligibility_var=rocky_10_0_to_10_2_enabled
+    repositories_var=rocky_10_0_to_10_2_repositories
+    ;;
+  *) fail "unsupported Rocky transition: $transition" ;;
+esac
 
 private_root=${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_root/../platform-private}
 env_file="$private_root/config/$environment.ansible.env"
@@ -59,7 +78,6 @@ ansible=${ANSIBLE:-ansible}
 ansible_playbook=${ANSIBLE_PLAYBOOK:-ansible-playbook}
 ansible_config_cmd=${ANSIBLE_CONFIG_CMD:-ansible-config}
 python=${PYTHON:-python}
-playbook="$repo_root/migrations/2026-08-rocky-10.1-to-10.2.yml"
 
 for executable in "$ansible_inventory" "$ansible" "$ansible_playbook" "$ansible_config_cmd" "$python"; do
   command -v "$executable" >/dev/null 2>&1 || fail "required executable not found: $executable"
@@ -80,14 +98,15 @@ def unsafe(value):
     return any(re.search(pattern, value) for pattern in patterns)
 
 data = json.load(sys.stdin)
+eligibility_var, repositories_var = sys.argv[1:]
 hosts = data.get("rocky_alignment_hosts", {}).get("hosts", [])
 if len(hosts) != 1:
     sys.exit("rocky_alignment_hosts must contain exactly one member")
 host = hosts[0]
 hostvars = data.get("_meta", {}).get("hostvars", {}).get(host, {})
-if hostvars.get("rocky_10_1_to_10_2_enabled") is not True:
+if hostvars.get(eligibility_var) is not True:
     sys.exit("private Rocky alignment eligibility must be true")
-repos = hostvars.get("rocky_10_1_to_10_2_repositories", {})
+repos = hostvars.get(repositories_var, {})
 if not isinstance(repos, dict) or not repos:
     sys.exit("private Rocky repository policy must be a nonempty object")
 address = hostvars.get("ansible_host", host)
@@ -120,7 +139,7 @@ print(json.dumps({
     "ssh_executable": hostvars.get("ansible_ssh_executable", ""),
     "user": hostvars.get("ansible_user", ""),
 }, sort_keys=True, separators=(",", ":")))
-' <<<"$inventory_json" 2>&1); then
+' "$eligibility_var" "$repositories_var" <<<"$inventory_json" 2>&1); then
   fail "$inventory_host"
 fi
 inventory_connection=$inventory_host
@@ -224,4 +243,5 @@ exec "$ansible_playbook" \
   --limit "$limit" \
   --extra-vars "rocky_alignment_supported_boundary=rocky-minor-alignment-v1" \
   --extra-vars "rocky_alignment_operation=$operation" \
+  --extra-vars "rocky_alignment_transition=$transition" \
   --extra-vars "rocky_alignment_target_host=$inventory_host"

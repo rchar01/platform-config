@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Fail-closed Rocky 10.1 to 10.2 DNF transaction helper."""
+"""Fail-closed Rocky minor-transition DNF transaction helper."""
 
 from __future__ import annotations
 
@@ -23,28 +23,58 @@ import urllib.parse
 from collections.abc import Iterator
 from typing import Any
 
-MIGRATION_ID = "2026-08-rocky-10.1-to-10.2"
-SOURCE_VERSION = "10.1"
-TARGET_VERSION = "10.2"
+DEFAULT_TRANSITION = "rocky-10.1-to-10.2"
+TRANSITIONS = {
+    DEFAULT_TRANSITION: {
+        "migration_id": "2026-08-rocky-10.1-to-10.2",
+        "source": "10.1",
+        "source_releasever": "10.1",
+        "target": "10.2",
+    },
+    "rocky-10.0-to-10.2": {
+        "migration_id": "2026-08-rocky-10.0-to-10.2",
+        "source": "10.0",
+        "source_releasever": None,
+        "target": "10.2",
+    },
+}
 TARGET_MAJOR_VERSION = "10"
-DNF_VERSION = "4.20.0"
-DO_TRANSACTION_SHA256 = "df2fac3511f8c1767872d3015f7a6e269e6f7ec064837f3a63a8f99fe9eb8859"
-QUALIFIED_DNF_PACKAGES = (
+DNF_QUALIFICATIONS = {
+    frozenset(
+        {
+            "dnf-0:4.20.0-14.el10_0.rocky.0.1.noarch",
+            "libdnf-0:0.73.1-9.el10_0.rocky.0.1.x86_64",
+            "python3-dnf-0:4.20.0-14.el10_0.rocky.0.1.noarch",
+        }
+    ): {
+        "dnf_version": "4.20.0",
+        "do_transaction_sha256": "046c279ebcc9f7fc207fa513300889dd6be5cd1c2583b4041900c89b602a278c",
+        "releases": frozenset({"10.0"}),
+    },
     frozenset(
         {
             "dnf-0:4.20.0-18.el10.rocky.0.1.noarch",
             "libdnf-0:0.73.1-12.el10.rocky.0.1.x86_64",
             "python3-dnf-0:4.20.0-18.el10.rocky.0.1.noarch",
         }
-    ),
+    ): {
+        "dnf_version": "4.20.0",
+        "do_transaction_sha256": "df2fac3511f8c1767872d3015f7a6e269e6f7ec064837f3a63a8f99fe9eb8859",
+        "releases": frozenset({"10.1"}),
+    },
     frozenset(
         {
             "dnf-0:4.20.0-22.el10_2.rocky.0.1.noarch",
             "libdnf-0:0.73.1-15.el10_2.rocky.0.1.x86_64",
             "python3-dnf-0:4.20.0-22.el10_2.rocky.0.1.noarch",
         }
-    ),
-)
+    ): {
+        "dnf_version": "4.20.0",
+        "do_transaction_sha256": "df2fac3511f8c1767872d3015f7a6e269e6f7ec064837f3a63a8f99fe9eb8859",
+        "releases": frozenset({"10.2"}),
+    },
+}
+DNF_VERSION = "4.20.0"
 DOWNLOAD_FREE_MARGIN = 1024 * 1024 * 1024
 MARKER_FIELDS = {
     "completed_at",
@@ -55,10 +85,30 @@ MARKER_FIELDS = {
     "source",
     "target",
 }
+MANIFEST_FIELDS = {
+    "dnf_version",
+    "download_size",
+    "install_size",
+    "installed_state_sha256",
+    "migration_id",
+    "payloads",
+    "repositories",
+    "schema",
+    "source",
+    "target",
+    "transaction",
+}
 
 
 class AlignmentError(RuntimeError):
     pass
+
+
+def transition(name: str) -> dict[str, Any]:
+    try:
+        return TRANSITIONS[name]
+    except KeyError as error:
+        raise AlignmentError(f"unsupported Rocky transition: {name}") from error
 
 
 def canonical_json(value: Any) -> bytes:
@@ -165,7 +215,9 @@ def validate_repositories(base: Any, policy: dict[str, dict[str, Any]]) -> dict[
     return actual
 
 
-def qualified_dnf_packages() -> frozenset[str]:
+def qualified_dnf_packages(
+    current_release: str, profile: dict[str, Any]
+) -> frozenset[str]:
     result = subprocess.run(
         [
             "rpm",
@@ -185,24 +237,33 @@ def qualified_dnf_packages() -> frozenset[str]:
     packages = frozenset(rows)
     if len(rows) != 3 or len(packages) != 3:
         raise AlignmentError("qualified DNF packages must have exactly one installed build each")
-    if packages not in QUALIFIED_DNF_PACKAGES:
+    qualification = DNF_QUALIFICATIONS.get(packages)
+    if qualification is None:
         raise AlignmentError("DNF package builds differ from the qualified Rocky builds")
+    allowed_package_releases = {current_release}
+    if current_release == profile["target"]:
+        allowed_package_releases.add(profile["source"])
+    if qualification["releases"].isdisjoint(allowed_package_releases):
+        raise AlignmentError("DNF package builds do not match the current Rocky release")
     return packages
 
 
-def load_dnf() -> tuple[Any, Any]:
+def load_dnf(
+    current_release: str, profile: dict[str, Any]
+) -> tuple[Any, Any]:
     try:
         import dnf
         import dnf.lock
         import dnf.transaction
     except ImportError as error:
         raise AlignmentError("DNF Python bindings are unavailable") from error
-    if dnf.VERSION != DNF_VERSION:
+    packages = qualified_dnf_packages(current_release, profile)
+    qualification = DNF_QUALIFICATIONS[packages]
+    if dnf.VERSION != qualification["dnf_version"]:
         raise AlignmentError(f"unsupported DNF version: {dnf.VERSION}")
     source_digest = sha256_bytes(inspect.getsource(dnf.Base.do_transaction).encode())
-    if source_digest != DO_TRANSACTION_SHA256:
+    if source_digest != qualification["do_transaction_sha256"]:
         raise AlignmentError("DNF transaction implementation differs from the qualified Rocky build")
-    qualified_dnf_packages()
     return dnf, dnf.transaction
 
 
@@ -211,8 +272,7 @@ def configure_base(dnf: Any, policy: dict[str, dict[str, Any]], *, available: bo
     base.conf.read()
     base.conf.substitutions.update_from_etc("/etc/dnf/vars", "/etc/yum/vars")
     # Rocky's supported repository stream is keyed by major release. Load its
-    # auxiliary substitutions first, then override only the template's 10.1
-    # releasever file for this resolved transaction.
+    # auxiliary substitutions first, then resolve against the major stream.
     base.conf.releasever = TARGET_MAJOR_VERSION
     base.conf.assumeyes = True
     base.conf.best = True
@@ -271,15 +331,15 @@ def transaction_rows(transaction: Any, transaction_module: Any) -> list[dict[str
     return rows
 
 
-def require_target_release(rows: list[dict[str, str]]) -> None:
+def require_target_release(rows: list[dict[str, str]], target: str) -> None:
     incoming = [
         row
         for row in rows
         if row["name"] == "rocky-release"
         and row["action"] in {"install", "upgrade-in"}
     ]
-    if len(incoming) != 1 or incoming[0]["version"] != TARGET_VERSION:
-        raise AlignmentError("transaction does not contain exactly Rocky release 10.2")
+    if len(incoming) != 1 or incoming[0]["version"] != target:
+        raise AlignmentError(f"transaction does not contain exactly Rocky release {target}")
 
 
 def resolve_upgrade(
@@ -288,6 +348,7 @@ def resolve_upgrade(
     policy: dict[str, dict[str, Any]],
     *,
     require_changes: bool,
+    target: str,
 ) -> tuple[Any, list[dict[str, str]]]:
     base = configure_base(dnf, policy, available=True)
     base.upgrade_all()
@@ -298,7 +359,7 @@ def resolve_upgrade(
         return base, []
     rows = transaction_rows(base.transaction, transaction_module)
     if require_changes:
-        require_target_release(rows)
+        require_target_release(rows, target)
     return base, rows
 
 
@@ -422,10 +483,54 @@ def load_manifest(staging: pathlib.Path, expected_digest: str) -> dict[str, Any]
     return manifest
 
 
+def validate_manifest_identity(
+    manifest: dict[str, Any], profile: dict[str, Any]
+) -> None:
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != MANIFEST_FIELDS
+        or manifest.get("schema") != 1
+    ):
+        raise AlignmentError("transaction manifest schema is invalid")
+    expected = {
+        "dnf_version": DNF_VERSION,
+        "migration_id": profile["migration_id"],
+        "source": profile["source"],
+        "target": profile["target"],
+    }
+    if any(manifest.get(key) != value for key, value in expected.items()):
+        raise AlignmentError("transaction manifest transition identity is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest.get("installed_state_sha256", "")):
+        raise AlignmentError("transaction manifest installed-state digest is invalid")
+    if not isinstance(manifest.get("repositories"), dict):
+        raise AlignmentError("transaction manifest repository policy is invalid")
+    if not isinstance(manifest.get("payloads"), list) or not isinstance(
+        manifest.get("transaction"), list
+    ):
+        raise AlignmentError("transaction manifest payload or action set is invalid")
+    for field in ("download_size", "install_size"):
+        if not isinstance(manifest.get(field), int) or manifest[field] < 0:
+            raise AlignmentError(f"transaction manifest {field} is invalid")
+    for row in manifest["transaction"]:
+        if not isinstance(row, dict) or set(row) != {
+            "action",
+            "name",
+            "nevra",
+            "repo",
+            "version",
+        } or not all(isinstance(value, str) for value in row.values()):
+            raise AlignmentError("transaction manifest action set is invalid")
+
+
 def verify_payloads(staging: pathlib.Path, payloads: list[dict[str, Any]]) -> list[pathlib.Path]:
     paths = []
     for record in payloads:
-        if set(record) != {"filename", "nevra", "sha256", "size"}:
+        if not isinstance(record, dict) or set(record) != {
+            "filename",
+            "nevra",
+            "sha256",
+            "size",
+        }:
             raise AlignmentError("RPM payload manifest fields are invalid")
         filename = record["filename"]
         if not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9_.+~-]+\.rpm", filename):
@@ -479,14 +584,16 @@ def qualified_rpmdb_lock(dnf: Any, base: Any) -> Iterator[None]:
 
 
 def command_inspect(args: argparse.Namespace) -> dict[str, Any]:
-    dnf, transaction_module = load_dnf()
+    profile = transition(args.transition)
     policy = decode_policy(args.policy_b64)
-    current_release = os_release_version()
+    current_release = os_release_version(profile)
+    dnf, transaction_module = load_dnf(current_release, profile)
     base, rows = resolve_upgrade(
         dnf,
         transaction_module,
         policy,
-        require_changes=current_release == SOURCE_VERSION,
+        require_changes=current_release == profile["source"],
+        target=profile["target"],
     )
     try:
         _, installed_digest = installed_state()
@@ -501,14 +608,24 @@ def command_inspect(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
-    dnf, transaction_module = load_dnf()
+    profile = transition(args.transition)
     policy = decode_policy(args.policy_b64)
-    if os_release_version() != SOURCE_VERSION:
-        raise AlignmentError("transaction preparation requires Rocky Linux 10.1")
+    current_release = os_release_version(profile)
+    if current_release != profile["source"]:
+        raise AlignmentError(
+            f"transaction preparation requires Rocky Linux {profile['source']}"
+        )
+    dnf, transaction_module = load_dnf(current_release, profile)
     staging = pathlib.Path(args.staging)
     rpms = create_staging(staging)
     try:
-        base, rows = resolve_upgrade(dnf, transaction_module, policy, require_changes=True)
+        base, rows = resolve_upgrade(
+            dnf,
+            transaction_module,
+            policy,
+            require_changes=True,
+            target=profile["target"],
+        )
         try:
             expected_download_size = require_download_capacity(
                 base, base.transaction.install_set, staging
@@ -524,12 +641,12 @@ def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
                 "dnf_version": DNF_VERSION,
                 "install_size": sum(int(getattr(package, "installsize", 0)) for package in base.transaction.install_set),
                 "installed_state_sha256": installed_digest,
-                "migration_id": MIGRATION_ID,
+                "migration_id": profile["migration_id"],
                 "payloads": payloads,
                 "repositories": validate_repositories(base, policy),
                 "schema": 1,
-                "source": SOURCE_VERSION,
-                "target": TARGET_VERSION,
+                "source": profile["source"],
+                "target": profile["target"],
                 "transaction": rows,
             }
         finally:
@@ -549,10 +666,38 @@ def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
         raise
 
 
+def source_releasever_path(profile: dict[str, Any]) -> pathlib.Path | None:
+    expected = profile["source_releasever"]
+    releasever = pathlib.Path("/etc/dnf/vars/releasever")
+    if expected is None:
+        for path in (releasever, pathlib.Path("/etc/yum/vars/releasever")):
+            if path.exists() or path.is_symlink():
+                raise AlignmentError("source release override must be absent")
+        return None
+    releasever_stat = releasever.lstat()
+    if (
+        not stat.S_ISREG(releasever_stat.st_mode)
+        or releasever.is_symlink()
+        or releasever_stat.st_uid != 0
+        or releasever_stat.st_gid != 0
+        or releasever_stat.st_mode & 0o022
+        or releasever.read_text().strip() != expected
+    ):
+        raise AlignmentError("source release override changed after approval")
+    return releasever
+
+
 def command_apply(args: argparse.Namespace) -> dict[str, Any]:
-    dnf, transaction_module = load_dnf()
+    profile = transition(args.transition)
+    current_release = os_release_version(profile)
+    if current_release != profile["source"]:
+        raise AlignmentError(
+            f"transaction apply requires Rocky Linux {profile['source']}"
+        )
+    dnf, transaction_module = load_dnf(current_release, profile)
     staging = pathlib.Path(args.staging)
     manifest = load_manifest(staging, args.manifest_sha256)
+    validate_manifest_identity(manifest, profile)
     if manifest.get("installed_state_sha256") != args.installed_state_sha256:
         raise AlignmentError("approved installed-state digest differs from the manifest")
     approved_rows = []
@@ -561,7 +706,6 @@ def command_apply(args: argparse.Namespace) -> dict[str, Any]:
         if normalized["action"].endswith("-in") or normalized["action"] == "install":
             normalized["repo"] = "@approved-local"
         approved_rows.append(normalized)
-    releasever = pathlib.Path("/etc/dnf/vars/releasever")
     phase_started = staging / "apply-started.json"
     phase_complete = staging / "transaction-complete.json"
     lock_base = dnf.Base()
@@ -576,31 +720,26 @@ def command_apply(args: argparse.Namespace) -> dict[str, Any]:
         if local_rows != approved_rows:
             base.close()
             raise AlignmentError("local-only DNF action set differs from the approved transaction")
-        releasever_stat = releasever.lstat()
-        if (
-            not stat.S_ISREG(releasever_stat.st_mode)
-            or releasever.is_symlink()
-            or releasever_stat.st_uid != 0
-            or releasever_stat.st_gid != 0
-            or releasever_stat.st_mode & 0o022
-            or releasever.read_text().strip() != SOURCE_VERSION
-        ):
+        try:
+            releasever = source_releasever_path(profile)
+        except AlignmentError:
             base.close()
-            raise AlignmentError("source release override changed after approval")
+            raise
         write_exclusive(
             phase_started,
             canonical_json(
                 {
                     "installed_state_sha256": args.installed_state_sha256,
                     "manifest_sha256": args.manifest_sha256,
-                    "migration_id": MIGRATION_ID,
+                    "migration_id": profile["migration_id"],
                     "phase": "apply-started",
                     "schema": 1,
                 }
             ),
             0o600,
         )
-        releasever.unlink()
+        if releasever is not None:
+            releasever.unlink()
         try:
             base.do_transaction()
         finally:
@@ -610,7 +749,7 @@ def command_apply(args: argparse.Namespace) -> dict[str, Any]:
             canonical_json(
                 {
                     "manifest_sha256": args.manifest_sha256,
-                    "migration_id": MIGRATION_ID,
+                    "migration_id": profile["migration_id"],
                     "phase": "transaction-complete",
                     "schema": 1,
                 }
@@ -621,19 +760,15 @@ def command_apply(args: argparse.Namespace) -> dict[str, Any]:
     return {"applied": True, "manifest_sha256": args.manifest_sha256}
 
 
-def validate_marker(path: pathlib.Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise AlignmentError("completion marker is missing or unsafe")
-    stat = path.stat()
-    if stat.st_uid != 0 or stat.st_gid != 0 or stat.st_mode & 0o777 != 0o600:
-        raise AlignmentError("completion marker ownership or mode is invalid")
-    try:
-        marker = json.loads(path.read_bytes())
-    except json.JSONDecodeError as error:
-        raise AlignmentError("completion marker is invalid JSON") from error
-    if set(marker) != MARKER_FIELDS or canonical_json(marker) != path.read_bytes():
-        raise AlignmentError("completion marker schema or encoding is invalid")
-    if marker["schema"] != 1 or marker["migration_id"] != MIGRATION_ID or marker["source"] != SOURCE_VERSION or marker["target"] != TARGET_VERSION:
+def validate_marker_identity(
+    marker: dict[str, Any], profile: dict[str, Any]
+) -> None:
+    if (
+        marker["schema"] != 1
+        or marker["migration_id"] != profile["migration_id"]
+        or marker["source"] != profile["source"]
+        or marker["target"] != profile["target"]
+    ):
         raise AlignmentError("completion marker transition identity is invalid")
     if not re.fullmatch(r"[0-9a-f]{64}", marker["manifest_sha256"]):
         raise AlignmentError("completion marker manifest digest is invalid")
@@ -644,24 +779,43 @@ def validate_marker(path: pathlib.Path) -> dict[str, Any]:
         marker["completed_at"],
     ):
         raise AlignmentError("completion marker timestamp is invalid")
+
+
+def validate_marker(path: pathlib.Path, profile: dict[str, Any]) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise AlignmentError("completion marker is missing or unsafe")
+    stat = path.stat()
+    if stat.st_uid != 0 or stat.st_gid != 0 or stat.st_mode & 0o777 != 0o600:
+        raise AlignmentError("completion marker ownership or mode is invalid")
+    try:
+        marker = json.loads(path.read_bytes())
+    except json.JSONDecodeError as error:
+        raise AlignmentError("completion marker is invalid JSON") from error
+    if (
+        not isinstance(marker, dict)
+        or set(marker) != MARKER_FIELDS
+        or canonical_json(marker) != path.read_bytes()
+    ):
+        raise AlignmentError("completion marker schema or encoding is invalid")
+    validate_marker_identity(marker, profile)
     return marker
 
 
-def os_release_version() -> str:
+def os_release_version(profile: dict[str, Any]) -> str:
     values = {}
     for line in pathlib.Path("/etc/os-release").read_text().splitlines():
         key, separator, value = line.partition("=")
         if separator:
             values[key] = value.strip().strip('"')
-    if values.get("ID") != "rocky" or values.get("VERSION_ID") not in {
-        SOURCE_VERSION,
-        TARGET_VERSION,
-    }:
-        raise AlignmentError("helper accepts only Rocky Linux 10.1 or 10.2")
+    accepted = {profile["source"], profile["target"]}
+    if values.get("ID") != "rocky" or values.get("VERSION_ID") not in accepted:
+        releases = " or ".join(f"Rocky Linux {value}" for value in sorted(accepted))
+        raise AlignmentError(f"helper accepts only {releases}")
     return values["VERSION_ID"]
 
 
 def command_mark(args: argparse.Namespace) -> dict[str, Any]:
+    profile = transition(args.transition)
     marker = pathlib.Path(args.marker)
     require_safe_parent(marker.parent)
     if not marker.parent.is_dir():
@@ -671,19 +825,21 @@ def command_mark(args: argparse.Namespace) -> dict[str, Any]:
         {
             "completed_at": completed_at,
             "manifest_sha256": args.manifest_sha256,
-            "migration_id": MIGRATION_ID,
+            "migration_id": profile["migration_id"],
             "running_kernel": os.uname().release,
             "schema": 1,
-            "source": SOURCE_VERSION,
-            "target": TARGET_VERSION,
+            "source": profile["source"],
+            "target": profile["target"],
         }
     )
     write_exclusive(marker, payload, 0o600)
-    return validate_marker(marker)
+    return validate_marker(marker, profile)
 
 
 def command_validate_marker(args: argparse.Namespace) -> dict[str, Any]:
-    return validate_marker(pathlib.Path(args.marker))
+    return validate_marker(
+        pathlib.Path(args.marker), transition(args.transition)
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -691,17 +847,29 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     for name in ("inspect", "prepare"):
         command = commands.add_parser(name)
+        command.add_argument(
+            "--transition", choices=sorted(TRANSITIONS), default=DEFAULT_TRANSITION
+        )
         command.add_argument("--policy-b64", required=True)
         if name == "prepare":
             command.add_argument("--staging", required=True)
     apply = commands.add_parser("apply")
+    apply.add_argument(
+        "--transition", choices=sorted(TRANSITIONS), default=DEFAULT_TRANSITION
+    )
     apply.add_argument("--staging", required=True)
     apply.add_argument("--manifest-sha256", required=True)
     apply.add_argument("--installed-state-sha256", required=True)
     mark = commands.add_parser("mark")
+    mark.add_argument(
+        "--transition", choices=sorted(TRANSITIONS), default=DEFAULT_TRANSITION
+    )
     mark.add_argument("--marker", required=True)
     mark.add_argument("--manifest-sha256", required=True)
     validate = commands.add_parser("validate-marker")
+    validate.add_argument(
+        "--transition", choices=sorted(TRANSITIONS), default=DEFAULT_TRANSITION
+    )
     validate.add_argument("--marker", required=True)
     return root
 
