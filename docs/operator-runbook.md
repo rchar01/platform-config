@@ -473,46 +473,38 @@ be treated as a normal service certificate renewal.
 
 ### Host-Local Zot Certificate Workflow
 
-This operator-only workflow keeps the leaf private key on one registry target.
-Configure the real one-host inventory, reviewed five-file trust, reviewed CA,
-validation boundary, protected controller exchange root, and a distinct
-read-only runner in private or outside-Git configuration. See
-[Same-Workstation PKI Layout](pki-local-layout.md) for the canonical signer,
-exchange, exact-service workspace, stable key-domain, backup, retention, and
-retired-path map. See
-[Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) for the
-complete actor-labeled sequence: Bootstrap, Request, Gate 1 offline approval and
-signing, Activate/Evidence, Gate 2 offline finalization and outcome signing,
-Complete, and fixed access cleanup. It is also authoritative for response source
-paths, digest provenance, GitLab package versions, publication locks, retry
-semantics, recovery, backups, and verification. See
-[Registry](registry.md#host-local-pki-development) for the detailed trust and
-lifecycle implementation contract.
+This operator-only workflow keeps the leaf private key and GitLab package
+transport on one registry target. Complete [PKI Exchange Setup](pki-exchange-setup.md)
+and the exact-version GitLab rollout gate before use. Private inventory must
+select one host, `issue` or `renew`, the schema-3 four-file trust snapshot,
+reviewed CA and validation inputs, and one private GitLab Generic Package
+project. The target token must already satisfy the protected metadata contract.
 
-The exact six-file response-check source must be protected and outside the
-controller exchange root; a GitLab download under that root must first be
-materialized into
-`$OFFLINE_WORKSPACE/media-out/response/<request-id>`. `pki-transfer` is retired
-for same-workstation operation. The single
-`registry-pki-activate` route is direct-only and runs automatically after its
-digest, candidate, and runner preflights pass. It preserves all authentication,
-local/runner validation, and rollback controls. GitLab and direct SSH are
-transport only; Ansible invokes neither transport.
+The complete public operator sequence is:
 
-The validation runner emits an unsigned canonical observation. The target
-authenticates that observation, derives `deployment` and `validation-result`,
-and signs both records with the target host key before evidence export.
+```bash
+make registry-pki-request-publish ENV=dev LIMIT=<one-host> [REQUEST_TTL_SECONDS=1..604800]
+make registry-pki-response-activate ENV=dev LIMIT=<one-host>
+```
 
-Private inventory does not select Zot TLS custody. After authenticated
-`activate-finish`, normal registry convergence automatically derives host-local
-custody and immutable TLS paths from authenticated target lifecycle state.
-Before predecessor-free first issuance, inventory uses `operation: issue`, no
-current certificate, and empty Zot controller TLS sources; registry convergence
-derives dormant custody and keeps Zot masked and stopped until activation.
-Require terminal `status=complete` and
-`signer_outcome_state=finalized`; `renewal_eligible=false` remains expected.
-Never select a latest package, infer a digest, clean an ambiguous retained stage,
-or treat historical signer outcome as current target authority.
+Square brackets denote the optional TTL assignment and are not literal shell
+syntax. The default is 3600 seconds. Between the two routes, separately
+authorize and perform offline approval/signing and response publication.
+
+The target sends request and response package bytes directly to and from GitLab;
+Ansible never carries them. The activation route derives coordinates from
+authenticated target state, recovers an interrupted journal before transport
+when needed, authenticates the response before mutation, validates Zot locally,
+and rolls back on failure. Require final `status=complete` and
+`required_action=none`.
+
+The request and response package records use schema 2. Target trust uses schema
+3 and exactly `approvers.allowed_signers`, `policy`,
+`requesters.allowed_signers`, and `responses.allowed_signers`. Old workflow state
+is rejected and requires a separately authorized reset or target recreation.
+
+Run `make smoke-registry ENV=dev` separately after activation when required. It
+does not participate in rollback.
 
 ## Make Targets
 
@@ -536,13 +528,6 @@ ENV        Environment name: homelab or dev
 PLAYBOOK   Playbook to run, default playbooks/site.yml
 LIMIT      Optional Ansible --limit value
 EXTRA_ARGS Extra flags passed to Ansible
-REQUEST_ID Exact 32-character host-local PKI request ID
-ARTIFACT_SHA256 Exact canonical artifact digest reported as export manifest_sha256
-DEPLOYMENT_SHA256 Exact target-signed canonical deployment digest
-OUTCOME_DIR Exact protected six-file signer-outcome directory
-OUTCOME_SHA256 Exact canonical outcome digest reported as export manifest_sha256
-RESPONSE_DIR Exact protected six-file response directory outside exchange root
-RUNNER_LIMIT Exact separate read-only validation runner host
 ```
 
 Examples:

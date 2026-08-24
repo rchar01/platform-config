@@ -1,3 +1,0 @@
----
-- name: Run fixed absent host-local PKI exchange access boundary
-  ansible.builtin.import_tasks: revoke.yml

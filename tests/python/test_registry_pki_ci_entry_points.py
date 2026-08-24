@@ -1,444 +1,297 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
+from ansible_test_helpers import run_playbook
+from conftest import CommandRunner
 
-def _load(path: Path) -> Any:
+
+def load_yaml(path: Path) -> Any:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _make_target(makefile: str, name: str) -> str:
-    return makefile.split(f"{name}:", 1)[1].split("\n\n", 1)[0]
+def make_target(makefile: str, name: str) -> tuple[list[str], str]:
+    match = re.search(
+        rf"^{re.escape(name)}:([^\n]*)\n((?:\t[^\n]*\n?)*)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert match is not None
+    return match.group(1).split(), match.group(2).strip()
 
 
-def _task_names(tasks: list[dict[str, Any]]) -> list[str]:
-    return [task["name"] for task in tasks]
+def task_named(tasks: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    return next(task for task in tasks if task.get("name") == name)
 
 
-def _fixed_cleanup_ci(workflow: str) -> dict[str, Any]:
-    section = workflow.split("## Fixed Cleanup\n", 1)[1].split(
-        "\n## Expected Status Transitions", 1
-    )[0]
-    assert section.count("```yaml\n") == 1
-    yaml_text = section.split("```yaml\n", 1)[1].split("\n```", 1)[0]
-    return yaml.safe_load(yaml_text)
-
-
-def test_bootstrap_readiness_is_check_mode_exact_and_transport_free(
+def test_make_exposes_only_two_coordinate_free_registry_pki_routes(
     repo_root: Path,
 ) -> None:
     makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
-    target = _make_target(makefile, "registry-pki-bootstrap-readiness")
-    tasks = _load(
-        repo_root
-        / "roles/pki_host_local_certificate/tasks/bootstrap_readiness.yml"
+    declarations = set(
+        re.findall(r"^(registry-pki-[A-Za-z0-9_.-]+):", makefile, re.MULTILINE)
     )
-    play = _load(repo_root / "playbooks/registry-pki-bootstrap-readiness.yml")[0]
 
-    assert play["hosts"] == "registry"
-    assert play["vars"] == {
-        "registry_pki_request_ttl_seconds": 3600,
-        "pki_host_local_certificate_request_ttl_seconds": (
-            "{{ registry_pki_request_ttl_seconds | int }}"
-        ),
+    assert declarations == {
+        "registry-pki-request-publish",
+        "registry-pki-response-activate",
     }
-    assert play["tasks"][0]["ansible.builtin.include_role"] == {
-        "name": "pki_host_local_certificate",
-        "tasks_from": "bootstrap_readiness",
-    }
-    assert "_guard-pki-limit" in target
-    assert "_guard-pki-runner" in target
-    assert "$(MAKE) check" in target
-    assert "PLAYBOOK=playbooks/registry-pki-bootstrap-readiness.yml" in target
-    assert target.index("$(EXTRA_ARGS)") < target.index(
-        "-e pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)"
+    request_prerequisites, request_recipe = make_target(
+        makefile, "registry-pki-request-publish"
     )
-    assert "-e registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS)" in target
-    assert "-e pki_host_local_certificate_request_ttl_seconds=" not in target
-    assert tasks[0]["ansible.builtin.assert"]["that"][0] == "ansible_check_mode"
-    topology = tasks[0]["ansible.builtin.assert"]["that"]
-    assert "ansible_play_hosts_all == [inventory_hostname]" in topology
-    assert "pki_host_local_certificate_remote_validator != inventory_hostname" in topology
-    assert "Run existing request helper in non-mutating preflight mode" in _task_names(
-        tasks
-    )
-    assert "Load host-local certificate lifecycle helper preflight" in _task_names(tasks)
-    assert "Load reviewed runner validator helper preflight" in _task_names(tasks)
-    names = _task_names(tasks)
-    assert names.index("Load host-local certificate lifecycle helper preflight") < (
-        names.index("Run existing request helper in non-mutating preflight mode")
-    )
-    assert names.index("Load reviewed runner validator helper preflight") < (
-        names.index("Run existing request helper in non-mutating preflight mode")
-    )
-    text = yaml.safe_dump(tasks)
-    for forbidden in (
-        "platform_pki_request_collection",
-        "platform_pki_response_ingress",
-        "platform_pki_evidence_collection",
-        "exchange_helper.yml",
-        "ansible.builtin.pause",
-    ):
-        assert forbidden not in text
-
-
-def test_readiness_authenticates_all_helpers_against_fixed_role_sources(
-    repo_root: Path,
-) -> None:
-    cases = (
-        (
-            "request_helper.yml",
-            "Inspect shipped host-local certificate request helper source",
-            "Inspect installed host-local certificate request helper",
-            "Require installed helper for non-mutating request preflight",
-            None,
-            "platform-pki-host-local-request",
-            None,
-        ),
-        (
-            "lifecycle_helper.yml",
-            "Inspect shipped host-local certificate lifecycle helper source",
-            "Inspect installed host-local certificate lifecycle helper",
-            "Require installed lifecycle helper for read-only preflight",
-            None,
-            "platform-pki-host-local-lifecycle",
-            None,
-        ),
-        (
-            "validator_helper.yml",
-            "Inspect shipped host-local certificate validator helper source",
-            "Inspect installed host-local certificate validator helper",
-            "Require installed validator helper for read-only preflight",
-            None,
-            "platform-pki-zot-read-only-validate",
-            "{{ pki_host_local_certificate_remote_validator }}",
-        ),
-    )
-    root = repo_root / "roles/pki_host_local_certificate/tasks"
-    for (
-        filename,
-        source_name,
-        installed_name,
-        assertion_name,
-        execution_name,
-        source_filename,
-        installed_delegate,
-    ) in cases:
-        tasks = _load(root / filename)
-        source = next(task for task in tasks if task["name"] == source_name)
-        installed = next(task for task in tasks if task["name"] == installed_name)
-        assertion = next(task for task in tasks if task["name"] == assertion_name)
-        source_stat = source["ansible.builtin.stat"]
-        installed_stat = installed["ansible.builtin.stat"]
-
-        assert source_stat["path"] == f"{{{{ role_path }}}}/files/{source_filename}"
-        assert source_stat["get_checksum"] is True
-        assert source_stat["checksum_algorithm"] == "sha256"
-        assert source["delegate_to"] == "localhost"
-        assert source["become"] is False
-        assert source["vars"] == {"ansible_become": False}
-        assert installed_stat["get_checksum"] is True
-        assert installed_stat["checksum_algorithm"] == "sha256"
-        assert installed.get("delegate_to") == installed_delegate
-        checks = assertion["ansible.builtin.assert"]["that"]
-        assert any("source.stat.checksum" in check for check in checks)
-        assert any("installed" in check and "source.stat.checksum" in check for check in checks)
-        assert tasks.index(source) < tasks.index(installed) < tasks.index(assertion)
-        if execution_name is not None:
-            execution = next(task for task in tasks if task["name"] == execution_name)
-            assert tasks.index(assertion) < tasks.index(execution)
-
-
-def test_trust_bootstrap_installs_request_helper_without_running_request(
-    repo_root: Path,
-) -> None:
-    role_tasks = repo_root / "roles/pki_host_local_certificate/tasks"
-    trust_tasks = _load(role_tasks / "trust.yml")
-    request_apply_tasks = _load(role_tasks / "request_apply.yml")
-    request_helper_tasks = _load(role_tasks / "request_helper.yml")
-    trust_validation = _load(role_tasks / "validate_trust.yml")
-    trust_names = _task_names(trust_tasks)
-
-    helper_import = trust_tasks[
-        trust_names.index(
-            "Install host-local certificate request helper during trust bootstrap"
-        )
-    ]
-    assert helper_import["ansible.builtin.import_tasks"] == "request_helper.yml"
-    assert request_apply_tasks[0]["ansible.builtin.import_tasks"] == (
-        "request_helper.yml"
-    )
-    assert _task_names(request_helper_tasks).count(
-        "Install host-local certificate request helper"
-    ) == 1
-    assert "Create or validate the target-local certificate request" not in trust_names
-    trust_checks = trust_validation[0]["ansible.builtin.assert"]["that"]
-    assert any("request_helper_path is match" in check for check in trust_checks)
-    assert any("request_helper_path is not search" in check for check in trust_checks)
-
-
-def test_controller_local_pki_tasks_override_inventory_become(repo_root: Path) -> None:
-    root = repo_root / "roles/pki_host_local_certificate/tasks"
-    task_files = sorted(
-        path for path in root.rglob("*") if path.suffix in {".yml", ".yaml"}
-    )
-    for path in task_files:
-        pending = list(_load(path))
-        while pending:
-            task = pending.pop()
-            if task.get("delegate_to") == "localhost":
-                assert task.get("become") is False
-                assert task.get("vars") == {"ansible_become": False}
-            for section in ("block", "rescue", "always"):
-                pending.extend(task.get(section, []))
-
-
-def test_terminal_verification_requires_all_exact_coordinates_and_final_state(
-    repo_root: Path,
-) -> None:
-    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
-    target = _make_target(makefile, "registry-pki-terminal-verification")
-    tasks = _load(
-        repo_root
-        / "roles/pki_host_local_certificate/tasks/terminal_verification.yml"
-    )
-    play = _load(repo_root / "playbooks/registry-pki-terminal-verification.yml")[0]
-
-    assert play["hosts"] == "registry"
-    assert play["tasks"][0]["ansible.builtin.include_role"] == {
-        "name": "pki_host_local_certificate",
-        "tasks_from": "terminal_verification",
-    }
-    for guard in (
-        "_guard-pki-service",
+    assert request_prerequisites == [
+        "_guard-pki-env",
         "_guard-pki-limit",
+        "_guard-pki-request-ttl",
+    ]
+    assert "PLAYBOOK=playbooks/registry-pki-request.yml" in request_recipe
+    assert "registry_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS)" in request_recipe
+    assert "$(EXTRA_ARGS)" not in request_recipe
+
+    activation_prerequisites, activation_recipe = make_target(
+        makefile, "registry-pki-response-activate"
+    )
+    assert activation_prerequisites == ["_guard-pki-env", "_guard-pki-limit"]
+    assert "PLAYBOOK=playbooks/registry-pki-activate.yml" in activation_recipe
+    assert "$(EXTRA_ARGS)" not in activation_recipe
+
+    for removed in (
+        "REQUEST_ID",
+        "ARTIFACT_SHA256",
+        "DEPLOYMENT_SHA256",
+        "OUTCOME_SHA256",
+        "RUNNER_LIMIT",
+        "ENDPOINT_RECORD",
+        "TRANSFER_DIR",
+        "OPERATION_TOKEN",
+        "_guard-pki-runner",
         "_guard-pki-request-id",
         "_guard-pki-artifact",
-        "_guard-pki-deployment",
-        "_guard-pki-outcome",
-        "_guard-pki-runner",
     ):
-        assert guard in target
-    forced = (
-        '\"pki_host_local_certificate_helper_read_only\":true',
-        "pki_host_local_certificate_service=$(SERVICE)",
-        "pki_host_local_certificate_request_id=$(REQUEST_ID)",
-        "pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256)",
-        "pki_host_local_certificate_deployment_sha256=$(DEPLOYMENT_SHA256)",
-        "pki_host_local_certificate_outcome_sha256=$(OUTCOME_SHA256)",
-        "pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)",
-    )
-    assert all(value in target for value in forced)
-    assert all(target.index("$(EXTRA_ARGS)") < target.index(value) for value in forced)
-    assert tasks[1]["ansible.builtin.import_tasks"] == "decision_preflight.yml"
-    terminal = tasks[2]["ansible.builtin.assert"]["that"]
-    assert "pki_host_local_certificate_terminal_status.status == 'complete'" in terminal
-    assert (
-        "pki_host_local_certificate_terminal_status.signer_outcome_state == 'finalized'"
-        in terminal
-    )
-    assert "pki_host_local_certificate_terminal_status.required_action == 'none'" in terminal
-    assert (
-        "pki_host_local_certificate_terminal_status.recovery_required is sameas false"
-        in terminal
-    )
-    assert "ansible.builtin.pause" not in yaml.safe_dump(tasks)
-    for relative_path in (
-        "roles/pki_host_local_certificate/tasks/terminal_verification.yml",
-        "roles/pki_host_local_certificate/tasks/decision_preflight.yml",
-        "roles/pki_host_local_certificate/tasks/status.yml",
-        "roles/pki_host_local_certificate/tasks/validator_helper.yml",
-        "roles/pki_host_local_certificate/tasks/lifecycle_helper.yml",
-    ):
-        assert "ansible.builtin.pause" not in (
-            repo_root / relative_path
-        ).read_text(encoding="utf-8")
+        assert removed not in makefile
+
+    _, syntax_recipe = make_target(makefile, "syntax-registry-pki-ci")
+    assert syntax_recipe.count("$(MAKE) syntax") == 2
+    assert "PLAYBOOK=playbooks/registry-pki-request.yml" in syntax_recipe
+    assert "PLAYBOOK=playbooks/registry-pki-activate.yml" in syntax_recipe
 
 
-def test_status_binds_terminal_outcome_inside_authenticated_status_protocol(
-    repo_root: Path,
+@pytest.mark.parametrize(
+    ("playbook_name", "tasks_from"),
+    (
+        ("registry-pki-request.yml", "request_publish"),
+        ("registry-pki-activate.yml", "response_activate"),
+    ),
+)
+def test_playbooks_dispatch_only_target_local_role_routes(
+    repo_root: Path, playbook_name: str, tasks_from: str
 ) -> None:
-    status_tasks = _load(
-        repo_root / "roles/pki_host_local_certificate/tasks/status.yml"
-    )
-    command = next(
-        task
-        for task in status_tasks
-        if task["name"] == "Read authenticated host-local certificate lifecycle status"
-    )
-    argv = command["ansible.builtin.command"]["argv"]
-    helper = (
-        repo_root
-        / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
-    ).read_text(encoding="utf-8")
+    plays = load_yaml(repo_root / "playbooks" / playbook_name)
 
-    assert "--outcome-sha256" in argv
-    assert "pki_host_local_certificate_outcome_sha256" in argv
-    assert 'status_parser.add_argument("--outcome-sha256")' in helper
-    assert 'pointer["outcome_sha256"] != args.outcome_sha256' in helper
-
-
-def test_ci_entry_points_have_syntax_coverage_and_do_not_invoke_transport_clis(
-    repo_root: Path,
-) -> None:
-    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
-    syntax = _make_target(makefile, "syntax-registry-pki-ci")
-    for playbook in (
-        "playbooks/registry-pki-bootstrap-readiness.yml",
-        "playbooks/registry-pki-exchange-access-revoke.yml",
-        "playbooks/registry-pki-terminal-verification.yml",
-    ):
-        assert f"PLAYBOOK={playbook}" in syntax
-    assert "platform-pki direct-exchange" not in makefile
-    assert "platform-pki gitlab-package" not in makefile
-
-    ansible_sources = [
-        *repo_root.glob("playbooks/**/*.yml"),
-        *repo_root.glob("roles/*/tasks/**/*.yml"),
-        *repo_root.glob("roles/*/handlers/**/*.yml"),
-    ]
-    for path in ansible_sources:
-        data = _load(path)
-        for task in _walk_tasks(data):
-            for action in (
-                "ansible.builtin.command",
-                "ansible.builtin.shell",
-                "ansible.builtin.raw",
-            ):
-                if action in task:
-                    invocation = str(task[action])
-                    assert "platform-pki direct-exchange" not in invocation
-                    assert "platform-pki gitlab-package" not in invocation
-
-
-def test_fixed_cleanup_ci_example_is_protected_required_and_ordered(
-    repo_root: Path,
-) -> None:
-    workflow = (
-        repo_root / "docs/registry-host-local-pki-workflow.md"
-    ).read_text(encoding="utf-8")
-    config = _fixed_cleanup_ci(workflow)
-    command = (
-        'make registry-pki-exchange-access-revoke '
-        'ENV="$PKI_ENVIRONMENT" LIMIT="$PKI_TARGET"'
-    )
-
-    assert config["stages"] == ["pki-online", "pki-cleanup", "pki-gate"]
-    assert config["variables"] == {
-        "PKI_ENVIRONMENT": "dev",
-        "PKI_TARGET": "dev-registry-01",
-    }
-    protected = config[".pki-protected-job"]
-    assert protected["tags"] == ["pki-protected"]
-    assert protected["rules"] == [
-        {"if": '$CI_COMMIT_REF_PROTECTED == "true"'}
-    ]
-
-    cleanup = config["pki-fixed-cleanup"]
-    assert cleanup["extends"] == ".pki-protected-job"
-    assert cleanup["stage"] == "pki-cleanup"
-    assert cleanup["needs"] == [
-        {"job": "pki-online-stage", "artifacts": False}
-    ]
-    assert cleanup["when"] == "always"
-    assert cleanup["allow_failure"] is False
-    assert cleanup["script"] == [command]
-    assert 0 < cleanup["retry"]["max"] <= 2
-    assert set(cleanup["retry"]["when"]) == {
-        "runner_system_failure",
-        "stuck_or_timeout_failure",
-        "script_failure",
+    assert len(plays) == 1
+    play = plays[0]
+    assert play["hosts"] == "registry"
+    assert play["become"] is True
+    assert play["gather_facts"] is False
+    assert len(play["tasks"]) == 1
+    assert play["tasks"][0]["ansible.builtin.include_role"] == {
+        "name": "pki_host_local_certificate",
+        "tasks_from": tasks_from,
     }
 
-    gate = config["pki-next-gate"]
-    assert gate["extends"] == ".pki-protected-job"
-    assert gate["stage"] == "pki-gate"
-    assert gate["needs"] == [
-        {"job": "pki-fixed-cleanup", "artifacts": False}
+
+def test_target_local_task_chains_use_facades_and_recover_before_download(
+    repo_root: Path,
+) -> None:
+    root = repo_root / "roles/pki_host_local_certificate/tasks"
+    request = load_yaml(root / "request_publish.yml")
+    activation = load_yaml(root / "response_activate.yml")
+
+    assert [
+        task["ansible.builtin.import_tasks"]
+        for task in request
+        if "ansible.builtin.import_tasks" in task
+    ] == ["validate_target_local.yml", "trust.yml", "gitlab_setup.yml"]
+    publish = task_named(
+        request, "Create and publish the target-local schema-2 request"
+    )
+    assert publish["ansible.builtin.command"]["argv"] == [
+        "{{ pki_host_local_certificate_gitlab_helper_path }}",
+        "request-publish",
+        "--config",
+        "{{ pki_host_local_certificate_gitlab_config_path }}",
     ]
-    assert gate["when"] == "on_success"
-    assert gate["allow_failure"] is False
-    assert gate["script"][0] == command
+    assert publish["no_log"] is True
+
+    names = [task["name"] for task in activation]
+    assert names.index("Read initial authenticated target-local status") < names.index(
+        "Recover target-local activation journal without operator coordinates"
+    )
+    assert names.index(
+        "Recover target-local activation journal without operator coordinates"
+    ) < names.index(
+        "Install target-local GitLab certificate components when transport is required"
+    )
+    assert names.index(
+        "Install target-local GitLab certificate components when transport is required"
+    ) < names.index("Download and install the authenticated schema-2 response")
+    assert names.index("Read post-download target-local status") < names.index(
+        "Start and locally validate target-local certificate activation"
+    )
+    download = task_named(
+        activation, "Download and install the authenticated schema-2 response"
+    )
+    assert download["ansible.builtin.command"]["argv"] == [
+        "{{ pki_host_local_certificate_gitlab_helper_path }}",
+        "response-download",
+        "--config",
+        "{{ pki_host_local_certificate_gitlab_config_path }}",
+    ]
+    assert download["no_log"] is True
 
 
-def test_fixed_cleanup_ci_documentation_states_failure_boundaries(
+def test_gitlab_token_is_validated_by_metadata_without_entering_ansible(
     repo_root: Path,
 ) -> None:
-    workflow = (
-        repo_root / "docs/registry-host-local-pki-workflow.md"
-    ).read_text(encoding="utf-8")
-    section = workflow.split("## Fixed Cleanup\n", 1)[1].split(
-        "\n## Expected Status Transitions", 1
-    )[0]
-    normalized = " ".join(section.split())
-
-    for required in (
-        "GitLab cannot guarantee",
-        "pipeline cancellation",
-        "runner loss",
-        "next gate or job must independently run fixed revocation and verify absence",
-        "administrator must",
-        "out-of-band revocation and absence verification",
-        "terminal-acceptance job must likewise `need` `pki-fixed-cleanup`",
-    ):
-        assert required in normalized
-
-
-def test_fixed_revoke_playbook_dispatches_revoke_and_verifies_absence(
-    repo_root: Path,
-) -> None:
-    play = _load(repo_root / "playbooks/registry-pki-exchange-access-revoke.yml")[0]
-    tasks = play["tasks"]
-    dispatch = tasks[1]["ansible.builtin.include_role"]
-
-    assert dispatch == {
-        "name": "pki_host_local_exchange_access",
-        "tasks_from": "revoke",
+    tasks = load_yaml(
+        repo_root / "roles/pki_host_local_certificate/tasks/gitlab_setup.yml"
+    )
+    token_stat = task_named(tasks, "Inspect pre-provisioned GitLab token metadata")
+    assert token_stat["ansible.builtin.stat"] == {
+        "path": "{{ pki_host_local_certificate_gitlab_token_path }}",
+        "follow": False,
+        "get_checksum": False,
+        "get_mime": False,
     }
-    assert "vars" not in play
-    postcondition = tasks[-1]["ansible.builtin.assert"]["that"]
-    assert any("revoked_paths" in condition for condition in postcondition)
-    assert "registry_pki_exchange_revoked_user.rc == 2" in postcondition
-    assert "registry_pki_exchange_revoked_group.rc == 2" in postcondition
-    assert tasks.index(tasks[1]) < tasks.index(tasks[-1])
+    assert token_stat["no_log"] is True
+
+    token_contract = task_named(
+        tasks, "Require protected pre-provisioned GitLab token metadata"
+    )
+    checks = token_contract["ansible.builtin.assert"]["that"]
+    for expected in (
+        "pki_host_local_certificate_gitlab_token.stat.uid == 0",
+        "pki_host_local_certificate_gitlab_token.stat.gid == 0",
+        "pki_host_local_certificate_gitlab_token.stat.nlink == 1",
+        "pki_host_local_certificate_gitlab_token.stat.mode == '0600'",
+        "pki_host_local_certificate_gitlab_token.stat.size <= 4096",
+    ):
+        assert expected in checks
+    assert token_contract["no_log"] is True
+
+    dumped = yaml.safe_dump(tasks)
+    assert "ansible.builtin.slurp" not in dumped
+    assert "ansible.builtin.fetch" not in dumped
+    config = task_named(
+        tasks, "Install target-local GitLab facade configuration"
+    )["vars"]["pki_host_local_certificate_gitlab_config"]
+    assert config["token_file"] == "{{ pki_host_local_certificate_gitlab_token_path }}"
+    assert not any("lookup(" in str(value) or "query(" in str(value) for value in config.values())
+    for field, variable in (
+        ("request_ttl_seconds", "pki_host_local_certificate_request_ttl_seconds"),
+        (
+            "minimum_remaining_lifetime_seconds",
+            "pki_host_local_certificate_minimum_remaining_lifetime_seconds",
+        ),
+        ("timeout", "pki_host_local_certificate_gitlab_timeout"),
+        (
+            "processing_attempts",
+            "pki_host_local_certificate_gitlab_processing_attempts",
+        ),
+        (
+            "processing_interval",
+            "pki_host_local_certificate_gitlab_processing_interval",
+        ),
+    ):
+        assert config[field] == "{{ " + variable + " | int }}"
 
 
-def _walk_tasks(value: Any):
-    if isinstance(value, list):
-        for child in value:
-            yield from _walk_tasks(child)
-    elif isinstance(value, dict):
-        if "name" in value:
-            yield value
-        for child in value.values():
-            yield from _walk_tasks(child)
-
-
-def test_activation_make_route_forces_direct_mode_after_caller_arguments(
+def test_transport_client_installation_uses_reviewed_digest(
     repo_root: Path,
 ) -> None:
-    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
-    target = _make_target(makefile, "registry-pki-activate")
-    forced = (
-        "pki_host_local_certificate_exchange_mode=direct",
-        "pki_host_local_certificate_request_id=$(REQUEST_ID)",
-        "pki_host_local_certificate_artifact_manifest_sha256=$(ARTIFACT_SHA256)",
-        "pki_host_local_certificate_remote_validator=$(RUNNER_LIMIT)",
+    tasks = load_yaml(
+        repo_root / "roles/pki_host_local_certificate/tasks/gitlab_setup.yml"
+    )
+    install = task_named(tasks, "Install platform-pki transport client")
+
+    assert install["platform_pki_transport_client"] == {
+        "source": "{{ pki_host_local_certificate_platform_pki_source }}",
+        "sha256": "{{ pki_host_local_certificate_platform_pki_sha256 }}",
+        "dest": "{{ pki_host_local_certificate_platform_pki_path }}",
+    }
+
+
+def test_gitlab_facade_config_renders_typed_json(
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    tasks = load_yaml(
+        repo_root / "roles/pki_host_local_certificate/tasks/gitlab_setup.yml"
+    )
+    config_task = task_named(
+        tasks, "Install target-local GitLab facade configuration"
+    )
+    variables = load_yaml(
+        repo_root / "roles/pki_host_local_certificate/defaults/main.yml"
+    )
+    variables.update(
+        pki_host_local_certificate_service="registry-test",
+        pki_host_local_certificate_target="target.test",
+        pki_host_local_certificate_operation="issue",
+        pki_host_local_certificate_inventory_sha256="a" * 64,
+        pki_host_local_certificate_common_name="registry.test",
+        pki_host_local_certificate_dns_sans=["registry.test", "target.test"],
+        pki_host_local_certificate_ip_sans=["192.0.2.61"],
+        pki_host_local_certificate_response_principal="response.test",
+        pki_host_local_certificate_minimum_remaining_lifetime_seconds=60,
+    )
+    output = isolated_test_dir / "gitlab-config.json"
+    playbook = isolated_test_dir / "render-gitlab-config.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Render focused target-local GitLab configuration",
+                    "hosts": "localhost",
+                    "connection": "local",
+                    "gather_facts": False,
+                    "vars": variables,
+                    "tasks": [
+                        {
+                            "name": "Render target-local GitLab configuration",
+                            "ansible.builtin.copy": {
+                                "content": config_task["ansible.builtin.copy"]["content"],
+                                "dest": str(output),
+                                "mode": "0600",
+                            },
+                            "vars": config_task["vars"],
+                        }
+                    ],
+                }
+            ],
+            sort_keys=False,
+        ),
+        encoding="utf-8",
     )
 
-    assert all(value in target for value in forced)
-    assert all(target.index("$(EXTRA_ARGS)") < target.index(value) for value in forced)
-    assert "registry-pki-activate-controller-local" not in makefile
-    assert "registry-pki-activate-unattended" not in makefile
-    for compatibility_target in (
-        "registry-pki-request-controller-local",
-        "registry-pki-evidence-export-controller-local",
-        "registry-pki-outcome-import-controller-local",
+    run_playbook(command_runner, playbook).assert_success()
+    rendered = json.loads(output.read_text(encoding="utf-8"))
+
+    assert rendered["schema"] == 2
+    assert rendered["dns_sans"] == ["registry.test", "target.test"]
+    for field, expected in (
+        ("request_ttl_seconds", 3600),
+        ("minimum_remaining_lifetime_seconds", 60),
+        ("timeout", 30),
+        ("processing_attempts", 5),
+        ("processing_interval", 2),
     ):
-        compatibility_route = _make_target(makefile, compatibility_target)
-        assert "pki_host_local_certificate_exchange_mode=controller-local" in (
-            compatibility_route
-        )
+        assert type(rendered[field]) is int
+        assert rendered[field] == expected

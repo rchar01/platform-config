@@ -10,9 +10,7 @@
   changed_when: false
   failed_when: false
   check_mode: false
-  when:
-    - not ansible_check_mode
-    - not pki_host_local_certificate_helper_read_only
+  when: not ansible_check_mode
 
 - name: Install host-local certificate lifecycle Python runtime
   ansible.builtin.package:
@@ -20,7 +18,6 @@
     state: present
   when:
     - not ansible_check_mode
-    - not pki_host_local_certificate_helper_read_only
     - pki_host_local_certificate_lifecycle_python_runtime.rc != 0
 
 - name: Inspect host-local certificate lifecycle helper directory
@@ -52,7 +49,6 @@
     mode: "0755"
   when:
     - not ansible_check_mode
-    - not pki_host_local_certificate_helper_read_only
     - not pki_host_local_certificate_lifecycle_helper_directory.stat.exists
 
 - name: Inspect shipped host-local certificate lifecycle helper source
@@ -66,7 +62,7 @@
   vars:
     ansible_become: false
   register: pki_host_local_certificate_lifecycle_helper_source
-  when: ansible_check_mode or pki_host_local_certificate_helper_read_only
+  when: ansible_check_mode
 
 - name: Inspect installed host-local certificate lifecycle helper
   ansible.builtin.stat:
@@ -93,7 +89,7 @@
         pki_host_local_certificate_installed_lifecycle_helper.stat.checksum
         == pki_host_local_certificate_lifecycle_helper_source.stat.checksum
     fail_msg: Read-only lifecycle use requires the exact shipped helper.
-  when: ansible_check_mode or pki_host_local_certificate_helper_read_only
+  when: ansible_check_mode
 
 - name: Install host-local certificate lifecycle helper
   ansible.builtin.copy:
@@ -102,6 +98,4 @@
     owner: root
     group: root
     mode: "0755"
-  when:
-    - not ansible_check_mode
-    - not pki_host_local_certificate_helper_read_only
+  when: not ansible_check_mode

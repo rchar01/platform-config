@@ -2,8 +2,5 @@
 - name: Refuse implicit host-local certificate role execution
   ansible.builtin.fail:
     msg: >-
-      Select the structural trust, request, or activate task entry point.
-      Status, response-check, recovery, rolled-back evidence publication,
-      request-intake, evidence-export, evidence-intake, decision-preflight,
-      and outcome-import are also operator-only structural entry points.
-      Normal role execution is intentionally unavailable.
+      Select the structural trust, request_publish, or response_activate task
+      entry point. Normal role execution is intentionally unavailable.

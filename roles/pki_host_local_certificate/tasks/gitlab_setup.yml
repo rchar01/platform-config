@@ -1,0 +1,122 @@
+---
+- name: Install target-local lifecycle helper
+  ansible.builtin.import_tasks: lifecycle_helper.yml
+
+- name: Install target-local request helper
+  ansible.builtin.import_tasks: request_helper.yml
+
+- name: Create protected target-local GitLab directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ pki_host_local_certificate_gitlab_config_path | dirname }}"
+      mode: "0755"
+    - path: "{{ pki_host_local_certificate_gitlab_spool_root }}"
+      mode: "0700"
+    - path: "{{ pki_host_local_certificate_gitlab_helper_path | dirname }}"
+      mode: "0755"
+
+- name: Install target-local GitLab facade
+  ansible.builtin.copy:
+    src: platform-pki-host-local-gitlab
+    dest: "{{ pki_host_local_certificate_gitlab_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install platform-pki transport client
+  platform_pki_transport_client:
+    source: "{{ pki_host_local_certificate_platform_pki_source }}"
+    sha256: "{{ pki_host_local_certificate_platform_pki_sha256 }}"
+    dest: "{{ pki_host_local_certificate_platform_pki_path }}"
+
+- name: Install reviewed GitLab project record
+  ansible.builtin.copy:
+    src: "{{ pki_host_local_certificate_gitlab_project_record_source }}"
+    dest: "{{ pki_host_local_certificate_gitlab_project_record_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install reviewed GitLab CA bundle
+  ansible.builtin.copy:
+    src: "{{ pki_host_local_certificate_gitlab_ca_source }}"
+    dest: "{{ pki_host_local_certificate_gitlab_ca_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Inspect pre-provisioned GitLab token metadata
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_gitlab_token_path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: pki_host_local_certificate_gitlab_token
+  no_log: true
+
+- name: Require protected pre-provisioned GitLab token metadata
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_gitlab_token.stat.exists
+      - pki_host_local_certificate_gitlab_token.stat.isreg
+      - not pki_host_local_certificate_gitlab_token.stat.islnk
+      - pki_host_local_certificate_gitlab_token.stat.uid == 0
+      - pki_host_local_certificate_gitlab_token.stat.gid == 0
+      - pki_host_local_certificate_gitlab_token.stat.nlink == 1
+      - pki_host_local_certificate_gitlab_token.stat.mode == '0600'
+      - pki_host_local_certificate_gitlab_token.stat.size > 0
+      - pki_host_local_certificate_gitlab_token.stat.size <= 4096
+    fail_msg: GitLab token metadata is absent or unsafe.
+  no_log: true
+
+- name: Install target-local GitLab facade configuration
+  ansible.builtin.copy:
+    content: "{{ pki_host_local_certificate_gitlab_config | to_nice_json }}\n"
+    dest: "{{ pki_host_local_certificate_gitlab_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    pki_host_local_certificate_gitlab_config:
+      schema: 2
+      kind: platform-config-target-local-gitlab
+      service: "{{ pki_host_local_certificate_service }}"
+      target: "{{ pki_host_local_certificate_target }}"
+      operation: "{{ pki_host_local_certificate_operation }}"
+      profile: "{{ pki_host_local_certificate_profile }}"
+      inventory_sha256: "{{ pki_host_local_certificate_inventory_sha256 }}"
+      current_cert_sha256: >-
+        {{ 'none' if pki_host_local_certificate_operation == 'issue'
+           else ('derived' if pki_host_local_certificate_operation == 'renew'
+           else pki_host_local_certificate_current_cert_sha256) }}
+      current_cert_path: >-
+        {{ 'none' if pki_host_local_certificate_operation == 'issue'
+           else ('derived' if pki_host_local_certificate_operation == 'renew'
+           else pki_host_local_certificate_current_cert_path) }}
+      common_name: "{{ pki_host_local_certificate_common_name }}"
+      dns_sans: "{{ pki_host_local_certificate_dns_sans }}"
+      ip_sans: "{{ pki_host_local_certificate_ip_sans }}"
+      response_principal: "{{ pki_host_local_certificate_response_principal }}"
+      request_ttl_seconds: "{{ pki_host_local_certificate_request_ttl_seconds | int }}"
+      request_signing_key: "{{ pki_host_local_certificate_request_signing_key_path }}"
+      trust_id: "{{ pki_host_local_certificate_trust_id }}"
+      state_root: "{{ pki_host_local_certificate_state_root }}"
+      pending_root: "{{ pki_host_local_certificate_pending_root }}"
+      versions_root: "{{ pki_host_local_certificate_versions_root }}"
+      zot_config: "{{ pki_host_local_certificate_zot_config_path }}"
+      minimum_remaining_lifetime_seconds: "{{ pki_host_local_certificate_minimum_remaining_lifetime_seconds | int }}"
+      project_record: "{{ pki_host_local_certificate_gitlab_project_record_path }}"
+      token_file: "{{ pki_host_local_certificate_gitlab_token_path }}"
+      ca_file: "{{ pki_host_local_certificate_gitlab_ca_path }}"
+      spool_root: "{{ pki_host_local_certificate_gitlab_spool_root }}"
+      request_helper: "{{ pki_host_local_certificate_request_helper_path }}"
+      lifecycle_helper: "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+      platform_pki: "{{ pki_host_local_certificate_platform_pki_path }}"
+      timeout: "{{ pki_host_local_certificate_gitlab_timeout | int }}"
+      processing_attempts: "{{ pki_host_local_certificate_gitlab_processing_attempts | int }}"
+      processing_interval: "{{ pki_host_local_certificate_gitlab_processing_interval | int }}"

@@ -1,0 +1,35 @@
+---
+- name: Load target-local GitLab certificate validation
+  ansible.builtin.import_tasks: validate_target_local.yml
+
+- name: Install target-local certificate trust
+  ansible.builtin.import_tasks: trust.yml
+
+- name: Install target-local GitLab certificate components
+  ansible.builtin.import_tasks: gitlab_setup.yml
+
+- name: Create and publish the target-local schema-2 request
+  ansible.builtin.command:
+    argv:
+      - "{{ pki_host_local_certificate_gitlab_helper_path }}"
+      - request-publish
+      - --config
+      - "{{ pki_host_local_certificate_gitlab_config_path }}"
+  register: pki_host_local_certificate_request_publish_result
+  changed_when: >-
+    (pki_host_local_certificate_request_publish_result.stdout | from_json).status == 'published'
+  no_log: true
+
+- name: Validate target-local request publication result
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_request_publish_result.stderr | length == 0
+      - pki_host_local_certificate_request_publish.keys() | list | sort == ['command', 'kind', 'schema', 'status']
+      - pki_host_local_certificate_request_publish.schema == 2
+      - pki_host_local_certificate_request_publish.kind == 'platform-config-target-local-gitlab-status'
+      - pki_host_local_certificate_request_publish.command == 'request-publish'
+      - pki_host_local_certificate_request_publish.status in ['existing', 'published']
+    fail_msg: Target-local GitLab request publication returned unsafe metadata.
+  vars:
+    pki_host_local_certificate_request_publish: >-
+      {{ pki_host_local_certificate_request_publish_result.stdout | from_json }}

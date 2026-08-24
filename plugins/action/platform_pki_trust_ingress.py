@@ -29,7 +29,6 @@ except ImportError:  # Standalone action plugins do not package local module_uti
 
 TRUST_NAMES = (
     "approvers.allowed_signers",
-    "deployers.allowed_signers",
     "policy",
     "requesters.allowed_signers",
     "responses.allowed_signers",
@@ -61,9 +60,9 @@ class ActionModule(ActionBase):
         if set(self._task.args) != {"sources", "sha256", "ingress_root"}:
             raise AnsibleActionFail("trust ingress action accepts only fixed source, digest, and ingress mappings")
         if not isinstance(sources, dict) or set(sources) != set(TRUST_NAMES):
-            raise AnsibleActionFail("trust ingress action requires the exact five-key source mapping")
+            raise AnsibleActionFail("trust ingress action requires the exact four-key source mapping")
         if not isinstance(digests, dict) or set(digests) != set(TRUST_NAMES):
-            raise AnsibleActionFail("trust ingress action requires the exact five-key digest mapping")
+            raise AnsibleActionFail("trust ingress action requires the exact four-key digest mapping")
         if not isinstance(ingress_root, str) or not ingress_root.startswith("/") or os.path.normpath(ingress_root) != ingress_root:
             raise AnsibleActionFail("trust ingress destination must be an absolute canonical path")
         if self._task.check_mode:
@@ -116,7 +115,9 @@ class ActionModule(ActionBase):
             result.update(changed=changed, status="transferred")
             return result
         finally:
-            if remote_tmp is not None:
-                self._remove_tmp_path(remote_tmp)
-            for source in pinned.values():
-                source.close()
+            try:
+                if remote_tmp is not None:
+                    self._remove_tmp_path(remote_tmp)
+            finally:
+                for source in pinned.values():
+                    source.close()

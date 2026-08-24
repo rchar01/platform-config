@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -17,17 +16,8 @@ VERSIONS_ROOT = "/etc/zot/tls-versions"
 FULLCHAIN_PATH = f"{VERSIONS_ROOT}/{REQUEST_ID}/fullchain.crt"
 KEY_PATH = f"{VERSIONS_ROOT}/{REQUEST_ID}/tls.key"
 DIGEST = "a" * 64
-V2_HELPER_SHA256 = (
-    "3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280"
-)
-V3_HELPER_SHA256 = (
-    "9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3"
-)
-V4_HELPER_SHA256 = (
-    "3d446de2d3e56314ca70e881b5354a2c341566f17a6e4472f58faced92daa7c0"
-)
 MANAGED_RESULT = {
-    "schema": "1",
+    "schema": "2",
     "kind": "platform-config-zot-tls-custody",
     "custody": "managed",
     "request_id": "none",
@@ -133,7 +123,7 @@ def _command_result(value: Any, *, stderr: str = "") -> dict[str, Any]:
     return {"rc": 0, "stdout": stdout, "stderr": stderr}
 
 
-def _helper_stat(checksum: str, *, mode: str = "0755") -> dict[str, Any]:
+def _helper_stat(*, mode: str = "0755") -> dict[str, Any]:
     return {
         "exists": True,
         "isreg": True,
@@ -141,20 +131,18 @@ def _helper_stat(checksum: str, *, mode: str = "0755") -> dict[str, Any]:
         "uid": 0,
         "gid": 0,
         "mode": mode,
-        "checksum": checksum,
     }
 
 
-def _source_stat(checksum: str = V4_HELPER_SHA256) -> dict[str, Any]:
+def _source_stat(*, isreg: bool = True, islnk: bool = False) -> dict[str, Any]:
     return {
         "exists": True,
-        "isreg": True,
-        "islnk": False,
-        "checksum": checksum,
+        "isreg": isreg,
+        "islnk": islnk,
     }
 
 
-def test_zot_tls_defaults_remove_inventory_custody_and_pin_lifecycle_inputs(
+def test_zot_tls_defaults_remove_inventory_custody_and_fix_lifecycle_inputs(
     repo_root: Path,
 ) -> None:
     defaults = _load_yaml(repo_root / "roles/zot_registry/defaults/main.yml")
@@ -177,11 +165,6 @@ def test_zot_tls_defaults_remove_inventory_custody_and_pin_lifecycle_inputs(
     assert defaults["zot_registry_tls_host_local_zot_config_path"] == (
         "/etc/zot/config.json"
     )
-    helper = (
-        repo_root
-        / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
-    )
-    assert hashlib.sha256(helper.read_bytes()).hexdigest() == V4_HELPER_SHA256
 
 
 def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) -> None:
@@ -235,7 +218,7 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
         "--target",
         "{{ zot_registry_tls_host_local_target }}",
         "--operation",
-        "{{ pki_host_local_certificate_operation | default('migrate', true) }}",
+        "{{ pki_host_local_certificate_operation | default('issue', true) }}",
         "--zot-config",
         "{{ zot_registry_tls_host_local_zot_config_path }}",
         "--managed-cert",
@@ -256,16 +239,16 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
 
     task_names = list(resolve_by_name)
     validate_index = task_names.index(
-        "Validate trusted Zot TLS lifecycle helper upgrade state"
+        "Validate Zot TLS lifecycle helper paths"
     )
     upgrade_index = task_names.index(
-        "Upgrade trusted predecessor Zot TLS lifecycle helper"
+        "Install Zot TLS lifecycle helper"
     )
     refresh_index = task_names.index(
         "Refresh installed Zot TLS lifecycle helper state"
     )
     require_index = task_names.index(
-        "Require exact current Zot TLS lifecycle helper before custody selection"
+        "Require safe installed Zot TLS lifecycle helper before custody selection"
     )
     selector_index = task_names.index(
         "Derive Zot TLS custody from initialized lifecycle state"
@@ -279,7 +262,7 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
     )
 
     upgrade = resolve_by_name[
-        "Upgrade trusted predecessor Zot TLS lifecycle helper"
+        "Install Zot TLS lifecycle helper"
     ]
     assert upgrade["ansible.builtin.copy"] == {
         "src": "{{ role_path }}/../pki_host_local_certificate/files/platform-pki-host-local-lifecycle",
@@ -288,23 +271,16 @@ def test_zot_tls_tasks_derive_custody_without_error_fallback(repo_root: Path) ->
         "group": "root",
         "mode": "0755",
     }
-    assert upgrade["when"][:3] == [
-        "zot_registry_tls_enabled | bool",
-        "not ansible_check_mode",
-        "zot_registry_tls_custody_state.helper.exists",
-    ]
-    assert len(upgrade["when"]) == 4
-    assert V2_HELPER_SHA256 in upgrade["when"][3]
-    assert V3_HELPER_SHA256 in upgrade["when"][3]
+    assert upgrade["when"] == ["zot_registry_tls_enabled | bool"]
 
     refreshed = resolve_by_name["Refresh installed Zot TLS lifecycle helper state"]
-    assert refreshed["ansible.builtin.stat"]["checksum_algorithm"] == "sha256"
+    assert refreshed["ansible.builtin.stat"]["get_checksum"] is False
     current = resolve_by_name[
-        "Require exact current Zot TLS lifecycle helper before custody selection"
+        "Require safe installed Zot TLS lifecycle helper before custody selection"
     ]
     current_contract = "\n".join(current["ansible.builtin.assert"]["that"])
     assert "root:root 0755" in current["ansible.builtin.assert"]["fail_msg"]
-    assert V4_HELPER_SHA256 in current_contract
+    assert "checksum" not in current_contract
     assert current["when"] == [
         "zot_registry_tls_enabled | bool",
         "zot_registry_tls_custody_state.state_root.exists",
@@ -422,70 +398,26 @@ def test_zot_tls_input_validation_fails_closed(
     (
         "case_id",
         "state_exists",
-        "helper_checksum",
         "helper_mode",
-        "source_checksum",
+        "source_isreg",
+        "source_islnk",
         "valid",
     ),
     [
-        ("fresh-absent", False, None, "0755", V4_HELPER_SHA256, True),
-        ("initialized-absent", True, None, "0755", V4_HELPER_SHA256, False),
-        (
-            "unknown-checksum",
-            True,
-            "b" * 64,
-            "0755",
-            V4_HELPER_SHA256,
-            False,
-        ),
-        (
-            "unsafe-predecessor",
-            True,
-            V2_HELPER_SHA256,
-            "0775",
-            V4_HELPER_SHA256,
-            False,
-        ),
-        (
-            "initialized-current",
-            True,
-            V4_HELPER_SHA256,
-            "0755",
-            V4_HELPER_SHA256,
-            True,
-        ),
-        (
-            "initialized-v3-predecessor",
-            True,
-            V3_HELPER_SHA256,
-            "0755",
-            V4_HELPER_SHA256,
-            True,
-        ),
-        (
-            "initialized-predecessor",
-            True,
-            V2_HELPER_SHA256,
-            "0755",
-            V4_HELPER_SHA256,
-            True,
-        ),
-        (
-            "source-drift",
-            True,
-            V2_HELPER_SHA256,
-            "0755",
-            "c" * 64,
-            False,
-        ),
+        ("fresh-absent", False, "0755", True, False, True),
+        ("initialized-absent", True, "0755", True, False, True),
+        ("safe-existing", True, "0755", True, False, True),
+        ("repairable-mode", True, "0775", True, False, True),
+        ("source-not-regular", True, "0755", False, False, False),
+        ("source-symlink", True, "0755", True, True, False),
     ],
 )
 def test_zot_tls_helper_absence_and_drift_are_state_sensitive(
     case_id: str,
     state_exists: bool,
-    helper_checksum: str | None,
     helper_mode: str,
-    source_checksum: str,
+    source_isreg: bool,
+    source_islnk: bool,
     valid: bool,
     command_runner: CommandRunner,
     isolated_test_dir: Path,
@@ -494,8 +426,8 @@ def test_zot_tls_helper_absence_and_drift_are_state_sensitive(
     _role_tasks_playbook(playbook, "validate_tls_lifecycle_helper")
     helper = (
         {"exists": False}
-        if helper_checksum is None
-        else _helper_stat(helper_checksum, mode=helper_mode)
+        if case_id.endswith("absent")
+        else _helper_stat(mode=helper_mode)
     )
     result = run_playbook(
         command_runner,
@@ -507,7 +439,7 @@ def test_zot_tls_helper_absence_and_drift_are_state_sensitive(
                     "helper": helper,
                 },
                 "zot_registry_tls_lifecycle_helper_source": {
-                    "stat": _source_stat(source_checksum)
+                    "stat": _source_stat(isreg=source_isreg, islnk=source_islnk)
                 },
             },
         ),
@@ -516,30 +448,19 @@ def test_zot_tls_helper_absence_and_drift_are_state_sensitive(
     if valid:
         result.assert_success()
     else:
-        assert_failed_with(result, "fail closed")
+        assert_failed_with(result, "normal copy convergence")
 
 
-@pytest.mark.parametrize(
-    ("checksum", "valid"),
-    (
-        (V4_HELPER_SHA256, True),
-        (V3_HELPER_SHA256, False),
-        (V2_HELPER_SHA256, False),
-    ),
-    ids=("current", "v3-predecessor", "v2-predecessor"),
-)
-def test_zot_tls_helper_check_mode_requires_current_without_mutation(
-    checksum: str,
-    valid: bool,
+def test_zot_tls_helper_check_mode_validates_metadata_without_content_pins(
     command_runner: CommandRunner,
     isolated_test_dir: Path,
 ) -> None:
-    playbook = isolated_test_dir / f"helper-check-{checksum[:8]}.yml"
+    playbook = isolated_test_dir / "helper-check.yml"
     _role_tasks_playbook(playbook, "validate_tls_lifecycle_helper")
     variables = {
         "zot_registry_tls_custody_state": {
             "state_root": {"exists": True},
-            "helper": _helper_stat(checksum),
+            "helper": _helper_stat(),
         },
         "zot_registry_tls_lifecycle_helper_source": {
             "stat": _source_stat()
@@ -555,13 +476,10 @@ def test_zot_tls_helper_check_mode_requires_current_without_mutation(
         ]
     )
 
-    if valid:
-        result.assert_success()
-    else:
-        assert_failed_with(result, "check mode")
+    result.assert_success()
 
 
-def test_zot_read_only_helper_validation_remains_exact(repo_root: Path) -> None:
+def test_lifecycle_helper_check_mode_validation_remains_exact(repo_root: Path) -> None:
     tasks = _load_yaml(
         repo_root / "roles/pki_host_local_certificate/tasks/lifecycle_helper.yml"
     )
@@ -572,11 +490,7 @@ def test_zot_read_only_helper_validation_remains_exact(repo_root: Path) -> None:
 
     assert "installed_lifecycle_helper.stat.checksum" in contract
     assert "lifecycle_helper_source.stat.checksum" in contract
-    assert V2_HELPER_SHA256 not in contract
-    assert V3_HELPER_SHA256 not in contract
-    assert read_only["when"] == (
-        "ansible_check_mode or pki_host_local_certificate_helper_read_only"
-    )
+    assert read_only["when"] == "ansible_check_mode"
 
 
 @pytest.mark.parametrize(

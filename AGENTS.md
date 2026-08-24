@@ -7,7 +7,7 @@
 - Do not commit working plans, test plans, incident notes, or environment-specific operational notes here. Store them under `../platform-plans/config/plans/`; publish only sanitized summaries or durable public docs.
 - Do not create Proxmox, OpenTofu, VM-template, or VM-lifecycle code here; those belong to other platform repos.
 - Public inventories under `inventories/` are `.example` files only; real `hosts.yml`, `group_vars/*.yml`, and `host_vars/*.yml` are intentionally ignored.
-- Human and CI PKI transfer commands belong in `platform-tools` and use the unified `platform-pki direct-exchange` and `platform-pki gitlab-package` routes. Keep only Ansible orchestration, target facades, restricted access policy, spools, and lifecycle actions in this repository.
+- Human and CI PKI package commands belong in `platform-tools` and use only the `platform-pki gitlab-package` route for request, approval, and response stages. Keep only Ansible orchestration, target-local GitLab facades, protected spools, reviewed trust installation, and host-local lifecycle actions in this repository; do not add direct/controller-local transport, SSH exchange access, or operator-supplied package coordinates.
 
 ## Kubernetes Bastion Boundary
 

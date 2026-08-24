@@ -1,275 +1,116 @@
 # pki_host_local_certificate
 
-Defines the fail-closed, operator-only target/controller/runner orchestration for
-one host-local Zot certificate lifecycle. Normal convergence does not import
-this role or any `registry-pki-*.yml` playbook.
+Provides the operator-only, target-local Zot certificate lifecycle. Normal
+convergence does not invoke this role. Its default task entry point fails closed;
+the two public Make routes select the fixed request or activation task file.
 
-## Entry Points
+## Operator Routes
 
-Use only these structural playbooks:
+The complete public operator surface is:
 
-- `registry-pki-validation-material.yml` invokes the separate
-  `pki_host_local_validation_material` role to provision the reviewed CA and
-  validation boundary on one exact target and one distinct runner. The
-  certificate lifecycle role does not import that prerequisite role.
-- `registry-pki-bootstrap-readiness.yml` runs request-helper, lifecycle,
-  validator, topology, and installed validation-material checks in fixed
-  non-mutating check mode without creating a request or invoking transport.
-- `registry-pki-trust.yml` installs the lifecycle and request helpers and
-  bootstraps the exact reviewed five-file target trust without creating a key or
-  request.
-- `registry-pki-request.yml` creates or validates a target-local request. Direct
-  mode exposes only the three public files through the fixed SSH facade;
-  controller-local compatibility mode uses the original Ansible collection.
-- `registry-pki-request-intake.yml` authenticates an already retrieved exact
-  three-file request locally and atomically publishes request plus frozen trust.
-- `registry-pki-abandon-expired-request.yml` removes only one exact authenticated
-  expired pending request. It refuses unexpired requests and any response,
-  version, active, evidence, or unresolved journal state for that request.
-- `registry-pki-cancel-request.yml` removes one exact authenticated pending
-  request only when both its request ID and request SHA-256 match. It has the
-  same response, version, active, evidence, and journal refusal boundaries.
-- `registry-pki-status.yml` reads and strictly validates lifecycle status.
-- `registry-pki-response-check.yml` authenticates one exact external signer
-  response entirely on the controller and publishes its immutable controller
-  snapshot. Its protected exact six-file source must neither be inside nor
-  contain `pki_host_local_certificate_controller_exchange_root`; a transport
-  download beneath that root must first be materialized outside it. Response
-  check does not contact Zot or mutate the target.
-- `registry-pki-activate.yml` prepares and installs the response, shows the
-  exact activation candidate, activates locally, validates Zot from one distinct
-  reviewed runner, consumes that runner's unsigned canonical observation, and
-  publishes target evidence whose `deployment` and `validation-result` records
-  are both signed with the target host key. The single direct-only
-  Make target runs automatically after all exact preflights while preserving all
-  authentication, validation, and rollback boundaries.
-- `registry-pki-recover.yml` explicitly performs only the recovery encoded by
-  the lifecycle journal and then reads status.
-- `registry-pki-evidence-export.yml` reports exact direct retrieval coordinates,
-  or collects through Ansible only in controller-local compatibility mode.
-- `registry-pki-evidence-intake.yml` authenticates an already retrieved exact
-  five-file evidence attempt locally and publishes it by deployment digest.
-- `registry-pki-decision-preflight.yml` binds controller-exported evidence to
-  current target status and a fresh read-only runner observation.
-- `registry-pki-outcome-import.yml` imports one exact terminal signer package
-  already staged in the fixed target spool. Compatibility mode retains the
-  original controller transfer action.
-- `registry-pki-terminal-verification.yml` authenticates exact request,
-  artifact, deployment, outcome, service, target, and runner coordinates,
-  requires finalized complete status, and repeats the fresh runner decision
-  preflight without a prompt or transport.
-
-Trust, request, expired-request abandonment, and recovery remain explicit
-operator actions. Activation is one automatic, direct-only, digest-pinned Make
-target with a required distinct runner. Request lifetime defaults to
-3600 seconds and may be overridden for one invocation with
-`REQUEST_TTL_SECONDS`, up to the schema-2 policy maximum of 604800 seconds.
-
-Migration requests bind the canonical first leaf certificate from the current
-Zot certificate file. Zot may serve a concatenated fullchain, but the digest in
-`current_cert_sha256` remains the signer-managed leaf certificate digest used
-by CSR history and candidate finalization.
-Renewal, archive cleanup, and live inventory enablement remain outside this role.
-
-## Exchange Modes
-
-`pki_host_local_certificate_exchange_mode` accepts only `direct` or
-`controller-local` and defaults to `direct`. Direct mode never reaches
-`platform_pki_request_collection`, `platform_pki_response_ingress`,
-`platform_pki_evidence_collection`, or `platform_pki_outcome_import`.
-
-Direct movement is an explicit operator command using
-`platform-pki direct-exchange` from `platform-tools` and the target-only
-`platform-pki-host-local-exchange` facade. Ansible does not run SSH package
-movement or GitLab network commands. Local request/evidence intake uses
-controller-only action plugins with no target connection and no Ansible file
-transfer. Compatibility behavior for request, evidence, and outcome operations
-is selected only by a documented `*-controller-local` Make target or an explicit
-mode variable. Activation rejects compatibility mode.
-
-Persistent target SSH authorization is owned separately by
-`pki_host_local_exchange_access`. That role installs the locked account,
-root-controlled forced key, account-wide SSH policy, unprivileged dispatcher,
-root broker, and narrow broker-only sudo policy; this lifecycle role continues
-to own only the target facade, config, spool, and PKI operations. Focused and
-normal access convergence install the lifecycle helper and exchange endpoint
-through this role without creating a request or changing certificate state.
-
-## Fixed Helpers
-
-The target lifecycle helper is installed only as
-`/usr/local/libexec/platform-pki-host-local-lifecycle`. The read-only runner
-validator is installed only as
-`/usr/local/libexec/platform-pki-zot-read-only-validate`. Check mode never
-installs either helper and requires reviewed root-owned mode-`0755` copies to
-already exist.
-
-Mutable lifecycle phases install the distribution `python3-cryptography`
-package required by the lifecycle helper. Read-only and check-mode phases do
-not install packages; run a mutable request or activation phase first.
-
-The request and trust phases retain their dedicated existing helpers. Private
-keys remain on the target. Do not add `fetch`, `slurp`, facts, debug output, or
-controller-side copy operations that handle `tls.key`.
-
-## Frozen Inputs
-
-Operational values default to inert empty strings, empty mappings, zeroes, or
-`false`, except fixed helper and namespace paths, the fixed Zot config path, and
-the fail-closed `direct` exchange mode. An operator must supply the
-exact request, artifact, response-file digest mapping, validation boundary,
-reviewed CA, endpoint, runner, lifetime, rollback, and phase bindings required
-by the selected entry point.
-
-For `service: registry-dev`, the only accepted target roots are:
-
-```yaml
-pki_host_local_certificate_state_root: /var/lib/platform-config/pki/host-local/registry-dev
-pki_host_local_certificate_pending_root: /etc/zot/tls-pending
-pki_host_local_certificate_versions_root: /etc/zot/tls-versions
+```bash
+make registry-pki-request-publish ENV=dev LIMIT=<one-host> [REQUEST_TTL_SECONDS=1..604800]
+make registry-pki-response-activate ENV=dev LIMIT=<one-host>
 ```
 
-Other service names retain canonical disjoint-root flexibility for synthetic
-tests. Lifecycle paths reject `latest` and `current` components. The fixed Zot
-configuration path is `/etc/zot/config.json`.
+Square brackets denote the optional TTL assignment and are not literal shell
+syntax. `LIMIT` must select exactly one registry host. The request lifetime
+defaults to 3600 seconds. Only `issue` and `renew` operations are accepted.
 
-Request collection additionally requires the exact five reviewed controller
-trust sources. Each source basename must equal its trust mapping key:
+The request route installs and validates the schema-3 trust snapshot, creates or
+revalidates the target-local private key and schema-2 request, and has the target
+publish the request package directly to its configured private GitLab Generic
+Package project. The activation route derives the request and package coordinates
+from authenticated target state; recovers an interrupted activation journal
+before transport when required; downloads and authenticates the schema-2
+response on the target; activates and validates Zot locally; and rolls back on
+failure. Success requires final `status=complete` and `required_action=none`.
 
-```yaml
-pki_host_local_certificate_trust_sources:
-  policy: /outside-git/reviewed-trust/policy
-  requesters.allowed_signers: /outside-git/reviewed-trust/requesters.allowed_signers
-  approvers.allowed_signers: /outside-git/reviewed-trust/approvers.allowed_signers
-  responses.allowed_signers: /outside-git/reviewed-trust/responses.allowed_signers
-  deployers.allowed_signers: /outside-git/reviewed-trust/deployers.allowed_signers
+Offline approval and signing are separate, authorized processes outside these
+Ansible routes. This role does not define their command line.
+
+## Trust And Packages
+
+The immutable schema-3 target trust directory contains exactly:
+
+```text
+approvers.allowed_signers
+policy
+requesters.allowed_signers
+responses.allowed_signers
 ```
 
-Response ingress accepts only the reviewed artifact SHA-256 pin. The fixed
-action derives and returns the exact six-key digest map for `artifact`,
-`tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, and `response.sig`; the
-role validates every derived digest and requires the artifact entry to equal
-`pki_host_local_certificate_artifact_manifest_sha256`.
+Each controller source is an absolute outside-Git path whose basename matches
+its mapping key. The role pins and validates each reviewed digest before
+installing the public trust snapshot.
 
-Status, evidence export, and decision preflight never create or update helper
-files. They require exact existing mode-`0755` lifecycle or validator helpers,
-including in check mode. When status receives a deployment digest, it first
-authenticates that exact controller evidence publication with
-`platform_pki_evidence_status`; verified `finalize/activated`,
-`abandon/not-activated`, or `abandon/rolled-back` evidence permits the
-controller-exported flag to reach target status. Status does not contact
-controller evidence when the deployment digest is empty.
+The schema-2 request package payload is exactly:
 
-Controller-local outcome import reuses the installed lifecycle helper, response
-principal, controller-frozen response/deployer trust, and target-frozen trust.
-It accepts no key or new trust input. The source is one absolute mode-`0700`
-current-user directory containing exactly six mode-`0600`, singly linked files.
-The compatibility action transfers only those bytes through a randomized
-root-owned stage. Check mode authenticates controller bytes and invokes the
-read-only target preflight without transferring outcome bytes.
+```text
+tls.csr
+request
+request.sig
+```
 
-Direct outcome import derives its only source as
-`EXCHANGE_SPOOL_ROOT/outcomes/REQUEST_ID/OUTCOME_SHA256`; callers cannot supply
-another path. `outcome-import --check` opens and authenticates that exact
-six-file stage under a shared lifecycle lock and returns `would-import` or
-`existing` without mutation. Normal import returns `imported` or `existing`.
-Only then may the fixed facade remove that exact stage after proving it equals
-immutable accepted history. Neither path reads `tls.key`.
+The schema-2 response package payload is exactly:
 
-The importer never stats, opens, reads, hashes, stages, or transfers a candidate,
-version, or restored managed private-key file. Managed rollback validation parses
-the restored Zot config's canonical TLS path object but accesses only its selected
-public certificate chain. Scalar preflight authenticates active state through
-named public version files, retained signed request material when available,
-the signed response, artifact and certificate chain, and matching signed target
-evidence. It never enumerates the version directory or accesses its private key.
-Other target binding comes from signed public outcome/deployment records and
-authenticated rollback records.
+```text
+artifact
+tls.crt
+ca-chain.crt
+fullchain.crt
+response
+response.sig
+```
 
-The target stores immutable packages under
-`STATE_ROOT/outcomes/REQUEST_ID/OUTCOME_SHA256/` and publishes
-`STATE_ROOT/accepted-outcome` only after target reauthentication. Exact reruns
-are no-ops and conflicts fail. Status remains `evidence-exported` while the
-pointer is absent, becomes `complete` only for a finalized outcome matching the
-current active identity, and reports `signer-outcome-abandoned` for authenticated
-abandonment with no predecessor, or authenticated managed-migration rollback,
-without claiming that candidate active.
-Finalized managed predecessors are bound exactly to rollback certificate/SPKI
-records and require all unavailable managed history fields to be `none`.
-Host-local predecessor outcomes fail closed because rollback records do not yet
-carry authenticated predecessor intermediate, response, deployment, and decision
-digests. Managed-migration rollback is the supported exception: signed rollback
-evidence and the restored Zot-selected public certificate chain prove its managed
-predecessor. Other abandonment with a non-empty predecessor fails closed because
-its candidate rollback record is no longer present after terminal abandonment.
-Historical outcomes never
-replace target active state as live authority. `renewal_eligible` remains
-`false`; authenticated renewal completion is not implemented by this workflow.
-An interruption may leave validated history without the pointer; status then
-fails closed and an exact rerun with the same coordinates completes no-clobber
-pointer publication. A protected remote stage is removed before the action
-returns. If identity or cleanup verification prevents safe removal, the action
-fails, reports the retained canonical stage, and leaves it as evidence for
-explicit operator inspection rather than deleting an unattributable path. A
-retained `.accepted-outcome-stage-*` blocks further imports as ambiguous state
-until exact-path operator recovery.
+`stage-manifest` is transport metadata, not PKI authority or an additional
+payload. The target exchanges these package bytes directly with one configured
+private GitLab project. Ansible never carries package bytes.
 
-## Activation Boundary
+## Token Boundary
 
-Activation requires exactly one registry play target and one distinct inventory
-host named by `pki_host_local_certificate_remote_validator`. The reviewed CA and
-validation boundary must already exist at their exact target and runner paths;
-this lifecycle role never distributes them. Provision those public prerequisites
-separately with `make registry-pki-validation-material ENV=... LIMIT=...`
-`RUNNER_LIMIT=...` after reviewing and pinning both controller sources. The CA
-source is exactly the profiled intermediate followed by its self-signed root;
-extra, reversed, unrelated, or incorrectly profiled certificates are rejected.
+The GitLab token must be provisioned on the target before either route runs. It
+must be a `root:root` regular, non-symlink file with link count 1, mode `0600`,
+and size from 1 through 4096 bytes. Ansible checks only this metadata under
+`no_log`; it does not read token bytes into variables, facts, output, argv, or
+environment variables. The target facade opens the token file directly.
 
-Before mutation, `activate-start --check` must return the exact candidate. The
-single `registry-pki-activate` Make target is direct-only and proceeds
-automatically after that preflight. It requires exact request and artifact
-digests plus one distinct runner, and appends those coordinates and direct mode
-after caller `EXTRA_ARGS`. Candidate authentication, local activation,
-separate-runner validation, and journal-bound rollback are unchanged. After
-local activation, the runner emits one canonical unsigned public observation.
-Only those bytes are copied
-under the root-owned mode-`0700` `/run/platform-pki-host-local/` directory as
-`REQUEST_ID.observation` with mode `0600`; the file is removed in `always`. Any
-ordinary failure after `activate-start` dispatches
-the helper's exact `recover` action, and recovery failure is not ignored.
-The target helper authenticates the observation, derives both canonical evidence
-records, and signs `deployment` and `validation-result` with the same target
-deployment-signing key.
+The reviewed GitLab project record and CA bundle are public inputs copied from
+outside Git. `pki_host_local_certificate_platform_pki_source` supplies the
+reviewed transport client installed on the target. The transport-client source
+must be an outside-repository, controller-user-owned, singly linked regular file
+with mode `0600`; `pki_host_local_certificate_platform_pki_sha256` pins its exact
+reviewed bytes before descriptor-bound transfer.
 
-In Ansible check mode activation runs helper `--check` preflights only. It does
-not transfer a response, restart Zot, invoke the network validator, copy
-an observation, or clean up target state.
+## Required Inputs
 
-The actor-labeled lifecycle, two external gates, transport stages, argument
-provenance, and fixed cleanup contract are canonical in
-[Host-Local Registry PKI Workflow](../../docs/registry-host-local-pki-workflow.md).
+Private inventory supplies the service and target identity, `issue` or `renew`,
+certificate profile and SANs, inventory digest, requester and response
+principals, schema-3 trust ID/path/source/digest mappings, lifecycle roots,
+reviewed GitLab project record and CA sources, installed target token path,
+transport-client source and SHA-256, validation boundary and reviewed CA
+paths/digests, Zot endpoint, minimum remaining lifetime, and rollback interval.
 
-Zot must reference the immutable version files under
-`/etc/zot/tls-versions/REQUEST_ID/`. Its certificate path is
-`fullchain.crt`, not the leaf-only `tls.crt`.
+The fixed target defaults include:
 
-## Decision Boundary
+```yaml
+pki_host_local_certificate_request_signing_key_path: /etc/ssh/ssh_host_ed25519_key
+pki_host_local_certificate_request_namespace: platform-pki-csr-request-v2
+pki_host_local_certificate_gitlab_token_path: /etc/platform-config/pki-gitlab-token
+pki_host_local_certificate_zot_config_path: /etc/zot/config.json
+```
 
-Decision preflight supplies the exact exported deployment digest to status, so
-the lifecycle helper must authenticate matching target evidence and report
-`evidence-exported` before outcome import or `complete` with a finalized signer
-outcome afterward. The delegated runner then validates the exact active leaf,
-expected served intermediate, reviewed boundary, reviewed CA digest, and HTTPS
-`/v2/` endpoint. The canonical observation must be no more than 300 seconds from
-the controller observation time. No observation file is copied and no Zot state
-is changed. A successful run emits only a safe assertion summary binding
-service, target, request, artifact, deployment, observed epoch, the exact
-observed-plus-300 expiry epoch, and `result=passed`.
+Private keys remain target-local. Do not add `fetch`, `slurp`, debug output,
+facts, or controller-side copies that expose `tls.key` or GitLab token bytes.
 
-Status, response check, activation finish, recovery, and evidence export also
-emit safe `ansible.builtin.assert` success summaries after their existing exact
-metadata validation passes. Status exposes the helper's compact public JSON;
-the other summaries contain only public lifecycle coordinates, certificate
-digests, approved response/evidence directories, action/result labels, and
-authenticated lifecycle status. They never expose key paths or bytes, trust
-contents, or certificate and signature contents.
+## State Compatibility
+
+This breaking workflow does not migrate predecessor helper hashes or lifecycle
+state. State from retired migration, direct/controller-local, SSH exchange,
+runner/evidence/outcome, or schema-2 trust workflows is rejected. Preserve it
+until a separately reviewed retention decision; use only a separately authorized
+reset or target recreation before starting the new workflow.
+
+GitLab CE `18.11.3-ce.0` live token and Generic Package behavior remains an
+explicit, unqualified rollout gate. Local helper tests do not qualify a live
+deployment.

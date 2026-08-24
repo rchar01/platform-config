@@ -26,7 +26,6 @@ TRUST_NAMES = (
     "requesters.allowed_signers",
     "approvers.allowed_signers",
     "responses.allowed_signers",
-    "deployers.allowed_signers",
 )
 
 
@@ -193,7 +192,9 @@ class TrustCase:
             "--request-signing-key",
             self.key,
             "--request-namespace",
-            "platform-pki-csr-request-v1",
+            "platform-pki-csr-request-v2",
+            "--predecessor-request-id",
+            "none",
             "--state-root",
             state,
             "--pending-root",
@@ -259,7 +260,6 @@ def trust_case(
         "requesters.allowed_signers": "test-target",
         "approvers.allowed_signers": "test-approver",
         "responses.allowed_signers": "test-response",
-        "deployers.allowed_signers": "test-target",
     }
     for name, principal in signer_principals.items():
         (source / name).write_text(
@@ -268,15 +268,13 @@ def trust_case(
     (source / "policy").write_text(
         "\n".join(
             (
-                "schema=2",
-                "request_namespace=platform-pki-csr-request-v1",
-                "approval_namespace=platform-pki-csr-approval-v1",
-                "response_namespace=platform-pki-csr-response-v1",
-                "deployment_namespace=platform-pki-csr-deployment-v1",
+                "schema=3",
+                "request_namespace=platform-pki-csr-request-v2",
+                "approval_namespace=platform-pki-csr-approval-v2",
+                "response_namespace=platform-pki-csr-response-v2",
                 "request_max_age_seconds=604800",
                 "sole_operator_min_delay_seconds=86400",
                 "approval_max_age_seconds=86400",
-                "deployment_max_age_seconds=86400",
                 "clock_skew_seconds=300",
                 "approver_principal=test-approver",
                 "response_principal=test-response",
@@ -398,6 +396,16 @@ def test_request_fails_before_trust_bootstrap(trust_case: TrustCase) -> None:
     )
 
 
+def test_schema3_installs_exact_four_file_target_trust(trust_case: TrustCase) -> None:
+    state = trust_case.work / "schema3-state"
+    trust_case.prepare_ingress(state)
+    target = state / "trust/reviewed-v1"
+    result = trust_case.install(state).assert_success()
+
+    assert json.loads(result.stdout)["status"] == "installed"
+    assert {path.name for path in target.iterdir()} == set(TRUST_NAMES)
+
+
 def test_install_enforces_metadata_and_is_idempotent(trust_case: TrustCase) -> None:
     state = trust_case.work / "installed-state"
     target = install_trust(trust_case, state)
@@ -414,7 +422,7 @@ for path in (state, os.path.join(state, "trust"), os.path.join(state, "trust", "
     metadata = os.lstat(path)
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o700 or metadata.st_uid != 0 or metadata.st_gid != 0:
         raise SystemExit(f"unsafe directory metadata: {path}")
-for name in ("lock", "trust/reviewed-v1/policy", "trust/reviewed-v1/requesters.allowed_signers", "trust/reviewed-v1/approvers.allowed_signers", "trust/reviewed-v1/responses.allowed_signers", "trust/reviewed-v1/deployers.allowed_signers"):
+for name in ("lock", "trust/reviewed-v1/policy", "trust/reviewed-v1/requesters.allowed_signers", "trust/reviewed-v1/approvers.allowed_signers", "trust/reviewed-v1/responses.allowed_signers"):
     metadata = os.lstat(os.path.join(state, name))
     if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_uid != 0 or metadata.st_gid != 0 or metadata.st_nlink != 1:
         raise SystemExit(f"unsafe file metadata: {name}")
@@ -541,7 +549,7 @@ def test_other_trust_id_is_rejected(trust_case: TrustCase) -> None:
     )
 
 
-def test_installed_trust_accepts_lifecycle_state_without_mutation(
+def test_installed_trust_rejects_legacy_evidence_state_without_mutation(
     trust_case: TrustCase,
 ) -> None:
     state = trust_case.work / "lifecycle-state"
@@ -572,9 +580,9 @@ def test_installed_trust_accepts_lifecycle_state_without_mutation(
         (deployment / name).chmod(0o600)
     before = tree_snapshot(state)
 
-    result = trust_case.install(state, check=True).assert_success()
+    result = trust_case.install(state, check=True)
 
-    assert json.loads(result.stdout)["status"] == "existing"
+    assert_helper_failure(result)
     assert tree_snapshot(state) == before
 
 
@@ -585,7 +593,6 @@ INVALID_CASES = (
     "requester",
     "approver",
     "response",
-    "deployer",
     "digest",
     "symlink",
     "hardlink",
@@ -609,12 +616,11 @@ def test_invalid_ingress_is_rejected(
         "requester",
         "approver",
         "response",
-        "deployer",
     }
     if mutation == "schema":
         policy = ingress / "policy"
         policy.write_text(
-            policy.read_text(encoding="ascii").replace("schema=2", "schema=1"),
+            policy.read_text(encoding="ascii").replace("schema=3", "schema=2"),
             encoding="ascii",
         )
     elif mutation == "principal":
@@ -645,13 +651,8 @@ def test_invalid_ingress_is_rejected(
             stream.write(
                 f"other {trust_case.key_algorithm} {trust_case.key_payload}\n"
             )
-    elif mutation == "deployer":
-        (ingress / "deployers.allowed_signers").write_text(
-            f"other-target {trust_case.key_algorithm} {trust_case.key_payload}\n",
-            encoding="ascii",
-        )
     elif mutation == "digest":
-        with (ingress / "deployers.allowed_signers").open(
+        with (ingress / "responses.allowed_signers").open(
             "a", encoding="ascii"
         ) as stream:
             stream.write("extra\n")
@@ -1042,104 +1043,3 @@ def test_action_plugin_pinned_source_recheck(
             probe_case,
         ]
     ).assert_success()
-
-
-def role_inputs(case: TrustCase) -> tuple[Path, Path, Path]:
-    for name in ("requesters.allowed_signers", "deployers.allowed_signers"):
-        (case.source / name).write_text(
-            f"localhost {case.key_algorithm} {case.key_payload}\n",
-            encoding="ascii",
-        )
-        (case.source / name).chmod(0o600)
-    case.digests.update(case.digest_tree(case.source))
-
-    state = case.work / "role-state"
-    helper = case.work / "bin/platform-pki-host-local-trust"
-    variables_path = case.work / "role-vars.json"
-    target = state / "trust/reviewed-v1"
-    variables = {
-        "ansible_remote_tmp": f"{state}-ansible-tmp",
-        "pki_host_local_certificate_target": "localhost",
-        "pki_host_local_certificate_requester_principal": "localhost",
-        "pki_host_local_certificate_response_principal": "test-response",
-        "pki_host_local_certificate_trust_id": "reviewed-v1",
-        "pki_host_local_certificate_state_root": str(state),
-        "pki_host_local_certificate_trust_helper_path": str(helper),
-        "pki_host_local_certificate_trust_sources": {
-            name: str(case.source / name) for name in TRUST_NAMES
-        },
-        "pki_host_local_certificate_trust_paths": {
-            name: str(target / name) for name in TRUST_NAMES
-        },
-        "pki_host_local_certificate_trust_sha256": case.digests,
-    }
-    variables_path.write_text(
-        json.dumps(variables, sort_keys=True), encoding="ascii"
-    )
-    return state, helper, variables_path
-
-
-def run_role(
-    case: TrustCase,
-    variables: Path,
-    *,
-    check: bool = False,
-):
-    playbook = (
-        case.repo_root
-        / "tests/fixtures/pki-host-local-trust-role/integration.yml"
-    )
-    argv: list[str | Path] = ["ansible-playbook"]
-    if check:
-        argv.append("--check")
-    argv.extend(["-i", "localhost,", "-e", f"@{variables}", playbook])
-    return case.runner.run(argv, timeout=90)
-
-
-def test_ansible_role_check_rejects_absent_prerequisites_without_mutation(
-    trust_case: TrustCase,
-) -> None:
-    state, helper, variables = role_inputs(trust_case)
-    before = tree_snapshot(state)
-
-    run_role(trust_case, variables, check=True).assert_failure()
-
-    assert tree_snapshot(state) == before
-    assert not os.path.lexists(helper)
-
-
-def test_ansible_role_apply_installs_trust(trust_case: TrustCase) -> None:
-    state, helper, variables = role_inputs(trust_case)
-
-    run_role(trust_case, variables).assert_success()
-
-    assert helper.is_file()
-    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
-    assert (state / "trust/reviewed-v1").is_dir()
-
-
-def test_ansible_role_check_validates_installed_trust_without_replacement(
-    trust_case: TrustCase,
-) -> None:
-    state, _helper, variables = role_inputs(trust_case)
-    run_role(trust_case, variables).assert_success()
-    target = state / "trust/reviewed-v1"
-    target_inode = target.stat().st_ino
-
-    run_role(trust_case, variables, check=True).assert_success()
-
-    assert target.stat().st_ino == target_inode
-
-
-def test_ansible_role_second_apply_is_exact_noop(trust_case: TrustCase) -> None:
-    state, _helper, variables = role_inputs(trust_case)
-    run_role(trust_case, variables).assert_success()
-    target = state / "trust/reviewed-v1"
-    target_inode = target.stat().st_ino
-
-    result = run_role(trust_case, variables).assert_success()
-
-    assert target.stat().st_ino == target_inode
-    recap = next(line for line in result.stdout.splitlines() if "failed=" in line)
-    assert "changed=0" in recap
-    assert "failed=0" in recap

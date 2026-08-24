@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install one reviewed schema-2 host-local trust tree."""
+"""Install one reviewed schema-3 target-local trust tree."""
 
 import argparse
 import base64
@@ -21,21 +21,18 @@ import time
 
 TRUST_NAMES = (
     "approvers.allowed_signers",
-    "deployers.allowed_signers",
     "policy",
     "requesters.allowed_signers",
     "responses.allowed_signers",
 )
 POLICY_PREFIX = (
-    "schema=2",
-    "request_namespace=platform-pki-csr-request-v1",
-    "approval_namespace=platform-pki-csr-approval-v1",
-    "response_namespace=platform-pki-csr-response-v1",
-    "deployment_namespace=platform-pki-csr-deployment-v1",
+    "schema=3",
+    "request_namespace=platform-pki-csr-request-v2",
+    "approval_namespace=platform-pki-csr-approval-v2",
+    "response_namespace=platform-pki-csr-response-v2",
     "request_max_age_seconds=604800",
     "sole_operator_min_delay_seconds=86400",
     "approval_max_age_seconds=86400",
-    "deployment_max_age_seconds=86400",
     "clock_skew_seconds=300",
 )
 JOURNAL_FIELDS = (
@@ -50,7 +47,6 @@ JOURNAL_FIELDS = (
     "stage_device",
     "stage_inode",
     "approvers_sha256",
-    "deployers_sha256",
     "policy_sha256",
     "requesters_sha256",
     "responses_sha256",
@@ -60,15 +56,8 @@ FINAL_STATE_NAMES = {
     "trust",
     "active",
     "rollback",
-    "validation-boundary",
-    "evidence",
-}
-EVIDENCE_FILES = {
-    "deployment",
-    "deployment.sig",
-    "validation-boundary",
-    "validation-result",
-    "validation-result.sig",
+    "target-terminal",
+    "target-terminal-history",
 }
 IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z")
 TRUST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -346,10 +335,10 @@ def parse_allowed_signers(data, label):
 
 def validate_policy(data, response_principal):
     lines = validate_text(data, "trust policy").splitlines()
-    if len(lines) != 12 or tuple(lines[:10]) != POLICY_PREFIX:
-        fail("trust policy does not match the canonical schema-2 contract")
-    approver = re.fullmatch(r"approver_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[10])
-    response = re.fullmatch(r"response_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[11])
+    if len(lines) != len(POLICY_PREFIX) + 2 or tuple(lines[: len(POLICY_PREFIX)]) != POLICY_PREFIX:
+        fail("trust policy does not match the canonical contract")
+    approver = re.fullmatch(r"approver_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[-2])
+    response = re.fullmatch(r"response_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[-1])
     if not approver or not response or response.group(1) != response_principal:
         fail("trust policy principals do not match the bootstrap contract")
     return approver.group(1)
@@ -358,11 +347,12 @@ def validate_policy(data, response_principal):
 def validate_tree_fd(descriptor, parent_descriptor, name, expected_identity, bindings, args, label):
     require_dir_binding(parent_descriptor, name, descriptor, expected_identity, label)
     entries = scan_directory_fd(descriptor, label)
-    if set(entries) != set(TRUST_NAMES):
-        fail(f"{label} must contain exactly the schema-2 five-file trust set")
+    trust_names = tuple(bindings)
+    if set(entries) != set(trust_names):
+        fail(f"{label} must contain exactly the selected trust file set")
     contents = {}
     snapshots = {}
-    for trust_name in TRUST_NAMES:
+    for trust_name in trust_names:
         contents[trust_name], snapshots[trust_name] = read_file_at(
             descriptor, trust_name, f"{label} file {trust_name}"
         )
@@ -372,14 +362,11 @@ def validate_tree_fd(descriptor, parent_descriptor, name, expected_identity, bin
     requesters = parse_allowed_signers(contents["requesters.allowed_signers"], "requester trust")
     approvers = parse_allowed_signers(contents["approvers.allowed_signers"], "approver trust")
     responses = parse_allowed_signers(contents["responses.allowed_signers"], "response trust")
-    deployers = parse_allowed_signers(contents["deployers.allowed_signers"], "deployment trust")
     if args.requester_principal not in requesters:
         fail("requester principal is absent from requester trust")
-    if args.requester_principal not in deployers:
-        fail("requester principal is absent from deployment trust")
     if set(approvers) != {approver_principal} or set(responses) != {args.response_principal}:
         fail("approver or response trust does not exactly match the policy-pinned principal")
-    for trust_name in TRUST_NAMES:
+    for trust_name in trust_names:
         require_file_snapshot(descriptor, trust_name, snapshots[trust_name], f"{label} file {trust_name}")
     require_dir_binding(parent_descriptor, name, descriptor, expected_identity, label)
     return contents, snapshots
@@ -540,7 +527,7 @@ def parse_journal(data):
 
 def journal_values(args, transaction_id, ingress_identity, stage_identity, bindings):
     return {
-        "schema": "2",
+        "schema": "3",
         "trust_id": args.trust_id,
         "transaction_id": transaction_id,
         "ingress_name": f".ingress-{args.trust_id}",
@@ -551,7 +538,6 @@ def journal_values(args, transaction_id, ingress_identity, stage_identity, bindi
         "stage_device": str(stage_identity[0]),
         "stage_inode": str(stage_identity[1]),
         "approvers_sha256": bindings["approvers.allowed_signers"][1],
-        "deployers_sha256": bindings["deployers.allowed_signers"][1],
         "policy_sha256": bindings["policy"][1],
         "requesters_sha256": bindings["requesters.allowed_signers"][1],
         "responses_sha256": bindings["responses.allowed_signers"][1],
@@ -567,7 +553,7 @@ def validate_journal(values, args, bindings):
         bindings,
     )
     if (
-        values["schema"] != "2"
+        values["schema"] != "3"
         or not TRANSACTION_RE.fullmatch(values["transaction_id"])
         or values != expected
     ):
@@ -674,13 +660,13 @@ def validate_bindings(args):
     target_root = os.path.join(args.state_root, "trust", args.trust_id)
     for name, path, digest in args.trust_binding:
         if name in supplied or name not in TRUST_NAMES:
-            fail("trust bindings must name each schema-2 trust file exactly once")
+            fail("trust bindings must name each schema-3 trust file exactly once")
         canonical_path(path, f"target trust path {name}")
         if path != os.path.join(target_root, name) or not HEX_256_RE.fullmatch(digest):
             fail(f"target trust binding is not canonical for {name}")
         supplied[name] = (path, digest)
     if set(supplied) != set(TRUST_NAMES):
-        fail("exactly five target trust bindings are required")
+        fail("trust bindings must contain exactly the four target-local files")
     return supplied
 
 
@@ -688,51 +674,33 @@ def validate_lifecycle_file(state_descriptor, name):
     read_file_at(state_descriptor, name, f"shared lifecycle file {name}", maximum=MAX_LIFECYCLE_SIZE)
 
 
-def validate_evidence(state_descriptor):
-    evidence_descriptor, evidence_identity = open_private_dir_at(state_descriptor, "evidence", "shared evidence root")
+def validate_target_terminal_history(state_descriptor):
+    history_descriptor, history_identity = open_private_dir_at(
+        state_descriptor,
+        "target-terminal-history",
+        "target-local terminal history",
+    )
     try:
-        for request_id, request_metadata in scan_directory_fd(evidence_descriptor, "shared evidence root").items():
-            if not REQUEST_ID_RE.fullmatch(request_id) or not stat.S_ISDIR(request_metadata.st_mode):
-                fail("shared evidence root contains an invalid request directory")
-            request_descriptor, request_identity = open_private_dir_at(evidence_descriptor, request_id, "shared evidence request directory")
-            try:
-                for digest, digest_metadata in scan_directory_fd(request_descriptor, "shared evidence request directory").items():
-                    if not HEX_256_RE.fullmatch(digest) or not stat.S_ISDIR(digest_metadata.st_mode):
-                        fail("shared evidence request directory contains an invalid deployment directory")
-                    deployment_descriptor, deployment_identity = open_private_dir_at(
-                        request_descriptor, digest, "shared evidence deployment directory"
-                    )
-                    try:
-                        if set(scan_directory_fd(deployment_descriptor, "shared evidence deployment directory")) != EVIDENCE_FILES:
-                            fail("shared evidence deployment directory has an invalid file set")
-                        for file_name in EVIDENCE_FILES:
-                            read_file_at(
-                                deployment_descriptor,
-                                file_name,
-                                f"shared evidence file {file_name}",
-                                maximum=MAX_LIFECYCLE_SIZE,
-                            )
-                        require_dir_binding(
-                            request_descriptor,
-                            digest,
-                            deployment_descriptor,
-                            deployment_identity,
-                            "shared evidence deployment directory",
-                        )
-                    finally:
-                        os.close(deployment_descriptor)
-                require_dir_binding(
-                    evidence_descriptor,
-                    request_id,
-                    request_descriptor,
-                    request_identity,
-                    "shared evidence request directory",
-                )
-            finally:
-                os.close(request_descriptor)
-        require_dir_binding(state_descriptor, "evidence", evidence_descriptor, evidence_identity, "shared evidence root")
+        for request_id, metadata in scan_directory_fd(
+            history_descriptor, "target-local terminal history"
+        ).items():
+            if not REQUEST_ID_RE.fullmatch(request_id) or not stat.S_ISREG(metadata.st_mode):
+                fail("target-local terminal history contains an invalid entry")
+            read_file_at(
+                history_descriptor,
+                request_id,
+                "target-local terminal history record",
+                maximum=MAX_LIFECYCLE_SIZE,
+            )
+        require_dir_binding(
+            state_descriptor,
+            "target-terminal-history",
+            history_descriptor,
+            history_identity,
+            "target-local terminal history",
+        )
     finally:
-        os.close(evidence_descriptor)
+        os.close(history_descriptor)
 
 
 def validate_final_state(state, state_descriptor, trust_descriptor, trust_identity, bindings, args):
@@ -750,11 +718,11 @@ def validate_final_state(state, state_descriptor, trust_descriptor, trust_identi
         )
     finally:
         os.close(target_descriptor)
-    for name in ("active", "rollback", "validation-boundary"):
+    for name in ("active", "rollback", "target-terminal"):
         if name in entries:
             validate_lifecycle_file(state_descriptor, name)
-    if "evidence" in entries:
-        validate_evidence(state_descriptor)
+    if "target-terminal-history" in entries:
+        validate_target_terminal_history(state_descriptor)
     state.recheck("state root")
     require_dir_binding(state_descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
 
@@ -971,7 +939,7 @@ def recover(state, state_descriptor, trust_descriptor, trust_identity, args, bin
 
 
 def populate_stage(stage_descriptor, contents, transaction_id):
-    for index, name in enumerate(TRUST_NAMES):
+    for index, name in enumerate(contents):
         partial = f".partial-{transaction_id}-{index}"
         descriptor, snapshot = write_file_at(stage_descriptor, partial, contents[name], f"partial staged trust file {name}")
         try:
@@ -1068,7 +1036,7 @@ def install(args):
         require_file_binding(state.descriptor, "lock", lock_descriptor, lock_snapshot, "canonical state lock")
         require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
         require_dir_binding(trust_descriptor, ingress_name, ingress_descriptor, ingress_identity, "target trust ingress")
-        for name in TRUST_NAMES:
+        for name in bindings:
             require_file_snapshot(
                 ingress_descriptor, name, ingress_files[name], f"target trust ingress file {name}"
             )
@@ -1091,7 +1059,7 @@ def install(args):
         require_dir_binding(state.descriptor, "trust", trust_descriptor, trust_identity, "state trust root")
         require_dir_binding(trust_descriptor, args.trust_id, stage_descriptor, stage_identity, "installed trust tree")
         require_dir_binding(trust_descriptor, ingress_name, ingress_descriptor, ingress_identity, "target trust ingress")
-        for name in TRUST_NAMES:
+        for name in bindings:
             require_file_snapshot(
                 ingress_descriptor, name, ingress_files[name], f"target trust ingress file {name}"
             )

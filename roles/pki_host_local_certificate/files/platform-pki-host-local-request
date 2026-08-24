@@ -36,18 +36,18 @@ REQUEST_FIELDS = (
     "csr_sha256",
     "csr_spki_sha256",
     "current_cert_sha256",
+    "predecessor_request_id",
     "profile",
     "response_principal",
 )
 TRUST_NAMES = (
     "approvers.allowed_signers",
-    "deployers.allowed_signers",
     "policy",
     "requesters.allowed_signers",
     "responses.allowed_signers",
 )
 PROFILE = "server-p384-sha384-v1"
-REQUEST_NAMESPACE = "platform-pki-csr-request-v1"
+REQUEST_NAMESPACE = "platform-pki-csr-request-v2"
 HEX_256_RE = re.compile(r"[0-9a-f]{64}\Z")
 IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z")
 SERVICE_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z")
@@ -55,14 +55,43 @@ REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
 NONCE_RE = re.compile(r"[0-9a-f]{64}\Z")
 PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9_@%+=:,.-]+\Z")
 EXPECTED_FILES = {"tls.key", "tls.csr", "request", "request.sig"}
-EVIDENCE_FILES = {
-    "deployment",
-    "deployment.sig",
-    "validation-boundary",
-    "validation-result",
-    "validation-result.sig",
-}
 JOURNAL_FIELDS = ("schema", "request_id", "stage_name", "pending_root")
+TARGET_TERMINAL_FIELDS = (
+    "schema",
+    "kind",
+    "service",
+    "target",
+    "request_id",
+    "state",
+    "artifact_manifest_sha256",
+    "response_sha256",
+    "response_signature_sha256",
+    "certificate_sha256",
+    "served_certificate_sha256",
+    "served_intermediate_sha256",
+    "activation_epoch",
+    "validation_epoch",
+)
+ACTIVE_FIELDS = (
+    "schema",
+    "kind",
+    "service",
+    "target",
+    "request_id",
+    "artifact_manifest_sha256",
+    "response_sha256",
+    "response_signature_sha256",
+    "certificate_sha256",
+    "certificate_spki_sha256",
+    "chain_sha256",
+    "fullchain_sha256",
+    "version_path",
+    "version_device",
+    "version_inode",
+    "zot_config_sha256",
+    "activation_epoch",
+    "rollback_deadline_epoch",
+)
 MAX_PROTOCOL_SIZE = 1024 * 1024
 
 
@@ -325,21 +354,19 @@ def validate_policy(data, response_principal):
         fail("trust policy is not canonically newline-terminated")
     lines = text.splitlines()
     fixed = (
-        "schema=2",
+        "schema=3",
         f"request_namespace={REQUEST_NAMESPACE}",
-        "approval_namespace=platform-pki-csr-approval-v1",
-        "response_namespace=platform-pki-csr-response-v1",
-        "deployment_namespace=platform-pki-csr-deployment-v1",
+        "approval_namespace=platform-pki-csr-approval-v2",
+        "response_namespace=platform-pki-csr-response-v2",
         "request_max_age_seconds=604800",
         "sole_operator_min_delay_seconds=86400",
         "approval_max_age_seconds=86400",
-        "deployment_max_age_seconds=86400",
         "clock_skew_seconds=300",
     )
-    if len(lines) != 12 or tuple(lines[:10]) != fixed:
-        fail("trust policy does not match the frozen schema-2 contract")
-    approver_match = re.fullmatch(r"approver_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[10])
-    response_match = re.fullmatch(r"response_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[11])
+    if len(lines) != len(fixed) + 2 or tuple(lines[: len(fixed)]) != fixed:
+        fail("trust policy does not match the frozen request protocol contract")
+    approver_match = re.fullmatch(r"approver_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[-2])
+    response_match = re.fullmatch(r"response_principal=([a-z0-9][a-z0-9.-]{0,252})", lines[-1])
     if not approver_match or not response_match or response_match.group(1) != response_principal:
         fail("trust policy principals do not match the request contract")
     return approver_match.group(1)
@@ -355,7 +382,7 @@ def validate_trust(bindings, response_principal, requester_principal):
             fail(f"trust digest for {name} is not canonical SHA-256")
         supplied[name] = (path, digest)
     if set(supplied) != set(TRUST_NAMES):
-        fail("exactly five frozen trust bindings are required")
+        fail(f"exactly {len(TRUST_NAMES)} frozen trust bindings are required")
 
     parents = {os.path.dirname(path) for path, _ in supplied.values()}
     if len(parents) != 1:
@@ -382,11 +409,8 @@ def validate_trust(bindings, response_principal, requester_principal):
     requester_records = parse_allowed_signers(contents["requesters.allowed_signers"], "requester trust")
     approver_records = parse_allowed_signers(contents["approvers.allowed_signers"], "approver trust")
     response_records = parse_allowed_signers(contents["responses.allowed_signers"], "response trust")
-    deployment_records = parse_allowed_signers(contents["deployers.allowed_signers"], "deployment trust")
     if requester_principal not in requester_records:
         fail("requester principal is absent from frozen requester trust")
-    if requester_principal not in deployment_records:
-        fail("requester principal is absent from frozen deployment trust")
     if set(approver_records) != {approver} or set(response_records) != {response_principal}:
         fail("pinned approver or response trust contains unexpected principals")
     for name in TRUST_NAMES:
@@ -442,8 +466,8 @@ def validate_arguments(args):
             fail(f"{label} is not canonical")
     if args.target != args.requester_principal:
         fail("target and requester principal must be identical")
-    if args.operation not in {"issue", "migrate", "renew"}:
-        fail("operation must be issue, migrate, or renew")
+    if args.operation not in {"issue", "renew"}:
+        fail("operation must be issue or renew")
     if args.profile != PROFILE or args.request_namespace != REQUEST_NAMESPACE:
         fail("profile or request namespace is not the frozen value")
     if not HEX_256_RE.fullmatch(args.inventory_sha256):
@@ -467,13 +491,20 @@ def validate_arguments(args):
     if path_contains(args.state_root, args.pending_root) or path_contains(args.pending_root, args.state_root):
         fail("state and pending roots must not overlap")
 
+    if args.predecessor_request_id != "none" and not REQUEST_ID_RE.fullmatch(args.predecessor_request_id):
+        fail("predecessor request ID is not canonical")
+
     if args.operation == "issue":
         if args.current_cert_sha256 != "none" or args.current_cert_path is not None:
             fail("issue requires current certificate digest none and no current certificate path")
+        if args.predecessor_request_id != "none":
+            fail("issue requires predecessor request ID none")
     else:
         if not HEX_256_RE.fullmatch(args.current_cert_sha256) or args.current_cert_path is None:
-            fail("migrate and renew require a current certificate path and SHA-256 digest")
+            fail("renew requires a current certificate path and SHA-256 digest")
         args.current_cert_path = canonical_path(args.current_cert_path, "current certificate path")
+        if args.operation == "renew" and args.predecessor_request_id == "none":
+            fail("renew requires a predecessor request ID")
 
     input_paths = [args.request_signing_key]
     if args.current_cert_path:
@@ -557,36 +588,141 @@ def validate_current_certificate(args):
 
 
 def validate_completed_lifecycle_state(state_root, entries):
-    for name in ("active", "rollback", "validation-boundary"):
+    for name in ("active", "rollback"):
         if name in entries:
             read_safe_file(os.path.join(state_root, name), f"shared lifecycle file {name}", 0o600)
-    if "evidence" not in entries:
-        return
-    evidence_root = os.path.join(state_root, "evidence")
-    require_dir(evidence_root, "shared evidence root")
-    for request_id, request_metadata in scan_directory(evidence_root, "shared evidence root"):
-        if not REQUEST_ID_RE.fullmatch(request_id) or not stat.S_ISDIR(request_metadata.st_mode):
-            fail("shared evidence root contains an invalid request directory")
-        request_root = os.path.join(evidence_root, request_id)
-        require_dir(request_root, "shared evidence request directory")
-        for digest, digest_metadata in scan_directory(request_root, "shared evidence request directory"):
-            if not HEX_256_RE.fullmatch(digest) or not stat.S_ISDIR(digest_metadata.st_mode):
-                fail("shared evidence request directory contains an invalid deployment directory")
-            deployment_root = os.path.join(request_root, digest)
-            require_dir(deployment_root, "shared evidence deployment directory")
-            if {name for name, _ in scan_directory(deployment_root, "shared evidence deployment directory")} != EVIDENCE_FILES:
-                fail("shared evidence deployment directory has an invalid file set")
-            for name in EVIDENCE_FILES:
-                read_safe_file(os.path.join(deployment_root, name), f"shared evidence file {name}", 0o600)
 
 
-def inspect_state_root(state_root, trust_dir):
+def parse_target_terminal(data, expected_request_id=None):
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail("target-local terminal record is not ASCII")
+    if len(lines) != len(TARGET_TERMINAL_FIELDS) or not data.endswith(b"\n"):
+        fail("target-local terminal record is malformed")
+    record = {}
+    for expected, line in zip(TARGET_TERMINAL_FIELDS, lines):
+        if "=" not in line:
+            fail("target-local terminal record is malformed")
+        name, value = line.split("=", 1)
+        if name != expected or not value:
+            fail("target-local terminal record field order is invalid")
+        record[name] = value
+    if (
+        record["schema"] != "2"
+        or record["kind"] != "host-local-target-terminal"
+        or not REQUEST_ID_RE.fullmatch(record["request_id"])
+        or record["state"] not in {"complete", "rolled-back", "not-activated"}
+        or any(
+            not HEX_256_RE.fullmatch(record[name])
+            for name in (
+                "artifact_manifest_sha256",
+                "response_sha256",
+                "response_signature_sha256",
+                "certificate_sha256",
+            )
+        )
+        or (expected_request_id is not None and record["request_id"] != expected_request_id)
+    ):
+        fail("target-local terminal record identity is invalid")
+    proof_fields = (
+        "served_certificate_sha256",
+        "served_intermediate_sha256",
+    )
+    if (
+        not record["activation_epoch"].isdigit()
+        or (
+            record["state"] == "complete"
+            and (
+                any(not HEX_256_RE.fullmatch(record[name]) for name in proof_fields)
+                or not record["validation_epoch"].isdigit()
+            )
+        )
+        or (
+            record["state"] != "complete"
+            and any(record[name] != "none" for name in (*proof_fields, "validation_epoch"))
+        )
+    ):
+        fail("target-local terminal record proof is invalid")
+    return record
+
+
+def active_request_id(state_root, entries, args):
+    if "active" not in entries:
+        return None
+    data, _snapshot = read_safe_file(
+        os.path.join(state_root, "active"), "shared lifecycle file active", 0o600
+    )
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail("active record is not ASCII")
+    if len(lines) != len(ACTIVE_FIELDS) or not data.endswith(b"\n"):
+        fail("active record is malformed")
+    record = {}
+    for expected, line in zip(ACTIVE_FIELDS, lines):
+        if "=" not in line:
+            fail("active record is malformed")
+        name, value = line.split("=", 1)
+        if name != expected or not value:
+            fail("active record field order is invalid")
+        record[name] = value
+    if (
+        record["schema"] != "2"
+        or record["kind"] != "host-local-active"
+        or record["service"] != args.service
+        or record["target"] != args.target
+        or not REQUEST_ID_RE.fullmatch(record["request_id"])
+    ):
+        fail("active record identity is invalid")
+    return record["request_id"]
+
+
+def completed_target_request_ids(state_root, entries, args):
+    completed = set()
+    if "target-terminal" in entries:
+        data, _snapshot = read_safe_file(
+            os.path.join(state_root, "target-terminal"),
+            "target-local terminal record",
+            0o600,
+        )
+        terminal = parse_target_terminal(data)
+        if terminal["service"] != args.service or terminal["target"] != args.target:
+            fail("target-local terminal record target binding is invalid")
+        completed.add(terminal["request_id"])
+    if "target-terminal-history" not in entries:
+        return completed
+    history_root = os.path.join(state_root, "target-terminal-history")
+    require_dir(history_root, "target-local terminal history")
+    for request_id, metadata in scan_directory(
+        history_root, "target-local terminal history"
+    ):
+        if not REQUEST_ID_RE.fullmatch(request_id) or not stat.S_ISREG(metadata.st_mode):
+            fail("target-local terminal history contains an invalid entry")
+        data, _snapshot = read_safe_file(
+            os.path.join(history_root, request_id),
+            "target-local terminal history record",
+            0o600,
+        )
+        terminal = parse_target_terminal(data, request_id)
+        if terminal["service"] != args.service or terminal["target"] != args.target:
+            fail("target-local terminal history target binding is invalid")
+        completed.add(request_id)
+    return completed
+
+
+def inspect_state_root(state_root, trust_dir, args):
     require_dir(state_root, "state root")
     entries = {name for name, _ in scan_directory(state_root, "state root")}
     allowed = {"lock"}
     if os.path.lexists(os.path.join(state_root, "request.journal")):
         allowed.add("request.journal")
-    for name in ("active", "rollback", "validation-boundary", "evidence"):
+    for name in (
+        "active",
+        "rollback",
+        "target-terminal",
+        "target-terminal-history",
+    ):
         if name in entries:
             allowed.add(name)
     if path_contains(state_root, trust_dir):
@@ -601,6 +737,10 @@ def inspect_state_root(state_root, trust_dir):
     if entries != allowed:
         fail("state root contains unexpected entries")
     validate_completed_lifecycle_state(state_root, entries)
+    return (
+        completed_target_request_ids(state_root, entries, args),
+        active_request_id(state_root, entries, args),
+    )
 
 
 def acquire_state_lock(state_root, check):
@@ -708,10 +848,11 @@ def parse_request(data):
     if not text.endswith("\n") or "\r" in text:
         fail("pending request is not canonically newline-terminated")
     lines = text.splitlines()
-    if len(lines) != len(REQUEST_FIELDS):
+    fields = REQUEST_FIELDS
+    if len(lines) != len(fields):
         fail("pending request has the wrong field count")
     record = {}
-    for expected, line in zip(REQUEST_FIELDS, lines):
+    for expected, line in zip(fields, lines):
         if "=" not in line:
             fail("pending request contains malformed text")
         key, value = line.split("=", 1)
@@ -911,7 +1052,7 @@ def validate_pending_directory(path, args, requesters_path, expected_request_id=
     request_id = expected_request_id or os.path.basename(path)
     now = int(time.time())
     if (
-        record["schema"] != "1"
+        record["schema"] != "2"
         or record["request_id"] != request_id
         or not REQUEST_ID_RE.fullmatch(record["request_id"])
         or not NONCE_RE.fullmatch(record["nonce"])
@@ -933,6 +1074,7 @@ def validate_pending_directory(path, args, requesters_path, expected_request_id=
         "profile": args.profile,
         "response_principal": args.response_principal,
     }
+    expected_fields["predecessor_request_id"] = args.predecessor_request_id
     if any(record[name] != value for name, value in expected_fields.items()):
         fail("pending request conflicts with supplied request bindings")
     if record["csr_sha256"] != sha256(contents["tls.csr"]):
@@ -966,19 +1108,118 @@ def validate_pending_directory(path, args, requesters_path, expected_request_id=
     }
 
 
-def inspect_pending_root(args, requesters_path):
+def validate_retained_pending_directory(path, args, requesters_path, request_id):
+    require_dir(path, "retained pending request directory")
+    names = {name for name, _ in scan_directory(path, "retained pending request directory")}
+    if names != EXPECTED_FILES:
+        fail("retained pending request does not contain the exact four-file protocol set")
+    contents = {}
+    snapshots = {}
+    for name in sorted(EXPECTED_FILES):
+        contents[name], snapshots[name] = read_safe_file(
+            os.path.join(path, name), f"retained pending protocol file {name}", 0o600
+        )
+    record = parse_request(contents["request"])
+    created = canonical_decimal(
+        record["created_epoch"], "retained request created epoch", 0, 2**63 - 1
+    )
+    expires = canonical_decimal(
+        record["expires_epoch"], "retained request expiry epoch", 0, 2**63 - 1
+    )
+    if (
+        record["schema"] != "2"
+        or record["request_id"] != request_id
+        or not NONCE_RE.fullmatch(record["nonce"])
+        or expires <= created
+        or expires - created > 604800
+        or created > int(time.time()) + 300
+        or record["operation"] not in {"issue", "renew"}
+        or record["service"] != args.service
+        or record["target"] != args.target
+        or record["requester_principal"] != args.requester_principal
+        or not HEX_256_RE.fullmatch(record["inventory_sha256"])
+        or not HEX_256_RE.fullmatch(record["csr_spki_sha256"])
+        or (
+            record["current_cert_sha256"] != "none"
+            and not HEX_256_RE.fullmatch(record["current_cert_sha256"])
+        )
+        or record["profile"] != PROFILE
+        or record["response_principal"] != args.response_principal
+        or record["csr_sha256"] != sha256(contents["tls.csr"])
+        or (
+            record["predecessor_request_id"] != "none"
+            and not REQUEST_ID_RE.fullmatch(record["predecessor_request_id"])
+        )
+        or (
+            record["operation"] == "issue"
+            and (
+                record["current_cert_sha256"] != "none"
+                or record["predecessor_request_id"] != "none"
+            )
+        )
+        or (
+            record["operation"] == "renew"
+            and (
+                record["current_cert_sha256"] == "none"
+                or record["predecessor_request_id"] == "none"
+            )
+        )
+    ):
+        fail("retained pending request binding is invalid")
+    key_public = run_command(
+        ["openssl", "pkey", "-in", os.path.join(path, "tls.key"), "-pubout", "-outform", "DER"],
+        "retained private-key public-key derivation",
+    )
+    csr_public_pem = run_command(
+        ["openssl", "req", "-in", os.path.join(path, "tls.csr"), "-pubkey", "-noout"],
+        "retained CSR public-key derivation",
+    )
+    csr_public = run_command(
+        ["openssl", "pkey", "-pubin", "-outform", "DER"],
+        "retained CSR public-key normalization",
+        input_bytes=csr_public_pem,
+    )
+    if key_public != csr_public or sha256(csr_public) != record["csr_spki_sha256"]:
+        fail("retained pending key and CSR SPKI binding is invalid")
+    verify_request_signature(
+        os.path.join(path, "request"),
+        os.path.join(path, "request.sig"),
+        requesters_path,
+        args.requester_principal,
+        REQUEST_NAMESPACE,
+    )
+    for name in EXPECTED_FILES:
+        require_unchanged(
+            os.path.join(path, name),
+            snapshots[name],
+            f"retained pending protocol file {name}",
+        )
+
+
+def inspect_pending_root(args, requesters_path, completed_request_ids):
     if not os.path.lexists(args.pending_root):
         return None
     require_dir(args.pending_root, "pending root")
     entries = scan_directory(args.pending_root, "pending root")
     if not entries:
         return None
-    if len(entries) != 1:
-        fail("multiple or unexpected pending request entries exist")
-    name, metadata = entries[0]
-    if not REQUEST_ID_RE.fullmatch(name) or not stat.S_ISDIR(metadata.st_mode):
-        fail("pending root contains staging, symlinked, or unexpected state")
-    return validate_pending_directory(os.path.join(args.pending_root, name), args, requesters_path)
+    candidates = []
+    for name, metadata in entries:
+        if not REQUEST_ID_RE.fullmatch(name) or not stat.S_ISDIR(metadata.st_mode):
+            fail("pending root contains staging, symlinked, or unexpected state")
+        if name in completed_request_ids:
+            validate_retained_pending_directory(
+                os.path.join(args.pending_root, name), args, requesters_path, name
+            )
+        else:
+            candidates.append(name)
+    if len(candidates) > 1:
+        fail("multiple nonterminal pending request entries exist")
+    if not candidates:
+        return None
+    return validate_pending_directory(
+        os.path.join(args.pending_root, candidates[0]), args, requesters_path
+    )
 
 
 def write_new_file(path, data):
@@ -1004,7 +1245,7 @@ def request_fault(point):
 
 def journal_content(request_id, stage_name, pending_root):
     values = {
-        "schema": "1",
+        "schema": "2",
         "request_id": request_id,
         "stage_name": stage_name,
         "pending_root": pending_root,
@@ -1044,7 +1285,7 @@ def recover_request(args, requesters_path, pending_identity):
     data, snapshot = read_safe_file(journal_path, "request recovery journal", 0o600)
     record = parse_journal(data)
     if (
-        record["schema"] != "1"
+        record["schema"] != "2"
         or not REQUEST_ID_RE.fullmatch(record["request_id"])
         or record["stage_name"] != f".stage-{record['request_id']}"
         or record["pending_root"] != args.pending_root
@@ -1135,6 +1376,7 @@ def create_request(
     state_identity,
     pending_parent_identity,
     pending_identity,
+    completed_request_ids,
 ):
     request_id = secrets.token_hex(16)
     nonce = secrets.token_hex(32)
@@ -1219,7 +1461,7 @@ def create_request(
     )
     created = int(time.time())
     values = {
-        "schema": "1",
+        "schema": "2",
         "request_id": request_id,
         "nonce": nonce,
         "created_epoch": str(created),
@@ -1232,6 +1474,7 @@ def create_request(
         "csr_sha256": sha256(csr_data),
         "csr_spki_sha256": spki_digest,
         "current_cert_sha256": args.current_cert_sha256,
+        "predecessor_request_id": args.predecessor_request_id,
         "profile": args.profile,
         "response_principal": args.response_principal,
     }
@@ -1280,7 +1523,7 @@ def create_request(
     fsync_dir(stage)
     request_fault("before-publication")
     pending_entries = {name for name, _ in scan_directory(args.pending_root, "pending root")}
-    if pending_entries != {os.path.basename(stage)}:
+    if pending_entries != completed_request_ids | {os.path.basename(stage)}:
         fail("pending root changed before request publication")
     require_lock_bindings(
         args, lock_snapshot, state_identity, pending_parent_identity
@@ -1314,6 +1557,7 @@ def build_parser():
     request.add_argument("--inventory-sha256", required=True)
     request.add_argument("--current-cert-sha256", required=True)
     request.add_argument("--current-cert-path")
+    request.add_argument("--predecessor-request-id", default="none")
     request.add_argument("--common-name", required=True)
     request.add_argument("--dns-san", action="append", default=[])
     request.add_argument("--ip-san", action="append", default=[])
@@ -1357,15 +1601,23 @@ def main():
     pending_root_descriptor = None
     try:
         trust_dir, requester_key = validate_trust(
-            args.trust_binding, args.response_principal, args.requester_principal
+            args.trust_binding, args.response_principal, args.requester_principal,
         )
         signing_key_descriptor, signing_key_snapshot = validate_signing_key(
             args.request_signing_key, requester_key
         )
         validate_current_certificate(args)
+        completed_request_ids = set()
+        active_request = None
         if state_exists:
-            inspect_state_root(args.state_root, trust_dir)
-
+            completed_request_ids, active_request = inspect_state_root(
+                args.state_root, trust_dir, args
+            )
+        if args.operation == "renew" and (
+            active_request is None
+            or args.predecessor_request_id != active_request
+        ):
+            fail("renewal predecessor does not match authenticated active state")
         if not pending_exists and not args.check:
             create_private_dir(args.pending_root, "pending root")
             pending_exists = True
@@ -1388,7 +1640,11 @@ def main():
             args, lock_snapshot, state_identity, pending_parent_identity
         )
         require_pending_binding(args.pending_root, pending_identity)
-        existing = inspect_pending_root(args, trust_paths["requesters.allowed_signers"])
+        existing = inspect_pending_root(
+            args,
+            trust_paths["requesters.allowed_signers"],
+            completed_request_ids,
+        )
         require_pending_binding(args.pending_root, pending_identity)
         if existing is not None:
             print(json.dumps(existing, sort_keys=True, separators=(",", ":")))
@@ -1406,6 +1662,7 @@ def main():
             state_identity,
             pending_parent_identity,
             pending_identity,
+            completed_request_ids,
         )
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     finally:

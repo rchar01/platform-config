@@ -40,9 +40,8 @@ notes belong in `../platform-plans/config/plans/`, not in this public repo.
 - Ansible and lint tooling installed inside `Containerfile.dev` from
   `requirements-dev.txt` and `requirements.yml`.
 - The `vendor/platform-k8s-bastion` submodule for default bastion runtime input.
-- `platform-tools` at commit
-  `7bdc69a1757d9f3a0c0428c194303b3703627764` or a release containing it for
-  operator-side PKI exchange commands.
+- `platform-tools` v4.0.0 or newer for operator-side PKI exchange commands. Pin
+  the exact target-installed `platform-pki` SHA-256 in private inventory.
 - SSH access, host keys, private inventory, and secret files for real runs.
 
 ## Quick Start

@@ -9,7 +9,7 @@
       - zot_registry_tls_custody_result.stdout | type_debug == 'str'
       - zot_registry_tls_custody_result.stdout | from_json | type_debug == 'dict'
       - (zot_registry_tls_custody_result.stdout | from_json).keys() | list | sort == zot_registry_tls_custody_required_fields
-      - (zot_registry_tls_custody_result.stdout | from_json).schema == '1'
+      - (zot_registry_tls_custody_result.stdout | from_json).schema == '2'
       - (zot_registry_tls_custody_result.stdout | from_json).kind == 'platform-config-zot-tls-custody'
       - (zot_registry_tls_custody_result.stdout | from_json).custody in ['dormant', 'managed', 'host-local']
       - (zot_registry_tls_custody_result.stdout | from_json).cert_path | type_debug == 'str'

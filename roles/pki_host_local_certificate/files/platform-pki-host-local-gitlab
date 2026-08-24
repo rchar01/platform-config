@@ -1,0 +1,1001 @@
+#!/usr/bin/env python3
+"""Publish and retrieve target-local PKI packages through GitLab."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import NoReturn
+
+
+DEFAULT_CONFIG = "/etc/platform-config/pki-host-local-gitlab.json"
+CONFIG_FIELDS = (
+    "schema", "kind", "service", "target", "operation", "profile",
+    "inventory_sha256", "current_cert_sha256", "current_cert_path",
+    "common_name", "dns_sans", "ip_sans", "response_principal",
+    "request_ttl_seconds", "request_signing_key", "trust_id", "state_root",
+    "pending_root", "versions_root", "zot_config",
+    "minimum_remaining_lifetime_seconds", "project_record", "token_file",
+    "ca_file", "spool_root", "request_helper", "lifecycle_helper",
+    "platform_pki", "timeout", "processing_attempts",
+    "processing_interval",
+)
+REQUEST_FIELDS = (
+    "schema", "request_id", "nonce", "created_epoch", "expires_epoch",
+    "operation", "service", "target", "requester_principal",
+    "inventory_sha256", "csr_sha256", "csr_spki_sha256",
+    "current_cert_sha256", "predecessor_request_id", "profile",
+    "response_principal",
+)
+REQUEST_FILES = ("tls.csr", "request", "request.sig")
+PROJECT_FIELDS = (
+    "schema", "kind", "origin", "project_id", "project_path",
+    "gitlab_version",
+)
+RESPONSE_FILES = (
+    "artifact", "tls.crt", "ca-chain.crt", "fullchain.crt", "response",
+    "response.sig",
+)
+DOWNLOAD_FILES = (*RESPONSE_FILES, "stage-manifest")
+TRUST_FILES = (
+    "policy", "requesters.allowed_signers", "approvers.allowed_signers",
+    "responses.allowed_signers",
+)
+REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
+DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+SERVICE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\Z", re.ASCII)
+IDENTITY = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
+PROJECT_PATH = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\Z", re.ASCII)
+PATH_COMPONENT = re.compile(r"[A-Za-z0-9_@%+=:,.-]+\Z", re.ASCII)
+MAX_OUTPUT = 128 * 1024
+MAX_FILE = 1024 * 1024
+
+
+class FacadeError(RuntimeError):
+    pass
+
+
+def fail() -> NoReturn:
+    raise FacadeError("operation failed")
+
+
+def canonical_path(value: object) -> str:
+    if not isinstance(value, str) or not value.startswith("/") or value == "/":
+        fail()
+    if os.path.normpath(value) != value or any(
+        PATH_COMPONENT.fullmatch(part) is None for part in value.split("/")[1:]
+    ):
+        fail()
+    return value
+
+
+def identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_uid,
+        stat.S_IFMT(metadata.st_mode), stat.S_IMODE(metadata.st_mode),
+        metadata.st_nlink, metadata.st_size, metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_uid,
+        stat.S_IFMT(metadata.st_mode), stat.S_IMODE(metadata.st_mode),
+    )
+
+
+def trusted_ancestor_owners() -> set[int]:
+    owners = {0}
+    try:
+        with open("/proc/self/uid_map", encoding="ascii") as stream:
+            mapping = [line.split() for line in stream if line.strip()]
+        if mapping != [["0", "0", "4294967295"]]:
+            with open("/proc/sys/kernel/overflowuid", encoding="ascii") as stream:
+                owners.add(int(stream.read().strip()))
+    except (OSError, ValueError):
+        pass
+    return owners
+
+
+class PinnedFile:
+    def __init__(
+        self,
+        path: str,
+        modes: Sequence[int],
+        maximum: int,
+        *,
+        executable: bool = False,
+    ) -> None:
+        self.path = canonical_path(path)
+        self.parent_fds: list[int] = []
+        self.components = tuple(self.path.split("/")[1:-1])
+        self.parent_identities: list[tuple[int, ...]] = []
+        self.fd = -1
+        ancestor_owners = trusted_ancestor_owners()
+        try:
+            parent = os.open(
+                "/", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+            )
+            self.parent_fds.append(parent)
+            self.parent_identities.append(directory_identity(os.fstat(parent)))
+            for component in self.components:
+                parent = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent,
+                )
+                metadata = os.fstat(parent)
+                mode = stat.S_IMODE(metadata.st_mode)
+                if metadata.st_uid not in ancestor_owners or (
+                    mode & 0o022 and not mode & stat.S_ISVTX
+                ):
+                    fail()
+                self.parent_fds.append(parent)
+                self.parent_identities.append(directory_identity(metadata))
+            self.fd = os.open(
+                os.path.basename(self.path),
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=self.parent_fds[-1],
+            )
+            metadata = os.fstat(self.fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
+                or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) not in modes
+                or metadata.st_size <= 0 or metadata.st_size > maximum
+                or (executable and not metadata.st_mode & stat.S_IXUSR)
+            ):
+                fail()
+            self.snapshot = identity(metadata)
+            self.data = self._read(maximum)
+            self.recheck()
+        except Exception:
+            self.close()
+            raise
+
+    def _read(self, maximum: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(self.fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > maximum or len(data) != self.snapshot[6]:
+            fail()
+        return data
+
+    def recheck(self) -> None:
+        for index, expected in enumerate(self.parent_identities):
+            if directory_identity(os.fstat(self.parent_fds[index])) != expected:
+                fail()
+            if index:
+                actual = os.stat(
+                    self.components[index - 1], dir_fd=self.parent_fds[index - 1],
+                    follow_symlinks=False,
+                )
+                if directory_identity(actual) != expected:
+                    fail()
+        if identity(os.fstat(self.fd)) != self.snapshot:
+            fail()
+        actual = os.stat(
+            os.path.basename(self.path), dir_fd=self.parent_fds[-1],
+            follow_symlinks=False,
+        )
+        if identity(actual) != self.snapshot:
+            fail()
+        os.lseek(self.fd, 0, os.SEEK_SET)
+        if self._read(max(len(self.data), 1)) != self.data:
+            fail()
+
+    def execute_path(self) -> str:
+        return f"/proc/self/fd/{self.fd}"
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+        for descriptor in reversed(self.parent_fds):
+            os.close(descriptor)
+        self.parent_fds.clear()
+
+
+class PinnedDirectory:
+    def __init__(self, path: str, *, mode: int = 0o700) -> None:
+        self.path = canonical_path(path)
+        self.fds: list[int] = []
+        self.components = tuple(self.path.split("/")[1:])
+        self.identities: list[tuple[int, ...]] = []
+        ancestor_owners = trusted_ancestor_owners()
+        try:
+            descriptor = os.open(
+                "/", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+            )
+            self.fds.append(descriptor)
+            self.identities.append(directory_identity(os.fstat(descriptor)))
+            for index, component in enumerate(self.components):
+                descriptor = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=descriptor,
+                )
+                metadata = os.fstat(descriptor)
+                actual_mode = stat.S_IMODE(metadata.st_mode)
+                if (
+                    metadata.st_uid
+                    not in ({0} if index + 1 == len(self.components) else ancestor_owners)
+                    or (index + 1 == len(self.components) and actual_mode != mode)
+                    or (
+                        index + 1 < len(self.components)
+                        and actual_mode & 0o022 and not actual_mode & stat.S_ISVTX
+                    )
+                ):
+                    fail()
+                self.fds.append(descriptor)
+                self.identities.append(directory_identity(metadata))
+            self.fd = self.fds[-1]
+            self.recheck()
+        except Exception:
+            self.close()
+            raise
+
+    def names(self) -> set[str]:
+        try:
+            return set(os.listdir(self.fd))
+        except OSError:
+            fail()
+
+    def recheck(self) -> None:
+        for index, expected in enumerate(self.identities):
+            if directory_identity(os.fstat(self.fds[index])) != expected:
+                fail()
+            if index:
+                actual = os.stat(
+                    self.components[index - 1], dir_fd=self.fds[index - 1],
+                    follow_symlinks=False,
+                )
+                if directory_identity(actual) != expected:
+                    fail()
+
+    def close(self) -> None:
+        for descriptor in reversed(getattr(self, "fds", [])):
+            os.close(descriptor)
+        self.fds = []
+        self.fd = -1
+
+
+def load_json(data: bytes) -> object:
+    if not data.endswith(b"\n") or data.endswith(b"\n\n") or b"\r" in data or b"\x00" in data:
+        fail()
+    try:
+        value = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail()
+    return value
+
+
+def require_int(value: object, minimum: int, maximum: int) -> int:
+    if type(value) is not int or value < minimum or value > maximum:
+        fail()
+    return value
+
+
+def validate_config(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != set(CONFIG_FIELDS):
+        fail()
+    if value["schema"] != 2 or value["kind"] != "platform-config-target-local-gitlab":
+        fail()
+    if not isinstance(value["service"], str) or SERVICE.fullmatch(value["service"]) is None:
+        fail()
+    if not isinstance(value["target"], str) or IDENTITY.fullmatch(value["target"]) is None:
+        fail()
+    if value["operation"] not in {"issue", "renew"}:
+        fail()
+    if value["profile"] != "server-p384-sha384-v1":
+        fail()
+    if not isinstance(value["inventory_sha256"], str) or DIGEST.fullmatch(value["inventory_sha256"]) is None:
+        fail()
+    for field in ("common_name", "response_principal", "trust_id"):
+        if not isinstance(value[field], str) or not value[field] or not value[field].isascii():
+            fail()
+    if IDENTITY.fullmatch(value["response_principal"]) is None:
+        fail()
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value["trust_id"], re.ASCII) is None:
+        fail()
+    for field in ("dns_sans", "ip_sans"):
+        items = value[field]
+        if not isinstance(items, list) or (field == "dns_sans" and not items):
+            fail()
+        if any(not isinstance(item, str) or not item or not item.isascii() for item in items):
+            fail()
+        if len(set(items)) != len(items) or len(items) > 100:
+            fail()
+    require_int(value["request_ttl_seconds"], 1, 604800)
+    require_int(value["minimum_remaining_lifetime_seconds"], 1, 2**31 - 1)
+    require_int(value["timeout"], 1, 120)
+    require_int(value["processing_attempts"], 1, 20)
+    require_int(value["processing_interval"], 0, 60)
+    path_fields = (
+        "request_signing_key", "state_root", "pending_root", "versions_root",
+        "zot_config", "project_record", "token_file", "ca_file", "spool_root",
+        "request_helper", "lifecycle_helper", "platform_pki",
+    )
+    for field in path_fields:
+        value[field] = canonical_path(value[field])
+    current_digest = value["current_cert_sha256"]
+    current_path = value["current_cert_path"]
+    if value["operation"] == "issue":
+        if current_digest != "none" or current_path != "none":
+            fail()
+    else:
+        if current_digest != "derived" or current_path != "derived":
+            fail()
+    if os.path.basename(value["pending_root"]) != "tls-pending" or os.path.basename(value["versions_root"]) != "tls-versions":
+        fail()
+    if os.path.dirname(value["pending_root"]) != os.path.dirname(value["versions_root"]):
+        fail()
+    if len(set(value[field] for field in path_fields)) != len(path_fields):
+        fail()
+    return value
+
+
+def parse_json_output(data: bytes, fields: set[str]) -> dict[str, object]:
+    value = load_json(data)
+    if not isinstance(value, dict) or set(value) != fields:
+        fail()
+    return value
+
+
+def run_process(
+    executable: PinnedFile, arguments: Sequence[str], *, timeout: int = 150,
+) -> bytes:
+    executable.recheck()
+    with tempfile.TemporaryFile() as output:
+        try:
+            result = subprocess.run(
+                (executable.execute_path(), *arguments),
+                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
+                pass_fds=(executable.fd,), timeout=timeout, check=False,
+                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            fail()
+        executable.recheck()
+        if result.returncode != 0:
+            fail()
+        output.seek(0)
+        data = output.read(MAX_OUTPUT + 1)
+        if len(data) > MAX_OUTPUT:
+            fail()
+        return data
+
+
+def gitlab_process_timeout(config: Mapping[str, object]) -> int:
+    request_timeout = int(config["timeout"])
+    attempts = int(config["processing_attempts"])
+    interval = int(config["processing_interval"])
+    # Request publication is the longest path: four uploads and six inspections.
+    package_files = len(REQUEST_FILES) + 1
+    inspections = package_files + 2
+    http_requests = 1 + package_files + inspections * (attempts + 1)
+    processing_wait = inspections * (attempts - 1) * interval
+    return http_requests * request_timeout + processing_wait + 30
+
+
+def common_lifecycle(config: Mapping[str, object]) -> list[str]:
+    return [
+        "--state-root", str(config["state_root"]),
+        "--pending-root", str(config["pending_root"]),
+        "--versions-root", str(config["versions_root"]),
+        "--service", str(config["service"]),
+        "--target", str(config["target"]),
+    ]
+
+
+def read_record(data: bytes, fields: Sequence[str]) -> dict[str, str]:
+    if not data.endswith(b"\n") or b"\r" in data or b"\x00" in data:
+        fail()
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail()
+    if len(lines) != len(fields):
+        fail()
+    result: dict[str, str] = {}
+    for field, line in zip(fields, lines, strict=True):
+        if not line.startswith(f"{field}=") or not line[len(field) + 1:]:
+            fail()
+        result[field] = line[len(field) + 1:]
+    return result
+
+
+def project_result_identity(source: PinnedFile) -> tuple[int, str]:
+    record = read_record(source.data, PROJECT_FIELDS)
+    if (
+        record["schema"] != "1" or record["kind"] != "pki-exchange-project"
+        or re.fullmatch(r"[1-9][0-9]*", record["project_id"], re.ASCII) is None
+        or PROJECT_PATH.fullmatch(record["project_path"]) is None
+        or any(part in {".", ".."} for part in record["project_path"].split("/"))
+        or record["gitlab_version"] != "18.11.3-ce.0"
+    ):
+        fail()
+    return int(record["project_id"]), record["project_path"]
+
+
+def validate_package_result(
+    value: object,
+    *,
+    statuses: set[str],
+    stage: str,
+    service: object,
+    request_id: str,
+    project: PinnedFile,
+    file_names: Sequence[str],
+    destination_dir: str | None = None,
+) -> dict[str, object]:
+    fields = {
+        "status", "stage", "project_id", "project_path", "package_id",
+        "package_name", "package_version", "file_sha256",
+    }
+    if destination_dir is not None:
+        fields.update(("destination_dir", "gitlab_authority_claimed"))
+    if not isinstance(value, dict) or set(value) != fields:
+        fail()
+    project_id, project_path = project_result_identity(project)
+    if (
+        value["status"] not in statuses
+        or value["stage"] != stage
+        or type(value["project_id"]) is not int
+        or value["project_id"] != project_id
+        or value["project_path"] != project_path
+        or type(value["package_id"]) is not int or value["package_id"] <= 0
+        or value["package_name"] != f"pki-exchange-{stage}-{service}"
+        or value["package_version"] != request_id
+    ):
+        fail()
+    if destination_dir is not None and (
+        value["destination_dir"] != destination_dir
+        or value["gitlab_authority_claimed"] is not False
+    ):
+        fail()
+    file_sha256 = value["file_sha256"]
+    if (
+        not isinstance(file_sha256, dict)
+        or set(file_sha256) != set(file_names)
+        or any(
+            not isinstance(digest, str) or DIGEST.fullmatch(digest) is None
+            for digest in file_sha256.values()
+        )
+    ):
+        fail()
+    return value
+
+
+def stage_manifest(
+    stage: str, service: object, request_id: str,
+    names: Sequence[str], files: Mapping[str, PinnedFile],
+) -> bytes:
+    lines = [
+        "schema=2", "kind=pki-exchange-stage", f"stage={stage}",
+        f"service={service}", f"request_id={request_id}",
+        f"package_version={request_id}", f"payload_count={len(names)}",
+        *(
+            f"payload={name} sha256={hashlib.sha256(files[name].data).hexdigest()}"
+            for name in names
+        ),
+    ]
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def open_exact_files(
+    directory: PinnedDirectory, names: Sequence[str], modes: Sequence[int] = (0o600,)
+) -> dict[str, PinnedFile]:
+    if directory.names() != set(names):
+        fail()
+    opened: dict[str, PinnedFile] = {}
+    try:
+        for name in names:
+            opened[name] = PinnedFile(
+                os.path.join(directory.path, name), modes, MAX_FILE
+            )
+        directory.recheck()
+        return opened
+    except Exception:
+        for source in opened.values():
+            source.close()
+        raise
+
+
+def make_child(parent: PinnedDirectory, name: str) -> PinnedDirectory:
+    if PATH_COMPONENT.fullmatch(name) is None:
+        fail()
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent.fd)
+        os.fsync(parent.fd)
+    except OSError:
+        fail()
+    return PinnedDirectory(os.path.join(parent.path, name))
+
+
+def remove_tree(directory: PinnedDirectory, *, exact: Sequence[str] | None = None) -> None:
+    names = directory.names()
+    if exact is not None and names != set(exact):
+        fail()
+    if len(names) > 32:
+        fail()
+    opened = open_exact_files(directory, tuple(sorted(names))) if names else {}
+    try:
+        for name, source in opened.items():
+            source.recheck()
+            os.unlink(name, dir_fd=directory.fd)
+        os.fsync(directory.fd)
+    finally:
+        for source in opened.values():
+            source.close()
+    parent = PinnedDirectory(os.path.dirname(directory.path))
+    try:
+        directory.recheck()
+        expected = directory_identity(os.fstat(directory.fd))
+        actual = os.stat(
+            os.path.basename(directory.path), dir_fd=parent.fd,
+            follow_symlinks=False,
+        )
+        if directory_identity(actual) != expected:
+            fail()
+        directory.close()
+        os.rmdir(os.path.basename(directory.path), dir_fd=parent.fd)
+        os.fsync(parent.fd)
+    finally:
+        parent.close()
+
+
+def trust_sources(config: Mapping[str, object]) -> dict[str, PinnedFile]:
+    root = os.path.join(
+        str(config["state_root"]), "trust", str(config["trust_id"])
+    )
+    directory = PinnedDirectory(root)
+    try:
+        return open_exact_files(directory, TRUST_FILES)
+    finally:
+        directory.close()
+
+
+def request_arguments(
+    config: Mapping[str, object], trust: Mapping[str, PinnedFile],
+    current_digest: str, current_path: str, predecessor: str,
+) -> list[str]:
+    arguments = [
+        "request", "--service", str(config["service"]), "--target",
+        str(config["target"]), "--requester-principal", str(config["target"]),
+        "--operation", str(config["operation"]), "--profile", str(config["profile"]),
+        "--inventory-sha256", str(config["inventory_sha256"]),
+        "--current-cert-sha256", current_digest,
+        "--predecessor-request-id", predecessor,
+        "--common-name", str(config["common_name"]),
+        "--response-principal", str(config["response_principal"]),
+        "--request-ttl-seconds", str(config["request_ttl_seconds"]),
+        "--request-signing-key", str(config["request_signing_key"]),
+        "--request-namespace", "platform-pki-csr-request-v2",
+        "--state-root", str(config["state_root"]),
+        "--pending-root", str(config["pending_root"]),
+    ]
+    if current_path != "none":
+        arguments.extend(("--current-cert-path", current_path))
+    for name in TRUST_FILES:
+        arguments.extend((
+            "--trust-binding", name, trust[name].path,
+            hashlib.sha256(trust[name].data).hexdigest(),
+        ))
+    for value in config["dns_sans"]:
+        arguments.extend(("--dns-san", str(value)))
+    for value in config["ip_sans"]:
+        arguments.extend(("--ip-san", str(value)))
+    return arguments
+
+
+def platform_arguments(config: Mapping[str, object], command: str) -> list[str]:
+    return [
+        "gitlab-package", command, "--stage", "request" if command == "publish" else "response",
+        "--service", str(config["service"]), "--target", str(config["target"]),
+    ]
+
+
+def validate_request_export(
+    files: Mapping[str, PinnedFile], config: Mapping[str, object], request_id: str,
+    current_digest: str, predecessor: str,
+) -> None:
+    request = read_record(files["request"].data, REQUEST_FIELDS)
+    if (
+        request["schema"] != "2" or request["request_id"] != request_id
+        or request["operation"] != config["operation"]
+        or request["service"] != config["service"]
+        or request["target"] != config["target"]
+        or request["requester_principal"] != config["target"]
+        or request["inventory_sha256"] != config["inventory_sha256"]
+        or request["csr_sha256"] != hashlib.sha256(files["tls.csr"].data).hexdigest()
+        or request["current_cert_sha256"] != current_digest
+        or request["predecessor_request_id"] != predecessor
+        or request["profile"] != config["profile"]
+        or request["response_principal"] != config["response_principal"]
+    ):
+        fail()
+    if DIGEST.fullmatch(request["csr_spki_sha256"]) is None:
+        fail()
+
+
+def derive_current(
+    config: Mapping[str, object], lifecycle: PinnedFile
+) -> tuple[str, str, str]:
+    if config["operation"] != "renew":
+        return (
+            str(config["current_cert_sha256"]),
+            str(config["current_cert_path"]), "none",
+        )
+    output = run_process(
+        lifecycle,
+        ["active-paths", *common_lifecycle(config), "--zot-config", str(config["zot_config"])],
+    )
+    active = parse_json_output(output, {
+        "request_id", "cert_path", "key_path", "artifact_sha256",
+        "certificate_sha256", "spki_sha256", "chain_sha256",
+        "fullchain_sha256", "zot_config_sha256",
+    })
+    if (
+        not isinstance(active["request_id"], str)
+        or REQUEST_ID.fullmatch(active["request_id"]) is None
+        or not isinstance(active["certificate_sha256"], str)
+        or DIGEST.fullmatch(active["certificate_sha256"]) is None
+        or not isinstance(active["cert_path"], str)
+    ):
+        fail()
+    return (
+        active["certificate_sha256"], canonical_path(active["cert_path"]),
+        active["request_id"],
+    )
+
+
+def publish_request(
+    config: Mapping[str, object], spool: PinnedDirectory, request: PinnedFile,
+    lifecycle: PinnedFile, platform: PinnedFile, project: PinnedFile,
+) -> str:
+    trust = trust_sources(config)
+    export: PinnedDirectory | None = None
+    export_files: dict[str, PinnedFile] = {}
+    try:
+        current_digest, current_path, predecessor = derive_current(config, lifecycle)
+        arguments = request_arguments(
+            config, trust, current_digest, current_path, predecessor
+        )
+        request_result = parse_json_output(
+            run_process(request, arguments),
+            {"status", "request_id", "request_sha256", "csr_sha256", "csr_spki_sha256", "pending_dir"},
+        )
+        request_id = request_result["request_id"]
+        if (
+            request_result["status"] not in {"created", "existing"}
+            or not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None
+        ):
+            fail()
+        export = make_child(spool, f".request-export-{secrets.token_hex(16)}")
+        exported = parse_json_output(
+            run_process(lifecycle, [
+                "target-request-export", *common_lifecycle(config), "--trust-id",
+                str(config["trust_id"]), "--output-dir", export.path,
+                "--output-owner-uid", "0",
+            ]),
+            {"status", "request_id", "request_sha256", "csr_sha256", "request_signature_sha256"},
+        )
+        if exported["status"] not in {"collected", "existing"} or exported["request_id"] != request_id:
+            fail()
+        export_files = open_exact_files(export, REQUEST_FILES)
+        validate_request_export(
+            export_files, config, request_id, current_digest, predecessor
+        )
+        client_output = run_process(platform, [
+            *platform_arguments(config, "publish"), "--request-id", request_id,
+            "--package-version", request_id, "--source-dir", export.path,
+            "--project-record", str(config["project_record"]), "--token-type",
+            "private", "--token-file", str(config["token_file"]), "--ca-file",
+            str(config["ca_file"]), "--timeout", str(config["timeout"]),
+            "--processing-attempts", str(config["processing_attempts"]),
+            "--processing-interval", str(config["processing_interval"]),
+        ], timeout=gitlab_process_timeout(config))
+        client_result = validate_package_result(
+            load_json(client_output), statuses={"published", "existing"},
+            stage="request", service=config["service"], request_id=request_id,
+            project=project, file_names=(*REQUEST_FILES, "stage-manifest"),
+        )
+        expected_sha256 = {
+            name: hashlib.sha256(export_files[name].data).hexdigest()
+            for name in REQUEST_FILES
+        }
+        expected_sha256["stage-manifest"] = hashlib.sha256(stage_manifest(
+            "request", config["service"], request_id, REQUEST_FILES, export_files
+        )).hexdigest()
+        if client_result["file_sha256"] != expected_sha256:
+            fail()
+        return "published" if client_result["status"] == "published" else "existing"
+    finally:
+        for source in export_files.values():
+            source.close()
+        if export is not None:
+            try:
+                remove_tree(export)
+            except (FacadeError, OSError):
+                pass
+        for source in trust.values():
+            source.close()
+
+
+def validate_manifest(
+    files: Mapping[str, PinnedFile], config: Mapping[str, object], request_id: str
+) -> None:
+    manifest = files["stage-manifest"].data
+    if not manifest.endswith(b"\n") or b"\r" in manifest or b"\x00" in manifest:
+        fail()
+    try:
+        lines = manifest.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        fail()
+    expected = [
+        "schema=2", "kind=pki-exchange-stage", "stage=response",
+        f"service={config['service']}", f"request_id={request_id}",
+        f"package_version={request_id}", "payload_count=6",
+        *(f"payload={name} sha256={hashlib.sha256(files[name].data).hexdigest()}" for name in RESPONSE_FILES),
+    ]
+    if lines != expected:
+        fail()
+
+
+def copy_response(
+    source: Mapping[str, PinnedFile], ingress_path: str,
+    ingress_device: object, ingress_inode: object,
+) -> None:
+    ingress = PinnedDirectory(ingress_path)
+    opened: list[PinnedFile] = []
+    try:
+        metadata = os.fstat(ingress.fd)
+        if metadata.st_dev != ingress_device or metadata.st_ino != ingress_inode:
+            fail()
+        if not ingress.names().issubset(RESPONSE_FILES):
+            fail()
+        for name in RESPONSE_FILES:
+            source[name].recheck()
+            if name in ingress.names():
+                existing = PinnedFile(os.path.join(ingress.path, name), (0o600,), MAX_FILE)
+                opened.append(existing)
+                if existing.data != source[name].data:
+                    fail()
+                continue
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    0o600, dir_fd=ingress.fd,
+                )
+                try:
+                    os.fchmod(descriptor, 0o600)
+                    view = memoryview(source[name].data)
+                    while view:
+                        written = os.write(descriptor, view)
+                        if written <= 0:
+                            fail()
+                        view = view[written:]
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                os.fsync(ingress.fd)
+            except OSError:
+                fail()
+        final = open_exact_files(ingress, RESPONSE_FILES)
+        try:
+            if any(final[name].data != source[name].data for name in RESPONSE_FILES):
+                fail()
+        finally:
+            for item in final.values():
+                item.close()
+    finally:
+        for item in opened:
+            item.close()
+        ingress.close()
+
+
+def candidate_arguments(config: Mapping[str, object]) -> list[str]:
+    result = [
+        "--trust-id", str(config["trust_id"]), "--common-name",
+        str(config["common_name"]), "--minimum-remaining-lifetime-seconds",
+        str(config["minimum_remaining_lifetime_seconds"]),
+    ]
+    for value in config["dns_sans"]:
+        result.extend(("--dns-san", str(value)))
+    for value in config["ip_sans"]:
+        result.extend(("--ip-san", str(value)))
+    return result
+
+
+def download_response(
+    config: Mapping[str, object], spool: PinnedDirectory,
+    lifecycle: PinnedFile, platform: PinnedFile, project: PinnedFile,
+) -> str:
+    prepared_value = load_json(run_process(lifecycle, [
+            "target-response-prepare", *common_lifecycle(config), "--trust-id",
+            str(config["trust_id"]),
+        ]))
+    if not isinstance(prepared_value, dict):
+        fail()
+    prepared = prepared_value
+    request_id = prepared["request_id"]
+    if not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None:
+        fail()
+    download_path = os.path.join(spool.path, "response-download")
+    if prepared["status"] == "installed":
+        if set(prepared) != {"status", "request_id", "ingress_dir"} or prepared["ingress_dir"] != "none":
+            fail()
+        if os.path.lexists(download_path):
+            downloaded = PinnedDirectory(download_path)
+            files = open_exact_files(downloaded, DOWNLOAD_FILES)
+            try:
+                validate_manifest(files, config, request_id)
+            finally:
+                for source in files.values():
+                    source.close()
+            remove_tree(downloaded, exact=DOWNLOAD_FILES)
+        return "existing"
+    if prepared["status"] not in {"prepared", "existing"}:
+        fail()
+    if set(prepared) != {"status", "request_id", "ingress_dir", "ingress_device", "ingress_inode"}:
+        fail()
+    expected_ingress = os.path.join(
+        str(config["versions_root"]), f".ingress-{request_id}"
+    )
+    if prepared["ingress_dir"] != expected_ingress:
+        fail()
+    client_output = run_process(platform, [
+        *platform_arguments(config, "download"), "--request-id", request_id,
+        "--package-version", request_id, "--destination-dir", download_path,
+        "--project-record", str(config["project_record"]), "--token-type",
+        "private", "--token-file", str(config["token_file"]), "--ca-file",
+        str(config["ca_file"]), "--timeout", str(config["timeout"]),
+        "--processing-attempts", str(config["processing_attempts"]),
+        "--processing-interval", str(config["processing_interval"]),
+    ], timeout=gitlab_process_timeout(config))
+    client_result = validate_package_result(
+        load_json(client_output), statuses={"downloaded", "existing"},
+        stage="response", service=config["service"], request_id=request_id,
+        project=project, file_names=DOWNLOAD_FILES,
+        destination_dir=download_path,
+    )
+    downloaded = PinnedDirectory(download_path)
+    files = open_exact_files(downloaded, DOWNLOAD_FILES)
+    try:
+        if client_result["file_sha256"] != {
+            name: hashlib.sha256(files[name].data).hexdigest()
+            for name in DOWNLOAD_FILES
+        }:
+            fail()
+        validate_manifest(files, config, request_id)
+        copy_response(
+            files, expected_ingress, prepared["ingress_device"],
+            prepared["ingress_inode"],
+        )
+        installed = load_json(run_process(lifecycle, [
+            "target-response-install", *common_lifecycle(config),
+            *candidate_arguments(config),
+        ]))
+        if not isinstance(installed, dict) or installed.get("status") not in {"installed", "existing"}:
+            fail()
+        remove_tree(downloaded, exact=DOWNLOAD_FILES)
+        return "installed" if installed["status"] == "installed" else "existing"
+    finally:
+        for source in files.values():
+            source.close()
+
+
+def acquire_lock(spool: PinnedDirectory) -> int:
+    try:
+        descriptor = os.open(
+            "lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=spool.fd,
+        )
+        os.fchmod(descriptor, 0o600)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
+            or metadata.st_nlink != 1 or metadata.st_size != 0
+        ):
+            os.close(descriptor)
+            fail()
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return descriptor
+    except (OSError, BlockingIOError):
+        fail()
+
+
+def status(command: str, value: str) -> None:
+    print(json.dumps({
+        "schema": 2, "kind": "platform-config-target-local-gitlab-status",
+        "command": command, "status": value,
+    }, sort_keys=True, separators=(",", ":")))
+
+
+class QuietParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> NoReturn:
+        fail()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = QuietParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("command", choices=("request-publish", "response-download"))
+    parser.add_argument("--config", default=DEFAULT_CONFIG)
+    return parser
+
+
+def main() -> None:
+    os.umask(0o077)
+    if os.geteuid() != 0:
+        fail()
+    args = build_parser().parse_args()
+    config_source = PinnedFile(args.config, (0o600,), 65536)
+    pins: list[PinnedFile] = [config_source]
+    spool: PinnedDirectory | None = None
+    lock = -1
+    try:
+        config = validate_config(load_json(config_source.data))
+        request = PinnedFile(str(config["request_helper"]), (0o755,), 16 * MAX_FILE, executable=True)
+        lifecycle = PinnedFile(str(config["lifecycle_helper"]), (0o755,), 16 * MAX_FILE, executable=True)
+        platform = PinnedFile(str(config["platform_pki"]), (0o755,), 64 * MAX_FILE, executable=True)
+        project = PinnedFile(str(config["project_record"]), (0o600,), 8192)
+        token = PinnedFile(str(config["token_file"]), (0o600,), 4096)
+        ca = PinnedFile(str(config["ca_file"]), (0o644,), MAX_FILE)
+        signing = PinnedFile(str(config["request_signing_key"]), (0o600,), MAX_FILE)
+        pins.extend((request, lifecycle, platform, project, token, ca, signing))
+        spool = PinnedDirectory(str(config["spool_root"]))
+        lock = acquire_lock(spool)
+        result = (
+            publish_request(config, spool, request, lifecycle, platform, project)
+            if args.command == "request-publish"
+            else download_response(config, spool, lifecycle, platform, project)
+        )
+        for source in pins:
+            source.recheck()
+        spool.recheck()
+        status(args.command, result)
+    finally:
+        if lock >= 0:
+            os.close(lock)
+        if spool is not None:
+            spool.close()
+        for source in reversed(pins):
+            source.close()
+
+
+def interrupted(_signal: int, _frame: object) -> NoReturn:
+    fail()
+
+
+if __name__ == "__main__":
+    for signal_name in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signal_name, interrupted)
+    try:
+        main()
+    except Exception:
+        print("platform-pki-host-local-gitlab: operation failed", file=sys.stderr)
+        raise SystemExit(1) from None

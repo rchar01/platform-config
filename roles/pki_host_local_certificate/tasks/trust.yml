@@ -106,8 +106,7 @@
           '--trust-binding', 'policy', pki_host_local_certificate_trust_paths['policy'], pki_host_local_certificate_trust_sha256['policy'],
           '--trust-binding', 'requesters.allowed_signers', pki_host_local_certificate_trust_paths['requesters.allowed_signers'], pki_host_local_certificate_trust_sha256['requesters.allowed_signers'],
           '--trust-binding', 'approvers.allowed_signers', pki_host_local_certificate_trust_paths['approvers.allowed_signers'], pki_host_local_certificate_trust_sha256['approvers.allowed_signers'],
-          '--trust-binding', 'responses.allowed_signers', pki_host_local_certificate_trust_paths['responses.allowed_signers'], pki_host_local_certificate_trust_sha256['responses.allowed_signers'],
-          '--trust-binding', 'deployers.allowed_signers', pki_host_local_certificate_trust_paths['deployers.allowed_signers'], pki_host_local_certificate_trust_sha256['deployers.allowed_signers']
+          '--trust-binding', 'responses.allowed_signers', pki_host_local_certificate_trust_paths['responses.allowed_signers'], pki_host_local_certificate_trust_sha256['responses.allowed_signers']
         ]
         + (['--check'] if ansible_check_mode or pki_host_local_certificate_target_trust.stat.exists else [])
       }}

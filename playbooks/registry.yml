@@ -2,11 +2,6 @@
 - name: Configure OCI registry hosts
   hosts: registry
   become: true
-  pre_tasks:
-    - name: Revoke host-local PKI exchange access before service convergence
-      ansible.builtin.include_role:
-        name: pki_host_local_exchange_access
-        tasks_from: revoke
   roles:
     - firewalld
     - podman_host

@@ -37,6 +37,7 @@ REQUEST_FIELDS = (
     "csr_sha256",
     "csr_spki_sha256",
     "current_cert_sha256",
+    "predecessor_request_id",
     "profile",
     "response_principal",
 )
@@ -46,7 +47,6 @@ TRUST_NAMES = (
     "requesters.allowed_signers",
     "approvers.allowed_signers",
     "responses.allowed_signers",
-    "deployers.allowed_signers",
 )
 
 
@@ -70,6 +70,9 @@ class RequestScenario:
         ttl: int = 3600,
         state: Path | None = None,
         pending: Path | None = None,
+        target_local: bool = True,
+        operation: str = "issue",
+        predecessor_request_id: str = "none",
     ) -> list[str | Path]:
         argv: list[str | Path] = [
             self.helper,
@@ -81,15 +84,13 @@ class RequestScenario:
             "--requester-principal",
             "test-target",
             "--operation",
-            "migrate",
+            operation,
             "--profile",
             "server-p384-sha384-v1",
             "--inventory-sha256",
             "a" * 64,
             "--current-cert-sha256",
-            self.current_digest,
-            "--current-cert-path",
-            self.current_cert,
+            "none" if operation == "issue" else self.current_digest,
             "--common-name",
             "registry.test.example",
             "--dns-san",
@@ -105,8 +106,11 @@ class RequestScenario:
             "--request-signing-key",
             self.signing_key,
             "--request-namespace",
-            "platform-pki-csr-request-v1",
+            "platform-pki-csr-request-v2",
         ]
+        if operation != "issue":
+            argv.extend(("--current-cert-path", self.current_cert))
+        argv.extend(("--predecessor-request-id", predecessor_request_id))
         for name in TRUST_NAMES:
             argv.extend(
                 (
@@ -137,6 +141,9 @@ class RequestScenario:
         pending: Path | None = None,
         environment: dict[str, str] | None = None,
         timeout: float = 30.0,
+        target_local: bool = True,
+        operation: str = "issue",
+        predecessor_request_id: str = "none",
     ) -> CommandResult:
         return self.runner.run(
             self.helper_argv(
@@ -144,6 +151,9 @@ class RequestScenario:
                 ttl=ttl,
                 state=state,
                 pending=pending,
+                target_local=target_local,
+                operation=operation,
+                predecessor_request_id=predecessor_request_id,
             ),
             environment=environment,
             timeout=timeout,
@@ -191,7 +201,6 @@ def request_scenario(
         "requesters.allowed_signers": "test-target",
         "approvers.allowed_signers": "test-approver",
         "responses.allowed_signers": "test-response",
-        "deployers.allowed_signers": "test-target",
     }
     for name, principal in signer_principals.items():
         _write_private(trust / name, f"{principal} {algorithm} {payload}\n")
@@ -199,15 +208,13 @@ def request_scenario(
         trust / "policy",
         "\n".join(
             (
-                "schema=2",
-                "request_namespace=platform-pki-csr-request-v1",
-                "approval_namespace=platform-pki-csr-approval-v1",
-                "response_namespace=platform-pki-csr-response-v1",
-                "deployment_namespace=platform-pki-csr-deployment-v1",
+                "schema=3",
+                "request_namespace=platform-pki-csr-request-v2",
+                "approval_namespace=platform-pki-csr-approval-v2",
+                "response_namespace=platform-pki-csr-response-v2",
                 "request_max_age_seconds=604800",
                 "sole_operator_min_delay_seconds=86400",
                 "approval_max_age_seconds=86400",
-                "deployment_max_age_seconds=86400",
                 "clock_skew_seconds=300",
                 "approver_principal=test-approver",
                 "response_principal=test-response",
@@ -513,14 +520,14 @@ def test_created_request_record_is_canonical_and_digest_bound(
             "response_principal",
         )
     } == {
-        "schema": "1",
+        "schema": "2",
         "request_id": output["request_id"],
-        "operation": "migrate",
+        "operation": "issue",
         "service": "registry-test",
         "target": "test-target",
         "requester_principal": "test-target",
         "inventory_sha256": "a" * 64,
-        "current_cert_sha256": scenario.current_digest,
+        "current_cert_sha256": "none",
         "profile": "server-p384-sha384-v1",
         "response_principal": "test-response",
     }
@@ -531,7 +538,7 @@ def test_created_request_record_is_canonical_and_digest_bound(
     assert output["csr_spki_sha256"] == record["csr_spki_sha256"]
 
 
-def test_request_binds_canonical_leaf_from_current_fullchain(
+def test_issue_request_does_not_read_unrelated_current_certificate(
     request_scenario: RequestScenario,
 ) -> None:
     leaf = request_scenario.current_cert.read_bytes()
@@ -548,7 +555,7 @@ def test_request_binds_canonical_leaf_from_current_fullchain(
         ).read_text(encoding="ascii").splitlines()
     )
 
-    assert request["current_cert_sha256"] == request_scenario.current_digest
+    assert request["current_cert_sha256"] == "none"
 
 
 def test_created_request_signature_verifies(
@@ -567,7 +574,7 @@ def test_created_request_signature_verifies(
                 "-I",
                 "test-target",
                 "-n",
-                "platform-pki-csr-request-v1",
+                "platform-pki-csr-request-v2",
                 "-s",
                 pending_dir / "request.sig",
             ]
@@ -644,7 +651,7 @@ def test_idempotent_rerun_selects_existing_request(
     assert existing["request_id"] == created["request_id"]
 
 
-def test_completed_lifecycle_state_preserves_existing_request(
+def test_legacy_evidence_state_is_rejected(
     created_request: tuple[RequestScenario, dict[str, Any]],
 ) -> None:
     scenario, created = created_request
@@ -670,9 +677,7 @@ def test_completed_lifecycle_state_preserves_existing_request(
         "validation-result.sig",
     ):
         _write_private(evidence / name, f"{name}\n")
-    output = _json_result(scenario.run())
-    assert output["status"] == "existing"
-    assert output["request_id"] == created["request_id"]
+    _assert_helper_failure(scenario.run())
 
 
 def test_unresolved_activation_journal_is_rejected(
@@ -787,6 +792,130 @@ def test_pending_request_is_not_current_at_exact_expiry(
     assert is_current(expires - 3600, expires, expires + 1, 3600) is False
 
 
+def test_schema2_request_uses_v2_namespace_and_four_file_trust(
+    request_scenario: RequestScenario,
+) -> None:
+    output = _json_result(request_scenario.run())
+    request = dict(
+        line.split("=", 1)
+        for line in request_scenario.pending.joinpath(output["request_id"], "request")
+        .read_text(encoding="ascii")
+        .splitlines()
+    )
+
+    assert request["schema"] == "2"
+    assert request["predecessor_request_id"] == "none"
+    assert tuple(request) == REQUEST_FIELDS
+
+
+def test_schema2_request_can_follow_retained_terminal_request(
+    request_scenario: RequestScenario,
+) -> None:
+    first = _json_result(request_scenario.run())
+    first_id = first["request_id"]
+    terminal = "\n".join(
+        (
+            "schema=2",
+            "kind=host-local-target-terminal",
+            "service=registry-test",
+            "target=test-target",
+            f"request_id={first_id}",
+            "state=complete",
+            f"artifact_manifest_sha256={'1' * 64}",
+            f"response_sha256={'2' * 64}",
+            f"response_signature_sha256={'3' * 64}",
+            f"certificate_sha256={'4' * 64}",
+            f"served_certificate_sha256={'4' * 64}",
+            f"served_intermediate_sha256={'6' * 64}",
+            "activation_epoch=1800000000",
+            "validation_epoch=1800000001",
+            "",
+        )
+    )
+    _write_private(request_scenario.state / "target-terminal", terminal)
+    history = request_scenario.state / "target-terminal-history"
+    _mkdir_private(history)
+    _write_private(history / first_id, terminal)
+    _write_private(
+        request_scenario.state / "active",
+        "\n".join(
+            (
+                "schema=2",
+                "kind=host-local-active",
+                "service=registry-test",
+                "target=test-target",
+                f"request_id={first_id}",
+                f"artifact_manifest_sha256={'1' * 64}",
+                f"response_sha256={'2' * 64}",
+                f"response_signature_sha256={'3' * 64}",
+                f"certificate_sha256={'4' * 64}",
+                f"certificate_spki_sha256={'5' * 64}",
+                f"chain_sha256={'6' * 64}",
+                f"fullchain_sha256={'7' * 64}",
+                "version_path=/invalid",
+                "version_device=1",
+                "version_inode=1",
+                f"zot_config_sha256={'8' * 64}",
+                "activation_epoch=1800000000",
+                "rollback_deadline_epoch=1800003600",
+                "",
+            )
+        ),
+    )
+    _assert_helper_failure(request_scenario.run(
+        target_local=True,
+        operation="migrate",
+    ))
+    _assert_helper_failure(request_scenario.run(
+        target_local=True,
+        operation="renew",
+        predecessor_request_id="0" * 32,
+    ))
+
+    renewed = _json_result(request_scenario.run(
+        target_local=True,
+        operation="renew",
+        predecessor_request_id=first_id,
+    ))
+    assert renewed["status"] == "created"
+    assert renewed["request_id"] != first_id
+    assert {path.name for path in request_scenario.pending.iterdir()} == {
+        first_id,
+        renewed["request_id"],
+    }
+    existing = _json_result(request_scenario.run(
+        target_local=True,
+        operation="renew",
+        predecessor_request_id=first_id,
+    ))
+    assert existing["status"] == "existing"
+    assert existing["request_id"] == renewed["request_id"]
+    failed_terminal = (
+        terminal.replace(f"request_id={first_id}", f"request_id={renewed['request_id']}")
+        .replace("state=complete", "state=rolled-back")
+        .replace(f"served_certificate_sha256={'4' * 64}", "served_certificate_sha256=none")
+        .replace(f"served_intermediate_sha256={'6' * 64}", "served_intermediate_sha256=none")
+        .replace("validation_epoch=1800000001", "validation_epoch=none")
+    )
+    _write_private(request_scenario.state / "target-terminal", failed_terminal)
+    _write_private(history / renewed["request_id"], failed_terminal)
+    retry = _json_result(request_scenario.run(
+        target_local=True,
+        operation="renew",
+        predecessor_request_id=first_id,
+    ))
+    assert retry["status"] == "created"
+    assert retry["request_id"] not in {first_id, renewed["request_id"]}
+    retained_key = request_scenario.pending / first_id / "tls.key"
+    retained_key.write_bytes(b"corrupted retained key\n")
+    retained_key.chmod(0o600)
+    _assert_helper_failure(request_scenario.run(
+        target_local=True,
+        operation="renew",
+        predecessor_request_id=first_id,
+    ))
+
+
 def test_prepublication_crash_check_is_non_mutating_and_apply_recovers(
     request_scenario: RequestScenario,
 ) -> None:
@@ -826,6 +955,22 @@ def test_postpublication_crash_check_is_non_mutating_and_apply_recovers(
     recovered = _json_result(request_scenario.run(state=state, pending=pending))
     assert recovered["status"] == "existing"
     assert not os.path.lexists(state / "request.journal")
+
+
+def test_schema1_request_journal_is_rejected_without_mutation(
+    request_scenario: RequestScenario,
+) -> None:
+    state = request_scenario.work / "schema1-journal-state"
+    pending = request_scenario.work / "schema1-journal-pending"
+    _crash_after_publication(request_scenario, state, pending)
+    journal = state / "request.journal"
+    journal.write_bytes(journal.read_bytes().replace(b"schema=2\n", b"schema=1\n", 1))
+    journal.chmod(0o600)
+    before = _tree_snapshot(request_scenario.work)
+
+    _assert_helper_failure(request_scenario.run(state=state, pending=pending))
+
+    assert _tree_snapshot(request_scenario.work) == before
 
 
 @pytest.mark.serial
@@ -1103,186 +1248,3 @@ def test_helper_stdout_redacts_private_signing_key(
     _assert_private_material_absent(
         request_scenario, failure.stdout + failure.stderr
     )
-
-
-@dataclass(frozen=True)
-class RoleScenario:
-    request: RequestScenario
-    variables: Path
-    state: Path
-    pending: Path
-    helper: Path
-    lifecycle_helper: Path
-    playbook: Path
-    pythonpath: Path
-    helper_digest: str
-
-    def run(self, *, check: bool = False) -> CommandResult:
-        playbook_argv: list[str | Path] = ["ansible-playbook"]
-        if check:
-            playbook_argv.append("--check")
-        playbook_argv.extend(
-            (
-                "-i",
-                "localhost,",
-                "-e",
-                f"@{self.variables}",
-                self.playbook,
-            )
-        )
-        return self.request.runner.run(
-            [
-                "unshare",
-                "-m",
-                "--",
-                "sh",
-                "-c",
-                'mount --bind "$1" /usr/local/libexec && shift && exec "$@"',
-                "sh",
-                self.lifecycle_helper.parent,
-                *playbook_argv,
-            ],
-            environment={"PYTHONPATH": str(self.pythonpath)},
-            timeout=60,
-        )
-
-
-@pytest.fixture
-def role_scenario(
-    request_scenario: RequestScenario, repo_root: Path
-) -> RoleScenario:
-    request = request_scenario
-    public = request.runner.run(
-        ["ssh-keygen", "-y", "-f", request.signing_key]
-    ).assert_success().stdout.strip().split()
-    assert len(public) >= 2
-    for name in ("requesters.allowed_signers", "deployers.allowed_signers"):
-        _write_private(request.trust / name, f"localhost {public[0]} {public[1]}\n")
-
-    state = request.work / "role-state"
-    pending = request.work / "tls-pending"
-    versions = request.work / "tls-versions"
-    exchange = request.work / "exchange"
-    helper = request.work / "bin/platform-pki-host-local-request"
-    lifecycle_helper = request.work / "bin/platform-pki-host-local-lifecycle"
-    role_trust = state / "trust/reviewed-v1"
-    _mkdir_private(state)
-    _mkdir_private(state / "trust")
-    _mkdir_private(role_trust)
-    _mkdir_private(exchange)
-    for name in TRUST_NAMES:
-        shutil.copyfile(request.trust / name, role_trust / name)
-        (role_trust / name).chmod(0o600)
-    (state / "lock").touch()
-    (state / "lock").chmod(0o600)
-    helper.parent.mkdir()
-    helper.parent.chmod(0o755)
-    shutil.copyfile(request.helper, helper)
-    helper.chmod(0o755)
-    shutil.copyfile(
-        repo_root
-        / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle",
-        lifecycle_helper,
-    )
-    lifecycle_helper.chmod(0o755)
-
-    variables = request.work / "role-vars.json"
-    trust_digests = {name: _sha256(request.trust / name) for name in TRUST_NAMES}
-    role_variables = {
-        "ansible_remote_tmp": f"{state}-ansible-tmp",
-        "pki_host_local_certificate_service": "registry-test",
-        "pki_host_local_certificate_target": "localhost",
-        "pki_host_local_certificate_operation": "migrate",
-        "pki_host_local_certificate_inventory_sha256": "a" * 64,
-        "pki_host_local_certificate_current_cert_sha256": request.current_digest,
-        "pki_host_local_certificate_current_cert_path": str(request.current_cert),
-        "pki_host_local_certificate_requester_principal": "localhost",
-        "pki_host_local_certificate_response_principal": "test-response",
-        "pki_host_local_certificate_common_name": "registry.test.example",
-        "pki_host_local_certificate_dns_sans": [
-            "registry.test.example",
-            "localhost",
-        ],
-        "pki_host_local_certificate_ip_sans": ["192.0.2.61"],
-        "pki_host_local_certificate_validity_days": 397,
-        "pki_host_local_certificate_request_ttl_seconds": 3600,
-        "pki_host_local_certificate_request_signing_key_path": str(
-            request.signing_key
-        ),
-        "pki_host_local_certificate_trust_id": "reviewed-v1",
-        "pki_host_local_certificate_state_root": str(state),
-        "pki_host_local_certificate_pending_root": str(pending),
-        "pki_host_local_certificate_versions_root": str(versions),
-        "pki_host_local_certificate_request_helper_path": str(helper),
-        "pki_host_local_certificate_lifecycle_helper_path": (
-            "/usr/local/libexec/platform-pki-host-local-lifecycle"
-        ),
-        "pki_host_local_certificate_controller_exchange_root": str(
-            exchange
-        ),
-        "pki_host_local_certificate_exchange_mode": "controller-local",
-        "pki_host_local_certificate_transport": "sftp",
-        "pki_host_local_certificate_transport_host_key_sha256": "b" * 64,
-        "pki_host_local_certificate_trust_paths": {
-            name: str(role_trust / name) for name in TRUST_NAMES
-        },
-        "pki_host_local_certificate_trust_sources": {
-            name: str(request.trust / name) for name in TRUST_NAMES
-        },
-        "pki_host_local_certificate_trust_sha256": trust_digests,
-    }
-    variables.write_text(
-        json.dumps(role_variables, sort_keys=True), encoding="utf-8"
-    )
-    variables.chmod(0o600)
-    return RoleScenario(
-        request=request,
-        variables=variables,
-        state=state,
-        pending=pending,
-        helper=helper,
-        lifecycle_helper=lifecycle_helper,
-        playbook=(
-            repo_root / "tests/fixtures/pki-host-local-request-role/integration.yml"
-        ),
-        pythonpath=repo_root,
-        helper_digest=_sha256(helper),
-    )
-
-
-def test_ansible_role_check_mode_is_non_mutating(
-    role_scenario: RoleScenario,
-) -> None:
-    role_scenario.run(check=True).assert_success()
-    assert not os.path.lexists(role_scenario.pending)
-    assert _sha256(role_scenario.helper) == role_scenario.helper_digest
-    assert {path.name for path in role_scenario.state.iterdir()} == {"lock", "trust"}
-
-
-def test_ansible_role_apply_creates_one_protected_request(
-    role_scenario: RoleScenario,
-) -> None:
-    result = role_scenario.run().assert_success()
-    _assert_private_material_absent(
-        role_scenario.request, result.stdout + result.stderr
-    )
-    assert os.access(role_scenario.helper, os.X_OK)
-    requests = [
-        path
-        for path in role_scenario.pending.iterdir()
-        if path.is_dir() and re.fullmatch(r"[0-9a-f]{32}", path.name)
-    ]
-    assert len(requests) == 1
-    assert (requests[0] / "tls.key").is_file()
-    assert not os.path.lexists(role_scenario.request.work / "tls.key")
-
-
-def test_ansible_role_second_apply_is_idempotent(
-    role_scenario: RoleScenario,
-) -> None:
-    role_scenario.run().assert_success()
-    result = role_scenario.run().assert_success()
-    _assert_private_material_absent(
-        role_scenario.request, result.stdout + result.stderr
-    )
-    assert re.search(r"changed=0.*failed=0", result.stdout)

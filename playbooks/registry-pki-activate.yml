@@ -1,14 +1,10 @@
 ---
-- name: Activate one authenticated host-local registry certificate response
+- name: Download and activate the target-local registry certificate response
   hosts: registry
   become: true
   gather_facts: false
-  vars:
-    pki_host_local_certificate_activation_action: finalize
-    pki_host_local_certificate_activation_result: activated
-    pki_host_local_certificate_exchange_mode: direct
   tasks:
-    - name: Run structurally fixed registry certificate activation boundary
+    - name: Run structurally fixed target-local response activation
       ansible.builtin.include_role:
         name: pki_host_local_certificate
-        tasks_from: activate
+        tasks_from: response_activate

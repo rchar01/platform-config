@@ -2,7 +2,7 @@
 - name: Initialize Zot TLS custody to exact managed paths
   ansible.builtin.set_fact:
     zot_registry_tls_effective_custody: >-
-      {{ 'dormant' if (pki_host_local_certificate_operation | default('migrate', true)) == 'issue' else 'managed' }}
+      {{ 'dormant' if (pki_host_local_certificate_operation | default('issue', true)) == 'issue' else 'managed' }}
     zot_registry_tls_effective_cert_path: "{{ zot_registry_tls_cert_path }}"
     zot_registry_tls_effective_key_path: "{{ zot_registry_tls_key_path }}"
 
@@ -34,7 +34,7 @@
       checksum: true
     - name: helper
       path: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
-      checksum: true
+      checksum: false
     - name: managed_cert
       path: "{{ zot_registry_tls_cert_path }}"
       checksum: false
@@ -59,8 +59,7 @@
   ansible.builtin.stat:
     path: "{{ role_path }}/../pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
     follow: false
-    get_checksum: true
-    checksum_algorithm: sha256
+    get_checksum: false
     get_mime: false
   delegate_to: localhost
   become: false
@@ -69,11 +68,11 @@
   register: zot_registry_tls_lifecycle_helper_source
   when: zot_registry_tls_enabled | bool
 
-- name: Validate trusted Zot TLS lifecycle helper upgrade state
+- name: Validate Zot TLS lifecycle helper paths
   ansible.builtin.import_tasks: validate_tls_lifecycle_helper.yml
   when: zot_registry_tls_enabled | bool
 
-- name: Upgrade trusted predecessor Zot TLS lifecycle helper
+- name: Install Zot TLS lifecycle helper
   ansible.builtin.copy:
     src: "{{ role_path }}/../pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
     dest: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
@@ -82,26 +81,17 @@
     mode: "0755"
   when:
     - zot_registry_tls_enabled | bool
-    - not ansible_check_mode
-    - zot_registry_tls_custody_state.helper.exists
-    - >-
-      zot_registry_tls_custody_state.helper.checksum in
-      [
-        '3044058c3d4884a3ab1d51f1dc128a5c84407e387d2805fa99087c65d98eb280',
-        '9b6c62c6380fb1ab00e0a10dc5905ec4f88af2b57b503c1b44ec4db497b68fb3'
-      ]
 
 - name: Refresh installed Zot TLS lifecycle helper state
   ansible.builtin.stat:
     path: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
     follow: false
-    get_checksum: true
-    checksum_algorithm: sha256
+    get_checksum: false
     get_mime: false
   register: zot_registry_tls_lifecycle_helper_refreshed
   when: zot_registry_tls_enabled | bool
 
-- name: Require exact current Zot TLS lifecycle helper before custody selection
+- name: Require safe installed Zot TLS lifecycle helper before custody selection
   ansible.builtin.assert:
     that:
       - zot_registry_tls_lifecycle_helper_refreshed.stat.exists
@@ -110,10 +100,9 @@
       - zot_registry_tls_lifecycle_helper_refreshed.stat.uid == 0
       - zot_registry_tls_lifecycle_helper_refreshed.stat.gid == 0
       - zot_registry_tls_lifecycle_helper_refreshed.stat.mode == '0755'
-      - zot_registry_tls_lifecycle_helper_refreshed.stat.checksum == '3d446de2d3e56314ca70e881b5354a2c341566f17a6e4472f58faced92daa7c0'
     fail_msg: >-
-      Initialized Zot TLS lifecycle state requires the exact current shipped
-      root:root 0755 helper before custody selection.
+      Initialized Zot TLS lifecycle state requires a root:root 0755 regular
+      helper before custody selection.
   when:
     - zot_registry_tls_enabled | bool
     - zot_registry_tls_custody_state.state_root.exists
@@ -135,14 +124,14 @@
               == zot_registry_tls_managed_config_sha256
         )
       - >-
-        (pki_host_local_certificate_operation | default('migrate', true)) != 'issue'
+        (pki_host_local_certificate_operation | default('issue', true)) != 'issue'
         or (
           not zot_registry_tls_custody_state.managed_cert.exists
           and not zot_registry_tls_custody_state.managed_key.exists
         )
-      - (pki_host_local_certificate_operation | default('migrate', true)) != 'renew'
+      - (pki_host_local_certificate_operation | default('issue', true)) != 'renew'
     fail_msg: >-
-      An absent lifecycle root requires issue or migrate, absent lifecycle data
+      An absent lifecycle root requires issue, absent lifecycle data
       roots, exact staged configuration when present, and no TLS destination
       material for fresh issue.
   when:
@@ -165,7 +154,7 @@
       - --target
       - "{{ zot_registry_tls_host_local_target }}"
       - --operation
-      - "{{ pki_host_local_certificate_operation | default('migrate', true) }}"
+      - "{{ pki_host_local_certificate_operation | default('issue', true) }}"
       - --zot-config
       - "{{ zot_registry_tls_host_local_zot_config_path }}"
       - --managed-cert

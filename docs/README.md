@@ -35,9 +35,8 @@ and other secrets belong outside Git.
 
 - [Firewalld Readiness And Enablement](firewalld.md): Inactive baseline, rule
   ownership, offline staging, canary activation, validation, rollout, and rollback.
-- [Same-Workstation PKI Layout](pki-local-layout.md): Canonical signer,
-  exchange, offline-workspace, key-custody, retention, compatibility, and legacy
-  path map.
+- [Target-Local PKI Layout](pki-local-layout.md): Target-owned lifecycle,
+  trust, token, package, and outside-Git custody boundaries.
 
 ## Services
 
@@ -48,17 +47,15 @@ and other secrets belong outside Git.
   first managed runner from itself with the repository container, self-SSH,
   private inventory, storage gates, and focused convergence.
 - [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
-  actor-labeled Bootstrap, Request, Gate 1, Activate/Evidence, Gate 2, Complete,
-  and fixed-cleanup sequence with exact transport and digest provenance.
-- [PKI Exchange Setup](pki-exchange-setup.md): Prepare protected transfer-station
-  storage, the GitLab project and credentials, pinned target SSH, offline
-  workspaces, and optional CI publication.
+  two-route target-local request publication and response activation workflow.
+- [PKI Exchange Setup](pki-exchange-setup.md): Prepare the target-local token,
+  reviewed public inputs, and one private GitLab Generic Package project.
 - [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.
 - [GitLab PKI Package Exchange](pki-gitlab-package.md): Integration guidance for
-  the `platform-tools` five-family package command, actor-neutral coordinates,
-  publication locking, and remaining runtime gates.
+  schema-2 request/response payloads, target-local token custody, and the live
+  GitLab rollout gate.
 - [Kubernetes Bastion](k8s-bastion.md): Bastion prerequisites, runtime source,
   access configuration, installation, issuer staging validation, smoke tests,
   and reconciliation.

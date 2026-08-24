@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Replaced the registry PKI command surface with the coordinate-free
+  `registry-pki-request-publish` and `registry-pki-response-activate` routes.
+- Removed direct and controller-local exchange, SSH exchange access,
+  runner-validation, evidence/outcome, candidate/finalization, and
+  operator-supplied package-coordinate interfaces.
+- Rejected schema-1 lifecycle state and require schema-2 request/response records
+  with exact schema-3 trust.
+
+### Security
+
+- Added a required SHA-256 binding and descriptor-pinned controller source for
+  the root-installed target-local `platform-pki` transport client.
+- Kept GitLab token bytes target-local and outside Ansible variables, facts,
+  output, arguments, and environment variables.
+
+### Changed
+
+- Moved request publication and exact response download behind a fixed
+  target-local GitLab facade with protected spools and local activation recovery.
+
 ## [3.1.0] - 2026-08-21
 
 ### Added

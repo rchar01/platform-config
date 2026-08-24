@@ -2,6 +2,30 @@
 
 This file gives a short, release-oriented view of what changed between versions.
 
+## Unreleased
+
+This update replaces the multi-route direct-exchange registry PKI workflow with
+two target-local GitLab package routes.
+
+### Upgrade Notes
+
+- Replace all registry PKI request, direct-transfer, activation, evidence,
+  outcome, runner-validation, and manual-coordinate targets with
+  `registry-pki-request-publish` and `registry-pki-response-activate`.
+- Reset or recreate incompatible schema-1 lifecycle state; the target-local
+  workflow accepts only schema-2 requests and responses and schema-3 trust.
+- Supply `pki_host_local_certificate_platform_pki_sha256` with the reviewed
+  digest of an outside-repository, mode-`0600` transport-client source.
+
+### Changes
+
+- Publish requests and download exact responses directly from the target through
+  a fixed GitLab facade without carrying package bytes through Ansible.
+- Preserve target-local private keys, authenticated activation rollback, strict
+  local Zot validation, protected spools, and pre-provisioned token isolation.
+- Descriptor-pin the reviewed `platform-pki` transport client before installing
+  it as a root-owned target executable.
+
 ## v3.1.0 - 2026-08-21
 
 This release adds predecessor-free host-local certificate issuance for fresh Zot

@@ -49,8 +49,8 @@
       - zot_registry_tls_host_local_target | type_debug == 'str'
       - zot_registry_tls_host_local_target is match('^[a-z0-9][a-z0-9.-]{0,252}$')
       - zot_registry_tls_host_local_target == inventory_hostname
-      - (pki_host_local_certificate_operation | default('migrate', true)) | type_debug == 'str'
-      - (pki_host_local_certificate_operation | default('migrate', true)) in ['issue', 'migrate', 'renew']
+      - (pki_host_local_certificate_operation | default('issue', true)) | type_debug == 'str'
+      - (pki_host_local_certificate_operation | default('issue', true)) in ['issue', 'renew']
       - zot_registry_tls_host_local_zot_config_path | type_debug == 'str'
       - zot_registry_tls_host_local_zot_config_path == '/etc/zot/config.json'
       - zot_registry_config_path == zot_registry_tls_host_local_zot_config_path
