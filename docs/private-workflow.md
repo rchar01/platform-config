@@ -145,6 +145,27 @@ PLATFORM_CONFIG_INVENTORY=../platform-private/config/inventories/homelab/hosts.y
 ./scripts/run-dev.sh --inventory ../platform-private/config/inventories/dev/hosts.yml --check
 ```
 
+## Rocky Repository Policy
+
+Repository files remain externally managed. Private inventory may enable the
+`rocky_repository_policy` role with the exact effective DNF release version,
+repository IDs, HTTPS origins, local signing-key URLs, and signature-check
+settings. The policy must not contain credentials. Package-consuming roles
+invoke this read-only gate before DNF operations; they do not repair drift.
+
+Validate one host without running package roles:
+
+```bash
+make check ENV=dev \
+  PLAYBOOK=playbooks/maintenance/rocky-repository-policy.yml \
+  LIMIT=dev-example-01
+```
+
+This check reads configured DNF repositories without refreshing metadata. It
+does not prove repository reachability, package availability, immutable content,
+or signing-key bytes. Keep policy disabled on a host until its exact repository
+state and SSH identity have been reviewed.
+
 ## Kubernetes Bastion Inputs
 
 Private inventory should point the bastion role at private non-secret files and outside-Git secret files:

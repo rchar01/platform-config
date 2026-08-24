@@ -1,0 +1,74 @@
+---
+- name: Require a boolean Rocky repository policy selector
+  ansible.builtin.assert:
+    that:
+      - rocky_repository_policy_enabled | type_debug == 'bool'
+    fail_msg: rocky_repository_policy_enabled must be a boolean.
+
+- name: Validate the effective Rocky repository policy
+  when: rocky_repository_policy_enabled
+  block:
+    - name: Require an exact Rocky release and repository policy
+      ansible.builtin.assert:
+        that:
+          - rocky_repository_policy_releasever | type_debug == 'str'
+          - rocky_repository_policy_releasever | length > 0
+          - rocky_repository_policy | type_debug == 'dict'
+          - rocky_repository_policy | length > 0
+        fail_msg: >-
+          Enabled Rocky repository validation requires an exact releasever and
+          a nonempty exact repository policy.
+
+    - name: Validate repositories through a protected temporary helper
+      block:
+        - name: Create a private repository policy validation directory
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: platform-rocky-repository-policy.
+          register: rocky_repository_policy_tempdir
+          changed_when: false
+          check_mode: false
+
+        - name: Stage the repository policy validator
+          ansible.builtin.copy:
+            src: platform-rocky-repository-policy
+            dest: "{{ rocky_repository_policy_tempdir.path }}/validator"
+            owner: root
+            group: root
+            mode: "0700"
+          changed_when: false
+          check_mode: false
+
+        - name: Compare enabled Rocky repositories with private policy
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ rocky_repository_policy_tempdir.path }}/validator"
+              - validate
+              - --releasever
+              - "{{ rocky_repository_policy_releasever }}"
+            stdin: "{{ rocky_repository_policy | to_json }}"
+            stdin_add_newline: false
+          register: rocky_repository_policy_validation
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          no_log: true
+
+        - name: Require exact effective Rocky repository policy
+          ansible.builtin.assert:
+            that:
+              - rocky_repository_policy_validation.rc == 0
+            fail_msg: >-
+              {{
+                rocky_repository_policy_validation.stderr
+                | default('Rocky repository policy validation failed.', true)
+              }}
+      always:
+        - name: Remove repository policy validation directory
+          ansible.builtin.file:
+            path: "{{ rocky_repository_policy_tempdir.path }}"
+            state: absent
+          when: rocky_repository_policy_tempdir.path is defined
+          changed_when: false
+          check_mode: false

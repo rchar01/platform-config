@@ -1,0 +1,7 @@
+---
+- name: Validate effective Rocky repository policy
+  hosts: rocky
+  gather_facts: false
+  become: true
+  roles:
+    - rocky_repository_policy

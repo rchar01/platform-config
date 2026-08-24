@@ -176,6 +176,11 @@ The current runner path expects:
   firewalld, its Python bindings, the DNF versionlock plugin, and the exact
   Podman NEVRA.
 
+When private inventory enables `rocky_repository_policy`, every package-consuming
+role first validates the exact effective DNF release version, repository IDs,
+HTTPS origins, local signing keys, and signature-check settings. The validation
+does not edit repository files or refresh metadata.
+
 Run any OS migration that reboots and performs post-reboot verification from an
 external controller. A development container on the managed VM is terminated by
 that reboot and cannot reconnect to verify the new release or publish the

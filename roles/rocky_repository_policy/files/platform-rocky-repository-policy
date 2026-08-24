@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import urllib.parse
+from typing import Any
+
+
+POLICY_FIELDS = {
+    "baseurl",
+    "gpgcheck",
+    "gpgkey",
+    "metalink",
+    "mirrorlist",
+    "repo_gpgcheck",
+}
+REPOSITORY_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]*")
+SENSITIVE_QUERY_KEY = re.compile(
+    r"(?:auth|credential|key|pass|secret|signature|token)", re.IGNORECASE
+)
+
+
+class PolicyError(RuntimeError):
+    pass
+
+
+def _contains_control(value: str) -> bool:
+    return any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    )
+
+
+def _validate_https_url(repository_id: str, field: str, value: str) -> None:
+    if _contains_control(value):
+        raise PolicyError(f"repository {repository_id} has an invalid {field}")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        parsed.port
+    except ValueError as error:
+        raise PolicyError(
+            f"repository {repository_id} has an invalid {field}"
+        ) from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise PolicyError(f"repository {repository_id} has an unsafe {field}")
+    if field == "baseurl" and parsed.query:
+        raise PolicyError(f"repository {repository_id} has an unsafe {field}")
+    if any(
+        SENSITIVE_QUERY_KEY.search(key)
+        for key, _value in urllib.parse.parse_qsl(
+            parsed.query, keep_blank_values=True
+        )
+    ):
+        raise PolicyError(f"repository {repository_id} has credentials in {field}")
+
+
+def _validate_gpgkey(repository_id: str, value: str) -> None:
+    if _contains_control(value):
+        raise PolicyError(f"repository {repository_id} has an invalid gpgkey")
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme != "file"
+        or parsed.netloc
+        or not parsed.path.startswith("/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise PolicyError(
+            f"repository {repository_id} must use an absolute local gpgkey"
+        )
+
+
+def decode_policy(value: str) -> dict[str, dict[str, Any]]:
+    try:
+        policy = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise PolicyError("repository policy is not valid JSON") from error
+    if not isinstance(policy, dict) or not policy:
+        raise PolicyError("repository policy must be a nonempty object")
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for repository_id, expected in policy.items():
+        if not isinstance(repository_id, str) or not REPOSITORY_ID.fullmatch(
+            repository_id
+        ):
+            raise PolicyError("repository policy contains an invalid ID")
+        if not isinstance(expected, dict) or set(expected) != POLICY_FIELDS:
+            raise PolicyError(
+                f"repository policy fields are invalid for {repository_id}"
+            )
+        for field in ("baseurl", "gpgkey"):
+            values = expected[field]
+            if not isinstance(values, list) or not all(
+                isinstance(item, str) for item in values
+            ):
+                raise PolicyError(
+                    f"repository policy {field} is invalid for {repository_id}"
+                )
+        for field in ("metalink", "mirrorlist"):
+            if expected[field] is not None and not isinstance(expected[field], str):
+                raise PolicyError(
+                    f"repository policy {field} is invalid for {repository_id}"
+                )
+        for field in ("gpgcheck", "repo_gpgcheck"):
+            if type(expected[field]) is not bool:
+                raise PolicyError(
+                    f"repository policy {field} is invalid for {repository_id}"
+                )
+        if not expected["gpgcheck"]:
+            raise PolicyError(
+                f"repository {repository_id} must enforce package signatures"
+            )
+        origin_count = sum(
+            bool(expected[field])
+            for field in ("baseurl", "metalink", "mirrorlist")
+        )
+        if origin_count != 1:
+            raise PolicyError(
+                f"repository {repository_id} must use exactly one origin method"
+            )
+        for origin in expected["baseurl"]:
+            _validate_https_url(repository_id, "baseurl", origin)
+        for field in ("metalink", "mirrorlist"):
+            if expected[field]:
+                _validate_https_url(repository_id, field, expected[field])
+        if not expected["gpgkey"]:
+            raise PolicyError(f"repository {repository_id} requires a local gpgkey")
+        for key in expected["gpgkey"]:
+            _validate_gpgkey(repository_id, key)
+
+        normalized[repository_id] = {
+            "baseurl": sorted(expected["baseurl"]),
+            "gpgcheck": expected["gpgcheck"],
+            "gpgkey": sorted(expected["gpgkey"]),
+            "metalink": expected["metalink"],
+            "mirrorlist": expected["mirrorlist"],
+            "repo_gpgcheck": expected["repo_gpgcheck"],
+        }
+    return normalized
+
+
+def repository_record(repository: Any) -> dict[str, Any]:
+    return {
+        "baseurl": sorted(str(value) for value in repository.baseurl),
+        "gpgcheck": bool(repository.gpgcheck),
+        "gpgkey": sorted(str(value) for value in repository.gpgkey),
+        "metalink": str(repository.metalink) if repository.metalink else None,
+        "mirrorlist": str(repository.mirrorlist) if repository.mirrorlist else None,
+        "repo_gpgcheck": bool(repository.repo_gpgcheck),
+    }
+
+
+def validate_releasever(expected: str, actual: str) -> None:
+    if not expected or _contains_control(expected):
+        raise PolicyError("expected DNF releasever is invalid")
+    if expected != actual:
+        raise PolicyError("effective DNF releasever differs")
+
+
+def collect_repositories() -> tuple[str, dict[str, dict[str, Any]]]:
+    try:
+        import dnf
+
+        base = dnf.Base()
+        try:
+            base.conf.read()
+            base.conf.substitutions.update_from_etc(
+                base.conf.installroot, base.conf.varsdir
+            )
+            base.read_all_repos()
+            releasever = str(base.conf.releasever)
+            repositories = {
+                repository.id: repository_record(repository)
+                for repository in base.repos.values()
+                if repository.enabled
+            }
+        finally:
+            base.close()
+    except Exception as error:
+        raise PolicyError(
+            f"DNF repository inspection failed ({type(error).__name__})"
+        ) from error
+    return releasever, dict(sorted(repositories.items()))
+
+
+def _require_credential_free_observation(
+    repositories: dict[str, dict[str, Any]],
+) -> None:
+    for repository_id, record in repositories.items():
+        for field in ("baseurl", "gpgkey"):
+            values = record[field]
+            for value in values:
+                parsed = urllib.parse.urlsplit(value)
+                if (
+                    parsed.username is not None
+                    or parsed.password is not None
+                    or any(
+                        SENSITIVE_QUERY_KEY.search(key)
+                        for key, _query_value in urllib.parse.parse_qsl(
+                            parsed.query, keep_blank_values=True
+                        )
+                    )
+                ):
+                    raise PolicyError(
+                        f"repository {repository_id} contains credentials"
+                    )
+        for field in ("metalink", "mirrorlist"):
+            value = record[field]
+            if value:
+                parsed = urllib.parse.urlsplit(value)
+                if (
+                    parsed.username is not None
+                    or parsed.password is not None
+                    or any(
+                        SENSITIVE_QUERY_KEY.search(key)
+                        for key, _query_value in urllib.parse.parse_qsl(
+                            parsed.query, keep_blank_values=True
+                        )
+                    )
+                ):
+                    raise PolicyError(
+                        f"repository {repository_id} contains credentials"
+                    )
+
+
+def validate_repositories(
+    expected: dict[str, dict[str, Any]],
+    actual: dict[str, dict[str, Any]],
+) -> None:
+    missing = sorted(set(expected) - set(actual))
+    unexpected = sorted(set(actual) - set(expected))
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing IDs: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected IDs: {', '.join(unexpected)}")
+        raise PolicyError("enabled repository set differs (" + "; ".join(details) + ")")
+
+    mismatches = [
+        f"{repository_id}.{field}"
+        for repository_id in sorted(expected)
+        for field in sorted(POLICY_FIELDS)
+        if expected[repository_id][field] != actual[repository_id][field]
+    ]
+    if mismatches:
+        raise PolicyError(
+            "enabled repository fields differ: " + ", ".join(mismatches)
+        )
+
+
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Inspect or validate effective enabled Rocky repositories."
+    )
+    subparsers = parser.add_subparsers(dest="operation", required=True)
+    subparsers.add_parser("inspect")
+    validate_parser = subparsers.add_parser("validate")
+    validate_parser.add_argument("--releasever", required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_arguments(argv)
+    try:
+        expected = (
+            decode_policy(sys.stdin.read())
+            if args.operation == "validate"
+            else None
+        )
+        releasever, repositories = collect_repositories()
+        if args.operation == "inspect":
+            _require_credential_free_observation(repositories)
+            output = {"releasever": releasever, "repositories": repositories}
+        else:
+            assert expected is not None
+            validate_releasever(args.releasever, releasever)
+            validate_repositories(expected, repositories)
+            output = {
+                "releasever": releasever,
+                "repository_ids": sorted(repositories),
+            }
+    except PolicyError as error:
+        print(f"platform-rocky-repository-policy: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(output, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
