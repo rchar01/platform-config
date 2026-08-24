@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+
+MANIFEST_NAME = ".platform-runner-self-bootstrap-export.json"
+SCHEMA = "platform.runner-self-bootstrap-export.v1"
+REPOSITORIES = ("public", "private")
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+class ManifestError(Exception):
+    pass
+
+
+def git(source: Path, *arguments: str) -> bytes:
+    try:
+        return subprocess.run(
+            ["git", "-C", source, *arguments],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.decode("utf-8", errors="replace").strip()
+        raise ManifestError(message or "Git command failed") from error
+
+
+def valid_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise ManifestError("manifest entry has an invalid path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+        raise ManifestError(f"unsafe manifest path: {value!r}")
+    if value == MANIFEST_NAME:
+        raise ManifestError(f"reserved manifest path is tracked: {value}")
+    return value
+
+
+def scan_tree(root: Path) -> tuple[dict[str, tuple[str, Path]], list[Path]]:
+    entries: dict[str, tuple[str, Path]] = {}
+    directories = [root]
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for child in os.scandir(directory):
+            path = Path(child.path)
+            relative = path.relative_to(root).as_posix()
+            metadata = child.stat(follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                directories.append(path)
+                pending.append(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                entries[relative] = ("file", path)
+            elif stat.S_ISLNK(metadata.st_mode):
+                entries[relative] = ("symlink", path)
+            else:
+                raise ManifestError(f"unsupported exported file type: {relative}")
+    return entries, directories
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ManifestError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def source_entries(source: Path, tree: Path) -> tuple[str, list[dict[str, str]]]:
+    worktree_root = Path(
+        git(source, "rev-parse", "--show-toplevel").decode("utf-8").strip()
+    ).resolve(strict=True)
+    if worktree_root != source:
+        raise ManifestError("source path is not the Git worktree root")
+    commit = git(source, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
+    if not COMMIT_PATTERN.fullmatch(commit):
+        raise ManifestError("source HEAD is not a supported Git object ID")
+
+    raw_records = git(source, "ls-tree", "-rz", "--full-tree", "-r", "HEAD")
+    records: list[tuple[str, str, str, str]] = []
+    for raw_record in raw_records.split(b"\0"):
+        if not raw_record:
+            continue
+        try:
+            raw_metadata, raw_path = raw_record.split(b"\t", 1)
+            mode, object_type, object_id = raw_metadata.decode("ascii").split(" ")
+            path = valid_path(raw_path.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ManifestError("source tree contains an unsupported path") from error
+        if mode not in {"100644", "100755", "120000", "160000"}:
+            raise ManifestError(f"unsupported Git mode for {path}: {mode}")
+        if (mode == "160000") != (object_type == "commit"):
+            raise ManifestError(f"unexpected Git object type for {path}")
+        if mode != "160000" and object_type != "blob":
+            raise ManifestError(f"unexpected Git object type for {path}")
+        records.append((path, mode, object_type, object_id))
+
+    actual, directories = scan_tree(tree)
+    expected_files = {path for path, mode, _, _ in records if mode != "160000"}
+    if set(actual) != expected_files:
+        missing = sorted(expected_files - set(actual))
+        extra = sorted(set(actual) - expected_files)
+        raise ManifestError(
+            f"exported source does not match Git archive; missing={missing!r} extra={extra!r}"
+        )
+
+    os.chmod(tree, 0o700)
+    for directory in directories:
+        os.chmod(directory, 0o700)
+
+    entries: list[dict[str, str]] = []
+    for path, mode, _, object_id in sorted(records):
+        if mode == "160000":
+            entries.append(
+                {"commit": object_id, "mode": mode, "path": path, "type": "gitlink"}
+            )
+            continue
+
+        actual_type, actual_path = actual[path]
+        if mode == "120000":
+            if actual_type != "symlink":
+                raise ManifestError(f"expected tracked symlink: {path}")
+            target = os.readlink(actual_path)
+            try:
+                target.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ManifestError(f"symlink target is not UTF-8: {path}") from error
+            entries.append(
+                {"mode": mode, "path": path, "target": target, "type": "symlink"}
+            )
+            continue
+
+        if actual_type != "file":
+            raise ManifestError(f"expected tracked regular file: {path}")
+        export_mode = 0o700 if mode == "100755" else 0o600
+        os.chmod(actual_path, export_mode)
+        entries.append(
+            {
+                "mode": mode,
+                "path": path,
+                "sha256": file_digest(actual_path),
+                "type": "file",
+            }
+        )
+
+    return commit, entries
+
+
+def create_manifest(repository: str, source: Path, tree: Path) -> None:
+    source = source.resolve(strict=True)
+    tree = tree.resolve(strict=True)
+    manifest_path = tree / MANIFEST_NAME
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raise ManifestError(f"reserved manifest already exists: {manifest_path}")
+
+    commit, entries = source_entries(source, tree)
+    manifest = {
+        "commit": commit,
+        "entries": entries,
+        "repository": repository,
+        "schema": SCHEMA,
+    }
+    with manifest_path.open("x", encoding="utf-8") as stream:
+        json.dump(manifest, stream, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+    os.chmod(manifest_path, 0o600)
+
+
+def load_manifest(path: Path) -> dict[str, object]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as error:
+        raise ManifestError("export manifest is missing") from error
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise ManifestError("export manifest must be a regular file with mode 0600")
+    try:
+        with path.open(encoding="utf-8") as stream:
+            manifest = json.load(stream, object_pairs_hook=reject_duplicate_keys)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ManifestError("export manifest is not valid UTF-8 JSON") from error
+    if not isinstance(manifest, dict):
+        raise ManifestError("export manifest must be a JSON object")
+    return manifest
+
+
+def verify_manifest(repository: str, tree: Path) -> str:
+    tree = tree.resolve(strict=True)
+    manifest = load_manifest(tree / MANIFEST_NAME)
+    if set(manifest) != {"commit", "entries", "repository", "schema"}:
+        raise ManifestError("export manifest has missing or unknown fields")
+    if manifest["schema"] != SCHEMA:
+        raise ManifestError("export manifest has an unsupported schema")
+    if manifest["repository"] != repository:
+        raise ManifestError("export manifest repository label does not match")
+    commit = manifest["commit"]
+    if not isinstance(commit, str) or not COMMIT_PATTERN.fullmatch(commit):
+        raise ManifestError("export manifest commit is invalid")
+    raw_entries = manifest["entries"]
+    if not isinstance(raw_entries, list):
+        raise ManifestError("export manifest entries must be a list")
+
+    expected: dict[str, dict[str, str]] = {}
+    previous_path = ""
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            raise ManifestError("export manifest entry must be an object")
+        path = valid_path(raw_entry.get("path"))
+        if path <= previous_path:
+            raise ManifestError("export manifest entries must be sorted and unique")
+        previous_path = path
+        entry_type = raw_entry.get("type")
+        expected_keys = {
+            "file": {"mode", "path", "sha256", "type"},
+            "symlink": {"mode", "path", "target", "type"},
+            "gitlink": {"commit", "mode", "path", "type"},
+        }.get(entry_type)
+        if expected_keys is None or set(raw_entry) != expected_keys:
+            raise ManifestError(f"export manifest entry is malformed: {path}")
+        if entry_type == "file":
+            mode = raw_entry["mode"]
+            digest = raw_entry["sha256"]
+            if mode not in {"100644", "100755"}:
+                raise ManifestError(f"invalid regular-file mode: {path}")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ManifestError(f"invalid regular-file digest: {path}")
+        elif entry_type == "symlink":
+            if raw_entry["mode"] != "120000" or not isinstance(raw_entry["target"], str):
+                raise ManifestError(f"invalid symlink entry: {path}")
+        else:
+            if raw_entry["mode"] != "160000" or not isinstance(raw_entry["commit"], str):
+                raise ManifestError(f"invalid gitlink entry: {path}")
+            if not COMMIT_PATTERN.fullmatch(raw_entry["commit"]):
+                raise ManifestError(f"invalid gitlink commit: {path}")
+        expected[path] = raw_entry
+
+    actual, directories = scan_tree(tree)
+    for directory in directories:
+        if stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+            relative = directory.relative_to(tree).as_posix() or "."
+            raise ManifestError(f"export directory mode is not 0700: {relative}")
+
+    expected_paths = {
+        path for path, entry in expected.items() if entry["type"] != "gitlink"
+    }
+    actual_paths = set(actual) - {MANIFEST_NAME}
+    if actual_paths != expected_paths:
+        missing = sorted(expected_paths - actual_paths)
+        extra = sorted(actual_paths - expected_paths)
+        raise ManifestError(f"export tree mismatch; missing={missing!r} extra={extra!r}")
+
+    for path, entry in expected.items():
+        if entry["type"] == "gitlink":
+            candidate = tree / path
+            if candidate.exists() and not stat.S_ISDIR(candidate.lstat().st_mode):
+                raise ManifestError(f"gitlink placeholder is not a directory: {path}")
+            continue
+        actual_type, actual_path = actual[path]
+        if entry["type"] == "symlink":
+            if actual_type != "symlink" or os.readlink(actual_path) != entry["target"]:
+                raise ManifestError(f"exported symlink does not match: {path}")
+            continue
+        if actual_type != "file":
+            raise ManifestError(f"exported file type does not match: {path}")
+        expected_mode = 0o700 if entry["mode"] == "100755" else 0o600
+        if stat.S_IMODE(actual_path.lstat().st_mode) != expected_mode:
+            raise ManifestError(f"exported file mode does not match: {path}")
+        if file_digest(actual_path) != entry["sha256"]:
+            raise ManifestError(f"exported file digest does not match: {path}")
+
+    return commit
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create or verify a GitLab Runner self-bootstrap source manifest."
+    )
+    subparsers = parser.add_subparsers(dest="operation", required=True)
+    create = subparsers.add_parser("create")
+    create.add_argument("--repository", choices=REPOSITORIES, required=True)
+    create.add_argument("--source", type=Path, required=True)
+    create.add_argument("--tree", type=Path, required=True)
+    verify = subparsers.add_parser("verify")
+    verify.add_argument("--repository", choices=REPOSITORIES, required=True)
+    verify.add_argument("--tree", type=Path, required=True)
+    return parser.parse_args()
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    try:
+        if arguments.operation == "create":
+            create_manifest(arguments.repository, arguments.source, arguments.tree)
+        else:
+            print(verify_manifest(arguments.repository, arguments.tree))
+    except (ManifestError, OSError) as error:
+        print(f"gitlab-runner-self-bootstrap-manifest: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

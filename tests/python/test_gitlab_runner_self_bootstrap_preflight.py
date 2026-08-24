@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import stat
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +14,9 @@ from conftest import CommandRunner
 
 
 SCRIPT = "scripts/gitlab-runner-self-bootstrap-preflight"
+EXPORT_SCRIPT = "scripts/gitlab-runner-self-bootstrap-export"
+MANIFEST_SCRIPT = "scripts/gitlab-runner-self-bootstrap-manifest"
+MANIFEST_NAME = ".platform-runner-self-bootstrap-export.json"
 DEFAULT_OPTIONS = {
     "--env": "test",
     "--limit": "gitlab-runner-01",
@@ -27,6 +35,112 @@ def _arguments(**overrides: str) -> list[str]:
     return arguments
 
 
+def _git(
+    command_runner: CommandRunner, repository: Path, *arguments: str
+) -> str:
+    return command_runner.run(["git", "-C", repository, *arguments]).assert_success().stdout.strip()
+
+
+def _commit_fixture(command_runner: CommandRunner, repository: Path) -> None:
+    _git(command_runner, repository, "init", "--quiet")
+    _git(command_runner, repository, "add", ".")
+    command_runner.run(
+        [
+            "git",
+            "-C",
+            repository,
+            "-c",
+            "user.name=Self Bootstrap Test",
+            "-c",
+            "user.email=self-bootstrap@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "test fixture",
+        ]
+    ).assert_success()
+
+
+def _export_fixture_sources(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> tuple[Path, Path, Path]:
+    public = tmp_path / "platform-config"
+    private = tmp_path / "platform-private"
+    secret = tmp_path / "platform-secrets"
+    (public / "scripts").mkdir(parents=True)
+    for relative in (SCRIPT, EXPORT_SCRIPT, MANIFEST_SCRIPT):
+        shutil.copy2(repo_root / relative, public / relative)
+    for relative in (
+        "Containerfile.dev",
+        "Makefile",
+        "ansible.cfg",
+        "requirements-dev.txt",
+        "requirements-test.txt",
+        "requirements.yml",
+    ):
+        (public / relative).write_text(f"fixture for {relative}\n", encoding="utf-8")
+    (public / "scripts/in-container").write_text(
+        "#!/usr/bin/env sh\nexit 1\n", encoding="utf-8"
+    )
+    (public / "scripts/in-container").chmod(0o755)
+    (public / "playbooks").mkdir()
+    for playbook in (
+        "bootstrap.yml",
+        "base-os.yml",
+        "storage-volumes.yml",
+        "container-runtime.yml",
+        "gitlab-runners.yml",
+    ):
+        (public / "playbooks" / playbook).write_text("---\n", encoding="utf-8")
+    (public / ".gitignore").write_text("ignored-public\n", encoding="utf-8")
+    (public / "ignored-public").write_text("not exported\n", encoding="utf-8")
+
+    (private / "config/inventories/test").mkdir(parents=True)
+    (private / ".gitignore").write_text("ignored-private\n", encoding="utf-8")
+    (private / "ignored-private").write_text("not exported\n", encoding="utf-8")
+    (private / "config/test.ansible.env").write_text(
+        "export ANSIBLE_HOST_KEY_CHECKING=True\n", encoding="utf-8"
+    )
+    (private / "config/inventories/test/hosts.yml").write_text(
+        "---\nall:\n  hosts: {}\n", encoding="utf-8"
+    )
+
+    secret.mkdir(mode=0o700)
+    (secret / "runner.token").write_text("outside-git-secret\n", encoding="utf-8")
+    _commit_fixture(command_runner, public)
+    _commit_fixture(command_runner, private)
+    return public, private, secret
+
+
+def _create_export(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner, name: str = "bootstrap.tgz"
+) -> tuple[Path, Path, Path, Path]:
+    public, private, secret = _export_fixture_sources(
+        tmp_path, repo_root, command_runner
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    archive = output / name
+    command_runner.run(
+        [public / EXPORT_SCRIPT, "--env", "test", "--output", archive],
+        environment={
+            "PLATFORM_CONFIG_PRIVATE_ROOT": str(private),
+            "PLATFORM_CONFIG_SECRET_ROOT": str(secret),
+        },
+    ).assert_success()
+    return public, private, secret, archive
+
+
+def _extract_export(
+    command_runner: CommandRunner, archive: Path, destination: Path
+) -> tuple[Path, Path]:
+    destination.mkdir(mode=0o700)
+    command_runner.run(
+        ["tar", "-C", destination, "-xzf", archive]
+    ).assert_success()
+    return destination / "platform-config", destination / "platform-private"
+
+
 @pytest.fixture(scope="module")
 def preflight_source(repo_root: Path) -> str:
     return (repo_root / SCRIPT).read_text(encoding="utf-8")
@@ -43,6 +157,23 @@ def test_preflight_is_executable_and_has_valid_bash_syntax(
     command_runner.run(["bash", "-n", script]).assert_success()
 
 
+def test_export_helpers_are_executable_and_have_valid_help(
+    repo_root: Path, command_runner: CommandRunner
+) -> None:
+    export = repo_root / EXPORT_SCRIPT
+    manifest = repo_root / MANIFEST_SCRIPT
+
+    for script in (export, manifest):
+        assert script.is_file()
+        assert script.stat().st_mode & 0o111
+    command_runner.run(["bash", "-n", export]).assert_success()
+    export_help = command_runner.run([export, "--help"]).assert_success()
+    manifest_help = command_runner.run([manifest, "--help"]).assert_success()
+    assert "Operator-attended use only" in export_help.stderr
+    assert "--env ENV --output ARCHIVE.tgz" in export_help.stderr
+    assert "{create,verify}" in manifest_help.stdout
+
+
 def test_preflight_help_is_available_without_an_operation(
     repo_root: Path, command_runner: CommandRunner
 ) -> None:
@@ -53,6 +184,7 @@ def test_preflight_help_is_available_without_an_operation(
     for option in DEFAULT_OPTIONS:
         assert option in result.stderr
     assert "--allow-dirty" in result.stderr
+    assert "Operator-attended use only" in result.stderr
 
 
 def test_preflight_requires_an_operation(
@@ -130,6 +262,316 @@ def test_preflight_operations_and_worktree_policy_are_explicit(
     assert 'fail "repository.$label.clean" "worktree is dirty; review it or use --allow-dirty"' in preflight_source
     assert "check_worktree public \"$repo_root\"" in preflight_source
     assert "check_worktree private \"$private_root\"" in preflight_source
+    assert 'git_root=$(git -C "$path" rev-parse --show-toplevel' in preflight_source
+    assert 'if [[ -n $path_root && $git_root == "$path_root" ]]; then' in preflight_source
+    assert (
+        'python3 "$repo_root/scripts/gitlab-runner-self-bootstrap-manifest" verify'
+        in preflight_source
+    )
+    assert 'pass "repository.$label.clean" "history-free export manifest is valid"' in preflight_source
+
+
+def test_history_free_export_is_deterministic_and_manifest_validated(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    public, private, _, archive = _create_export(
+        tmp_path, repo_root, command_runner
+    )
+    sidecar = archive.with_name(f"{archive.name}.sha256")
+
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o600
+    assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+    command_runner.run(
+        ["sha256sum", "-c", sidecar.name], cwd=archive.parent
+    ).assert_success()
+
+    with tarfile.open(archive, "r:gz") as stream:
+        names = {member.name.rstrip("/") for member in stream.getmembers()}
+    assert not any(".git" in Path(name).parts for name in names)
+    assert "platform-config/ignored-public" not in names
+    assert "platform-private/ignored-private" not in names
+    assert not any("runner.token" in name for name in names)
+    assert f"platform-config/{MANIFEST_NAME}" in names
+    assert f"platform-private/{MANIFEST_NAME}" in names
+
+    extracted_public, extracted_private = _extract_export(
+        command_runner, archive, tmp_path / "extracted"
+    )
+    public_result = command_runner.run(
+        [
+            repo_root / MANIFEST_SCRIPT,
+            "verify",
+            "--repository",
+            "public",
+            "--tree",
+            extracted_public,
+        ]
+    ).assert_success()
+    private_result = command_runner.run(
+        [
+            repo_root / MANIFEST_SCRIPT,
+            "verify",
+            "--repository",
+            "private",
+            "--tree",
+            extracted_private,
+        ]
+    ).assert_success()
+    assert public_result.stdout.strip() == _git(
+        command_runner, public, "rev-parse", "HEAD"
+    )
+    assert private_result.stdout.strip() == _git(
+        command_runner, private, "rev-parse", "HEAD"
+    )
+
+    second_output = tmp_path / "second-output"
+    second_output.mkdir()
+    second_archive = second_output / "second.tar.gz"
+    command_runner.run(
+        [public / EXPORT_SCRIPT, "--env", "test", "--output", second_archive],
+        environment={"PLATFORM_CONFIG_PRIVATE_ROOT": str(private)},
+    ).assert_success()
+    assert archive.read_bytes() == second_archive.read_bytes()
+
+    with archive.open("ab") as stream:
+        stream.write(b"tampered")
+    command_runner.run(
+        ["sha256sum", "-c", sidecar.name], cwd=archive.parent
+    ).assert_failure()
+
+
+def test_preflight_recognizes_extracted_manifest_backed_sources(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    _, _, secret, archive = _create_export(tmp_path, repo_root, command_runner)
+    public, private = _extract_export(command_runner, archive, tmp_path / "extracted")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    for command in ("dnf", "podman", "rpm", "sudo", "systemctl"):
+        stub = stubs / command
+        stub.write_text("#!/usr/bin/env sh\nexit 1\n", encoding="utf-8")
+        stub.chmod(0o755)
+
+    result = command_runner.run(
+        [
+            public / SCRIPT,
+            "inspect",
+            "--env",
+            "test",
+            "--limit",
+            "gitlab-runner-01",
+            "--min-controller-free-gib",
+            "1",
+            "--min-root-free-gib",
+            "1",
+        ],
+        environment={
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_PRIVATE_ROOT": str(private),
+            "PLATFORM_CONFIG_SECRET_ROOT": str(secret),
+        },
+    ).assert_failure()
+
+    assert re.search(r"\[PASS\] repository\.public\s+export commit [0-9a-f]{12}", result.stdout)
+    assert re.search(r"\[PASS\] repository\.private\s+export commit [0-9a-f]{12}", result.stdout)
+    assert result.stdout.count("history-free export manifest is valid") == 2
+
+
+@pytest.mark.parametrize("dirty_repository", ("public", "private"))
+def test_export_rejects_dirty_sources(
+    dirty_repository: str,
+    tmp_path: Path,
+    repo_root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    public, private, secret = _export_fixture_sources(
+        tmp_path, repo_root, command_runner
+    )
+    selected = public if dirty_repository == "public" else private
+    (selected / ".gitignore").write_text("changed\n", encoding="utf-8")
+    archive = tmp_path / "dirty.tgz"
+
+    result = command_runner.run(
+        [public / EXPORT_SCRIPT, "--env", "test", "--output", archive],
+        environment={
+            "PLATFORM_CONFIG_PRIVATE_ROOT": str(private),
+            "PLATFORM_CONFIG_SECRET_ROOT": str(secret),
+        },
+    ).assert_failure()
+
+    assert f"{dirty_repository} source is dirty" in result.stderr
+    assert not archive.exists()
+    assert not archive.with_name(f"{archive.name}.sha256").exists()
+
+
+def test_export_requires_selected_private_files_at_head(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    public, private, _ = _export_fixture_sources(tmp_path, repo_root, command_runner)
+    inventory = "config/inventories/test/hosts.yml"
+    with (private / ".gitignore").open("a", encoding="utf-8") as stream:
+        stream.write(f"/{inventory}\n")
+    _git(command_runner, private, "rm", "--cached", inventory)
+    _git(command_runner, private, "add", ".gitignore")
+    command_runner.run(
+        [
+            "git",
+            "-C",
+            private,
+            "-c",
+            "user.name=Self Bootstrap Test",
+            "-c",
+            "user.email=self-bootstrap@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "untrack inventory",
+        ]
+    ).assert_success()
+
+    result = command_runner.run(
+        [public / EXPORT_SCRIPT, "--env", "test", "--output", tmp_path / "untracked.tgz"],
+        environment={"PLATFORM_CONFIG_PRIVATE_ROOT": str(private)},
+    ).assert_failure()
+
+    assert "private source file is not tracked as a regular file" in result.stderr
+
+
+def test_export_refuses_an_existing_or_symlinked_output(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    public, private, _ = _export_fixture_sources(tmp_path, repo_root, command_runner)
+    target = tmp_path / "target"
+    target.write_text("keep\n", encoding="utf-8")
+    archive = tmp_path / "existing.tgz"
+    archive.symlink_to(target)
+
+    result = command_runner.run(
+        [public / EXPORT_SCRIPT, "--env", "test", "--output", archive],
+        environment={"PLATFORM_CONFIG_PRIVATE_ROOT": str(private)},
+    ).assert_failure()
+
+    assert "output already exists" in result.stderr
+    assert target.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_export_does_not_replace_an_output_created_during_publication(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    public, private, _ = _export_fixture_sources(tmp_path, repo_root, command_runner)
+    output = tmp_path / "output"
+    output.mkdir()
+    archive = output / "raced.tgz"
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    gzip = stubs / "gzip"
+    gzip.write_text(
+        "#!/usr/bin/env sh\n"
+        "printf 'raced\\n' >\"$RACE_OUTPUT\"\n"
+        "exec \"$REAL_GZIP\" \"$@\"\n",
+        encoding="utf-8",
+    )
+    gzip.chmod(0o755)
+    real_gzip = shutil.which("gzip")
+    assert real_gzip is not None
+
+    result = command_runner.run(
+        [public / EXPORT_SCRIPT, "--env", "test", "--output", archive],
+        environment={
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_PRIVATE_ROOT": str(private),
+            "RACE_OUTPUT": str(archive),
+            "REAL_GZIP": real_gzip,
+        },
+    ).assert_failure()
+
+    assert "could not publish without replacing an existing path" in result.stderr
+    assert archive.read_text(encoding="utf-8") == "raced\n"
+    assert not archive.with_name(f"{archive.name}.sha256").exists()
+
+
+@pytest.mark.parametrize(
+    ("tamper", "repository", "message"),
+    (
+        ("modified", "public", "file digest does not match"),
+        ("missing", "private", "export tree mismatch"),
+        ("extra", "private", "export tree mismatch"),
+        ("symlink", "private", "exported file type does not match"),
+        ("schema", "public", "unsupported schema"),
+        ("manifest-missing", "public", "export manifest is missing"),
+        ("manifest-malformed", "public", "not valid UTF-8 JSON"),
+        ("manifest-duplicate-top", "public", "duplicate JSON object key"),
+        ("manifest-duplicate-entry", "public", "duplicate JSON object key"),
+    ),
+)
+def test_manifest_rejects_tampered_export_trees(
+    tamper: str,
+    repository: str,
+    message: str,
+    tmp_path: Path,
+    repo_root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    _, _, _, archive = _create_export(tmp_path, repo_root, command_runner)
+    public, private = _extract_export(command_runner, archive, tmp_path / "extracted")
+    tree = public if repository == "public" else private
+
+    if tamper == "modified":
+        with (public / EXPORT_SCRIPT).open("a", encoding="utf-8") as stream:
+            stream.write("# changed\n")
+    elif tamper == "missing":
+        (private / "config/inventories/test/hosts.yml").unlink()
+    elif tamper == "extra":
+        (private / "extra").write_text("unexpected\n", encoding="utf-8")
+    elif tamper == "symlink":
+        inventory = private / "config/inventories/test/hosts.yml"
+        inventory.unlink()
+        inventory.symlink_to("/dev/null")
+    elif tamper == "schema":
+        manifest_path = public / MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["schema"] = "unknown"
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        manifest_path.chmod(0o600)
+    elif tamper == "manifest-missing":
+        (public / MANIFEST_NAME).unlink()
+    elif tamper == "manifest-malformed":
+        manifest_path = public / MANIFEST_NAME
+        manifest_path.write_text("{\n", encoding="utf-8")
+        manifest_path.chmod(0o600)
+    elif tamper == "manifest-duplicate-top":
+        manifest_path = public / MANIFEST_NAME
+        content = manifest_path.read_text(encoding="utf-8")
+        manifest_path.write_text(
+            content[:-2] + ',"schema":"duplicate"}\n', encoding="utf-8"
+        )
+    else:
+        manifest_path = public / MANIFEST_NAME
+        content = manifest_path.read_text(encoding="utf-8")
+        manifest_path.write_text(
+            content.replace(
+                '"mode":"100644"',
+                '"mode":"100644","mode":"100644"',
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+    result = command_runner.run(
+        [
+            repo_root / MANIFEST_SCRIPT,
+            "verify",
+            "--repository",
+            repository,
+            "--tree",
+            tree,
+        ]
+    ).assert_failure()
+
+    assert message in result.stderr
 
 
 def test_preflight_only_syntax_checks_the_required_playbooks(
@@ -230,3 +672,6 @@ def test_preflight_make_targets_forward_the_development_image(repo_root: Path) -
         target = f"runner-self-bootstrap-{operation}:"
         assert target in makefile
     assert makefile.count('PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight') == 4
+    assert "runner-self-bootstrap-export:" in makefile
+    assert './scripts/gitlab-runner-self-bootstrap-export --env "$(ENV)" --output "$(EXPORT_ARCHIVE)"' in makefile
+    assert makefile.count("operator-attended only") == 4

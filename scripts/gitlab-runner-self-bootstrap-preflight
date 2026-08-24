@@ -7,7 +7,8 @@ repo_root=$(cd -- "$script_dir/.." && pwd -P)
 
 usage() {
   printf '%s\n' \
-    'Usage: gitlab-runner-self-bootstrap-preflight {inspect|build|connect|all} --env ENV --limit HOST --min-controller-free-gib N --min-root-free-gib N [--allow-dirty] [--connect-timeout SECONDS] [--connect-retries COUNT]' >&2
+    'Usage: gitlab-runner-self-bootstrap-preflight {inspect|build|connect|all} --env ENV --limit HOST --min-controller-free-gib N --min-root-free-gib N [--allow-dirty] [--connect-timeout SECONDS] [--connect-retries COUNT]' \
+    'Operator-attended use only; do not run self-bootstrap from CI or automation.' >&2
 }
 
 die() {
@@ -57,29 +58,37 @@ require_command() {
 }
 
 check_worktree() {
-  local label=$1 path=$2 commit worktree_status
-  if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    fail "repository.$label" "not a Git worktree: $path"
-    return
-  fi
-  if ! commit=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null); then
-    fail "repository.$label" "has no resolvable HEAD"
-    return
-  fi
-  pass "repository.$label" "commit ${commit:0:12}"
-  if ! worktree_status=$(git -C "$path" status --porcelain=v1 --untracked-files=normal 2>/dev/null); then
-    fail "repository.$label.clean" "could not inspect worktree status"
-  elif [[ -z $worktree_status ]]; then
-    pass "repository.$label.clean" "worktree is clean"
-  elif [[ $allow_dirty == true ]]; then
-    warn "repository.$label.clean" "dirty worktree allowed explicitly"
+  local label=$1 path=$2 commit worktree_status manifest_error git_root path_root
+  path_root=$(realpath --canonicalize-existing "$path" 2>/dev/null || true)
+  git_root=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null || true)
+  git_root=$(realpath --canonicalize-existing "$git_root" 2>/dev/null || true)
+  if [[ -n $path_root && $git_root == "$path_root" ]]; then
+    if ! commit=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null); then
+      fail "repository.$label" "has no resolvable HEAD"
+      return
+    fi
+    pass "repository.$label" "commit ${commit:0:12}"
+    if ! worktree_status=$(git -C "$path" status --porcelain=v1 --untracked-files=normal 2>/dev/null); then
+      fail "repository.$label.clean" "could not inspect worktree status"
+    elif [[ -z $worktree_status ]]; then
+      pass "repository.$label.clean" "worktree is clean"
+    elif [[ $allow_dirty == true ]]; then
+      warn "repository.$label.clean" "dirty worktree allowed explicitly"
+    else
+      fail "repository.$label.clean" "worktree is dirty; review it or use --allow-dirty"
+    fi
+    if git -C "$path" diff --check >/dev/null 2>&1; then
+      pass "repository.$label.diff" "no whitespace errors"
+    else
+      fail "repository.$label.diff" "git diff --check failed"
+    fi
+  elif commit=$(python3 "$repo_root/scripts/gitlab-runner-self-bootstrap-manifest" verify --repository "$label" --tree "$path" 2>"$tmp_dir/manifest-$label.err"); then
+    pass "repository.$label" "export commit ${commit:0:12}"
+    pass "repository.$label.clean" "history-free export manifest is valid"
+    pass "repository.$label.diff" "exported files match deterministic integrity metadata"
   else
-    fail "repository.$label.clean" "worktree is dirty; review it or use --allow-dirty"
-  fi
-  if git -C "$path" diff --check >/dev/null 2>&1; then
-    pass "repository.$label.diff" "no whitespace errors"
-  else
-    fail "repository.$label.diff" "git diff --check failed"
+    manifest_error=$(<"$tmp_dir/manifest-$label.err")
+    fail "repository.$label" "not a clean Git worktree or valid export: ${manifest_error:-validation failed}"
   fi
 }
 
@@ -237,7 +246,7 @@ inspect_phase() {
     require_command "$command_name"
   done
 
-  for path in Containerfile.dev Makefile ansible.cfg requirements-dev.txt requirements-test.txt requirements.yml scripts/in-container playbooks/bootstrap.yml playbooks/base-os.yml playbooks/storage-volumes.yml playbooks/container-runtime.yml playbooks/gitlab-runners.yml; do
+  for path in Containerfile.dev Makefile ansible.cfg requirements-dev.txt requirements-test.txt requirements.yml scripts/in-container scripts/gitlab-runner-self-bootstrap-manifest playbooks/bootstrap.yml playbooks/base-os.yml playbooks/storage-volumes.yml playbooks/container-runtime.yml playbooks/gitlab-runners.yml; do
     if [[ -f $repo_root/$path && ! -L $repo_root/$path ]]; then
       pass "repository.public.file" "$path"
     else

@@ -17,6 +17,12 @@ configures only the runner service and not the complete host baseline.
 
 ## Security Boundary
 
+This is an operator-attended recovery/bootstrap procedure, not a CI or
+unattended automation entry point. Run each export, preflight, and convergence
+command interactively, review its complete output, and stop on any unexpected
+state. Runtime deliberately does not try to detect CI or enforce a TTY; operator
+attendance is a procedural requirement.
+
 Keep real inventory in the sibling private configuration repository. Keep
 tokens, private keys, and other secrets outside every Git repository. Use
 fictional values from this guide only as examples.
@@ -171,7 +177,7 @@ When using an agent instead of a named identity file, omit `-i` and remove
 
 ## Repository And Secret Layout
 
-Clone reviewed revisions of the public and private repositories as siblings:
+Use reviewed revisions of the public and private repositories as siblings:
 
 ```text
 bootstrap/
@@ -179,24 +185,51 @@ bootstrap/
 +-- platform-private/
 ```
 
-When the VM cannot clone the repositories, run these commands from the directory
-containing both sibling repositories on the source host:
+Cloning both repositories remains supported. When the VM must not receive Git
+history, create the project-specific history-free export from the reviewed clean
+`platform-config` checkout on the source host. The selected private environment
+file and inventory must both be tracked at the private repository's clean
+`HEAD`:
 
 ```bash
-tar -czf "$HOME/platform-bootstrap.tgz" platform-config platform-private
-scp "$HOME/platform-bootstrap.tgz" example-user@192.0.2.50:/tmp/
+environment=example
+export_archive="$HOME/platform-bootstrap-${environment}.tgz"
+
+make runner-self-bootstrap-export \
+  ENV="$environment" \
+  EXPORT_ARCHIVE="$export_archive"
+
+scp "$export_archive" "$export_archive.sha256" \
+  example-user@192.0.2.50:/tmp/
 ```
 
-Then extract it as the bootstrap user on the target VM:
+The helper exports only tracked files from each repository's exact `HEAD`, adds
+deterministic manifests containing the source commits and per-file integrity
+metadata, creates an owner-only archive, and writes an owner-only SHA-256
+sidecar. It refuses dirty source trees, existing output paths, and untracked or
+symlinked selected private inputs. It does not read or include the outside-Git
+secret root. The Runner bootstrap does not use the Kubernetes bastion runtime,
+so the public repository manifest records the submodule commit but the export
+does not include submodule content.
+
+The archive still contains private, environment-specific, non-secret
+configuration. Protect it as a control-plane asset and transfer it only through
+an approved channel. On the target VM, verify the archive before extraction,
+then extract it as the bootstrap user:
 
 ```bash
-mkdir -p "$HOME/bootstrap"
-tar -C "$HOME/bootstrap" -xzf /tmp/platform-bootstrap.tgz
+cd /tmp
+export_name=platform-bootstrap-example.tgz
+sha256sum -c "$export_name.sha256"
+install -d -m 0700 "$HOME/bootstrap"
+tar -C "$HOME/bootstrap" -xzf "$export_name"
+cd "$HOME/bootstrap/platform-config"
 ```
 
-The archive includes everything currently inside both repository directories.
-Transfer it only through an approved channel, and do not add the outside-Git
-secret store to it.
+Do not edit the extracted trees. The self-bootstrap preflight accepts either the
+existing clean Git-worktree contract or these manifest-backed exports and fails
+on malformed metadata or missing, changed, symlink-substituted, or extra files.
+After successful bootstrap, remove the transferred archive and sidecar.
 
 The wrapper discovers the sibling private repository and mounts it read-only
 inside the development container. The private environment file and inventory
@@ -336,7 +369,8 @@ without an explicit controlled force-registration procedure.
 
 ## Preflight
 
-The host-side `scripts/gitlab-runner-self-bootstrap-preflight` helper verifies
+The operator-attended host-side
+`scripts/gitlab-runner-self-bootstrap-preflight` helper verifies
 the clean-host contract without running Ansible check mode or applying changes.
 It provides four explicit operations:
 

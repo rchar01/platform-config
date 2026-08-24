@@ -21,6 +21,7 @@ TEST_IN_CONTAINER ?= $(IN_CONTAINER)
 TEST_WORKERS ?= 2
 MIN_CONTROLLER_FREE_GIB ?=
 MIN_ROOT_FREE_GIB ?=
+EXPORT_ARCHIVE ?=
 REQUEST_TTL_SECONDS ?= 3600
 
 LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
@@ -29,7 +30,7 @@ sh_quote = '$(subst ','"'"',$(1))'
 .PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
 
 .PHONY: activate-monitoring-etcd status-monitoring-etcd
-.PHONY: runner-self-bootstrap-inspect runner-self-bootstrap-build runner-self-bootstrap-connect runner-self-bootstrap-all
+.PHONY: runner-self-bootstrap-export runner-self-bootstrap-inspect runner-self-bootstrap-build runner-self-bootstrap-connect runner-self-bootstrap-all
 
 ## Show available commands
 help:
@@ -56,6 +57,7 @@ help:
 	@printf '  %-24s %s\n' 'TEST_WORKERS' 'Parallel pytest worker count, default: 2'
 	@printf '  %-24s %s\n' 'MIN_CONTROLLER_FREE_GIB' 'Required controller/rootless-Podman free-space gate'
 	@printf '  %-24s %s\n' 'MIN_ROOT_FREE_GIB' 'Required managed-root free-space gate'
+	@printf '  %-24s %s\n' 'EXPORT_ARCHIVE' 'Required output path for the self-bootstrap source export'
 	@printf '  %-24s %s\n' 'REQUEST_TTL_SECONDS' 'Per-request PKI lifetime, default: 3600, maximum: 604800'
 	@printf '\n%s\n' 'Examples:'
 	@printf '  %s\n' 'make deps'
@@ -125,19 +127,23 @@ check-test-container-profile:
 check-container-wrapper:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" bash scripts/check-container-wrapper
 
-## Inspect first-runner self-bootstrap host prerequisites
+## Create an attended history-free first-runner source export
+runner-self-bootstrap-export:
+	@./scripts/gitlab-runner-self-bootstrap-export --env "$(ENV)" --output "$(EXPORT_ARCHIVE)"
+
+## Inspect first-runner self-bootstrap host prerequisites (operator-attended only)
 runner-self-bootstrap-inspect:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight inspect --env "$(ENV)" --limit "$(LIMIT)" --min-controller-free-gib "$(MIN_CONTROLLER_FREE_GIB)" --min-root-free-gib "$(MIN_ROOT_FREE_GIB)"
 
-## Rebuild and validate the first-runner Ansible controller image
+## Rebuild and validate the first-runner controller image (operator-attended only)
 runner-self-bootstrap-build:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight build --env "$(ENV)" --limit "$(LIMIT)" --min-controller-free-gib "$(MIN_CONTROLLER_FREE_GIB)" --min-root-free-gib "$(MIN_ROOT_FREE_GIB)"
 
-## Validate first-runner private inventory and self-SSH
+## Validate first-runner private inventory and self-SSH (operator-attended only)
 runner-self-bootstrap-connect:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight connect --env "$(ENV)" --limit "$(LIMIT)" --min-controller-free-gib "$(MIN_CONTROLLER_FREE_GIB)" --min-root-free-gib "$(MIN_ROOT_FREE_GIB)"
 
-## Run the complete first-runner self-bootstrap preflight
+## Run the complete first-runner preflight (operator-attended only)
 runner-self-bootstrap-all:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight all --env "$(ENV)" --limit "$(LIMIT)" --min-controller-free-gib "$(MIN_CONTROLLER_FREE_GIB)" --min-root-free-gib "$(MIN_ROOT_FREE_GIB)"
 

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd -- "$script_dir/.." && pwd -P)
+manifest_helper="$script_dir/gitlab-runner-self-bootstrap-manifest"
+
+usage() {
+  printf '%s\n' \
+    'Usage: gitlab-runner-self-bootstrap-export --env ENV --output ARCHIVE.tgz' \
+    'Operator-attended use only; do not run this export from CI or automation.' >&2
+}
+
+die() {
+  printf 'gitlab-runner-self-bootstrap-export: %s\n' "$1" >&2
+  exit 2
+}
+
+require_command() {
+  command -v -- "$1" >/dev/null 2>&1 || die "required command is missing: $1"
+}
+
+check_source() {
+  local label=$1 path=$2 commit source_root worktree_status
+  [[ -d $path && ! -L $path ]] || die "$label source is missing or symlinked: $path"
+  git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$label source is not a Git worktree"
+  source_root=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || die "could not resolve $label worktree root"
+  source_root=$(realpath --canonicalize-existing "$source_root") || die "could not canonicalize $label worktree root"
+  [[ $source_root == "$path" ]] || die "$label source is not the Git worktree root"
+  commit=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null) || die "$label source has no resolvable HEAD"
+  worktree_status=$(git -C "$path" status --porcelain=v1 --untracked-files=normal 2>/dev/null) || die "could not inspect $label source status"
+  [[ -z $worktree_status ]] || die "$label source is dirty; export requires a clean worktree"
+  git -C "$path" diff --check >/dev/null 2>&1 || die "$label source failed git diff --check"
+  printf '%s\n' "$commit"
+}
+
+require_tracked_private_file() {
+  local relative=$1 mode object_type tree_entry
+  [[ -f $private_root/$relative && ! -L $private_root/$relative ]] || die "private source file is missing or symlinked: $relative"
+  tree_entry=$(git -C "$private_root" ls-tree HEAD -- "$relative") || die "could not inspect private source file: $relative"
+  [[ -n $tree_entry ]] || die "private source file is not tracked as a regular file: $relative"
+  read -r mode object_type _ <<<"$tree_entry"
+  [[ $mode == 100644 || $mode == 100755 ]] || die "private source file is not tracked as a regular file: $relative"
+  [[ $object_type == blob ]] || die "private source file is not a tracked blob: $relative"
+}
+
+environment=""
+output=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      [[ $# -ge 2 ]] || die "--env requires a value"
+      environment=$2
+      shift 2
+      ;;
+    --output)
+      [[ $# -ge 2 ]] || die "--output requires a value"
+      output=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *) die "unexpected argument: $1" ;;
+  esac
+done
+
+[[ $environment =~ ^[a-z][a-z0-9-]*$ ]] || die "--env must be a literal environment name"
+[[ -n $output ]] || die "--output is required"
+
+for command_name in git tar gzip sha256sum python3 realpath dirname basename mktemp chmod awk; do
+  require_command "$command_name"
+done
+
+private_root=${PLATFORM_CONFIG_PRIVATE_ROOT:-$repo_root/../platform-private}
+[[ -d $private_root && ! -L $private_root ]] || die "private source is missing or symlinked: $private_root"
+private_root=$(realpath --canonicalize-existing "$private_root")
+
+output_parent=$(dirname -- "$output")
+output_name=$(basename -- "$output")
+[[ $output_name =~ ^[A-Za-z0-9._-]+\.(tgz|tar\.gz)$ ]] || die "--output must use a safe .tgz or .tar.gz filename"
+[[ -d $output_parent && ! -L $output_parent ]] || die "output parent is missing or symlinked: $output_parent"
+output_parent=$(realpath --canonicalize-existing "$output_parent")
+output_path="$output_parent/$output_name"
+sidecar_path="$output_path.sha256"
+[[ ! -e $output_path && ! -L $output_path ]] || die "output already exists: $output_path"
+[[ ! -e $sidecar_path && ! -L $sidecar_path ]] || die "output digest already exists: $sidecar_path"
+case "$output_path" in
+  "$repo_root"/*|"$private_root"/*) die "output must be outside both source worktrees" ;;
+esac
+
+public_commit=$(check_source public "$repo_root")
+private_commit=$(check_source private "$private_root")
+private_env="config/$environment.ansible.env"
+private_inventory="config/inventories/$environment/hosts.yml"
+require_tracked_private_file "$private_env"
+require_tracked_private_file "$private_inventory"
+
+temporary=$(mktemp -d "$output_parent/.runner-self-bootstrap-export.XXXXXXXX") || die "could not create output staging directory"
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  rm -rf -- "$temporary"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+stage="$temporary/stage"
+mkdir -m 0700 -- "$stage" "$stage/platform-config" "$stage/platform-private"
+git -C "$repo_root" archive --format=tar "$public_commit" | tar -C "$stage/platform-config" -xf -
+git -C "$private_root" archive --format=tar "$private_commit" | tar -C "$stage/platform-private" -xf -
+
+python3 "$manifest_helper" create --repository public --source "$repo_root" --tree "$stage/platform-config"
+python3 "$manifest_helper" create --repository private --source "$private_root" --tree "$stage/platform-private"
+python3 "$stage/platform-config/scripts/gitlab-runner-self-bootstrap-manifest" verify --repository public --tree "$stage/platform-config" >/dev/null
+python3 "$stage/platform-config/scripts/gitlab-runner-self-bootstrap-manifest" verify --repository private --tree "$stage/platform-private" >/dev/null
+
+archive_tar="$temporary/archive.tar"
+archive_gzip="$temporary/$output_name"
+archive_sidecar="$temporary/$output_name.sha256"
+tar \
+  --format=posix \
+  --sort=name \
+  --mtime=@0 \
+  --owner=0 \
+  --group=0 \
+  --numeric-owner \
+  --pax-option=delete=atime,delete=ctime \
+  -C "$stage" \
+  -cf "$archive_tar" \
+  platform-config platform-private
+gzip -n -c -- "$archive_tar" >"$archive_gzip"
+archive_digest=$(sha256sum -- "$archive_gzip" | awk '{print $1}')
+printf '%s  %s\n' "$archive_digest" "$output_name" >"$archive_sidecar"
+chmod 0600 -- "$archive_gzip" "$archive_sidecar"
+python3 - "$archive_gzip" "$output_path" "$archive_sidecar" "$sidecar_path" <<'PY'
+import os
+import stat
+import sys
+
+pairs = ((sys.argv[1], sys.argv[2]), (sys.argv[3], sys.argv[4]))
+created = []
+try:
+    for source, destination in pairs:
+        metadata = os.stat(source, follow_symlinks=False)
+        os.link(source, destination, follow_symlinks=False)
+        created.append((destination, metadata.st_dev, metadata.st_ino))
+except OSError as error:
+    for destination, device, inode in reversed(created):
+        try:
+            metadata = os.lstat(destination)
+            if stat.S_ISREG(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == (device, inode):
+                os.unlink(destination)
+        except FileNotFoundError:
+            pass
+    raise SystemExit(f"gitlab-runner-self-bootstrap-export: could not publish without replacing an existing path: {error}")
+PY
+
+printf '%s\n' \
+  "Created operator-attended self-bootstrap export: $output_path" \
+  "Public commit:  $public_commit" \
+  "Private commit: $private_commit" \
+  "SHA-256:        $archive_digest" \
+  'Outside-Git secrets and Git history were not included.'
