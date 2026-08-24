@@ -88,14 +88,22 @@ must be an outside-repository, controller-user-owned, singly linked regular file
 with mode `0600`; `pki_host_local_certificate_platform_pki_sha256` pins its exact
 reviewed bytes before descriptor-bound transfer.
 
+`pki_host_local_certificate_reviewed_ca_source` supplies the public CA bundle
+used for strict local Zot validation. It follows the same outside-repository,
+controller-user-owned, singly linked, mode-`0600` source policy and is limited to
+1 MiB. Activation descriptor-pins
+`pki_host_local_certificate_reviewed_ca_sha256` and installs the exact bytes as
+`root:root` at `pki_host_local_certificate_reviewed_ca_target_path` with the
+selected `0600` or `0644` mode before invoking local validation.
+
 ## Required Inputs
 
 Private inventory supplies the service and target identity, `issue` or `renew`,
 certificate profile and SANs, inventory digest, requester and response
 principals, schema-3 trust ID/path/source/digest mappings, lifecycle roots,
 reviewed GitLab project record and CA sources, installed target token path,
-transport-client source and SHA-256, validation boundary and reviewed CA
-paths/digests, Zot endpoint, minimum remaining lifetime, and rollback interval.
+transport-client source and SHA-256, reviewed Zot CA source, target path, digest,
+and mode, Zot endpoint, minimum remaining lifetime, and rollback interval.
 
 The fixed target defaults include:
 

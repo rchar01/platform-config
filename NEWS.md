@@ -16,6 +16,8 @@ two target-local GitLab package routes.
   workflow accepts only schema-2 requests and responses and schema-3 trust.
 - Supply `pki_host_local_certificate_platform_pki_sha256` with the reviewed
   digest of an outside-repository, mode-`0600` transport-client source.
+- Supply the reviewed Zot validation CA as an outside-repository, mode-`0600`
+  source with its exact SHA-256, target path, and target mode.
 
 ### Changes
 
@@ -28,6 +30,8 @@ two target-local GitLab package routes.
   local Zot validation, protected spools, and pre-provisioned token isolation.
 - Descriptor-pin the reviewed `platform-pki` transport client before installing
   it as a root-owned target executable.
+- Descriptor-pin and install the reviewed Zot validation CA before actionable
+  local activation.
 
 ## v3.1.0 - 2026-08-21
 

@@ -5,11 +5,16 @@
 - name: Validate local activation inputs
   ansible.builtin.assert:
     that:
+      - pki_host_local_certificate_reviewed_ca_source is match(pki_host_local_certificate_absolute_path_pattern)
+      - pki_host_local_certificate_reviewed_ca_sha256 is match('^[0-9a-f]{64}$')
       - pki_host_local_certificate_reviewed_ca_mode in ['0600', '0644']
       - pki_host_local_certificate_endpoint is match('^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?/v2/$')
       - pki_host_local_certificate_rollback_seconds is integer
       - pki_host_local_certificate_rollback_seconds >= 1209600
     fail_msg: Local activation inputs are incomplete or unsafe.
+  vars:
+    pki_host_local_certificate_absolute_path_pattern: >-
+      ^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$
 
 - name: Install target-local certificate trust
   ansible.builtin.import_tasks: trust.yml
@@ -255,6 +260,18 @@
   vars:
     pki_host_local_certificate_post_download_status: >-
       {{ pki_host_local_certificate_post_download_status_result.stdout | from_json }}
+
+- name: Install reviewed local Zot validation CA
+  platform_pki_reviewed_ca:
+    source: "{{ pki_host_local_certificate_reviewed_ca_source }}"
+    sha256: "{{ pki_host_local_certificate_reviewed_ca_sha256 }}"
+    dest: "{{ pki_host_local_certificate_reviewed_ca_target_path }}"
+    mode: "{{ pki_host_local_certificate_reviewed_ca_mode }}"
+  when: >-
+    [(pki_host_local_certificate_post_download_status_result.stdout | from_json).status,
+     (pki_host_local_certificate_post_download_status_result.stdout | from_json).required_action]
+    in [['response-ready', 'activate-response'],
+        ['activating', 'complete-local-validation']]
 
 - name: Start and locally validate target-local certificate activation
   ansible.builtin.command:

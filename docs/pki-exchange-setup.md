@@ -99,6 +99,10 @@ pki_host_local_certificate_gitlab_ca_source: /outside-git/pki/gitlab-ca.crt
 pki_host_local_certificate_platform_pki_source: /outside-git/bin/platform-pki
 pki_host_local_certificate_platform_pki_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 pki_host_local_certificate_gitlab_token_path: /etc/platform-config/pki-gitlab-token
+pki_host_local_certificate_reviewed_ca_source: /outside-git/pki/zot-validation-ca.crt
+pki_host_local_certificate_reviewed_ca_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+pki_host_local_certificate_reviewed_ca_target_path: /etc/platform-config/zot-validation-ca.crt
+pki_host_local_certificate_reviewed_ca_mode: "0644"
 
 pki_host_local_certificate_trust_sources:
   approvers.allowed_signers: /outside-git/pki/trust/approvers.allowed_signers
@@ -110,8 +114,10 @@ pki_host_local_certificate_trust_sources:
 The transport-client source must be outside the public repository, owned by the
 controller user, mode `0600`, singly linked, and no larger than 8 MiB. The role
 pins its descriptor and reviewed digest throughout transfer, copies the project
-record, CA bundle, and reviewed public trust, and never copies the token or target
-leaf private key.
+record, GitLab CA bundle, and reviewed public trust, and never copies the token
+or target leaf private key. The reviewed Zot CA source has the same metadata
+policy with a 1 MiB limit; activation digest-pins and installs it as `root:root`
+with only mode `0600` or `0644` before strict local validation.
 
 ## Package Contract
 

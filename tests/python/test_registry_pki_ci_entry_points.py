@@ -160,6 +160,9 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "Install target-local GitLab certificate components when transport is required"
     ) < names.index("Download and install the authenticated schema-2 response")
     assert names.index("Read post-download target-local status") < names.index(
+        "Install reviewed local Zot validation CA"
+    )
+    assert names.index("Install reviewed local Zot validation CA") < names.index(
         "Start and locally validate target-local certificate activation"
     )
     download = task_named(
@@ -172,6 +175,38 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "{{ pki_host_local_certificate_gitlab_config_path }}",
     ]
     assert download["no_log"] is True
+
+    install_ca = task_named(
+        activation, "Install reviewed local Zot validation CA"
+    )
+    assert install_ca["platform_pki_reviewed_ca"] == {
+        "source": "{{ pki_host_local_certificate_reviewed_ca_source }}",
+        "sha256": "{{ pki_host_local_certificate_reviewed_ca_sha256 }}",
+        "dest": "{{ pki_host_local_certificate_reviewed_ca_target_path }}",
+        "mode": "{{ pki_host_local_certificate_reviewed_ca_mode }}",
+    }
+    assert "['response-ready', 'activate-response']" in install_ca["when"]
+    assert "['activating', 'complete-local-validation']" in install_ca["when"]
+
+
+def test_activation_validates_reviewed_ca_source_and_digest(repo_root: Path) -> None:
+    tasks = load_yaml(
+        repo_root / "roles/pki_host_local_certificate/tasks/response_activate.yml"
+    )
+    validation = task_named(tasks, "Validate local activation inputs")
+    checks = validation["ansible.builtin.assert"]["that"]
+
+    assert (
+        "pki_host_local_certificate_reviewed_ca_source is "
+        "match(pki_host_local_certificate_absolute_path_pattern)"
+    ) in checks
+    assert (
+        "pki_host_local_certificate_reviewed_ca_sha256 is "
+        "match('^[0-9a-f]{64}$')"
+    ) in checks
+    assert validation["vars"]["pki_host_local_certificate_absolute_path_pattern"] == (
+        "^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$"
+    )
 
 
 def test_gitlab_token_is_validated_by_metadata_without_entering_ansible(

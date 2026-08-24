@@ -25,9 +25,14 @@ def load_plugin(
 
 
 class FakePinned:
-    def __init__(self, *, fail_recheck: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        data: bytes = b"transport-client",
+        fail_recheck: int | None = None,
+    ) -> None:
         self.path = ""
-        self.data = b"transport-client"
+        self.data = data
         self.fail_recheck = fail_recheck
         self.rechecks = 0
         self.closed = False
@@ -49,13 +54,15 @@ def make_action(
     transfer_error: Exception | None = None,
     module_result: dict[str, Any] | None = None,
     cleanup_error: Exception | None = None,
+    task_args: dict[str, str] | None = None,
 ) -> tuple[Any, list[tuple[str, Any]]]:
     events: list[tuple[str, Any]] = []
     monkeypatch.setattr(plugin.ActionBase, "run", lambda *args, **kwargs: {})
     monkeypatch.setattr(plugin, "pin_source", lambda source, digest: pinned)
     action = object.__new__(plugin.ActionModule)
     action._task = SimpleNamespace(
-        args={
+        args=task_args
+        or {
             "source": "/outside-git/platform-pki",
             "sha256": "0" * 64,
             "dest": "/usr/local/libexec/platform-pki",
@@ -187,6 +194,117 @@ def test_action_rejects_unexpected_arguments_before_pinning(
     action._task.args["mode"] = "0777"
 
     with pytest.raises(plugin.AnsibleActionFail, match="accepts only"):
+        action.run()
+
+    assert pinned.rechecks == 0
+    assert not pinned.closed
+
+
+def test_reviewed_ca_action_installs_pinned_bytes_with_selected_mode(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = load_plugin(repo_root, "platform_pki_reviewed_ca")
+    pinned = FakePinned(data=b"reviewed CA bytes\n")
+    action, events = make_action(
+        plugin,
+        monkeypatch,
+        pinned,
+        task_args={
+            "source": "/outside-git/reviewed-ca.crt",
+            "sha256": "0" * 64,
+            "dest": "/etc/platform-config/reviewed-ca.crt",
+            "mode": "0644",
+        },
+    )
+
+    assert action.run() == {"changed": True, "status": "installed"}
+    assert pinned.rechecks == 3
+    assert pinned.closed
+    assert events[0] == (
+        "transfer",
+        ("/remote/tmp/.reviewed-ca", b"reviewed CA bytes\n"),
+    )
+    assert events[1][1]["module_args"] == {
+        "src": "/remote/tmp/.reviewed-ca",
+        "dest": "/etc/platform-config/reviewed-ca.crt",
+        "remote_src": True,
+        "owner": "root",
+        "group": "root",
+        "mode": "0644",
+        "force": True,
+        "follow": False,
+    }
+    assert events[-1] == ("cleanup", "/remote/tmp")
+
+
+def test_reviewed_ca_action_returns_module_failure_and_cleans_up(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = load_plugin(repo_root, "platform_pki_reviewed_ca")
+    pinned = FakePinned(data=b"reviewed CA bytes\n")
+    failure = {"failed": True, "msg": "copy failed"}
+    action, events = make_action(
+        plugin,
+        monkeypatch,
+        pinned,
+        module_result=failure,
+        task_args={
+            "source": "/outside-git/reviewed-ca.crt",
+            "sha256": "0" * 64,
+            "dest": "/etc/platform-config/reviewed-ca.crt",
+            "mode": "0600",
+        },
+    )
+
+    assert action.run() == failure
+    assert pinned.rechecks == 3
+    assert pinned.closed
+    assert events[-1] == ("cleanup", "/remote/tmp")
+
+
+def test_reviewed_ca_action_cleans_up_after_source_recheck_failure(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = load_plugin(repo_root, "platform_pki_reviewed_ca")
+    pinned = FakePinned(data=b"reviewed CA bytes\n", fail_recheck=2)
+    action, events = make_action(
+        plugin,
+        monkeypatch,
+        pinned,
+        task_args={
+            "source": "/outside-git/reviewed-ca.crt",
+            "sha256": "0" * 64,
+            "dest": "/etc/platform-config/reviewed-ca.crt",
+            "mode": "0644",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="source changed"):
+        action.run()
+
+    assert pinned.closed
+    assert events[-1] == ("cleanup", "/remote/tmp")
+
+
+@pytest.mark.parametrize("mode", ("", "644", "0666", "0755"))
+def test_reviewed_ca_action_rejects_unsafe_mode_before_pinning(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    plugin = load_plugin(repo_root, "platform_pki_reviewed_ca")
+    pinned = FakePinned(data=b"reviewed CA bytes\n")
+    action, _ = make_action(
+        plugin,
+        monkeypatch,
+        pinned,
+        task_args={
+            "source": "/outside-git/reviewed-ca.crt",
+            "sha256": "0" * 64,
+            "dest": "/etc/platform-config/reviewed-ca.crt",
+            "mode": mode,
+        },
+    )
+
+    with pytest.raises(plugin.AnsibleActionFail, match="mode must be 0600 or 0644"):
         action.run()
 
     assert pinned.rechecks == 0

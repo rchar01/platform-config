@@ -22,6 +22,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Added a required SHA-256 binding and descriptor-pinned controller source for
   the root-installed target-local `platform-pki` transport client.
+- Added descriptor-pinned, SHA-256-bound installation of the reviewed Zot
+  validation CA before actionable local certificate activation.
 - Kept GitLab token bytes target-local and outside Ansible variables, facts,
   output, arguments, and environment variables.
 - Exposed only the authenticated 32-hex request ID after protected request

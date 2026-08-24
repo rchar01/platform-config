@@ -45,6 +45,7 @@ pki_host_local_certificate_gitlab_timeout: 30
 pki_host_local_certificate_gitlab_processing_attempts: 5
 pki_host_local_certificate_gitlab_processing_interval: 2
 
+pki_host_local_certificate_reviewed_ca_source: ""
 pki_host_local_certificate_reviewed_ca_target_path: ""
 pki_host_local_certificate_reviewed_ca_sha256: ""
 pki_host_local_certificate_reviewed_ca_mode: ""

@@ -94,11 +94,17 @@
           pki_host_local_certificate_request_helper_path,
           pki_host_local_certificate_trust_helper_path,
           pki_host_local_certificate_lifecycle_helper_path,
+          pki_host_local_certificate_reviewed_ca_source,
           pki_host_local_certificate_reviewed_ca_target_path,
           pki_host_local_certificate_zot_config_path
         ] + (pki_host_local_certificate_trust_sources.values() | list)
       }}
     pki_host_local_certificate_file_destinations:
+      - "{{ pki_host_local_certificate_request_signing_key_path }}"
+      - "{{ pki_host_local_certificate_trust_paths['approvers.allowed_signers'] }}"
+      - "{{ pki_host_local_certificate_trust_paths['policy'] }}"
+      - "{{ pki_host_local_certificate_trust_paths['requesters.allowed_signers'] }}"
+      - "{{ pki_host_local_certificate_trust_paths['responses.allowed_signers'] }}"
       - "{{ pki_host_local_certificate_gitlab_helper_path }}"
       - "{{ pki_host_local_certificate_gitlab_config_path }}"
       - "{{ pki_host_local_certificate_gitlab_project_record_path }}"
@@ -109,6 +115,7 @@
       - "{{ pki_host_local_certificate_trust_helper_path }}"
       - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
       - "{{ pki_host_local_certificate_reviewed_ca_target_path }}"
+      - "{{ pki_host_local_certificate_zot_config_path }}"
 
 - name: Validate target-local trust bindings
   ansible.builtin.assert:

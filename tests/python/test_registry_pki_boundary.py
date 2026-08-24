@@ -62,7 +62,24 @@ def test_schema2_target_local_contract_uses_exact_four_file_trust(
         "pki_host_local_certificate_platform_pki_sha256 is "
         "match('^[0-9a-f]{64}$')"
     ) in checks
-    assert set(contract["vars"]["pki_host_local_certificate_required_trust_names"]) == TRUST_NAMES
+    assert defaults["pki_host_local_certificate_reviewed_ca_source"] == ""
+    assert defaults["pki_host_local_certificate_reviewed_ca_sha256"] == ""
+    destinations = contract["vars"][
+        "pki_host_local_certificate_file_destinations"
+    ]
+    assert {
+        "{{ pki_host_local_certificate_request_signing_key_path }}",
+        "{{ pki_host_local_certificate_trust_paths['approvers.allowed_signers'] }}",
+        "{{ pki_host_local_certificate_trust_paths['policy'] }}",
+        "{{ pki_host_local_certificate_trust_paths['requesters.allowed_signers'] }}",
+        "{{ pki_host_local_certificate_trust_paths['responses.allowed_signers'] }}",
+        "{{ pki_host_local_certificate_reviewed_ca_target_path }}",
+        "{{ pki_host_local_certificate_zot_config_path }}",
+    } <= set(destinations)
+    assert (
+        set(contract["vars"]["pki_host_local_certificate_required_trust_names"])
+        == TRUST_NAMES
+    )
     trust_contract = task_named(
         trust_validation, "Validate host-local certificate trust bootstrap contract"
     )
@@ -90,6 +107,7 @@ def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> 
         "validate_trust.yml",
     }
     assert {path.name for path in (repo_root / "plugins/action").glob("platform_pki_*.py")} == {
+        "platform_pki_reviewed_ca.py",
         "platform_pki_transport_client.py",
         "platform_pki_trust_ingress.py",
     }
@@ -111,6 +129,26 @@ def test_transport_client_source_is_descriptor_pinned(
     )
     source = tmp_path / "platform-pki"
     source.write_bytes(b"#!/bin/sh\nexit 0\n")
+    source.chmod(0o600)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    pinned = plugin.pin_source(str(source), digest)
+    try:
+        assert pinned.data == source.read_bytes()
+        pinned.recheck()
+    finally:
+        pinned.close()
+
+    with pytest.raises(plugin.AnsibleActionFail, match="digest mismatch"):
+        plugin.pin_source(str(source), "0" * 64)
+
+
+def test_reviewed_ca_source_is_descriptor_pinned(
+    repo_root: Path, tmp_path: Path
+) -> None:
+    plugin = load_script(repo_root / "plugins/action/platform_pki_reviewed_ca.py")
+    source = tmp_path / "reviewed-ca.crt"
+    source.write_bytes(b"reviewed CA bytes\n")
     source.chmod(0o600)
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
 
