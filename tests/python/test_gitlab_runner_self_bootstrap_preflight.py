@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
+import pwd
 import re
 import shutil
 import stat
 import tarfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,6 +20,7 @@ from conftest import CommandRunner
 SCRIPT = "scripts/gitlab-runner-self-bootstrap-preflight"
 EXPORT_SCRIPT = "scripts/gitlab-runner-self-bootstrap-export"
 MANIFEST_SCRIPT = "scripts/gitlab-runner-self-bootstrap-manifest"
+CONTROLLER_CHECK = "scripts/gitlab-runner-self-bootstrap-controller-check"
 MANIFEST_NAME = ".platform-runner-self-bootstrap-export.json"
 DEFAULT_OPTIONS = {
     "--env": "test",
@@ -68,7 +73,7 @@ def _export_fixture_sources(
     private = tmp_path / "platform-private"
     secret = tmp_path / "platform-secrets"
     (public / "scripts").mkdir(parents=True)
-    for relative in (SCRIPT, EXPORT_SCRIPT, MANIFEST_SCRIPT):
+    for relative in (SCRIPT, EXPORT_SCRIPT, MANIFEST_SCRIPT, CONTROLLER_CHECK):
         shutil.copy2(repo_root / relative, public / relative)
     for relative in (
         "Containerfile.dev",
@@ -146,6 +151,17 @@ def preflight_source(repo_root: Path) -> str:
     return (repo_root / SCRIPT).read_text(encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def controller_check_module(repo_root: Path) -> object:
+    path = repo_root / CONTROLLER_CHECK
+    loader = importlib.machinery.SourceFileLoader("self_bootstrap_controller_check", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 def test_preflight_is_executable_and_has_valid_bash_syntax(
     repo_root: Path, command_runner: CommandRunner
 ) -> None:
@@ -174,6 +190,278 @@ def test_export_helpers_are_executable_and_have_valid_help(
     assert "{create,verify}" in manifest_help.stdout
 
 
+def test_controller_check_is_executable_and_has_valid_help(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    controller_check = repo_root / CONTROLLER_CHECK
+
+    assert controller_check.is_file()
+    assert controller_check.stat().st_mode & 0o111
+    command_runner.run(
+        ["python3", "-m", "py_compile", controller_check],
+        environment={"PYTHONPYCACHEPREFIX": str(tmp_path / "pycache")},
+    ).assert_success()
+    help_result = command_runner.run([controller_check, "--help"]).assert_success()
+    assert "--controller-root" in help_result.stdout
+    assert "--private-root" in help_result.stdout
+    assert "--subuid-file" not in help_result.stdout
+    assert "--subgid-file" not in help_result.stdout
+
+
+def _controller_check_fixture(
+    tmp_path: Path, repo_root: Path
+) -> tuple[list[Path | str], dict[str, str], dict[str, Path]]:
+    controller_root = tmp_path / "controller"
+    public_root = controller_root / "source/platform-config"
+    private_root = controller_root / "source/platform-private"
+    graphroot = controller_root / "containers/storage"
+    runtime_root = tmp_path / "runtime"
+    runroot = runtime_root / "containers"
+    home = tmp_path / "home"
+    config_root = home / ".config"
+    storage_config = config_root / "containers/storage.conf"
+    for directory in (
+        public_root / "scripts",
+        private_root,
+        graphroot,
+        runroot,
+        storage_config.parent,
+        home,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    in_container = public_root / "scripts/in-container"
+    in_container.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+    in_container.chmod(0o755)
+    storage_config.write_text(
+        "[storage]\n"
+        'driver = "overlay"\n'
+        f'graphroot = "{graphroot}"\n'
+        "\n[storage.options.overlay]\n"
+        'mountopt = "nodev"\n',
+        encoding="utf-8",
+    )
+    storage_config.chmod(0o600)
+
+    podman_info = tmp_path / "podman.json"
+    podman_info.write_text(
+        json.dumps(
+            {
+                "host": {
+                    "security": {"rootless": True, "selinuxEnabled": True},
+                    "idMappings": {
+                        "uidmap": [
+                            {"container_id": 0, "host_id": os.getuid(), "size": 1},
+                            {"container_id": 1, "host_id": 100000, "size": 65536},
+                        ],
+                        "gidmap": [
+                            {"container_id": 0, "host_id": os.getgid(), "size": 1},
+                            {"container_id": 1, "host_id": 100000, "size": 65536},
+                        ],
+                    },
+                },
+                "store": {
+                    "configFile": str(storage_config),
+                    "graphDriverName": "overlay",
+                    "graphOptions": {"overlay.mountopt": "nodev"},
+                    "graphRoot": str(graphroot),
+                    "runRoot": str(runroot),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    mount_info = tmp_path / "mount.json"
+    mount_info.write_text(
+        json.dumps(
+            {
+                "filesystems": [
+                    {
+                        "target": str(controller_root),
+                        "source": "/dev/mapper/example-bootstrap",
+                        "fstype": "xfs",
+                        "options": "rw,relatime,seclabel",
+                        "fsroot": "/",
+                        "maj:min": "254:42",
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    equivalences = tmp_path / "selinux-equivalences.txt"
+    equivalences.write_text(
+        f"{graphroot} = {home}/.local/share/containers\n", encoding="utf-8"
+    )
+    username = pwd.getpwuid(os.getuid()).pw_name
+    subuid = tmp_path / "subuid"
+    subgid = tmp_path / "subgid"
+    for path in (subuid, subgid):
+        path.write_text(f"{username}:100000:65536\n", encoding="utf-8")
+    arguments: list[Path | str] = [
+        repo_root / CONTROLLER_CHECK,
+        "--controller-root",
+        controller_root,
+        "--repository-root",
+        public_root,
+        "--private-root",
+        private_root,
+        "--podman-info",
+        podman_info,
+        "--mount-info",
+        mount_info,
+        "--selinux-equivalences",
+        equivalences,
+    ]
+    environment = {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(config_root),
+        "XDG_RUNTIME_DIR": str(runtime_root),
+    }
+    paths = {
+        "controller_root": controller_root,
+        "equivalences": equivalences,
+        "graphroot": graphroot,
+        "home": home,
+        "mount_info": mount_info,
+        "podman_info": podman_info,
+        "runtime_root": runtime_root,
+        "storage_config": storage_config,
+        "subgid": subgid,
+        "subuid": subuid,
+    }
+    return arguments, environment, paths
+
+
+def _validate_controller_check_fixture(
+    controller_check_module: object,
+    arguments: list[Path | str],
+    environment: dict[str, str],
+    paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, str]:
+    for name in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        if name in environment:
+            monkeypatch.setenv(name, environment[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
+    user = pwd.getpwuid(os.getuid())
+    account = SimpleNamespace(
+        pw_dir=str(paths["home"]), pw_name=user.pw_name, pw_uid=user.pw_uid
+    )
+    parsed = controller_check_module.parse_arguments(
+        [os.fspath(argument) for argument in arguments[1:]]
+    )
+    return controller_check_module.validate(
+        parsed,
+        account=account,
+        expected_runtime_root=paths["runtime_root"],
+        subuid_file=paths["subuid"],
+        subgid_file=paths["subgid"],
+    )
+
+
+def test_controller_check_accepts_the_complete_dedicated_storage_contract(
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+
+    result = _validate_controller_check_fixture(
+        controller_check_module, arguments, environment, paths, monkeypatch
+    )
+
+    assert result == {
+        "driver": "overlay",
+        "graphroot": str(paths["graphroot"]),
+        "runroot": f"{environment['XDG_RUNTIME_DIR']}/containers",
+    }
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("wrong-graphroot", "effective Podman graphroot does not match"),
+        ("noexec", "read-write and exec-capable"),
+        ("small-subuid", "subordinate-ID range"),
+        ("small-effective-map", "effective Podman UID mapping does not match"),
+        ("stale-effective-map", "effective Podman UID mapping does not match"),
+        ("configured-runroot", "must not override runroot"),
+        ("wrong-driver", "configured storage driver does not match"),
+        ("effective-vfs", "must use the overlay storage driver"),
+        ("nested-mount", "must not contain nested mounts"),
+        ("bind-mount", "block-backed filesystem"),
+        ("unsafe-source-mode", "repository source path must not be"),
+        ("transient-home", "HOME must match"),
+        ("transient-runtime", "XDG_RUNTIME_DIR must match"),
+        ("transient-config", "XDG_CONFIG_HOME must match"),
+        ("missing-equivalence", "missing SELinux fcontext equivalence"),
+    ),
+)
+def test_controller_check_rejects_incomplete_or_mismatched_storage_state(
+    tamper: str,
+    message: str,
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    podman = json.loads(paths["podman_info"].read_text(encoding="utf-8"))
+    mount = json.loads(paths["mount_info"].read_text(encoding="utf-8"))
+    config = paths["storage_config"].read_text(encoding="utf-8")
+    if tamper == "wrong-graphroot":
+        podman["store"]["graphRoot"] = str(tmp_path / "wrong")
+    elif tamper == "noexec":
+        mount["filesystems"][0]["options"] += ",noexec"
+    elif tamper == "small-subuid":
+        username = pwd.getpwuid(os.getuid()).pw_name
+        paths["subuid"].write_text(f"{username}:100000:65535\n", encoding="utf-8")
+    elif tamper == "small-effective-map":
+        podman["host"]["idMappings"]["uidmap"][1]["size"] = 65535
+    elif tamper == "stale-effective-map":
+        podman["host"]["idMappings"]["uidmap"][1]["host_id"] = 200000
+    elif tamper == "configured-runroot":
+        config = config.replace(
+            '[storage]\n', f'[storage]\nrunroot = "{environment["XDG_RUNTIME_DIR"]}"\n'
+        )
+    elif tamper == "wrong-driver":
+        config = config.replace('driver = "overlay"', 'driver = "vfs"')
+    elif tamper == "effective-vfs":
+        podman["store"]["graphDriverName"] = "vfs"
+        config = config.replace('driver = "overlay"', 'driver = "vfs"')
+    elif tamper == "nested-mount":
+        nested = mount["filesystems"][0].copy()
+        nested["target"] = str(paths["graphroot"] / "nested")
+        mount["filesystems"][0]["children"] = [nested]
+    elif tamper == "bind-mount":
+        mount["filesystems"][0]["fsroot"] = "/bootstrap"
+    elif tamper == "unsafe-source-mode":
+        (paths["controller_root"] / "source").chmod(0o777)
+    elif tamper == "transient-home":
+        environment["HOME"] = str(tmp_path / "alternate-home")
+    elif tamper == "transient-runtime":
+        environment["XDG_RUNTIME_DIR"] = str(tmp_path / "alternate-runtime")
+    elif tamper == "transient-config":
+        environment["XDG_CONFIG_HOME"] = str(tmp_path / "alternate-config")
+    else:
+        paths["equivalences"].write_text("", encoding="utf-8")
+    paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")
+    paths["mount_info"].write_text(json.dumps(mount) + "\n", encoding="utf-8")
+    paths["storage_config"].write_text(config, encoding="utf-8")
+    paths["storage_config"].chmod(0o600)
+
+    with pytest.raises(controller_check_module.ValidationError) as error:
+        _validate_controller_check_fixture(
+            controller_check_module, arguments, environment, paths, monkeypatch
+        )
+
+    assert message in str(error.value)
+
+
 def test_preflight_help_is_available_without_an_operation(
     repo_root: Path, command_runner: CommandRunner
 ) -> None:
@@ -184,6 +472,7 @@ def test_preflight_help_is_available_without_an_operation(
     for option in DEFAULT_OPTIONS:
         assert option in result.stderr
     assert "--allow-dirty" in result.stderr
+    assert "--controller-root" in result.stderr
     assert "Operator-attended use only" in result.stderr
 
 
@@ -218,6 +507,9 @@ def test_preflight_rejects_an_unsupported_operation(
         ({"--connect-timeout": "3601"}, "--connect-timeout must not exceed 3600 seconds"),
         ({"--connect-retries": "0"}, "--connect-retries must be a positive integer"),
         ({"--connect-retries": "101"}, "--connect-retries must not exceed 100"),
+        ({"--controller-root": "relative"}, "--controller-root must be a safe absolute path"),
+        ({"--controller-root": "/"}, "--controller-root must be a safe absolute path"),
+        ({"--controller-root": "/srv/example/../bootstrap"}, "--controller-root must be canonical"),
     ),
 )
 def test_preflight_rejects_unsafe_cli_values_before_inspection(
@@ -244,14 +536,14 @@ def test_preflight_operations_and_worktree_policy_are_explicit(
 
     assert operation_case is not None
     assert operation_case.group(1).split("|") == ["inspect", "build", "connect", "all"]
-    assert "inspect_phase\ncase \"$operation\" in" in preflight_source
+    assert 'inspect_phase\nif [[ -n $controller_root && $operation != inspect' in preflight_source
     for dispatch in (
         "inspect) ;;",
         "build) build_phase ;;",
         "connect) connect_phase ;;",
     ):
         assert dispatch in preflight_source
-    assert re.search(r"\n  all\)\s+build_phase\s+connect_phase\s+;;", preflight_source)
+    assert re.search(r"\n +all\)\s+build_phase\s+connect_phase\s+;;", preflight_source)
 
     assert "allow_dirty=false" in preflight_source
     assert "--allow-dirty)\n      allow_dirty=true" in preflight_source
@@ -375,6 +667,59 @@ def test_preflight_recognizes_extracted_manifest_backed_sources(
     assert re.search(r"\[PASS\] repository\.public\s+export commit [0-9a-f]{12}", result.stdout)
     assert re.search(r"\[PASS\] repository\.private\s+export commit [0-9a-f]{12}", result.stdout)
     assert result.stdout.count("history-free export manifest is valid") == 2
+    assert "controller.command." not in result.stdout
+    assert "controller.storage.contract" not in result.stderr
+
+
+def test_selected_controller_failure_blocks_build_and_target_contact(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    public, private, secret = _export_fixture_sources(
+        tmp_path, repo_root, command_runner
+    )
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    for command in ("dnf", "rpm", "sudo", "systemctl"):
+        stub = stubs / command
+        stub.write_text("#!/usr/bin/env sh\nexit 1\n", encoding="utf-8")
+        stub.chmod(0o755)
+    podman = stubs / "podman"
+    podman.write_text(
+        "#!/usr/bin/env sh\n"
+        'if [ "${1:-}" = build ]; then : >"$BUILD_MARKER"; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    podman.chmod(0o755)
+    marker = tmp_path / "build-called"
+
+    result = command_runner.run(
+        [
+            public / SCRIPT,
+            "all",
+            "--env",
+            "test",
+            "--limit",
+            "gitlab-runner-01",
+            "--min-controller-free-gib",
+            "1",
+            "--min-root-free-gib",
+            "1",
+            "--controller-root",
+            tmp_path,
+        ],
+        environment={
+            "BUILD_MARKER": str(marker),
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_PRIVATE_ROOT": str(private),
+            "PLATFORM_CONFIG_SECRET_ROOT": str(secret),
+        },
+    ).assert_failure()
+
+    assert "inspection failed; build and target contact are blocked" in result.stdout
+    assert "== Build and validate controller image ==" not in result.stdout
+    assert "== Validate inventory and self-connection ==" not in result.stdout
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("dirty_repository", ("public", "private"))
@@ -675,3 +1020,21 @@ def test_preflight_make_targets_forward_the_development_image(repo_root: Path) -
     assert "runner-self-bootstrap-export:" in makefile
     assert './scripts/gitlab-runner-self-bootstrap-export --env "$(ENV)" --output "$(EXPORT_ARCHIVE)"' in makefile
     assert makefile.count("operator-attended only") == 4
+
+
+def test_dedicated_controller_validation_is_opt_in_and_read_only(
+    preflight_source: str, repo_root: Path
+) -> None:
+    makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+
+    assert 'controller_root=""' in preflight_source
+    assert '--controller-root "$controller_root"' in preflight_source
+    assert "findmnt --evaluate --json --submounts" in preflight_source
+    assert "TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT,MAJ:MIN" in preflight_source
+    assert "stat.S_ISBLK(metadata.st_mode)" in preflight_source
+    assert 'sudo -n semanage fcontext -l -n -C' in preflight_source
+    assert 'sudo -n restorecon -R -x -n -v "$graph_root"' in preflight_source
+    assert "semanage fcontext -a" not in preflight_source
+    assert "restorecon -R -v" not in preflight_source
+    assert "CONTROLLER_ROOT ?=" in makefile
+    assert makefile.count("$(CONTROLLER_ROOT_ARG)") == 4

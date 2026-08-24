@@ -7,7 +7,7 @@ repo_root=$(cd -- "$script_dir/.." && pwd -P)
 
 usage() {
   printf '%s\n' \
-    'Usage: gitlab-runner-self-bootstrap-preflight {inspect|build|connect|all} --env ENV --limit HOST --min-controller-free-gib N --min-root-free-gib N [--allow-dirty] [--connect-timeout SECONDS] [--connect-retries COUNT]' \
+    'Usage: gitlab-runner-self-bootstrap-preflight {inspect|build|connect|all} --env ENV --limit HOST --min-controller-free-gib N --min-root-free-gib N [--controller-root ABSOLUTE_PATH] [--allow-dirty] [--connect-timeout SECONDS] [--connect-retries COUNT]' \
     'Operator-attended use only; do not run self-bootstrap from CI or automation.' >&2
 }
 
@@ -142,6 +142,7 @@ environment=""
 limit=""
 min_controller_free_gib=""
 min_root_free_gib=""
+controller_root=""
 allow_dirty=false
 connect_timeout=10
 connect_retries=6
@@ -180,6 +181,11 @@ while [[ $# -gt 0 ]]; do
       min_root_free_gib=$2
       shift 2
       ;;
+    --controller-root)
+      [[ $# -ge 2 ]] || die "--controller-root requires a value"
+      controller_root=$2
+      shift 2
+      ;;
     --allow-dirty)
       allow_dirty=true
       shift
@@ -206,6 +212,11 @@ done
 [[ $limit =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--limit must be one literal inventory hostname"
 [[ $min_controller_free_gib =~ ^[1-9][0-9]*$ ]] || die "--min-controller-free-gib must be a positive integer"
 [[ $min_root_free_gib =~ ^[1-9][0-9]*$ ]] || die "--min-root-free-gib must be a positive integer"
+if [[ -n $controller_root ]]; then
+  [[ $controller_root =~ ^/[A-Za-z0-9._/-]+$ ]] || die "--controller-root must be a safe absolute path"
+  [[ $controller_root != / && $controller_root != */ && $controller_root != *//* ]] || die "--controller-root must be canonical"
+  [[ $controller_root != */../* && $controller_root != */.. && $controller_root != */./* && $controller_root != */. ]] || die "--controller-root must be canonical"
+fi
 [[ $connect_timeout =~ ^[1-9][0-9]*$ ]] || die "--connect-timeout must be a positive integer"
 [[ $connect_retries =~ ^[1-9][0-9]*$ ]] || die "--connect-retries must be a positive integer"
 ((min_controller_free_gib <= 1000000)) || die "--min-controller-free-gib is unreasonably large"
@@ -227,6 +238,7 @@ trap 'exit 143' TERM
 
 inspect_phase() {
   local command_name path metadata podman_info podman_values graph_root os_id arch pid1 root_nevra unit_files rootful_containers
+  local controller_commands_ready controller_mount controller_device controller_selinux controller_state controller_error restorecon_output
 
   printf '%s\n' '== Inspect host and repositories =='
   printf '%s\n' 'Output contains private host and storage metadata; do not publish it.'
@@ -253,6 +265,14 @@ inspect_phase() {
       fail "repository.public.file" "missing or symlinked: $path"
     fi
   done
+  if [[ -n $controller_root ]]; then
+    path=scripts/gitlab-runner-self-bootstrap-controller-check
+    if [[ -f $repo_root/$path && ! -L $repo_root/$path && -x $repo_root/$path ]]; then
+      pass "repository.public.file" "$path"
+    else
+      fail "repository.public.file" "missing, symlinked, or non-executable: $path"
+    fi
+  fi
 
   check_worktree public "$repo_root"
 
@@ -307,10 +327,103 @@ print(driver)
     mapfile -t podman_fields <<<"$podman_values"
     graph_root=${podman_fields[0]:-}
     pass "controller.podman.rootless" "driver ${podman_fields[1]:-unknown}"
-    check_space "capacity.controller" "$graph_root" "$min_controller_free_gib"
+    if [[ -z $controller_root ]]; then
+      check_space "capacity.controller" "$graph_root" "$min_controller_free_gib"
+    else
+      controller_commands_ready=true
+      for command_name in getenforce matchpathcon newgidmap newuidmap restorecon semanage; do
+        if command -v -- "$command_name" >/dev/null 2>&1; then
+          pass "controller.command.$command_name" "available"
+        else
+          fail "controller.command.$command_name" "required for selected controller root"
+          controller_commands_ready=false
+        fi
+      done
+      if [[ $controller_commands_ready == true ]]; then
+        if controller_mount=$(findmnt --evaluate --json --submounts --output TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT,MAJ:MIN --mountpoint "$controller_root" 2>"$tmp_dir/controller-findmnt.err"); then
+          printf '%s\n' "$controller_mount" >"$tmp_dir/controller-mount.json"
+          chmod 0600 "$tmp_dir/controller-mount.json"
+          if controller_device=$(python3 -c '
+import json, os, stat, sys
+data = json.load(sys.stdin)
+filesystems = data.get("filesystems")
+if not isinstance(filesystems, list) or len(filesystems) != 1:
+    raise SystemExit(1)
+filesystem = filesystems[0]
+source = filesystem.get("source")
+identity = filesystem.get("maj:min")
+if filesystem.get("children") or not isinstance(source, str) or not isinstance(identity, str):
+    raise SystemExit(1)
+metadata = os.stat(source)
+if not stat.S_ISBLK(metadata.st_mode):
+    raise SystemExit(1)
+if identity != f"{os.major(metadata.st_rdev)}:{os.minor(metadata.st_rdev)}":
+    raise SystemExit(1)
+print(source)
+' <<<"$controller_mount" 2>/dev/null); then
+            pass "controller.storage.device" "$controller_device is the exact backing block device"
+          else
+            fail "controller.storage.device" "mount is nested, bind-backed, or lacks matching block-device identity"
+            controller_commands_ready=false
+          fi
+        else
+          fail "controller.storage.mount" "selected controller root is not an exact mountpoint"
+          controller_commands_ready=false
+        fi
+        if controller_selinux=$(LC_ALL=C sudo -n semanage fcontext -l -n -C 2>"$tmp_dir/controller-semanage.err"); then
+          printf '%s\n' "$controller_selinux" >"$tmp_dir/controller-selinux.txt"
+          chmod 0600 "$tmp_dir/controller-selinux.txt"
+        else
+          fail "controller.storage.selinux" "could not inspect local SELinux fcontext policy"
+          controller_commands_ready=false
+        fi
+      fi
+      if [[ $controller_commands_ready == true ]]; then
+        printf '%s\n' "$podman_info" >"$tmp_dir/controller-podman.json"
+        chmod 0600 "$tmp_dir/controller-podman.json"
+        if controller_state=$("$repo_root/scripts/gitlab-runner-self-bootstrap-controller-check" \
+          --controller-root "$controller_root" \
+          --repository-root "$repo_root" \
+          --private-root "$private_root" \
+          --podman-info "$tmp_dir/controller-podman.json" \
+          --mount-info "$tmp_dir/controller-mount.json" \
+          --selinux-equivalences "$tmp_dir/controller-selinux.txt" \
+          2>"$tmp_dir/controller-check.err"); then
+          graph_root=$(json_value graphroot <<<"$controller_state")
+          pass "controller.storage.contract" "dedicated XFS root and Podman state validated"
+          if [[ $(getenforce 2>/dev/null) == Enforcing ]]; then
+            pass "controller.storage.enforcing" "SELinux is enforcing"
+          else
+            fail "controller.storage.enforcing" "SELinux must be enforcing"
+          fi
+          if matchpathcon -V "$graph_root" >/dev/null 2>&1; then
+            pass "controller.storage.label" "graphroot label matches policy"
+          else
+            fail "controller.storage.label" "graphroot label does not match policy"
+          fi
+          if restorecon_output=$(sudo -n restorecon -R -x -n -v "$graph_root" 2>"$tmp_dir/controller-restorecon.err"); then
+            if [[ -z $restorecon_output && ! -s $tmp_dir/controller-restorecon.err ]]; then
+              pass "controller.storage.labels" "graphroot tree has no pending relabel"
+            else
+              fail "controller.storage.labels" "graphroot tree has pending or unreadable labels"
+            fi
+          else
+            fail "controller.storage.labels" "could not inspect graphroot labels"
+          fi
+          check_space "capacity.controller" "$graph_root" "$min_controller_free_gib"
+        else
+          controller_error=$(<"$tmp_dir/controller-check.err")
+          fail "controller.storage.contract" "${controller_error:-controller validation failed}"
+        fi
+      fi
+    fi
   else
     fail "controller.podman.rootless" "podman info did not report a usable rootless store"
-    check_space "capacity.controller" "$repo_root" "$min_controller_free_gib"
+    if [[ -z $controller_root ]]; then
+      check_space "capacity.controller" "$repo_root" "$min_controller_free_gib"
+    else
+      fail "controller.storage.contract" "selected controller root requires usable rootless Podman state"
+    fi
   fi
 
   os_id=""
@@ -1226,14 +1339,18 @@ PY
 }
 
 inspect_phase
-case "$operation" in
-  inspect) ;;
-  build) build_phase ;;
-  connect) connect_phase ;;
-  all)
-    build_phase
-    connect_phase
-    ;;
-esac
+if [[ -n $controller_root && $operation != inspect && $failures -gt 0 ]]; then
+  skip "controller.strict-gate" "inspection failed; build and target contact are blocked"
+else
+  case "$operation" in
+    inspect) ;;
+    build) build_phase ;;
+    connect) connect_phase ;;
+    all)
+      build_phase
+      connect_phase
+      ;;
+  esac
+fi
 
 summary

@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pwd
+import re
+import stat
+import sys
+import tomllib
+from pathlib import Path
+
+
+MIN_SUBORDINATE_IDS = 65536
+
+
+class ValidationError(Exception):
+    pass
+
+
+def load_json(path: Path) -> dict[str, object]:
+    try:
+        with path.open(encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValidationError(f"invalid JSON input: {path}") from error
+    if not isinstance(value, dict):
+        raise ValidationError(f"JSON input must be an object: {path}")
+    return value
+
+
+def exact_directory(value: str, label: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute() or any(character.isspace() for character in value):
+        raise ValidationError(f"{label} must be an absolute path without whitespace")
+    try:
+        metadata = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise ValidationError(f"{label} does not resolve: {path}") from error
+    if not stat.S_ISDIR(metadata.st_mode) or resolved != path:
+        raise ValidationError(f"{label} must be a real canonical directory: {path}")
+    return path
+
+
+def current_user_directory(path: Path, label: str) -> None:
+    metadata = path.stat()
+    if metadata.st_uid != os.getuid():
+        raise ValidationError(f"{label} must be owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise ValidationError(f"{label} must not be group- or other-writable")
+
+
+def nested_path(path: Path, parent: Path, label: str) -> None:
+    if path == parent or not path.is_relative_to(parent):
+        raise ValidationError(f"{label} must be below {parent}")
+
+
+def safe_descendant_chain(path: Path, parent: Path, label: str) -> None:
+    current = path
+    while True:
+        current_user_directory(current, label)
+        if current == parent:
+            return
+        current = current.parent
+
+
+def podman_mapping_valid(
+    value: object, current_id: int, subordinate_ranges: list[tuple[int, int]]
+) -> bool:
+    if not isinstance(value, list):
+        return False
+    mappings: list[tuple[int, int, int]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return False
+        container_id = entry.get("container_id", entry.get("containerID"))
+        host_id = entry.get("host_id", entry.get("hostID"))
+        size = entry.get("size")
+        if not all(type(field) is int for field in (container_id, host_id, size)):
+            return False
+        if container_id < 0 or host_id < 0 or size <= 0:
+            return False
+        mappings.append((container_id, host_id, size))
+    mappings.sort()
+    if not mappings or mappings[0] != (0, current_id, 1):
+        return False
+    container_cursor = 1
+    host_intervals: list[tuple[int, int]] = []
+    subordinate_count = 0
+    for container_id, host_id, size in mappings[1:]:
+        host_end = host_id + size
+        if container_id != container_cursor:
+            return False
+        if not any(
+            host_id >= start and host_end <= start + count
+            for start, count in subordinate_ranges
+        ):
+            return False
+        if any(host_id < end and host_end > start for start, end in host_intervals):
+            return False
+        host_intervals.append((host_id, host_end))
+        container_cursor += size
+        subordinate_count += size
+    return subordinate_count >= MIN_SUBORDINATE_IDS
+
+
+def subordinate_ranges(path: Path, username: str, user_id: int) -> list[tuple[int, int]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ValidationError(f"could not read subordinate-ID file: {path}") from error
+    ranges: list[tuple[int, int]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split(":")
+        if fields[0] not in {username, str(user_id)}:
+            continue
+        if len(fields) != 3 or not fields[1].isdigit() or not fields[2].isdigit():
+            raise ValidationError(f"malformed subordinate-ID record for {username}: {path}")
+        start = int(fields[1])
+        count = int(fields[2])
+        if start <= 0 or count <= 0:
+            raise ValidationError(f"invalid subordinate-ID record for {username}: {path}")
+        ranges.append((start, count))
+    if not ranges:
+        raise ValidationError(f"no subordinate-ID range for {username}: {path}")
+    if max(count for _, count in ranges) < MIN_SUBORDINATE_IDS:
+        raise ValidationError(
+            f"subordinate-ID range for {username} is smaller than {MIN_SUBORDINATE_IDS}: {path}"
+        )
+    return ranges
+
+
+def storage_configuration(
+    path: Path, expected_graphroot: Path, effective_driver: str
+) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ValidationError(f"rootless storage configuration is missing: {path}") from error
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise ValidationError("rootless storage configuration does not resolve") from error
+    if resolved != path:
+        raise ValidationError("rootless storage configuration must not use symlinks")
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise ValidationError(
+            "rootless storage configuration must be a current-user-owned regular file"
+        )
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise ValidationError(
+            "rootless storage configuration must not be group- or other-writable"
+        )
+    try:
+        with path.open("rb") as stream:
+            config = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValidationError("rootless storage configuration is invalid TOML") from error
+    storage = config.get("storage")
+    if not isinstance(storage, dict):
+        raise ValidationError("rootless storage configuration requires [storage]")
+    if storage.get("graphroot") != str(expected_graphroot):
+        raise ValidationError("configured graphroot does not match the selected controller root")
+    if "runroot" in storage:
+        raise ValidationError("rootless storage configuration must not override runroot")
+    configured_driver = storage.get("driver")
+    if configured_driver != effective_driver:
+        raise ValidationError("configured storage driver does not match effective Podman state")
+
+
+def exact_selinux_equivalence(path: Path, source: Path, destination: Path) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ValidationError("could not read SELinux fcontext equivalences") from error
+    expected = (str(destination), str(source))
+    for line in lines:
+        match = re.fullmatch(r"\s*(\S+)\s*=\s*(\S+)\s*", line)
+        if match and match.groups() == expected:
+            return
+    raise ValidationError(
+        f"missing SELinux fcontext equivalence: {destination} = {source}"
+    )
+
+
+def validate(
+    arguments: argparse.Namespace,
+    *,
+    account: object | None = None,
+    expected_runtime_root: Path | None = None,
+    subuid_file: Path = Path("/etc/subuid"),
+    subgid_file: Path = Path("/etc/subgid"),
+) -> dict[str, str]:
+    user = account if account is not None else pwd.getpwuid(os.getuid())
+    account_home = exact_directory(str(user.pw_dir), "account home")
+    current_user_directory(account_home, "account home")
+    if os.environ.get("HOME") != str(account_home):
+        raise ValidationError("HOME must match the current account's passwd home")
+
+    controller_root = exact_directory(arguments.controller_root, "controller root")
+    if controller_root == Path("/"):
+        raise ValidationError("controller root must be a dedicated filesystem")
+    repository_root = exact_directory(arguments.repository_root, "repository root")
+    private_root = exact_directory(arguments.private_root, "private repository root")
+    nested_path(repository_root, controller_root, "repository root")
+    nested_path(private_root, controller_root, "private repository root")
+    in_container = repository_root / "scripts/in-container"
+    if not in_container.is_file() or in_container.is_symlink() or not os.access(in_container, os.X_OK):
+        raise ValidationError("repository source is not executable from the controller filesystem")
+
+    expected_graphroot = controller_root / "containers/storage"
+    graphroot = exact_directory(str(expected_graphroot), "rootless graphroot")
+    current_user_directory(controller_root, "controller root")
+    safe_descendant_chain(repository_root, controller_root, "repository source path")
+    safe_descendant_chain(private_root, controller_root, "private source path")
+    safe_descendant_chain(graphroot, controller_root, "rootless graphroot path")
+    if not os.access(controller_root, os.R_OK | os.W_OK | os.X_OK):
+        raise ValidationError("controller root is not accessible to the current user")
+    if not os.access(graphroot, os.R_OK | os.W_OK | os.X_OK):
+        raise ValidationError("rootless graphroot is not accessible to the current user")
+    if repository_root.stat().st_dev != controller_root.stat().st_dev:
+        raise ValidationError("repository source is not backed by the controller filesystem")
+    if private_root.stat().st_dev != controller_root.stat().st_dev:
+        raise ValidationError("private source is not backed by the controller filesystem")
+    if graphroot.stat().st_dev != controller_root.stat().st_dev:
+        raise ValidationError("rootless graphroot is not backed by the controller filesystem")
+
+    mount = load_json(arguments.mount_info)
+    filesystems = mount.get("filesystems")
+    if not isinstance(filesystems, list) or len(filesystems) != 1:
+        raise ValidationError("controller root must resolve to exactly one mount")
+    filesystem = filesystems[0]
+    if not isinstance(filesystem, dict):
+        raise ValidationError("controller mount information is malformed")
+    if filesystem.get("children"):
+        raise ValidationError("controller filesystem must not contain nested mounts")
+    if filesystem.get("target") != str(controller_root):
+        raise ValidationError("controller root must be the exact mountpoint")
+    source = filesystem.get("source")
+    if (
+        not isinstance(source, str)
+        or not source.startswith("/dev/")
+        or "[" in source
+        or filesystem.get("fsroot") != "/"
+    ):
+        raise ValidationError("controller root must use a block-backed filesystem")
+    if not re.fullmatch(r"[0-9]+:[0-9]+", str(filesystem.get("maj:min", ""))):
+        raise ValidationError("controller mount is missing block-device identity")
+    if filesystem.get("fstype") != "xfs":
+        raise ValidationError("controller root must use XFS")
+    options_value = filesystem.get("options")
+    if not isinstance(options_value, str):
+        raise ValidationError("controller mount options are missing")
+    options = set(options_value.split(","))
+    if "rw" not in options or "ro" in options or "noexec" in options:
+        raise ValidationError("controller root must be mounted read-write and exec-capable")
+
+    podman = load_json(arguments.podman_info)
+    host = podman.get("host")
+    store = podman.get("store")
+    if not isinstance(host, dict) or not isinstance(store, dict):
+        raise ValidationError("Podman information is missing host or store data")
+    security = host.get("security")
+    if not isinstance(security, dict) or security.get("rootless") is not True:
+        raise ValidationError("Podman did not report rootless operation")
+    if security.get("selinuxEnabled") is not True:
+        raise ValidationError("SELinux must be enabled for the selected controller root")
+    driver = store.get("graphDriverName")
+    if driver != "overlay":
+        raise ValidationError("rootless Podman must use the overlay storage driver")
+    if store.get("graphRoot") != str(expected_graphroot):
+        raise ValidationError("effective Podman graphroot does not match the controller root")
+
+    runtime_root = expected_runtime_root or Path(f"/run/user/{os.getuid()}")
+    if os.environ.get("XDG_RUNTIME_DIR", str(runtime_root)) != str(runtime_root):
+        raise ValidationError("XDG_RUNTIME_DIR must match the account runtime directory")
+    runtime_root = exact_directory(str(runtime_root), "runtime root")
+    expected_runroot = runtime_root / "containers"
+    runroot = exact_directory(str(expected_runroot), "Podman runroot")
+    current_user_directory(runtime_root, "runtime root")
+    current_user_directory(runroot, "Podman runroot")
+    if store.get("runRoot") != str(runroot):
+        raise ValidationError("effective Podman runroot is not the default runtime path")
+    if runroot.is_relative_to(controller_root):
+        raise ValidationError("Podman runroot must remain outside persistent controller storage")
+
+    config_root = account_home / ".config"
+    if os.environ.get("XDG_CONFIG_HOME", str(config_root)) != str(config_root):
+        raise ValidationError("XDG_CONFIG_HOME must match the account configuration directory")
+    expected_data_root = account_home / ".local/share"
+    if os.environ.get("XDG_DATA_HOME", str(expected_data_root)) != str(expected_data_root):
+        raise ValidationError("XDG_DATA_HOME must match the account data directory")
+    expected_config = config_root / "containers/storage.conf"
+    if not expected_config.is_absolute():
+        raise ValidationError("rootless storage configuration path must be absolute")
+    config_root = exact_directory(str(config_root), "storage configuration root")
+    config_parent = exact_directory(str(expected_config.parent), "storage configuration directory")
+    safe_descendant_chain(
+        config_parent, config_root, "storage configuration directory path"
+    )
+    if store.get("configFile") != str(expected_config):
+        raise ValidationError("Podman is not using the expected per-user storage.conf")
+    storage_configuration(expected_config, expected_graphroot, driver)
+
+    mappings = host.get("idMappings")
+    if not isinstance(mappings, dict):
+        raise ValidationError("Podman did not report rootless ID mappings")
+    uid_ranges = subordinate_ranges(subuid_file, user.pw_name, user.pw_uid)
+    gid_ranges = subordinate_ranges(subgid_file, user.pw_name, user.pw_uid)
+    if not podman_mapping_valid(mappings.get("uidmap"), os.getuid(), uid_ranges):
+        raise ValidationError("effective Podman UID mapping does not match current subordinate IDs")
+    if not podman_mapping_valid(mappings.get("gidmap"), os.getgid(), gid_ranges):
+        raise ValidationError("effective Podman GID mapping does not match current subordinate IDs")
+
+    selinux_source = account_home / ".local/share/containers"
+    exact_selinux_equivalence(
+        arguments.selinux_equivalences, selinux_source, expected_graphroot
+    )
+    return {
+        "driver": driver,
+        "graphroot": str(graphroot),
+        "runroot": str(runroot),
+    }
+
+
+def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate an opt-in rootless self-bootstrap controller filesystem."
+    )
+    parser.add_argument("--controller-root", required=True)
+    parser.add_argument("--repository-root", required=True)
+    parser.add_argument("--private-root", required=True)
+    parser.add_argument("--podman-info", type=Path, required=True)
+    parser.add_argument("--mount-info", type=Path, required=True)
+    parser.add_argument("--selinux-equivalences", type=Path, required=True)
+    return parser.parse_args(arguments)
+
+
+def main() -> int:
+    try:
+        result = validate(parse_arguments())
+    except (KeyError, OSError, ValidationError) as error:
+        print(f"gitlab-runner-self-bootstrap-controller-check: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

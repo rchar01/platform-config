@@ -90,6 +90,72 @@ Podman package while the Ansible control container is active is an avoidable
 bootstrap risk. The exact package must remain available from an enabled,
 approved repository.
 
+### Dedicated Controller Filesystem
+
+The normal home-directory controller remains supported. When a reviewed
+bootstrap design provides a dedicated persistent filesystem, select it with
+`CONTROLLER_ROOT` to enable the stricter gate. The selected path must be the
+exact mountpoint of a current-user-owned, block-backed XFS filesystem mounted
+read-write without `noexec`. Both source trees and the effective rootless
+Podman graphroot must be below that path and backed by the same filesystem.
+Nested mounts and group- or other-writable path components are rejected.
+
+Prepare the filesystem, source layout, subordinate IDs, and rootless Podman
+configuration before running preflight. The account needs contiguous
+subordinate UID and GID ranges of at least 65,536 IDs plus working `newuidmap`
+and `newgidmap` helpers. Use the package-provided runtime default at
+`/run/user/<uid>/containers`; do not set `runroot` in the user's
+`storage.conf`. Run preflight from the account's normal passwd home and default
+XDG data/configuration locations. Transient `HOME`, `XDG_RUNTIME_DIR`,
+`XDG_CONFIG_HOME`, or `XDG_DATA_HOME` overrides fail the strict gate.
+
+For example, a fictional selected root could contain:
+
+```text
+/srv/example-bootstrap/
++-- containers/
+|   +-- storage/
++-- source/
+    +-- platform-config/
+    +-- platform-private/
+```
+
+Clone into that `source` directory or extract the history-free archive there.
+For this selected-root model, replace the home-directory extraction shown later
+in this guide with:
+
+```bash
+controller_root=/srv/example-bootstrap
+export_name=platform-bootstrap-example.tgz
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 \
+  "$controller_root/source"
+tar -C "$controller_root/source" -xzf "/tmp/$export_name"
+cd "$controller_root/source/platform-config"
+```
+
+Update the account's complete `$HOME/.config/containers/storage.conf`, not a
+minimal replacement snippet. Retain the reviewed storage driver and every
+required `[storage.options]` setting, set `storage.graphroot` to
+`/srv/example-bootstrap/containers/storage`, and omit `storage.runroot`.
+Changing rootless storage after it contains images or containers is a separate
+migration operation; do not copy or repoint populated state casually.
+
+On an SELinux host, the containers-storage contract requires an exact fcontext
+equivalence followed by a recursive relabel. For the fictional path above:
+
+```bash
+sudo semanage fcontext -a -e \
+  "$HOME/.local/share/containers" \
+  /srv/example-bootstrap/containers/storage
+sudo restorecon -R -v /srv/example-bootstrap/containers/storage
+```
+
+The strict preflight validates the effective Podman graphroot, per-user
+configuration, default runroot, helpers and ID mappings, mount identity and
+options, SELinux enforcing state, equivalence policy, and effective labels. It
+does not create, relabel, mount, or rewrite any of them. Omitting
+`CONTROLLER_ROOT` preserves the existing environment-neutral checks.
+
 ### Operating System
 
 The current runner path expects:
@@ -392,23 +458,27 @@ phases separately. Run one command at a time, and stop to resolve every
 ```bash
 environment=example
 runner_host=example-runner-01
+controller_root=/srv/example-bootstrap
 read -r -p 'Minimum controller free GiB: ' controller_min_gib
 read -r -p 'Minimum managed-root free GiB: ' root_min_gib
 
 make runner-self-bootstrap-inspect \
   ENV="$environment" LIMIT="$runner_host" \
   MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
-  MIN_ROOT_FREE_GIB="$root_min_gib"
+  MIN_ROOT_FREE_GIB="$root_min_gib" \
+  CONTROLLER_ROOT="$controller_root"
 
 make runner-self-bootstrap-build \
   ENV="$environment" LIMIT="$runner_host" \
   MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
-  MIN_ROOT_FREE_GIB="$root_min_gib"
+  MIN_ROOT_FREE_GIB="$root_min_gib" \
+  CONTROLLER_ROOT="$controller_root"
 
 make runner-self-bootstrap-connect \
   ENV="$environment" LIMIT="$runner_host" \
   MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
-  MIN_ROOT_FREE_GIB="$root_min_gib"
+  MIN_ROOT_FREE_GIB="$root_min_gib" \
+  CONTROLLER_ROOT="$controller_root"
 ```
 
 After all three individual phases pass, run the complete aggregate gate:
@@ -417,7 +487,8 @@ After all three individual phases pass, run the complete aggregate gate:
 make runner-self-bootstrap-all \
   ENV="$environment" LIMIT="$runner_host" \
   MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
-  MIN_ROOT_FREE_GIB="$root_min_gib"
+  MIN_ROOT_FREE_GIB="$root_min_gib" \
+  CONTROLLER_ROOT="$controller_root"
 ```
 
 Do not start Ansible convergence unless this final command reports:
@@ -465,7 +536,8 @@ re-run the complete readiness check immediately before convergence:
 make runner-self-bootstrap-all \
   ENV="$environment" LIMIT="$runner_host" \
   MIN_CONTROLLER_FREE_GIB="$controller_min_gib" \
-  MIN_ROOT_FREE_GIB="$root_min_gib"
+  MIN_ROOT_FREE_GIB="$root_min_gib" \
+  CONTROLLER_ROOT="$controller_root"
 ```
 
 Converge users and SSH first:
