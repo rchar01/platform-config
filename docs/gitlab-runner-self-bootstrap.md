@@ -140,6 +140,13 @@ required `[storage.options]` setting, set `storage.graphroot` to
 Changing rootless storage after it contains images or containers is a separate
 migration operation; do not copy or repoint populated state casually.
 
+When Ansible must create the dedicated controller filesystem, bootstrap first
+from the account's normal home without `CONTROLLER_ROOT`. Converge storage,
+remove the temporary rootless development image and storage through a reviewed
+cleanup, then configure the new empty graphroot, transfer a fresh source export,
+and rebuild with `CONTROLLER_ROOT`. A controller cannot initially run from the
+filesystem it is expected to create.
+
 On an SELinux host, the containers-storage contract requires an exact fcontext
 equivalence followed by a recursive relabel. For the fictional path above:
 
@@ -168,6 +175,12 @@ The current runner path expects:
 - repositories that provide the configured base packages, `kmod`, Chrony,
   firewalld, its Python bindings, the DNF versionlock plugin, and the exact
   Podman NEVRA.
+
+Run any OS migration that reboots and performs post-reboot verification from an
+external controller. A development container on the managed VM is terminated by
+that reboot and cannot reconnect to verify the new release or publish the
+migration completion marker. Target self-bootstrap may resume after the
+external migration has completed successfully.
 
 Keep the system clock sufficiently accurate for HTTPS before Chrony is
 configured. Preserve the normal Rocky SELinux model; the Podman and runner roles
@@ -414,6 +427,12 @@ PV, the VG must have no additional PVs, and every existing requested LV must
 match its declared non-shrinking size, filesystem, and mountpoint. Never reuse
 the OS VG for runner data.
 
+An unmounted future mountpoint must be absent or empty. A nonempty mountpoint is
+valid only when it is already backed by the exact declared LV, as with a mounted
+`/var`. For `grow_from_size_gib`, the readiness gate accepts only the
+extent-rounded reviewed source or target LV size, requires the LV at its exact
+mountpoint, and includes pending growth in the VG free-space calculation.
+
 The optional `root_lvm` role is a separate decision. It is disabled by default
 and expands only a precisely declared existing LVM-backed root layout; it does
 not convert a non-LVM root filesystem or shrink storage.
@@ -529,7 +548,8 @@ redacted; repository URLs must still be reviewed before reuse.
 
 The fixed command set does not invoke network clients, DNF metadata loading or
 package transactions, Podman, LVM/filesystem mutation, mount operations, reboots,
-or service state changes. It reads the mount table first and does not inspect,
+or service state changes. It tries only bounded, fixed `findmnt` and `lsblk`
+compatibility profiles, reads the mount table first, and does not inspect,
 measure, or traverse paths on automount or non-allowlisted filesystems. Configured
 NSS, PAM, logging, and audit integrations may still observe normal account and
 `sudo` lookups. Keep the report outside Git and public issue trackers. Provide it

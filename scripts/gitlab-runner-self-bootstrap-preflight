@@ -589,9 +589,9 @@ connect_phase() {
   local local_ips resolved_ips matched known_host_lookup config_json ssh_g ssh_error
   local attempt output token_path token_metadata ca_path ca_safe url package_nevra installed_nevra available_nevras
   local cloud_template users_manage keys_count identity_file identity_metadata identity_uid identity_mode identity_type
-  local storage_member storage_rows root_source root_vg root_chain candidate_chain device initialize mountpoint reuse vg lv pv fstype capacity_gib size_gib required_free_gib partition
+  local storage_member storage_rows root_source root_vg root_chain candidate_chain device initialize mountpoint reuse vg lv pv fstype capacity_gib size_gib required_free_gib partition growth_from_size_gib
   local device_real ancestor ancestor_real root_ancestor root_ancestor_real actual_bytes expected_bytes existing_vg existing_pvs lv_path existing_fstype
-  local topology_output wipefs_output blkid_output blkid_status os_disk size_bytes requested_bytes rounded_bytes mount_targets mount_status mount_content mount_content_status free_bytes required_bytes extent_bytes
+  local topology_output wipefs_output blkid_output blkid_status os_disk size_bytes requested_bytes rounded_bytes source_requested_bytes source_rounded_bytes mount_targets mount_status mount_target_count mount_record mount_record_status mount_identity_matches lv_identity mount_active mount_content mount_content_status free_bytes required_bytes extent_bytes
   local pv_real pv_type pv_parent pv_parent_real pv_partition
   local -a effective_inventory_ssh_args
 
@@ -1095,7 +1095,9 @@ for volume in volumes:
     fstype = volume.get("fstype", "xfs")
     capacity = layout.get("capacity_gib", 0)
     size = volume.get("size_gib", 0)
+    growth_from = volume.get("grow_from_size_gib", 0)
     required_free = layout.get("required_free_gib", 0)
+    state = volume.get("state", "mounted")
     values = (device, mountpoint, vg, lv, pv, fstype)
     if any(not isinstance(item, str) or not item or any(character in item for character in "\t\n\r") for item in values):
         raise SystemExit(1)
@@ -1109,13 +1111,26 @@ for volume in volumes:
         raise SystemExit(1)
     if type(size) is not int or not 0 <= size <= 1000000:
         raise SystemExit(1)
+    if type(growth_from) is not int or not 0 <= growth_from <= 1000000:
+        raise SystemExit(1)
     if type(required_free) is not int or not 0 <= required_free <= 1000000:
         raise SystemExit(1)
     if type(partition) is not int or partition <= 0:
         raise SystemExit(1)
     if layout and (capacity <= 0 or size <= 0 or size + required_free > capacity):
         raise SystemExit(1)
-    print("\t".join((device, str(initialize).lower(), mountpoint, str(reuse).lower(), vg, lv, pv, fstype, str(capacity), str(size), str(required_free), str(partition))))
+    if growth_from:
+        if (
+            reuse is not True
+            or "initialize" not in layout
+            or layout.get("initialize") is not False
+            or growth_from >= size
+            or "lv_size" in volume
+            or fstype != "xfs"
+            or state != "mounted"
+        ):
+            raise SystemExit(1)
+    print("\t".join((device, str(initialize).lower(), mountpoint, str(reuse).lower(), vg, lv, pv, fstype, str(capacity), str(size), str(required_free), str(partition), str(growth_from))))
 PY
     ); then
       fail "storage.inventory" "storage volumes are absent or use unsafe paths"
@@ -1136,9 +1151,10 @@ PY
       fi
       declare -A checked_devices=()
       declare -A vg_missing_bytes=()
+      declare -A vg_growth_bytes=()
       declare -A vg_headroom_bytes=()
       declare -A vg_extent_bytes=()
-      while IFS=$'\t' read -r device initialize mountpoint reuse vg lv pv fstype capacity_gib size_gib required_free_gib partition; do
+      while IFS=$'\t' read -r device initialize mountpoint reuse vg lv pv fstype capacity_gib size_gib required_free_gib partition growth_from_size_gib; do
         [[ -n $device ]] || continue
         if [[ ! -b $device ]]; then
           fail "storage.device" "not a block device: $device"
@@ -1236,6 +1252,7 @@ PY
             extent_bytes=$(sudo vgs --units b --nosuffix --noheadings -o vg_extent_size "$vg" 2>/dev/null | awk '{printf "%.0f", $1}' || true)
             if [[ -n $pv_real && $pv_type == part && $pv_parent_real == "$device_real" && $pv_partition == "$partition" && $existing_vg == "$vg" && $existing_pvs == 1 && $vg != "$root_vg" && $extent_bytes =~ ^[1-9][0-9]*$ ]]; then
               vg_extent_bytes[$vg]=$extent_bytes
+              vg_headroom_bytes[$vg]=${vg_headroom_bytes[$vg]:-0}
               pass "storage.existing-layout" "$pv is the declared partition and sole PV for non-root VG $vg"
             else
               fail "storage.existing-layout" "existing PV/VG ownership does not match the declared one-PV non-root layout"
@@ -1243,6 +1260,7 @@ PY
           fi
         fi
         lv_path="/dev/$vg/$lv"
+        mount_active=false
         if [[ -e $lv_path ]]; then
           existing_fstype=$(sudo blkid -o value -s TYPE "$lv_path" 2>/dev/null || true)
           if [[ $reuse == true && $existing_fstype == "$fstype" ]]; then
@@ -1263,26 +1281,75 @@ PY
             else
               rounded_bytes=0
             fi
-            if [[ $size_bytes =~ ^[0-9]+$ ]] && ((size_bytes == rounded_bytes && rounded_bytes > 0)); then
-              pass "storage.logical-volume-size" "$lv_path exactly matches the extent-rounded declared size"
+            if [[ $growth_from_size_gib =~ ^[1-9][0-9]*$ ]] && ((extent_bytes > 0)); then
+              source_requested_bytes=$((growth_from_size_gib * 1024 * 1024 * 1024))
+              source_rounded_bytes=$(( (source_requested_bytes + extent_bytes - 1) / extent_bytes * extent_bytes ))
+            elif [[ $growth_from_size_gib =~ ^[1-9][0-9]*$ ]]; then
+              source_rounded_bytes=0
             else
-              fail "storage.logical-volume-size" "$lv_path does not exactly match the extent-rounded declared size"
+              source_rounded_bytes=$rounded_bytes
+            fi
+            if [[ $size_bytes =~ ^[0-9]+$ ]] && ((rounded_bytes > 0)) && ((size_bytes == source_rounded_bytes || size_bytes == rounded_bytes)); then
+              pass "storage.logical-volume-size" "$lv_path matches the extent-rounded reviewed source or target size"
+              if ((size_bytes == source_rounded_bytes && source_rounded_bytes < rounded_bytes)); then
+                vg_growth_bytes[$vg]=$(( ${vg_growth_bytes[$vg]:-0} + rounded_bytes - size_bytes ))
+              fi
+            else
+              fail "storage.logical-volume-size" "$lv_path does not match the extent-rounded reviewed source or target size"
             fi
           fi
           mount_status=0
           mount_targets=$(findmnt -rn -S "$lv_path" -o TARGET 2>/dev/null) || mount_status=$?
-          if ((mount_status == 1)); then
+          mount_target_count=$(grep -Fxc "$mountpoint" <<<"$mount_targets" || true)
+          mount_record_status=0
+          mount_record=$(findmnt --json --mountpoint "$mountpoint" --output TARGET,SOURCE,FSTYPE,FSROOT,MAJ:MIN 2>/dev/null) || mount_record_status=$?
+          lv_identity=$(lsblk -dnro MAJ:MIN "$lv_path" 2>/dev/null | awk '{$1=$1; print}' || true)
+          mount_identity_matches=false
+          if ((mount_record_status == 0)) && python3 -c '
+import json, sys
+document = json.load(sys.stdin)
+records = document.get("filesystems")
+if not isinstance(records, list) or len(records) != 1:
+    raise SystemExit(1)
+record = records[0]
+target, filesystem, identity = sys.argv[1:]
+if (
+    not isinstance(record, dict)
+    or record.get("target") != target
+    or record.get("fstype") != filesystem
+    or record.get("fsroot") != "/"
+    or record.get("maj:min") != identity
+):
+    raise SystemExit(1)
+' "$mountpoint" "$fstype" "$lv_identity" <<<"$mount_record" 2>/dev/null; then
+            mount_identity_matches=true
+          elif ((mount_record_status == 0)); then
+            fail "storage.logical-volume-mounts" "$mountpoint is mounted from an unexpected filesystem root or block device"
+          elif ((mount_record_status != 1)); then
+            fail "storage.logical-volume-mounts" "could not inspect exact mountpoint $mountpoint"
+          fi
+          if [[ $growth_from_size_gib =~ ^[1-9][0-9]*$ ]] && ((mount_status == 0)) && [[ -n $mount_targets ]] && ! grep -Fvx "$mountpoint" <<<"$mount_targets" | grep -q . && ((mount_target_count == 1)) && [[ $mount_identity_matches == true ]]; then
+            mount_active=true
+            pass "storage.logical-volume-mounts" "$lv_path is mounted only at $mountpoint as required for growth"
+          elif [[ $growth_from_size_gib =~ ^[1-9][0-9]*$ ]]; then
+            fail "storage.logical-volume-mounts" "$lv_path must be mounted only at $mountpoint for reviewed growth"
+          elif ((mount_status == 1 && mount_record_status == 1)); then
             pass "storage.logical-volume-mounts" "$lv_path is unmounted"
           elif ((mount_status != 0)); then
             fail "storage.logical-volume-mounts" "could not inspect mount targets for $lv_path"
-          elif [[ -n $mount_targets ]] && ! grep -Fvx "$mountpoint" <<<"$mount_targets" | grep -q .; then
-            pass "storage.logical-volume-mounts" "$lv_path is unmounted or only at $mountpoint"
+          elif [[ -n $mount_targets ]] && ! grep -Fvx "$mountpoint" <<<"$mount_targets" | grep -q . && ((mount_target_count == 1)) && [[ $mount_identity_matches == true ]]; then
+            mount_active=true
+            pass "storage.logical-volume-mounts" "$lv_path is mounted only at $mountpoint"
           else
             fail "storage.logical-volume-mounts" "$lv_path is mounted outside $mountpoint"
           fi
         else
-          pass "storage.logical-volume" "$lv_path will be created"
-          if [[ $reuse == true && $size_gib =~ ^[1-9][0-9]*$ ]]; then
+          if [[ $growth_from_size_gib =~ ^[1-9][0-9]*$ ]]; then
+            fail "storage.logical-volume" "$lv_path must already exist for reviewed growth"
+          else
+            pass "storage.logical-volume" "$lv_path will be created"
+          fi
+          if [[ $reuse == true && $size_gib =~ ^[1-9][0-9]*$ && $growth_from_size_gib == 0 ]]; then
             requested_bytes=$((size_gib * 1024 * 1024 * 1024))
             extent_bytes=${vg_extent_bytes[$vg]:-0}
             if ((extent_bytes > 0)); then
@@ -1295,6 +1362,7 @@ PY
         fi
         if [[ $reuse == true && $required_free_gib =~ ^[0-9]+$ ]]; then
           required_bytes=$((required_free_gib * 1024 * 1024 * 1024))
+          vg_headroom_bytes[$vg]=${vg_headroom_bytes[$vg]:-0}
           if (( ${vg_headroom_bytes[$vg]:-0} < required_bytes )); then
             vg_headroom_bytes[$vg]=$required_bytes
           fi
@@ -1303,6 +1371,8 @@ PY
           pass "storage.mountpoint" "$mountpoint is absent"
         elif [[ -L $mountpoint || ! -d $mountpoint ]]; then
           fail "storage.mountpoint" "$mountpoint exists but is not a safe directory"
+        elif [[ $mount_active == true ]]; then
+          pass "storage.mountpoint" "$mountpoint content is on the intended logical volume"
         else
           mount_content_status=0
           mount_content=$(sudo find "$mountpoint" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null) || mount_content_status=$?
@@ -1317,11 +1387,11 @@ PY
       done <<<"$storage_rows"
       for vg in "${!vg_headroom_bytes[@]}"; do
         free_bytes=$(sudo vgs --units b --nosuffix --noheadings -o vg_free "$vg" 2>/dev/null | awk '{printf "%.0f", $1}' || true)
-        required_bytes=$(( ${vg_missing_bytes[$vg]:-0} + ${vg_headroom_bytes[$vg]} ))
+        required_bytes=$(( ${vg_missing_bytes[$vg]:-0} + ${vg_growth_bytes[$vg]:-0} + ${vg_headroom_bytes[$vg]} ))
         if [[ $free_bytes =~ ^[0-9]+$ ]] && ((free_bytes >= required_bytes)); then
           pass "storage.vg-headroom" "$vg has required free space"
         else
-          fail "storage.vg-headroom" "$vg lacks declared free space and missing-LV allocation headroom"
+          fail "storage.vg-headroom" "$vg lacks declared free space, missing-LV allocation, and growth headroom"
         fi
       done
     fi

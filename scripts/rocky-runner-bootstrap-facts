@@ -168,7 +168,9 @@ def sanitize_text(value: str) -> str:
     return BEARER_PATTERN.sub(r"\1 <redacted>", value)
 
 
-def command_result(argv: list[str], *, timeout: int = 30) -> dict[str, Any]:
+def command_result(
+    argv: list[str], *, timeout: int = 30, sanitize_stdout: bool = True
+) -> dict[str, Any]:
     executable = shutil.which(argv[0], path=COMMAND_PATH)
     if executable is None:
         return {
@@ -206,7 +208,7 @@ def command_result(argv: list[str], *, timeout: int = 30) -> dict[str, Any]:
             "argv": argv,
             "returncode": None,
             "stderr": sanitize_text(f"{stderr}\ncommand timed out after {timeout}s").strip(),
-            "stdout": sanitize_text(stdout).strip(),
+            "stdout": (sanitize_text(stdout) if sanitize_stdout else stdout).strip(),
         }
     except OSError as error:
         return {
@@ -220,7 +222,11 @@ def command_result(argv: list[str], *, timeout: int = 30) -> dict[str, Any]:
         "argv": argv,
         "returncode": result.returncode,
         "stderr": sanitize_text(result.stderr.decode(errors="replace")).strip(),
-        "stdout": sanitize_text(result.stdout.decode(errors="replace")).strip(),
+        "stdout": (
+            sanitize_text(result.stdout.decode(errors="replace"))
+            if sanitize_stdout
+            else result.stdout.decode(errors="replace")
+        ).strip(),
     }
 
 
@@ -463,45 +469,140 @@ def collect_disk_links() -> list[dict[str, Any]]:
     return records
 
 
-def flatten_mounts(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def flatten_mounts(records: list[Any]) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
     for record in records:
-        current = {key: value for key, value in record.items() if key != "children"}
-        flattened.append(current)
+        if not isinstance(record, dict):
+            raise ValueError("findmnt filesystem record is not an object")
         children = record.get("children", [])
-        if isinstance(children, list):
-            flattened.extend(flatten_mounts(children))
+        if not isinstance(children, list):
+            raise ValueError("findmnt filesystem children result is not a list")
+        current = {
+            key: record[key]
+            for key in ("target", "source", "fstype", "options", "fsroot")
+            if key in record
+        }
+        flattened.append(current)
+        flattened.extend(flatten_mounts(children))
     return flattened
 
 
+def command_attempt(command: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "argv": command["argv"],
+        "returncode": command["returncode"],
+        "stderr": command["stderr"],
+    }
+
+
+def sanitized_mount_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    selected = {
+        "fstype": sanitize_text(str(record.get("fstype", ""))),
+        "target": sanitize_text(str(record.get("target", ""))),
+    }
+    if "source" in record:
+        selected["source"] = sanitize_text(str(record["source"]))
+    if "options" in record:
+        selected["options"] = sanitize_mount_options(str(record["options"]))
+    if "fsroot" in record:
+        selected["fsroot"] = sanitize_text(str(record["fsroot"]))
+    return selected
+
+
+def parse_mount_records(command: dict[str, Any]) -> list[dict[str, Any]]:
+    if command["returncode"] != 0:
+        raise ValueError("findmnt command failed")
+    document = json.loads(command["stdout"])
+    if not isinstance(document, dict):
+        raise ValueError("findmnt result is not an object")
+    filesystems = document.get("filesystems")
+    if not isinstance(filesystems, list) or not filesystems:
+        raise ValueError("findmnt filesystems result is not a nonempty list")
+    records = flatten_mounts(filesystems)
+    targets: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for record in records:
+        target = record.get("target")
+        filesystem = record.get("fstype")
+        if (
+            not isinstance(target, str)
+            or not target
+            or not target.startswith("/")
+            or os.path.normpath(target) != target
+            or not isinstance(filesystem, str)
+            or not filesystem
+        ):
+            raise ValueError("findmnt filesystem record has an invalid target or type")
+        if target in targets:
+            raise ValueError("findmnt filesystem targets are ambiguous")
+        targets.add(target)
+        selected: dict[str, Any] = {"fstype": filesystem, "target": target}
+        source = record.get("source")
+        if source is not None:
+            if not isinstance(source, str):
+                raise ValueError("findmnt filesystem source is not text")
+            selected["source"] = source
+        options = record.get("options")
+        if options is not None:
+            if not isinstance(options, str):
+                raise ValueError("findmnt filesystem options are not text")
+            selected["options"] = options
+        fsroot = record.get("fsroot")
+        if fsroot is not None:
+            if not isinstance(fsroot, str):
+                raise ValueError("findmnt filesystem root is not text")
+            selected["fsroot"] = fsroot
+        normalized.append(selected)
+    if "/" not in targets:
+        raise ValueError("findmnt result does not contain the root mount")
+    return normalized
+
+
 def collect_mount_table() -> dict[str, Any]:
-    command = command_result(
+    profiles = (
         [
             "findmnt",
             "--json",
-            "--bytes",
+            "--list",
             "--output",
             "TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT",
-        ]
+        ],
+        [
+            "findmnt",
+            "--json",
+            "--list",
+            "--output",
+            "TARGET,FSTYPE",
+        ],
     )
-    result: dict[str, Any] = {
-        "command": {
-            "argv": command["argv"],
-            "returncode": command["returncode"],
-            "stderr": command["stderr"],
-        },
+    attempts: list[dict[str, Any]] = []
+    last_command: dict[str, Any] | None = None
+    last_error = "findmnt did not produce a usable mount table"
+    for profile in profiles:
+        command = command_result(profile, sanitize_stdout=False)
+        last_command = command
+        try:
+            records = parse_mount_records(command)
+        except (json.JSONDecodeError, ValueError) as error:
+            attempts.append(command_attempt(command))
+            last_error = str(error)
+            continue
+        result: dict[str, Any] = {
+            "command": command_attempt(command),
+            "records": records,
+        }
+        if attempts:
+            result["attempts"] = attempts
+        return result
+    assert last_command is not None
+    result = {
+        "attempts": attempts,
+        "collection_error": sanitize_text(last_error),
+        "command": command_attempt(last_command),
         "records": [],
     }
-    if command["returncode"] != 0:
-        return result
-    try:
-        document = json.loads(command["stdout"])
-        filesystems = document.get("filesystems", [])
-        if not isinstance(filesystems, list):
-            raise ValueError("findmnt filesystems result is not a list")
-        result["records"] = flatten_mounts(filesystems)
-    except (json.JSONDecodeError, ValueError) as error:
-        result["collection_error"] = sanitize_text(str(error))
     return result
 
 
@@ -533,27 +634,104 @@ def local_path_metadata(path: Path, mount_table: dict[str, Any]) -> dict[str, An
     if filesystem not in LOCAL_FILESYSTEMS:
         return {
             "containing_filesystem": filesystem,
-            "containing_mount": mount.get("target"),
+            "containing_mount": sanitize_text(str(mount.get("target", ""))),
             "inspection_skipped": "filesystem is not in the local inspection allowlist",
             "path": str(path),
         }
     return file_metadata(path)
 
 
+def parse_block_devices(command: dict[str, Any]) -> None:
+    if command["returncode"] != 0:
+        raise ValueError("lsblk command failed")
+    document = json.loads(command["stdout"])
+    if not isinstance(document, dict):
+        raise ValueError("lsblk result is not an object")
+    devices = document.get("blockdevices")
+    if not isinstance(devices, list) or not devices:
+        raise ValueError("lsblk blockdevices result is not a nonempty list")
+
+    def validate(records: list[Any]) -> None:
+        for record in records:
+            if not isinstance(record, dict):
+                raise ValueError("lsblk block device record is not an object")
+            if (
+                not isinstance(record.get("name"), str)
+                or not record["name"]
+                or not isinstance(record.get("kname"), str)
+                or not record["kname"]
+                or not isinstance(record.get("type"), str)
+                or not record["type"]
+                or type(record.get("size")) is not int
+                or record["size"] < 0
+            ):
+                raise ValueError("lsblk block device record lacks required identity fields")
+            children = record.get("children", [])
+            if not isinstance(children, list):
+                raise ValueError("lsblk block device children result is not a list")
+            validate(children)
+
+    validate(devices)
+
+
+def collect_block_devices() -> dict[str, Any]:
+    profiles = (
+        [
+            "lsblk",
+            "--json",
+            "--bytes",
+            "--paths",
+            "--output",
+            "NAME,KNAME,PATH,PKNAME,TYPE,SIZE,FSTYPE,FSVER,UUID,PARTUUID,MOUNTPOINTS,MODEL,SERIAL,WWN",
+        ],
+        [
+            "lsblk",
+            "--json",
+            "--bytes",
+            "--paths",
+            "--output",
+            "NAME,KNAME,PKNAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINT,MODEL,SERIAL,WWN",
+        ],
+        [
+            "lsblk",
+            "--json",
+            "--bytes",
+            "--paths",
+            "--output",
+            "NAME,KNAME,PKNAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINT",
+        ],
+    )
+    attempts: list[dict[str, Any]] = []
+    last_command: dict[str, Any] | None = None
+    last_error = "lsblk did not produce usable block-device data"
+    for profile in profiles:
+        command = command_result(profile)
+        last_command = command
+        try:
+            parse_block_devices(command)
+        except (json.JSONDecodeError, ValueError) as error:
+            attempts.append(command_attempt(command))
+            last_error = str(error)
+            continue
+        if attempts:
+            command["attempts"] = attempts
+        return command
+    assert last_command is not None
+    return {
+        "argv": last_command["argv"],
+        "attempts": attempts,
+        "collection_error": sanitize_text(last_error),
+        "returncode": last_command["returncode"],
+        "stderr": last_command["stderr"],
+        "stdout": "",
+    }
+
+
 def collect_storage(mount_table: dict[str, Any] | None = None) -> dict[str, Any]:
     if mount_table is None:
         mount_table = collect_mount_table()
     result: dict[str, Any] = {
-        "block_devices": command_result(
-            [
-                "lsblk",
-                "--json",
-                "--bytes",
-                "--paths",
-                "--output",
-                "NAME,KNAME,PATH,PKNAME,TYPE,SIZE,FSTYPE,FSVER,UUID,PARTUUID,MOUNTPOINTS,MOUNTOPTIONS,MODEL,SERIAL,WWN",
-            ]
-        ),
+        "block_devices": collect_block_devices(),
         "blkid": command_result(["blkid", "-o", "full"]),
         "disk_links": collect_disk_links(),
         "filesystems": collect_fstab(),
@@ -604,8 +782,8 @@ def collect_storage(mount_table: dict[str, Any] | None = None) -> dict[str, Any]
         exact_mount = selected_mounts.get(str(target))
         containing = containing_mount(target, mount_table)
         mounts[str(target)] = {
-            "containing_mount": containing,
-            "exact_mount": exact_mount,
+            "containing_mount": sanitized_mount_record(containing),
+            "exact_mount": sanitized_mount_record(exact_mount),
             "path": local_path_metadata(target, mount_table),
         }
         if exact_mount and str(exact_mount.get("fstype", "")).lower() in LOCAL_FILESYSTEMS:
@@ -724,7 +902,7 @@ def descendant_mount_skip(
     if root_mount is None or path_mount is None:
         return "mount containment is unknown"
     if root_mount.get("target") != path_mount.get("target"):
-        return f"path crosses descendant mount {path_mount.get('target')}"
+        return f"path crosses descendant mount {sanitize_text(str(path_mount.get('target', '')))}"
     return None
 
 
@@ -909,10 +1087,20 @@ def collect_storage_config(
     return collect_storage_config_beneath(path.parent, Path(path.name))
 
 
-def collect_ssh_host_keys() -> list[dict[str, Any]]:
+def collect_ssh_host_keys(
+    mount_table: dict[str, Any] | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    if mount_table is None:
+        mount_table = collect_mount_table()
+    directory = Path("/etc/ssh")
+    directory_metadata = local_path_metadata(directory, mount_table)
+    if "inspection_skipped" in directory_metadata:
+        return directory_metadata
     records: list[dict[str, Any]] = []
-    for path in sorted(Path("/etc/ssh").glob("ssh_host_*_key.pub")):
-        record = key_file_fingerprints_beneath(path.parent, Path(path.name))
+    for path in sorted(directory.glob("ssh_host_*_key.pub")):
+        record = key_file_fingerprints_beneath(
+            path.parent, Path(path.name), mount_table
+        )
         records.append(record)
     return records
 
@@ -1006,7 +1194,7 @@ def collect_report(controller_user: str) -> dict[str, Any]:
         },
         "runtime": collect_runtime(mount_table),
         "schema": SCHEMA,
-        "ssh_host_keys": collect_ssh_host_keys(),
+        "ssh_host_keys": collect_ssh_host_keys(mount_table),
         "storage": collect_storage(mount_table),
         "warning": WARNING,
     }

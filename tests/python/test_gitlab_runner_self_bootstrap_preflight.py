@@ -1006,8 +1006,130 @@ def test_preflight_storage_checks_fail_closed(preflight_source: str) -> None:
     assert 'pv_partition == "$partition"' in preflight_source
     assert '[[ ! -e $mountpoint && ! -L $mountpoint ]]' in preflight_source
     assert '[[ -L $mountpoint || ! -d $mountpoint ]]' in preflight_source
-    assert "size_bytes == rounded_bytes" in preflight_source
+    assert "grow_from_size_gib" in preflight_source
+    assert '"initialize" not in layout' in preflight_source
+    assert 'or "lv_size" in volume' in preflight_source
+    assert 'or fstype != "xfs"' in preflight_source
+    assert 'or state != "mounted"' in preflight_source
+    assert "size_bytes == source_rounded_bytes || size_bytes == rounded_bytes" in preflight_source
+    assert 'mount_active=true' in preflight_source
+    assert '[[ $mount_active == true ]]' in preflight_source
+    assert 'record.get("fsroot") != "/"' in preflight_source
+    assert 'record.get("maj:min") != identity' in preflight_source
+    assert 'must already exist for reviewed growth' in preflight_source
     assert "vg_missing_bytes[$vg]" in preflight_source
+    assert "vg_growth_bytes[$vg]" in preflight_source
+    assert "${vg_growth_bytes[$vg]:-0}" in preflight_source
+    assert "vg_headroom_bytes[$vg]=${vg_headroom_bytes[$vg]:-0}" in preflight_source
+
+
+def test_preflight_storage_parser_emits_unambiguous_growth_row(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    parser_match = re.search(
+        r"if ! storage_rows=\$\(python3 - \"\$selected_file\" <<'PY'\n(.*?)\nPY",
+        preflight_source,
+        re.DOTALL,
+    )
+    assert parser_match is not None
+    selected = tmp_path / "selected.json"
+    selected.write_text(
+        json.dumps(
+            {
+                "storage_layouts": [
+                    {
+                        "capacity_gib": 79,
+                        "device": "/dev/disk/by-path/test-disk",
+                        "initialize": False,
+                        "name": "data",
+                        "pv_device": "/dev/disk/by-path/test-disk-part1",
+                        "required_free_gib": 19,
+                        "reuse_existing_vg": True,
+                        "vg_name": "data",
+                    }
+                ],
+                "storage_volumes": [
+                    {
+                        "grow_from_size_gib": 1,
+                        "layout": "data",
+                        "lv_name": "var",
+                        "mountpoint": "/var",
+                        "name": "var",
+                        "size_gib": 8,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = command_runner.run(
+        ["python3", "-c", parser_match.group(1), selected]
+    ).assert_success()
+
+    fields = result.stdout.strip().split("\t")
+    assert len(fields) == 13
+    assert fields[-2:] == ["1", "1"]
+
+
+@pytest.mark.parametrize(
+    "invalid_update",
+    (
+        {"grow_from_size_gib": True},
+        {"grow_from_size_gib": 8},
+        {"lv_size": "9g"},
+        {"fstype": "ext4"},
+        {"state": "present"},
+    ),
+)
+def test_preflight_storage_parser_rejects_invalid_growth_contract(
+    invalid_update: dict[str, object],
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    parser_match = re.search(
+        r"if ! storage_rows=\$\(python3 - \"\$selected_file\" <<'PY'\n(.*?)\nPY",
+        preflight_source,
+        re.DOTALL,
+    )
+    assert parser_match is not None
+    volume = {
+        "grow_from_size_gib": 1,
+        "layout": "data",
+        "lv_name": "var",
+        "mountpoint": "/var",
+        "name": "var",
+        "size_gib": 8,
+    }
+    volume.update(invalid_update)
+    selected = tmp_path / "selected.json"
+    selected.write_text(
+        json.dumps(
+            {
+                "storage_layouts": [
+                    {
+                        "capacity_gib": 79,
+                        "device": "/dev/disk/by-path/test-disk",
+                        "initialize": False,
+                        "name": "data",
+                        "pv_device": "/dev/disk/by-path/test-disk-part1",
+                        "required_free_gib": 19,
+                        "reuse_existing_vg": True,
+                        "vg_name": "data",
+                    }
+                ],
+                "storage_volumes": [volume],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    command_runner.run(
+        ["python3", "-c", parser_match.group(1), selected]
+    ).assert_failure()
 
 
 def test_preflight_make_targets_forward_the_development_image(repo_root: Path) -> None:

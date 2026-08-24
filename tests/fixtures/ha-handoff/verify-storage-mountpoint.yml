@@ -1,0 +1,97 @@
+---
+- name: Verify storage mountpoint safety guard
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    storage_volume_lv_device: /dev/platform-test/missing
+    storage_volume_mountpoint_check_phase: test
+  tasks:
+    - name: Create storage mountpoint test root
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: platform-storage-mountpoint-
+      register: storage_mountpoint_test_root
+
+    - name: Verify absent storage mountpoint
+      ansible.builtin.include_tasks: ../../../roles/storage_volume/tasks/verify_mountpoint.yml
+      vars:
+        storage_volume_mountpoint: "{{ storage_mountpoint_test_root.path }}/absent"
+
+    - name: Create empty storage mountpoint
+      ansible.builtin.file:
+        path: "{{ storage_mountpoint_test_root.path }}/empty"
+        state: directory
+        mode: "0700"
+
+    - name: Verify empty storage mountpoint
+      ansible.builtin.include_tasks: ../../../roles/storage_volume/tasks/verify_mountpoint.yml
+      vars:
+        storage_volume_mountpoint: "{{ storage_mountpoint_test_root.path }}/empty"
+
+    - name: Create nonempty storage mountpoint
+      ansible.builtin.copy:
+        dest: "{{ storage_mountpoint_test_root.path }}/empty/existing"
+        content: existing
+        mode: "0600"
+
+    - name: Verify nonempty storage mountpoint is rejected
+      block:
+        - name: Run guard against nonempty storage mountpoint
+          ansible.builtin.include_tasks: ../../../roles/storage_volume/tasks/verify_mountpoint.yml
+          vars:
+            storage_volume_mountpoint: "{{ storage_mountpoint_test_root.path }}/empty"
+
+        - name: Stop if nonempty storage mountpoint was accepted
+          ansible.builtin.fail:
+            msg: Nonempty storage mountpoint was accepted.
+      rescue:
+        - name: Require guard to reject nonempty storage mountpoint
+          ansible.builtin.assert:
+            that:
+              - >-
+                'not empty; refusing to hide its contents'
+                in ansible_failed_result.msg
+
+        - name: Record nonempty storage mountpoint rejection
+          ansible.builtin.set_fact:
+            storage_mountpoint_nonempty_rejected: true
+
+    - name: Create storage mountpoint symlink
+      ansible.builtin.file:
+        src: "{{ storage_mountpoint_test_root.path }}/empty"
+        dest: "{{ storage_mountpoint_test_root.path }}/linked"
+        state: link
+
+    - name: Verify storage mountpoint symlink is rejected
+      block:
+        - name: Run guard against storage mountpoint symlink
+          ansible.builtin.include_tasks: ../../../roles/storage_volume/tasks/verify_mountpoint.yml
+          vars:
+            storage_volume_mountpoint: "{{ storage_mountpoint_test_root.path }}/linked"
+
+        - name: Stop if storage mountpoint symlink was accepted
+          ansible.builtin.fail:
+            msg: Storage mountpoint symlink was accepted.
+      rescue:
+        - name: Require guard to reject storage mountpoint symlink
+          ansible.builtin.assert:
+            that:
+              - >-
+                'must be absent or a real directory'
+                in ansible_failed_result.msg
+
+        - name: Record storage mountpoint symlink rejection
+          ansible.builtin.set_fact:
+            storage_mountpoint_symlink_rejected: true
+
+    - name: Require unsafe storage mountpoints to fail closed
+      ansible.builtin.assert:
+        that:
+          - storage_mountpoint_nonempty_rejected | default(false) | bool
+          - storage_mountpoint_symlink_rejected | default(false) | bool
+
+    - name: Remove storage mountpoint test root
+      ansible.builtin.file:
+        path: "{{ storage_mountpoint_test_root.path }}"
+        state: absent

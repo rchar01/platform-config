@@ -1,0 +1,111 @@
+---
+- name: Inspect storage volume mountpoint path
+  ansible.builtin.stat:
+    path: "{{ storage_volume_mountpoint }}"
+    follow: false
+  register: storage_volume_mountpoint_stat
+
+- name: Require a safe storage volume mountpoint path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not storage_volume_mountpoint_stat.stat.exists
+        or (
+          storage_volume_mountpoint_stat.stat.isdir
+          and not storage_volume_mountpoint_stat.stat.islnk
+        )
+    fail_msg: >-
+      Storage mountpoint {{ storage_volume_mountpoint }} must be absent or a
+      real directory before {{ storage_volume_mountpoint_check_phase }}.
+
+- name: Inspect exact storage volume mountpoint
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --json
+      - --mountpoint
+      - "{{ storage_volume_mountpoint }}"
+      - --output
+      - TARGET,SOURCE,FSTYPE,FSROOT,MAJ:MIN
+  register: storage_volume_mountpoint_findmnt
+  changed_when: false
+  check_mode: false
+  failed_when: storage_volume_mountpoint_findmnt.rc not in [0, 1]
+  when:
+    - storage_volume_mountpoint_stat.stat.exists
+    - storage_volume_mountpoint_stat.stat.isdir
+    - not storage_volume_mountpoint_stat.stat.islnk
+
+- name: Inspect mounted storage logical volume device
+  ansible.builtin.stat:
+    path: "{{ storage_volume_lv_device }}"
+    follow: true
+  register: storage_volume_mountpoint_lv_stat
+  when: storage_volume_mountpoint_findmnt.rc | default(1) == 0
+
+- name: Read mounted storage logical volume block identity
+  ansible.builtin.command:
+    argv:
+      - lsblk
+      - -dnro
+      - MAJ:MIN
+      - "{{ storage_volume_lv_device }}"
+  register: storage_volume_mountpoint_lv_identity
+  changed_when: false
+  check_mode: false
+  when:
+    - storage_volume_mountpoint_findmnt.rc | default(1) == 0
+    - storage_volume_mountpoint_lv_stat.stat.isblk | default(false)
+
+- name: Parse exact storage volume mountpoint
+  ansible.builtin.set_fact:
+    storage_volume_mountpoint_records: >-
+      {{
+        (storage_volume_mountpoint_findmnt.stdout | from_json).filesystems
+        if storage_volume_mountpoint_findmnt.rc | default(1) == 0
+        else []
+      }}
+
+- name: Require the intended storage logical volume at an active mountpoint
+  ansible.builtin.assert:
+    that:
+      - storage_volume_mountpoint_records | length == 1
+      - storage_volume_mountpoint_records[0].target == storage_volume_mountpoint
+      - storage_volume_mountpoint_records[0].fsroot == '/'
+      - storage_volume_mountpoint_records[0]['maj:min'] is match('^[0-9]+:[0-9]+$')
+      - storage_volume_mountpoint_lv_stat.stat.isblk | default(false)
+      - storage_volume_mountpoint_lv_identity.stdout | default('') | trim == storage_volume_mountpoint_records[0]['maj:min']
+    fail_msg: >-
+      Storage mountpoint {{ storage_volume_mountpoint }} is already mounted from
+      a different filesystem root or block device than
+      {{ storage_volume_lv_device }}.
+  when: storage_volume_mountpoint_findmnt.rc | default(1) == 0
+
+- name: Inspect unmounted storage volume mountpoint contents
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ storage_volume_mountpoint }}"
+      - -mindepth
+      - "1"
+      - -maxdepth
+      - "1"
+      - -print
+      - -quit
+  register: storage_volume_mountpoint_contents
+  changed_when: false
+  check_mode: false
+  when:
+    - storage_volume_mountpoint_stat.stat.exists
+    - storage_volume_mountpoint_stat.stat.isdir
+    - not storage_volume_mountpoint_stat.stat.islnk
+    - storage_volume_mountpoint_findmnt.rc | default(1) == 1
+
+- name: Refuse to hide unmounted storage volume mountpoint contents
+  ansible.builtin.assert:
+    that:
+      - storage_volume_mountpoint_contents.stdout | default('') | trim | length == 0
+    fail_msg: >-
+      Storage mountpoint {{ storage_volume_mountpoint }} is not mounted from the
+      intended logical volume and is not empty; refusing to hide its contents.
+  when: storage_volume_mountpoint_findmnt.rc | default(1) == 1

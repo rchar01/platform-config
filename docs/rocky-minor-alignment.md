@@ -5,6 +5,12 @@ to 10.2. They are historical transitions for explicitly eligible hosts, not
 normal desired-state convergence. No regular playbook imports them. The 10.1
 transition remains the launcher default; 10.0 must be selected explicitly.
 
+Run `apply` from a controller that remains available while the managed host
+reboots. The migration waits for SSH to return, verifies the new release and
+running kernel, and only then publishes its completion marker. A controller
+running on the migrating host cannot complete that sequence; use an external
+controller for this one-time phase before target-side self-bootstrap.
+
 The migration accepts only these states:
 
 - Rocky 10.1 with an exact `/etc/dnf/vars/releasever` value of `10.1` and no

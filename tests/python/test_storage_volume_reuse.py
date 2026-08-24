@@ -228,6 +228,51 @@ def test_reuse_preflight_precedes_mutation_and_is_read_only(repo_root: Path) -> 
             assert task["changed_when"] is False
 
 
+def test_mountpoint_guard_precedes_mutation_and_mount(repo_root: Path) -> None:
+    role = repo_root / "roles/storage_volume/tasks"
+    volume_tasks = _load_yaml(role / "volume.yml")
+    guard_tasks = _load_yaml(role / "verify_mountpoint.yml")
+    names = [task["name"] for task in volume_tasks]
+
+    assert names.index("Verify storage volume mountpoint before mutation") < names.index(
+        "Create LVM partition for storage volume"
+    )
+    assert names.index("Ensure storage volume mountpoint exists") < names.index(
+        "Recheck storage volume mountpoint before mounting"
+    )
+    assert names.index("Recheck storage volume mountpoint before mounting") < names.index(
+        "Mount storage volume by UUID"
+    )
+
+    commands = [
+        task["ansible.builtin.command"]["argv"][0]
+        for task in guard_tasks
+        if "ansible.builtin.command" in task
+    ]
+    assert commands == ["findmnt", "lsblk", "find"]
+    for task in guard_tasks:
+        if "ansible.builtin.command" in task:
+            assert task["changed_when"] is False
+            assert task["check_mode"] is False
+
+    source = (role / "verify_mountpoint.yml").read_text(encoding="utf-8")
+    assert "TARGET,SOURCE,FSTYPE,FSROOT,MAJ:MIN" in source
+    assert "storage_volume_mountpoint_records[0]['maj:min']" in source
+    assert "storage_volume_mountpoint_lv_identity.stdout" in source
+    assert "not empty; refusing to hide its contents" in source
+    for unsafe in ("ansible.builtin.copy", "ansible.posix.synchronize", "rsync", "rm -", "mv "):
+        assert unsafe not in source
+
+
+def test_mountpoint_guard_accepts_safe_paths_and_rejects_unsafe_paths(
+    repo_root: Path, command_runner: CommandRunner
+) -> None:
+    run_playbook(
+        command_runner,
+        repo_root / "tests/fixtures/ha-handoff/verify-storage-mountpoint.yml",
+    ).assert_success()
+
+
 def test_preinstalled_storage_packages_skip_package_manager(repo_root: Path) -> None:
     tasks = _load_yaml(repo_root / "roles/storage_volume/tasks/main.yml")
     package_facts = _task(tasks, "Collect installed storage volume packages")

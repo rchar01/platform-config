@@ -17,6 +17,15 @@ where a blank replacement should initialize automatically. Use
 separate reviewed initialization decision after replacement. Unexpected disk
 content fails closed under either policy.
 
+Before any storage mutation and again immediately before mounting, the role
+checks the target mountpoint. An absent or empty unmounted directory is safe. A
+nonempty directory is accepted only when it is already mounted from the exact
+intended LV filesystem root; a subdirectory bind, unrelated block device,
+symlink, non-directory, or nonempty unmounted directory fails closed. The role
+does not copy, remove, or migrate existing mountpoint contents. Prepare paths
+such as `/var/lib/containers` before rootful services create state there, or use
+a separately reviewed data migration.
+
 For several bounded logical volumes on one disk, define one
 `storage_volume_layouts` entry and reference it from each volume. The layout owns
 the stable device, VG, capacity, required unallocated headroom, and one explicit

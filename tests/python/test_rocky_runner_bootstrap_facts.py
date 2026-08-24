@@ -420,12 +420,254 @@ def test_remote_and_automount_paths_are_not_dereferenced(
     assert inspected == [Path("/var")]
 
 
+def test_lsblk_primary_profile_omits_invalid_mountoptions(
+    collector_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def result(argv: list[str], **_kwargs) -> dict[str, object]:
+        calls.append(argv)
+        return {
+            "argv": argv,
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(
+                {
+                    "blockdevices": [
+                        {"kname": "/dev/vda", "name": "/dev/vda", "size": 1, "type": "disk"}
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(collector_module, "command_result", result)
+
+    collected = collector_module.collect_block_devices()
+
+    assert len(calls) == 1
+    assert "MOUNTOPTIONS" not in calls[0][-1]
+    assert "MOUNTPOINTS" in calls[0][-1]
+    assert collected["returncode"] == 0
+
+
+def test_lsblk_uses_only_fixed_compatibility_profiles(
+    collector_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def result(argv: list[str], **_kwargs) -> dict[str, object]:
+        calls.append(argv)
+        if len(calls) == 1:
+            return {
+                "argv": argv,
+                "returncode": 1,
+                "stderr": "lsblk: unknown column: FSVER token=<redacted>",
+                "stdout": "",
+            }
+        return {
+            "argv": argv,
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(
+                {
+                    "blockdevices": [
+                        {"kname": "/dev/vda", "name": "/dev/vda", "size": 1, "type": "disk"}
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(collector_module, "command_result", result)
+
+    collected = collector_module.collect_block_devices()
+
+    assert len(calls) == 2
+    assert calls[1][-1] == (
+        "NAME,KNAME,PKNAME,TYPE,SIZE,FSTYPE,UUID,MOUNTPOINT,MODEL,SERIAL,WWN"
+    )
+    assert collected["argv"] == calls[1]
+    assert collected["attempts"] == [
+        {
+            "argv": calls[0],
+            "returncode": 1,
+            "stderr": "lsblk: unknown column: FSVER token=<redacted>",
+        }
+    ]
+
+
+def test_findmnt_empty_success_uses_minimal_fallback(
+    collector_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def result(argv: list[str], **_kwargs) -> dict[str, object]:
+        calls.append(argv)
+        filesystems = [] if len(calls) == 1 else [
+            {"target": "/", "fstype": "xfs"},
+            {"target": "/home", "fstype": "nfs4"},
+        ]
+        return {
+            "argv": argv,
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps({"filesystems": filesystems}),
+        }
+
+    monkeypatch.setattr(collector_module, "command_result", result)
+
+    collected = collector_module.collect_mount_table()
+
+    assert len(calls) == 2
+    assert calls[1][-1] == "TARGET,FSTYPE"
+    assert collected["records"] == [
+        {"fstype": "xfs", "target": "/"},
+        {"fstype": "nfs4", "target": "/home"},
+    ]
+    assert len(collected["attempts"]) == 1
+
+
+def test_findmnt_raw_target_controls_containment_before_report_redaction(
+    collector_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = "/mnt/token/private-value"
+    document = {
+        "filesystems": [
+            {"target": "/", "fstype": "xfs"},
+            {"target": target, "fstype": "nfs4"},
+        ]
+    }
+    monkeypatch.setattr(
+        collector_module,
+        "command_result",
+        lambda argv, **_kwargs: {
+            "argv": argv,
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(document),
+        },
+    )
+    monkeypatch.setattr(
+        collector_module,
+        "file_metadata",
+        lambda _path: pytest.fail("remote path must not be inspected"),
+    )
+
+    mount_table = collector_module.collect_mount_table()
+    result = collector_module.local_path_metadata(
+        Path(f"{target}/child"), mount_table
+    )
+
+    assert mount_table["records"][1]["target"] == target
+    assert result["containing_filesystem"] == "nfs4"
+    assert result["containing_mount"] == "/mnt/token/<redacted>"
+
+
+@pytest.mark.parametrize(
+    "record",
+    (
+        {},
+        {"name": "/dev/vda", "kname": "/dev/vda", "type": "disk"},
+        {"name": "/dev/vda", "kname": "/dev/vda", "size": 1, "type": ""},
+        {"name": "/dev/vda", "kname": "/dev/vda", "size": "1", "type": "disk"},
+    ),
+)
+def test_lsblk_rejects_structurally_empty_device_records(
+    record: dict[str, object],
+    collector_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        collector_module,
+        "command_result",
+        lambda argv, **_kwargs: {
+            "argv": argv,
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps({"blockdevices": [record]}),
+        },
+    )
+
+    collected = collector_module.collect_block_devices()
+
+    assert collected["stdout"] == ""
+    assert len(collected["attempts"]) == 3
+    assert "required identity fields" in collected["collection_error"]
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        {},
+        {"filesystems": []},
+        {"filesystems": [{}]},
+        {"filesystems": [None]},
+        {"filesystems": [{"target": "relative", "fstype": "xfs"}]},
+        {"filesystems": [{"target": "/", "fstype": ""}]},
+        {"filesystems": [{"target": "/", "fstype": "xfs", "children": {}}]},
+        {
+            "filesystems": [
+                {"target": "/", "fstype": "xfs"},
+                {"target": "/home", "fstype": "xfs"},
+                {"target": "/home", "fstype": "nfs4"},
+            ]
+        },
+    ),
+)
+def test_findmnt_rejects_the_whole_unusable_result(
+    document: object,
+    collector_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        collector_module,
+        "command_result",
+        lambda argv, **_kwargs: {
+            "argv": argv,
+            "returncode": 0,
+            "stderr": "",
+            "stdout": json.dumps(document),
+        },
+    )
+
+    collected = collector_module.collect_mount_table()
+
+    assert collected["records"] == []
+    assert len(collected["attempts"]) == 2
+    assert "collection_error" in collected
+
+
+def test_ssh_host_keys_skip_unknown_mount_containment(
+    collector_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        collector_module,
+        "local_path_metadata",
+        lambda path, _mounts: {
+            "inspection_skipped": "containing filesystem is unknown",
+            "path": str(path),
+        },
+    )
+    monkeypatch.setattr(
+        Path,
+        "glob",
+        lambda *_args, **_kwargs: pytest.fail("unknown mount must not be traversed"),
+    )
+
+    collected = collector_module.collect_ssh_host_keys(
+        {"command": {}, "records": []}
+    )
+
+    assert collected["inspection_skipped"] == "containing filesystem is unknown"
+
+
 def test_observational_command_set_excludes_network_and_mutation(
     collector_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
 
-    def record(argv: list[str], *, timeout: int = 30) -> dict[str, object]:
+    def record(
+        argv: list[str], *, timeout: int = 30, sanitize_stdout: bool = True
+    ) -> dict[str, object]:
         calls.append(argv)
         stdout = ""
         if argv[0] == "findmnt":
@@ -439,6 +681,14 @@ def test_observational_command_set_excludes_network_and_mutation(
                             "source": "/dev/mapper/system-root",
                             "target": "/",
                         }
+                    ]
+                }
+            )
+        elif argv[0] == "lsblk":
+            stdout = json.dumps(
+                {
+                    "blockdevices": [
+                        {"kname": "/dev/vda", "name": "/dev/vda", "size": 1, "type": "disk"}
                     ]
                 }
             )

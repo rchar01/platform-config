@@ -86,6 +86,11 @@
       - storage_volume_mountpoint is match('^/')
     fail_msg: "Storage volume definitions must use explicit stable devices, VG/LV names, and absolute mountpoints."
 
+- name: Verify storage volume mountpoint before mutation
+  ansible.builtin.include_tasks: verify_mountpoint.yml
+  vars:
+    storage_volume_mountpoint_check_phase: storage mutation
+
 - name: Check storage volume source disk
   ansible.builtin.stat:
     path: "{{ storage_volume_device }}"
@@ -261,6 +266,11 @@
     group: "{{ storage_volume_group }}"
     mode: "{{ storage_volume_mode }}"
   when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Recheck storage volume mountpoint before mounting
+  ansible.builtin.include_tasks: verify_mountpoint.yml
+  vars:
+    storage_volume_mountpoint_check_phase: mounting
 
 - name: Read storage logical volume UUID
   ansible.builtin.command:
