@@ -503,8 +503,45 @@ change, invoke the script directly with `--allow-dirty`; the Make targets do not
 weaken the clean-worktree gate. The helper reports private host and disk
 metadata, so do not paste its output into public issues.
 
-The individual read-only commands remain useful when collecting evidence before
-private inventory is complete:
+When private inventory is incomplete, run the standalone fact collector directly
+on the target as root. Replace `ansible` only when a different automation account
+is intended. Shell redirection occurs before `sudo`, so the report remains owned
+by the connected operator account; `umask 077` makes it owner-only.
+
+```bash
+umask 077
+report="$HOME/rocky-runner-bootstrap-facts-$(date -u +%Y%m%dT%H%M%SZ).json"
+sudo python3 ./scripts/rocky-runner-bootstrap-facts \
+  --controller-user ansible > "$report"
+python3 -m json.tool "$report" >/dev/null
+printf 'Private fact report: %s\n' "$report"
+```
+
+The collector writes one JSON document to standard output and a privacy warning
+to standard error. It records host identity, addresses, current Rocky/DNF and
+repository state, signing-key identity, block/LVM/filesystem topology, relevant
+mount policy, automation-account readiness, SSH public-key fingerprints,
+container storage configuration, and Podman/Runner unit and path state. It does
+not print private keys, public-key bodies, Runner configuration, complete
+`fstab`, or unrelated mount entries. URL userinfo, query strings, fragments,
+recognized credential path forms, bearer values, and sensitive assignments are
+redacted; repository URLs must still be reviewed before reuse.
+
+The fixed command set does not invoke network clients, DNF metadata loading or
+package transactions, Podman, LVM/filesystem mutation, mount operations, reboots,
+or service state changes. It reads the mount table first and does not inspect,
+measure, or traverse paths on automount or non-allowlisted filesystems. Configured
+NSS, PAM, logging, and audit integrations may still observe normal account and
+`sudo` lookups. Keep the report outside Git and public issue trackers. Provide it
+only through the approved private evidence channel.
+
+The report describes current guest state. It cannot prove hypervisor snapshot
+scope, choose desired LV sizes, identify an unconfigured HTTPS 10.2 mirror, or
+establish GitLab-side Runner scope and token readiness. Those remain separate
+operator decisions and evidence gates.
+
+The individual observational commands remain useful when only a small evidence
+subset is needed:
 
 ```bash
 hostnamectl --static

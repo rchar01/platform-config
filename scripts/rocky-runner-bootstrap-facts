@@ -1,0 +1,1046 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import datetime
+import hashlib
+import inspect
+import json
+import os
+import platform
+import pwd
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA = "platform.rocky-runner-bootstrap-facts.v1"
+COMMAND_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+WARNING = (
+    "This report contains private host, network, repository, and storage topology. "
+    "Keep it outside Git and public issue trackers."
+)
+USERNAME_PATTERN = re.compile(r"[a-z_][a-z0-9_.-]{0,63}\$?")
+URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
+    r'''(?ix)
+    \b([a-z0-9_-]*(?:password|passwd|token|secret|credentials|
+    api[_-]?key|keyfile)[a-z0-9_-]*)\s*=\s*
+    (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,]+)
+    '''
+)
+BEARER_PATTERN = re.compile(
+    r'''(?ix)
+    \b(bearer)\s+
+    (?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[a-z0-9._~+/-]+=*)
+    '''
+)
+SENSITIVE_PATH_PATTERN = re.compile(
+    r"(?i)(/(?:[a-z0-9_-]*(?:password|passwd|token|secret|credentials|"
+    r"api[_-]?key|keyfile)[a-z0-9_-]*)/)([^/\s,]+)"
+)
+MAX_INSPECTED_FILE_BYTES = 1024 * 1024
+TARGET_PATHS = (
+    Path("/"),
+    Path("/boot"),
+    Path("/home"),
+    Path("/var"),
+    Path("/var/lib/containers"),
+    Path("/var/lib/gitlab-runner"),
+    Path("/srv/platform-bootstrap"),
+)
+INSPECTED_PATHS = (
+    Path("/etc/containers/storage.conf"),
+    Path("/etc/gitlab-runner/config.toml"),
+    Path("/etc/containers/systemd/gitlab-runner.container"),
+    Path("/var/lib/containers"),
+    Path("/var/lib/gitlab-runner"),
+    Path("/srv/platform-bootstrap"),
+)
+SYSTEMD_UNITS = (
+    "podman.service",
+    "podman.socket",
+    "gitlab-runner.service",
+    "platform-container-runtime-overlayfs-exception.service",
+)
+LOCAL_FILESYSTEMS = {
+    "btrfs",
+    "ext2",
+    "ext3",
+    "ext4",
+    "overlay",
+    "tmpfs",
+    "vfat",
+    "xfs",
+}
+
+
+def parse_arguments(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Collect non-mutating Rocky Linux Runner bootstrap facts as JSON. "
+            "Run with sudo and keep the report outside Git."
+        )
+    )
+    parser.add_argument(
+        "--controller-user",
+        required=True,
+        help="automation account to inspect, even when the account does not yet exist",
+    )
+    arguments = parser.parse_args(argv)
+    if not USERNAME_PATTERN.fullmatch(arguments.controller_user):
+        parser.error("--controller-user must be one literal Linux account name")
+    return arguments
+
+
+def sanitize_url(value: str) -> tuple[str, list[str]]:
+    redactions: list[str] = []
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return "<redacted-invalid-url>", ["invalid"]
+
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    if parsed.username is not None or parsed.password is not None:
+        netloc = f"<redacted-auth>@{netloc}"
+        redactions.append("userinfo")
+
+    path_segments = parsed.path.split("/")
+    for index, segment in enumerate(path_segments):
+        decoded = urllib.parse.unquote(segment)
+        sanitized_segment = sanitize_assignment(decoded)
+        if sanitized_segment != decoded:
+            path_segments[index] = urllib.parse.quote(sanitized_segment, safe="=<>._~-")
+            redactions.append("path")
+        if is_sensitive_key(decoded) and index + 1 < len(path_segments):
+            path_segments[index + 1] = "<redacted>"
+            redactions.append("path")
+    path = "/".join(path_segments)
+
+    query = parsed.query
+    if query:
+        query = "<redacted>"
+        redactions.append("query")
+    fragment = parsed.fragment
+    if fragment:
+        fragment = "<redacted>"
+        redactions.append("fragment")
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, netloc, path, query, fragment)
+    ), list(dict.fromkeys(redactions))
+
+
+def is_sensitive_key(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?i)[a-z0-9_-]*(?:password|passwd|token|secret|credentials|"
+            r"api[_-]?key|keyfile)[a-z0-9_-]*",
+            value,
+        )
+    )
+
+
+def sanitize_assignment(value: str) -> str:
+    return SENSITIVE_ASSIGNMENT_PATTERN.sub(r"\1=<redacted>", value)
+
+
+def sanitize_text(value: str) -> str:
+    def replace_url(match: re.Match[str]) -> str:
+        return sanitize_url(match.group(0))[0]
+
+    value = URL_PATTERN.sub(replace_url, value)
+    value = SENSITIVE_PATH_PATTERN.sub(r"\1<redacted>", value)
+    value = sanitize_assignment(value)
+    return BEARER_PATTERN.sub(r"\1 <redacted>", value)
+
+
+def command_result(argv: list[str], *, timeout: int = 30) -> dict[str, Any]:
+    executable = shutil.which(argv[0], path=COMMAND_PATH)
+    if executable is None:
+        return {
+            "argv": argv,
+            "returncode": None,
+            "stderr": f"required executable not found: {argv[0]}",
+            "stdout": "",
+        }
+
+    try:
+        result = subprocess.run(
+            [executable, *argv[1:]],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env={
+                "HOME": "/root",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": COMMAND_PATH,
+                "SYSTEMD_COLORS": "0",
+                "SYSTEMD_PAGER": "cat",
+            },
+        )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout or ""
+        stderr = error.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        return {
+            "argv": argv,
+            "returncode": None,
+            "stderr": sanitize_text(f"{stderr}\ncommand timed out after {timeout}s").strip(),
+            "stdout": sanitize_text(stdout).strip(),
+        }
+    except OSError as error:
+        return {
+            "argv": argv,
+            "returncode": None,
+            "stderr": sanitize_text(f"{type(error).__name__}: {error}"),
+            "stdout": "",
+        }
+
+    return {
+        "argv": argv,
+        "returncode": result.returncode,
+        "stderr": sanitize_text(result.stderr.decode(errors="replace")).strip(),
+        "stdout": sanitize_text(result.stdout.decode(errors="replace")).strip(),
+    }
+
+
+def file_metadata(path: Path) -> dict[str, Any]:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"exists": False, "path": str(path)}
+    except OSError as error:
+        return {
+            "error": sanitize_text(str(error)),
+            "exists": None,
+            "path": str(path),
+        }
+
+    kind = "other"
+    if stat.S_ISREG(metadata.st_mode):
+        kind = "file"
+    elif stat.S_ISDIR(metadata.st_mode):
+        kind = "directory"
+    elif stat.S_ISLNK(metadata.st_mode):
+        kind = "symlink"
+    elif stat.S_ISBLK(metadata.st_mode):
+        kind = "block"
+    return {
+        "exists": True,
+        "gid": metadata.st_gid,
+        "kind": kind,
+        "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+        "path": str(path),
+        "size_bytes": metadata.st_size,
+        "uid": metadata.st_uid,
+    }
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def signing_key_fact(path: Path) -> dict[str, Any]:
+    result = file_metadata(path)
+    if result.get("exists") and result.get("kind") == "file":
+        try:
+            result["sha256"] = file_digest(path)
+        except OSError as error:
+            result["digest_error"] = sanitize_text(str(error))
+    return result
+
+
+def read_release_variable(path: Path) -> dict[str, Any]:
+    result = file_metadata(path)
+    if result.get("exists") and result.get("kind") == "file":
+        try:
+            result["value"] = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as error:
+            result["read_error"] = sanitize_text(str(error))
+    return result
+
+
+def repository_url_values(values: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
+    sanitized: list[str] = []
+    redacted: list[dict[str, Any]] = []
+    for value in values:
+        safe_value, components = sanitize_url(str(value))
+        sanitized.append(safe_value)
+        if components:
+            redacted.append({"components": components, "value": safe_value})
+    return sorted(sanitized), redacted
+
+
+def collect_dnf() -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "installed_core_packages": command_result(
+            [
+                "rpm",
+                "-q",
+                "--qf",
+                "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\\n",
+                "dnf",
+                "python3-dnf",
+                "libdnf",
+            ]
+        ),
+        "release_variables": {
+            str(path): read_release_variable(path)
+            for path in (
+                Path("/etc/dnf/vars/releasever"),
+                Path("/etc/yum/vars/releasever"),
+            )
+        },
+        "repositories": [],
+        "signing_key": signing_key_fact(
+            Path("/etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-10")
+        ),
+    }
+    try:
+        import dnf
+
+        result["dnf_version"] = dnf.VERSION
+        result["do_transaction_sha256"] = hashlib.sha256(
+            inspect.getsource(dnf.Base.do_transaction).encode()
+        ).hexdigest()
+
+        base = dnf.Base()
+        try:
+            base.conf.read()
+            base.conf.substitutions.update_from_etc("/etc/dnf/vars", "/etc/yum/vars")
+            base.read_all_repos()
+            result["releasever"] = str(base.conf.releasever)
+            for repository in sorted(base.repos.values(), key=lambda item: item.id):
+                if not repository.enabled:
+                    continue
+                baseurl, baseurl_redactions = repository_url_values(
+                    [str(value) for value in repository.baseurl]
+                )
+                gpgkey, gpgkey_redactions = repository_url_values(
+                    [str(value) for value in repository.gpgkey]
+                )
+                single_urls: dict[str, str | None] = {}
+                url_redactions = {
+                    "baseurl": baseurl_redactions,
+                    "gpgkey": gpgkey_redactions,
+                }
+                for name in ("metalink", "mirrorlist"):
+                    value = getattr(repository, name)
+                    if value:
+                        safe_value, redactions = sanitize_url(str(value))
+                        single_urls[name] = safe_value
+                        url_redactions[name] = (
+                            [{"components": redactions, "value": safe_value}]
+                            if redactions
+                            else []
+                        )
+                    else:
+                        single_urls[name] = None
+                        url_redactions[name] = []
+                result["repositories"].append(
+                    {
+                        "baseurl": baseurl,
+                        "gpgcheck": bool(repository.gpgcheck),
+                        "gpgkey": gpgkey,
+                        "id": sanitize_text(repository.id),
+                        "metalink": single_urls["metalink"],
+                        "mirrorlist": single_urls["mirrorlist"],
+                        "name": sanitize_text(repository.name),
+                        "repo_gpgcheck": bool(repository.repo_gpgcheck),
+                        "url_redactions": url_redactions,
+                    }
+                )
+        finally:
+            base.close()
+    except Exception as error:
+        result["collection_error"] = sanitize_text(
+            f"{type(error).__name__}: {error}"
+        )
+    return result
+
+
+def decode_fstab_value(value: str) -> str:
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\134", "\\")
+    )
+
+
+def sanitize_mount_options(value: str) -> str:
+    sensitive = {
+        "credentials",
+        "keyfile",
+        "pass",
+        "passwd",
+        "password",
+        "secret",
+        "token",
+    }
+    options: list[str] = []
+    for option in value.split(","):
+        key, separator, _ = option.partition("=")
+        if separator and key.lower() in sensitive:
+            options.append(f"{key}=<redacted>")
+        else:
+            options.append(option)
+    return ",".join(options)
+
+
+def collect_fstab(
+    path: Path = Path("/etc/fstab"),
+    target_paths: tuple[Path, ...] = TARGET_PATHS,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"entries": [], "path": str(path)}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        result["collection_error"] = sanitize_text(str(error))
+        return result
+
+    targets = {str(target) for target in target_paths}
+    for line_number, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) < 4:
+            continue
+        source, target, filesystem, options = (
+            decode_fstab_value(value) for value in fields[:4]
+        )
+        if target not in targets:
+            continue
+        result["entries"].append(
+            {
+                "filesystem": filesystem,
+                "line": line_number,
+                "options": sanitize_mount_options(options),
+                "source": sanitize_text(source),
+                "target": target,
+            }
+        )
+    return result
+
+
+def collect_disk_links() -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for directory in (Path("/dev/disk/by-id"), Path("/dev/disk/by-path")):
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                target = os.path.realpath(entry)
+            except OSError as error:
+                target = f"<unresolved: {sanitize_text(str(error))}>"
+            records.append({"link": str(entry), "target": target})
+    return records
+
+
+def flatten_mounts(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for record in records:
+        current = {key: value for key, value in record.items() if key != "children"}
+        flattened.append(current)
+        children = record.get("children", [])
+        if isinstance(children, list):
+            flattened.extend(flatten_mounts(children))
+    return flattened
+
+
+def collect_mount_table() -> dict[str, Any]:
+    command = command_result(
+        [
+            "findmnt",
+            "--json",
+            "--bytes",
+            "--output",
+            "TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT",
+        ]
+    )
+    result: dict[str, Any] = {
+        "command": {
+            "argv": command["argv"],
+            "returncode": command["returncode"],
+            "stderr": command["stderr"],
+        },
+        "records": [],
+    }
+    if command["returncode"] != 0:
+        return result
+    try:
+        document = json.loads(command["stdout"])
+        filesystems = document.get("filesystems", [])
+        if not isinstance(filesystems, list):
+            raise ValueError("findmnt filesystems result is not a list")
+        result["records"] = flatten_mounts(filesystems)
+    except (json.JSONDecodeError, ValueError) as error:
+        result["collection_error"] = sanitize_text(str(error))
+    return result
+
+
+def containing_mount(
+    path: Path, mount_table: dict[str, Any]
+) -> dict[str, Any] | None:
+    path_value = str(path)
+    candidates = []
+    for record in mount_table.get("records", []):
+        target = str(record.get("target", ""))
+        if not target:
+            continue
+        prefix = target.rstrip("/") + "/"
+        if path_value == target or path_value.startswith(prefix) or target == "/":
+            candidates.append(record)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda record: len(str(record["target"])))
+
+
+def local_path_metadata(path: Path, mount_table: dict[str, Any]) -> dict[str, Any]:
+    mount = containing_mount(path, mount_table)
+    if mount is None:
+        return {
+            "inspection_skipped": "containing filesystem is unknown",
+            "path": str(path),
+        }
+    filesystem = str(mount.get("fstype", "")).lower()
+    if filesystem not in LOCAL_FILESYSTEMS:
+        return {
+            "containing_filesystem": filesystem,
+            "containing_mount": mount.get("target"),
+            "inspection_skipped": "filesystem is not in the local inspection allowlist",
+            "path": str(path),
+        }
+    return file_metadata(path)
+
+
+def collect_storage(mount_table: dict[str, Any] | None = None) -> dict[str, Any]:
+    if mount_table is None:
+        mount_table = collect_mount_table()
+    result: dict[str, Any] = {
+        "block_devices": command_result(
+            [
+                "lsblk",
+                "--json",
+                "--bytes",
+                "--paths",
+                "--output",
+                "NAME,KNAME,PATH,PKNAME,TYPE,SIZE,FSTYPE,FSVER,UUID,PARTUUID,MOUNTPOINTS,MOUNTOPTIONS,MODEL,SERIAL,WWN",
+            ]
+        ),
+        "blkid": command_result(["blkid", "-o", "full"]),
+        "disk_links": collect_disk_links(),
+        "filesystems": collect_fstab(),
+        "logical_volumes": command_result(
+            [
+                "lvs",
+                "--reportformat",
+                "json",
+                "--units",
+                "b",
+                "--nosuffix",
+                "--options",
+                "vg_name,lv_name,lv_uuid,lv_path,lv_size,lv_attr,segtype,devices",
+            ]
+        ),
+        "physical_volumes": command_result(
+            [
+                "pvs",
+                "--reportformat",
+                "json",
+                "--units",
+                "b",
+                "--nosuffix",
+                "--options",
+                "pv_name,pv_uuid,vg_name,pv_size,pv_free,pv_attr",
+            ]
+        ),
+        "volume_groups": command_result(
+            [
+                "vgs",
+                "--reportformat",
+                "json",
+                "--units",
+                "b",
+                "--nosuffix",
+                "--options",
+                "vg_name,vg_uuid,pv_count,lv_count,vg_size,vg_free,vg_extent_size,vg_attr",
+            ]
+        ),
+    }
+    selected_mounts = {
+        str(record.get("target")): record
+        for record in mount_table.get("records", [])
+        if str(record.get("target")) in {str(path) for path in TARGET_PATHS}
+    }
+    mounts: dict[str, Any] = {}
+    for target in TARGET_PATHS:
+        exact_mount = selected_mounts.get(str(target))
+        containing = containing_mount(target, mount_table)
+        mounts[str(target)] = {
+            "containing_mount": containing,
+            "exact_mount": exact_mount,
+            "path": local_path_metadata(target, mount_table),
+        }
+        if exact_mount and str(exact_mount.get("fstype", "")).lower() in LOCAL_FILESYSTEMS:
+            mounts[str(target)]["df"] = command_result(
+                [
+                    "df",
+                    "--block-size=1",
+                    "--output=source,fstype,size,used,avail,pcent,target",
+                    str(target),
+                ]
+            )
+    result["mounts"] = mounts
+    result["mount_table"] = mount_table["command"]
+    return result
+
+
+def public_key_fingerprint(line: str) -> dict[str, str] | None:
+    fields = line.strip().split()
+    for index, field in enumerate(fields[:-1]):
+        if not (
+            field.startswith("ssh-")
+            or field.startswith("ecdsa-")
+            or field.startswith("sk-")
+        ):
+            continue
+        try:
+            key_blob = base64.b64decode(fields[index + 1], validate=True)
+        except (ValueError, binascii.Error):
+            return None
+        digest = (
+            base64.b64encode(hashlib.sha256(key_blob).digest())
+            .decode()
+            .rstrip("=")
+        )
+        return {"fingerprint": f"SHA256:{digest}", "type": field}
+    return None
+
+
+def read_regular_file_beneath(
+    root: Path, relative: Path, *, maximum_bytes: int = MAX_INSPECTED_FILE_BYTES
+) -> tuple[bytes | None, dict[str, Any]]:
+    path = root / relative
+    result: dict[str, Any] = {"path": str(path)}
+    if (
+        not root.is_absolute()
+        or relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        result["inspection_skipped"] = "path is not a safe relative file beneath an absolute root"
+        return None, result
+
+    directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptors: list[int] = []
+    root_device: int | None = None
+    try:
+        descriptor = os.open(root, directory_flags)
+        descriptors.append(descriptor)
+        root_device = os.fstat(descriptor).st_dev
+        for part in relative.parts[:-1]:
+            descriptor = os.open(part, directory_flags, dir_fd=descriptor)
+            descriptors.append(descriptor)
+            if os.fstat(descriptor).st_dev != root_device:
+                result["inspection_skipped"] = "path crosses a filesystem boundary"
+                return None, result
+        file_descriptor = os.open(relative.parts[-1], file_flags, dir_fd=descriptor)
+        descriptors.append(file_descriptor)
+        metadata = os.fstat(file_descriptor)
+        if metadata.st_dev != root_device:
+            result["inspection_skipped"] = "path crosses a filesystem boundary"
+            return None, result
+        if not stat.S_ISREG(metadata.st_mode):
+            result["inspection_skipped"] = "path is not a regular file"
+            return None, result
+        if metadata.st_size > maximum_bytes:
+            result["inspection_skipped"] = (
+                f"regular file exceeds {maximum_bytes} byte inspection limit"
+            )
+            return None, result
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining:
+            chunk = os.read(file_descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        if len(content) > maximum_bytes:
+            result["inspection_skipped"] = (
+                f"regular file exceeds {maximum_bytes} byte inspection limit"
+            )
+            return None, result
+        result["exists"] = True
+        result["size_bytes"] = len(content)
+        return content, result
+    except FileNotFoundError:
+        result["exists"] = False
+        return None, result
+    except OSError as error:
+        result["inspection_skipped"] = sanitize_text(
+            f"safe file open failed: {type(error).__name__}: {error}"
+        )
+        return None, result
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def descendant_mount_skip(
+    root: Path, relative: Path, mount_table: dict[str, Any]
+) -> str | None:
+    root_mount = containing_mount(root, mount_table)
+    path_mount = containing_mount(root / relative, mount_table)
+    if root_mount is None or path_mount is None:
+        return "mount containment is unknown"
+    if root_mount.get("target") != path_mount.get("target"):
+        return f"path crosses descendant mount {path_mount.get('target')}"
+    return None
+
+
+def key_file_fingerprints_beneath(
+    root: Path, relative: Path, mount_table: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if mount_table is not None:
+        reason = descendant_mount_skip(root, relative, mount_table)
+        if reason:
+            return {
+                "inspection_skipped": reason,
+                "keys": [],
+                "path": str(root / relative),
+            }
+    content, result = read_regular_file_beneath(root, relative)
+    result["keys"] = []
+    if content is None:
+        return result
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeError as error:
+        result["inspection_skipped"] = sanitize_text(
+            f"authorized keys are not UTF-8: {error}"
+        )
+        return result
+
+    for line_number, line in enumerate(lines, 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fingerprint = public_key_fingerprint(line)
+        if fingerprint is None:
+            result.setdefault("unparsed_lines", []).append(line_number)
+            continue
+        result["keys"].append({"line": line_number, **fingerprint})
+    return result
+
+
+def subordinate_ids(path: Path, username: str) -> dict[str, Any]:
+    result: dict[str, Any] = {"entries": [], "path": str(path)}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        result["exists"] = False
+        return result
+    except (OSError, UnicodeError) as error:
+        result["collection_error"] = sanitize_text(str(error))
+        result["exists"] = None
+        return result
+
+    result["exists"] = True
+    for line_number, line in enumerate(lines, 1):
+        fields = line.split(":")
+        if len(fields) == 3 and fields[0] == username:
+            result["entries"].append(
+                {"count": fields[2], "line": line_number, "start": fields[1]}
+            )
+    return result
+
+
+def collect_access(
+    username: str, mount_table: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if mount_table is None:
+        mount_table = collect_mount_table()
+    result: dict[str, Any] = {
+        "controller_user": username,
+        "subgid": subordinate_ids(Path("/etc/subgid"), username),
+        "subuid": subordinate_ids(Path("/etc/subuid"), username),
+    }
+    try:
+        account = pwd.getpwnam(username)
+    except KeyError:
+        result["account"] = {"exists": False}
+        return result
+
+    home = Path(account.pw_dir)
+    result["account"] = {
+        "exists": True,
+        "gid": account.pw_gid,
+        "home": account.pw_dir,
+        "shell": account.pw_shell,
+        "uid": account.pw_uid,
+    }
+    result["identity"] = command_result(["id", username])
+    if not home.is_absolute() or ".." in home.parts:
+        home_metadata = {
+            "inspection_skipped": "account home is not an absolute normalized path",
+            "path": account.pw_dir,
+        }
+    else:
+        home_metadata = local_path_metadata(home, mount_table)
+    result["home"] = home_metadata
+    if "inspection_skipped" in home_metadata:
+        result["authorized_keys"] = {
+            "inspection_skipped": home_metadata["inspection_skipped"]
+        }
+        result["rootless_storage_config"] = {
+            "inspection_skipped": home_metadata["inspection_skipped"]
+        }
+        result["noninteractive_sudo"] = {
+            "inspection_skipped": home_metadata["inspection_skipped"]
+        }
+    else:
+        result["noninteractive_sudo"] = command_result(
+            ["runuser", "--user", username, "--", "sudo", "-n", "true"]
+        )
+        result["authorized_keys"] = [
+            key_file_fingerprints_beneath(
+                home, Path(".ssh") / name, mount_table
+            )
+            for name in ("authorized_keys", "authorized_keys2")
+        ]
+        result["rootless_storage_config"] = collect_storage_config_beneath(
+            home, Path(".config/containers/storage.conf"), mount_table
+        )
+    return result
+
+
+def parse_storage_config(content: bytes, result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        import tomllib
+
+        document = tomllib.loads(content.decode("utf-8"))
+    except (UnicodeError, ValueError) as error:
+        result["inspection_skipped"] = sanitize_text(
+            f"storage configuration is invalid: {error}"
+        )
+        return result
+
+    storage = document.get("storage", {})
+    overlay = storage.get("options", {}).get("overlay", {})
+
+    def selected_value(value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return f"<unsupported-{type(value).__name__}>"
+        return sanitize_text(value)
+
+    result.update(
+        {
+            "driver": selected_value(storage.get("driver")),
+            "exists": True,
+            "graphroot": selected_value(storage.get("graphroot")),
+            "mountopt": selected_value(overlay.get("mountopt")),
+            "runroot": selected_value(storage.get("runroot")),
+        }
+    )
+    return result
+
+
+def collect_storage_config_beneath(
+    root: Path,
+    relative: Path,
+    mount_table: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if mount_table is not None:
+        reason = descendant_mount_skip(root, relative, mount_table)
+        if reason:
+            return {
+                "inspection_skipped": reason,
+                "path": str(root / relative),
+            }
+    content, result = read_regular_file_beneath(root, relative)
+    if content is None:
+        return result
+    return parse_storage_config(content, result)
+
+
+def collect_storage_config(
+    path: Path, mount_table: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if mount_table is not None:
+        mount = containing_mount(path, mount_table)
+        filesystem = str((mount or {}).get("fstype", "")).lower()
+        if filesystem not in LOCAL_FILESYSTEMS:
+            return {
+                "containing_filesystem": filesystem or None,
+                "inspection_skipped": "filesystem is not in the local inspection allowlist",
+                "path": str(path),
+            }
+    return collect_storage_config_beneath(path.parent, Path(path.name))
+
+
+def collect_ssh_host_keys() -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for path in sorted(Path("/etc/ssh").glob("ssh_host_*_key.pub")):
+        record = key_file_fingerprints_beneath(path.parent, Path(path.name))
+        records.append(record)
+    return records
+
+
+def collect_runtime(mount_table: dict[str, Any] | None = None) -> dict[str, Any]:
+    if mount_table is None:
+        mount_table = collect_mount_table()
+    units = {
+        unit: command_result(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--no-pager",
+                "--property=LoadState,UnitFileState,ActiveState,SubState,FragmentPath",
+            ]
+        )
+        for unit in SYSTEMD_UNITS
+    }
+    path_facts = {
+        str(path): local_path_metadata(path, mount_table) for path in INSPECTED_PATHS
+    }
+    return {
+        "installed_container_packages": command_result(
+            [
+                "rpm",
+                "-q",
+                "--qf",
+                "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\\n",
+                "podman",
+                "conmon",
+                "crun",
+                "netavark",
+                "aardvark-dns",
+                "fuse-overlayfs",
+            ]
+        ),
+        "paths": path_facts,
+        "rootful_storage_config": collect_storage_config(
+            Path("/etc/containers/storage.conf"), mount_table
+        ),
+        "units": units,
+    }
+
+
+def collect_report(controller_user: str) -> dict[str, Any]:
+    collected_at = datetime.datetime.now(datetime.timezone.utc).replace(
+        microsecond=0
+    )
+    mount_table = collect_mount_table()
+    try:
+        os_release: dict[str, str] | dict[str, Any] = platform.freedesktop_os_release()
+    except OSError as error:
+        os_release = {"collection_error": sanitize_text(str(error))}
+    return {
+        "access": collect_access(controller_user, mount_table),
+        "collection": {
+            "collected_at": collected_at.isoformat().replace("+00:00", "Z"),
+            "collector_euid": os.geteuid(),
+            "controller_user": controller_user,
+            "hostname": socket.gethostname(),
+            "python": platform.python_version(),
+        },
+        "dnf": collect_dnf(),
+        "host": {
+            "addresses": command_result(["ip", "--json", "address", "show"]),
+            "architecture": platform.machine(),
+            "crypto_policy": command_result(["update-crypto-policies", "--show"]),
+            "failed_units": command_result(
+                ["systemctl", "--failed", "--no-legend", "--plain", "--no-pager"]
+            ),
+            "hostnamectl": command_result(["hostnamectl", "--static"]),
+            "kernel_packages": command_result(
+                [
+                    "rpm",
+                    "-q",
+                    "--qf",
+                    "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\\n",
+                    "kernel",
+                    "kernel-core",
+                    "kernel-modules",
+                ]
+            ),
+            "kernel_release": platform.release(),
+            "os_release": os_release,
+            "routes": command_result(["ip", "--json", "route", "show"]),
+            "selinux": command_result(["getenforce"]),
+            "timezone": command_result(
+                ["timedatectl", "show", "--property=Timezone", "--value"]
+            ),
+        },
+        "runtime": collect_runtime(mount_table),
+        "schema": SCHEMA,
+        "ssh_host_keys": collect_ssh_host_keys(),
+        "storage": collect_storage(mount_table),
+        "warning": WARNING,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = parse_arguments(argv if argv is not None else sys.argv[1:])
+    if os.geteuid() != 0:
+        print(
+            "rocky-runner-bootstrap-facts: run this collector with sudo",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(WARNING, file=sys.stderr)
+    exit_code = 0
+    try:
+        report = collect_report(arguments.controller_user)
+    except Exception as error:
+        report = {
+            "collection": {
+                "collection_error": sanitize_text(
+                    f"{type(error).__name__}: {error}"
+                ),
+                "controller_user": arguments.controller_user,
+            },
+            "schema": SCHEMA,
+            "warning": WARNING,
+        }
+        exit_code = 1
+    json.dump(report, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
