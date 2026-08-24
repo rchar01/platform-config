@@ -32,7 +32,10 @@ The registry target publishes request bytes and downloads response bytes
 directly through one configured private GitLab Generic Package project. Ansible
 never carries package bytes. Offline approval and signing remain separately
 authorized operations using the `platform-pki gitlab-package` request, approval,
-and response stages; no other signer command is defined here.
+and response stages; no other signer command is defined here. A successful
+request route exposes only its authenticated 32-hex `request_id` for that offline
+handoff. The activation Ansible route continues to derive its coordinates from
+authenticated target state and does not accept the ID as input.
 
 The target GitLab token is pre-provisioned at the configured target path. It
 must be a `root:root` regular non-symlink with link count 1, mode `0600`, and
@@ -46,11 +49,12 @@ before mutation, activates and validates Zot locally, and rolls back on failure.
 It succeeds only with final `status=complete` and `required_action=none`.
 
 Direct/controller-local transport, SSH exchange access, controller intake or
-transfer, manual request IDs/digests/directories, runners, evidence/outcome
+transfer, operator-supplied Ansible coordinates, runners, evidence/outcome
 packages, migration operations, and helper-hash predecessor migration are not
 supported. Old workflow state is rejected and requires a separately authorized
-reset or target recreation. See [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md)
-and [PKI Exchange Setup](pki-exchange-setup.md).
+reset or target recreation. See
+[Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) and
+[PKI Exchange Setup](pki-exchange-setup.md).
 
 GitLab CE `18.11.3-ce.0` live token and Generic Package behavior remains an
 explicit, unqualified rollout gate. Do not use these routes for a live rollout

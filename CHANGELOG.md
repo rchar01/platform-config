@@ -9,8 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking Changes
 
-- Replaced the registry PKI command surface with the coordinate-free
-  `registry-pki-request-publish` and `registry-pki-response-activate` routes.
+- Replaced the registry PKI command surface with the fixed
+  `registry-pki-request-publish` and `registry-pki-response-activate` routes;
+  activation remains free of operator-supplied coordinates.
 - Removed direct and controller-local exchange, SSH exchange access,
   runner-validation, evidence/outcome, candidate/finalization, and
   operator-supplied package-coordinate interfaces.
@@ -23,11 +24,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the root-installed target-local `platform-pki` transport client.
 - Kept GitLab token bytes target-local and outside Ansible variables, facts,
   output, arguments, and environment variables.
+- Exposed only the authenticated 32-hex request ID after protected request
+  publication; token, package, digest, project, and path data remain redacted.
 
 ### Changed
 
 - Moved request publication and exact response download behind a fixed
   target-local GitLab facade with protected spools and local activation recovery.
+- Returned the request ID needed by the separately authorized offline GitLab
+  package stages while keeping activation free of operator-supplied coordinates.
 
 ## [3.1.0] - 2026-08-21
 

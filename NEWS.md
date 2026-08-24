@@ -21,6 +21,9 @@ two target-local GitLab package routes.
 
 - Publish requests and download exact responses directly from the target through
   a fixed GitLab facade without carrying package bytes through Ansible.
+- Return the authenticated request ID after successful publication so the
+  offline operator can select the exact request, approval, signing, and response
+  stages without exposing token or package data.
 - Preserve target-local private keys, authenticated activation rollback, strict
   local Zot validation, protected spools, and pre-provisioned token isolation.
 - Descriptor-pin the reviewed `platform-pki` transport client before installing

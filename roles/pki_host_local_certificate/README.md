@@ -26,6 +26,12 @@ before transport when required; downloads and authenticates the schema-2
 response on the target; activates and validates Zot locally; and rolls back on
 failure. Success requires final `status=complete` and `required_action=none`.
 
+After successful request publication, the request route reports only the
+authenticated 32-hex `request_id` outside its protected `no_log` task. Carry that
+exact ID into the separately authorized offline request, approval, signing, and
+response-publication process. The activation Ansible route does not accept it as
+input.
+
 Offline approval and signing are separate, authorized processes outside these
 Ansible routes. This role does not define their command line.
 

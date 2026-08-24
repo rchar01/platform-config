@@ -674,7 +674,7 @@ def derive_current(
 def publish_request(
     config: Mapping[str, object], spool: PinnedDirectory, request: PinnedFile,
     lifecycle: PinnedFile, platform: PinnedFile, project: PinnedFile,
-) -> str:
+) -> tuple[str, str]:
     trust = trust_sources(config)
     export: PinnedDirectory | None = None
     export_files: dict[str, PinnedFile] = {}
@@ -731,7 +731,10 @@ def publish_request(
         )).hexdigest()
         if client_result["file_sha256"] != expected_sha256:
             fail()
-        return "published" if client_result["status"] == "published" else "existing"
+        status_value = (
+            "published" if client_result["status"] == "published" else "existing"
+        )
+        return status_value, request_id
     finally:
         for source in export_files.values():
             source.close()
@@ -929,11 +932,16 @@ def acquire_lock(spool: PinnedDirectory) -> int:
         fail()
 
 
-def status(command: str, value: str) -> None:
-    print(json.dumps({
+def status(command: str, value: str, request_id: str | None = None) -> None:
+    result = {
         "schema": 2, "kind": "platform-config-target-local-gitlab-status",
         "command": command, "status": value,
-    }, sort_keys=True, separators=(",", ":")))
+    }
+    if request_id is not None:
+        if command != "request-publish" or REQUEST_ID.fullmatch(request_id) is None:
+            fail()
+        result["request_id"] = request_id
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
 
 class QuietParser(argparse.ArgumentParser):
@@ -969,15 +977,19 @@ def main() -> None:
         pins.extend((request, lifecycle, platform, project, token, ca, signing))
         spool = PinnedDirectory(str(config["spool_root"]))
         lock = acquire_lock(spool)
-        result = (
-            publish_request(config, spool, request, lifecycle, platform, project)
-            if args.command == "request-publish"
-            else download_response(config, spool, lifecycle, platform, project)
-        )
+        request_id = None
+        if args.command == "request-publish":
+            result, request_id = publish_request(
+                config, spool, request, lifecycle, platform, project
+            )
+        else:
+            result = download_response(
+                config, spool, lifecycle, platform, project
+            )
         for source in pins:
             source.recheck()
         spool.recheck()
-        status(args.command, result)
+        status(args.command, result, request_id)
     finally:
         if lock >= 0:
             os.close(lock)

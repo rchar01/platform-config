@@ -16,8 +16,9 @@ project records, CA files, and secrets remain outside public Git.
   `responses.allowed_signers`.
 - The target exchanges package bytes directly with one private GitLab Generic
   Package project. Ansible never carries package bytes.
-- Operators do not supply request IDs, digests, package versions, or exchange
-  directories.
+- Ansible activation does not accept request IDs, digests, package versions, or
+  exchange directories. The request route returns one authenticated request ID
+  for the separately authorized offline stages.
 - GitLab CE `18.11.3-ce.0` live token and package behavior must pass its explicit
   rollout gate before use.
 
@@ -36,6 +37,10 @@ and schema-2 request, and has the target publish the package directly to GitLab.
 The request payload is exactly `tls.csr`, `request`, and `request.sig`;
 `stage-manifest` is transport metadata.
 
+On success, the route reports only the authenticated 32-hex `request_id` outside
+the protected publication task. Record that exact value for the offline handoff;
+do not derive or substitute a package coordinate.
+
 For `issue`, a fresh registry starts with empty controller TLS sources and Zot
 in derived dormant custody. For `renew`, the route derives the predecessor from
 authenticated active target state.
@@ -46,8 +51,9 @@ After request publication, stop the Ansible workflow. Separately authorize the
 offline approval/signing process. That process authenticates the request, uses
 `platform-pki gitlab-package` to publish the signed approval stage, issues the
 certificate, and publishes the response stage to the same private GitLab
-project. Its remaining commands and private-key custody are outside these
-Ansible routes and are not defined here.
+project. Carry the exact request ID returned by the request route through those
+offline stages. Their remaining commands and private-key custody are outside
+these Ansible routes and are not defined here.
 
 The approval payload is exactly `approval` and `approval.sig`. The response
 payload must be exactly `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`,

@@ -128,6 +128,24 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "{{ pki_host_local_certificate_gitlab_config_path }}",
     ]
     assert publish["no_log"] is True
+    validation = task_named(
+        request, "Validate target-local request publication result"
+    )
+    checks = validation["ansible.builtin.assert"]["that"]
+    assert (
+        "pki_host_local_certificate_request_publish.keys() | list | sort "
+        "== ['command', 'kind', 'request_id', 'schema', 'status']"
+    ) in checks
+    assert (
+        "pki_host_local_certificate_request_publish.request_id "
+        "is match('^[0-9a-f]{32}$')"
+    ) in checks
+    report = task_named(request, "Report authenticated target-local request ID")
+    assert report["ansible.builtin.debug"] == {
+        "msg": {
+            "request_id": "{{ (pki_host_local_certificate_request_publish_result.stdout | from_json).request_id }}"
+        }
+    }
 
     names = [task["name"] for task in activation]
     assert names.index("Read initial authenticated target-local status") < names.index(

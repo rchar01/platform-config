@@ -491,6 +491,12 @@ Square brackets denote the optional TTL assignment and are not literal shell
 syntax. The default is 3600 seconds. Between the two routes, separately
 authorize and perform offline approval/signing and response publication.
 
+Successful request publication reports only the authenticated 32-hex
+`request_id` outside the protected task. Carry that exact ID through the offline
+request, approval, signing, and response-publication stages. Do not pass it to
+the activation Ansible route, which derives coordinates from authenticated
+target state.
+
 The target sends request and response package bytes directly to and from GitLab;
 Ansible never carries them. The activation route derives coordinates from
 authenticated target state, recovers an interrupted journal before transport

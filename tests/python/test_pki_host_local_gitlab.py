@@ -443,16 +443,24 @@ def gitlab_case(
     return case
 
 
-def assert_bounded(result: Result, command: str, status: str) -> None:
+def assert_bounded(
+    result: Result, command: str, status: str, request_id: str | None = None
+) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
-    assert json.loads(result.stdout) == {
+    expected = {
         "schema": 2,
         "kind": "platform-config-target-local-gitlab-status",
         "command": command,
         "status": status,
     }
-    for secret in (TOKEN, REQUEST_ID, ACTIVE_ID, DIGEST, "/private/project"):
+    if request_id is not None:
+        expected["request_id"] = request_id
+    assert json.loads(result.stdout) == expected
+    secrets = [TOKEN, ACTIVE_ID, DIGEST, "/private/project"]
+    if request_id is None:
+        secrets.append(REQUEST_ID)
+    for secret in secrets:
         assert secret not in result.stdout
         assert secret not in result.stderr
 
@@ -499,7 +507,7 @@ def test_request_publish_uses_schema_2_transport_and_cleans_export(
 ) -> None:
     result = gitlab_case.run("request-publish")
 
-    assert_bounded(result, "request-publish", "published")
+    assert_bounded(result, "request-publish", "published", REQUEST_ID)
     request_call = call(gitlab_case, "request-helper", "request")
     assert option(request_call["argv"], "--request-namespace") == "platform-pki-csr-request-v2"
     assert option(request_call["argv"], "--predecessor-request-id") == "none"
@@ -517,8 +525,8 @@ def test_request_publish_is_idempotent(gitlab_case: GitLabCase) -> None:
     gitlab_case.control(request_status="existing", publish_status="existing")
     second = gitlab_case.run("request-publish")
 
-    assert_bounded(first, "request-publish", "published")
-    assert_bounded(second, "request-publish", "existing")
+    assert_bounded(first, "request-publish", "published", REQUEST_ID)
+    assert_bounded(second, "request-publish", "existing", REQUEST_ID)
     assert len([item for item in gitlab_case.calls() if item["role"] == "platform-pki"]) == 2
     assert set(item.name for item in gitlab_case.spool.iterdir()) == {"lock"}
 
@@ -567,7 +575,7 @@ def test_renew_derives_authenticated_predecessor_and_leaf(
 
     result = gitlab_case.run("request-publish")
 
-    assert_bounded(result, "request-publish", "published")
+    assert_bounded(result, "request-publish", "published", REQUEST_ID)
     active = call(gitlab_case, "lifecycle-helper", "active-paths")
     request_call = call(gitlab_case, "request-helper", "request")
     assert active

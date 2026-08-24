@@ -38,9 +38,11 @@ checked by the package client. It is not PKI authority. Consumers authenticate
 the signed request, approval, or response and local state rather than package
 presence. The schema-2 response `artifact` omits candidate and deployment state.
 
-The target derives the project package coordinates from authenticated lifecycle
-state. No operator route accepts a request ID, digest, package version, source
-directory, or destination directory.
+The target derives activation package coordinates from authenticated lifecycle
+state. No target-local Ansible route accepts a request ID, digest, package
+version, source directory, or destination directory. Successful request
+publication reports one authenticated request ID for the separately authorized
+offline stages.
 
 ## Credential Boundary
 
@@ -53,7 +55,9 @@ variables. See [PKI Exchange Setup](pki-exchange-setup.md).
 Offline approval/signing is outside these Ansible routes. It is responsible for
 authenticating the request and using `platform-pki gitlab-package` to publish the
 signed approval stage and authenticated response stage to the same project under
-separate authorization; this guide does not invent its remaining command line.
+separate authorization. Carry the exact request ID reported by the request route
+through those offline stages; this guide does not invent their remaining command
+line.
 
 ## Rollout Gate
 

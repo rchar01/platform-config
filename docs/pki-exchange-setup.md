@@ -36,8 +36,10 @@ Disable unreviewed membership, package deletion, cleanup, duplicate publication,
 and unrelated automation according to the approved project policy.
 
 The target routes derive package names, versions, request IDs, and digests from
-authenticated target state. Operators do not supply package coordinates or
-download directories.
+authenticated target state. Target-local Ansible routes do not accept package
+coordinates or download directories. Successful request publication reports one
+authenticated request ID, which the operator carries through the separately
+authorized offline request, approval, signing, and response stages.
 
 Self-managed GitLab CE `18.11.3-ce.0` live behavior is not qualified by local
 tests or documentation. Exact-version token authentication, project access,

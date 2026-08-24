@@ -24,12 +24,19 @@
   ansible.builtin.assert:
     that:
       - pki_host_local_certificate_request_publish_result.stderr | length == 0
-      - pki_host_local_certificate_request_publish.keys() | list | sort == ['command', 'kind', 'schema', 'status']
+      - pki_host_local_certificate_request_publish.keys() | list | sort == ['command', 'kind', 'request_id', 'schema', 'status']
       - pki_host_local_certificate_request_publish.schema == 2
       - pki_host_local_certificate_request_publish.kind == 'platform-config-target-local-gitlab-status'
       - pki_host_local_certificate_request_publish.command == 'request-publish'
       - pki_host_local_certificate_request_publish.status in ['existing', 'published']
+      - pki_host_local_certificate_request_publish.request_id is match('^[0-9a-f]{32}$')
     fail_msg: Target-local GitLab request publication returned unsafe metadata.
   vars:
     pki_host_local_certificate_request_publish: >-
       {{ pki_host_local_certificate_request_publish_result.stdout | from_json }}
+
+- name: Report authenticated target-local request ID
+  ansible.builtin.debug:
+    msg:
+      request_id: >-
+        {{ (pki_host_local_certificate_request_publish_result.stdout | from_json).request_id }}
