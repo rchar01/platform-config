@@ -1,0 +1,27 @@
+---
+- name: Validate existing storage growth behavior
+  hosts: localhost
+  gather_facts: false
+  vars:
+    storage_volume_layouts:
+      - name: test_data
+        device: /dev/disk/by-id/example-test-data
+        vg_name: test_data
+        capacity_gib: 20
+        required_free_gib: 4
+        initialize: false
+        reuse_existing_vg: "{{ test_reuse_existing_vg | default(true) | bool }}"
+    storage_volumes:
+      - name: test_primary
+        layout: test_data
+        lv_name: primary
+        grow_from_size_gib: "{{ test_grow_from_size_gib | default(6) }}"
+        size_gib: "{{ test_size_gib | default(8) }}"
+        fstype: "{{ test_fstype | default('xfs') }}"
+        state: "{{ test_mount_state | default('mounted') }}"
+        mountpoint: /srv/test/primary
+  tasks:
+    - name: Run storage growth validation only
+      ansible.builtin.include_role:
+        name: storage_volume
+        tasks_from: validate.yml

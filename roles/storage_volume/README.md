@@ -32,9 +32,20 @@ the expected disk/partition relationship, and verifies the PV and VG identities
 and exact one-PV membership. It inspects all requested existing LVs and their
 filesystems, rejects size or filesystem mismatches, and rejects an existing LV
 mounted anywhere other than its declared mountpoint. It requires enough live VG
-free space for only the missing requested LVs plus `required_free_gib`. Reuse mode
-never partitions or changes VG membership. Check mode runs these read-only checks
-but does not create a missing LV or filesystem.
+free space for missing requested LVs, approved growth, and `required_free_gib`.
+Reuse mode never partitions or changes VG membership. Check mode runs these
+read-only checks but does not create or grow an LV or filesystem.
+
+Existing-LV growth is disabled unless a volume sets `grow_from_size_gib` to its
+reviewed current size and `size_gib` to a larger target. Growth is limited to an
+existing XFS filesystem mounted at its declared mountpoint in a reused VG;
+`lv_size` cannot override the reviewed `size_gib` target. The
+preflight accepts only the extent-rounded source or target LV size, verifies the
+XFS geometry, and reserves the growth delta before mutation. It also accepts an
+interrupted state where the LV reached its target but XFS still has its source
+size. Shrinking, missing growth-marked LVs, intermediate sizes, and other
+filesystems fail closed. After successful growth, removing
+`grow_from_size_gib` returns the volume to ordinary exact-target management.
 
 Example:
 
@@ -70,6 +81,7 @@ storage_volumes:
   - name: service_primary
     layout: service_data
     lv_name: primary
+    grow_from_size_gib: 6
     size_gib: 8
     mountpoint: /srv/service/primary
   - name: service_staging
@@ -87,8 +99,9 @@ settings individually.
 Do not set `reuse_existing_vg` for a new disk. Existing-VG reuse supports one
 partition-backed PV whose canonical parent is the configured source disk. It
 fails closed when the requested PV belongs to another VG, the VG has additional
-PVs, an existing requested LV has a different size or filesystem, or live free
-space cannot satisfy all missing allocations and required headroom. An existing
-requested LV must be unmounted or mounted only at its declared mountpoint. The
-preflight is a safety check against reviewed topology, not a migration or VG
+PVs, an existing requested LV has an unapproved size or filesystem, or live free
+space cannot satisfy missing allocations, approved growth, and required
+headroom. An ordinary existing requested LV may be unmounted or mounted only at
+its declared mountpoint; approved XFS growth requires it to be mounted there.
+The preflight is a safety check against reviewed topology, not a migration or VG
 repair mechanism; stop concurrent storage administration while applying it.

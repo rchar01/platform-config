@@ -44,18 +44,24 @@
         storage_volume_reuse_matching_lvs | length == 0
         or storage_volume_reuse_matching_lvs[0].lv_uuid | trim | length > 0
       - >-
+        storage_volume_reuse_requested_volume.grow_from_size_gib is not defined
+        or storage_volume_reuse_matching_lvs | length == 1
+      - >-
         storage_volume_reuse_matching_lvs | length == 0
-        or storage_volume_reuse_matching_lvs[0].lv_size | int
-           == (
-             (
-               storage_volume_reuse_requested_volume.size_gib | int * 1073741824
-               + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
-             )
-             // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
-           ) * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        or (
+          storage_volume_reuse_requested_volume.grow_from_size_gib is defined
+          and storage_volume_reuse_matching_lvs[0].lv_size | int
+              in [storage_volume_reuse_source_bytes, storage_volume_reuse_target_bytes]
+        )
+        or (
+          storage_volume_reuse_requested_volume.grow_from_size_gib is not defined
+          and storage_volume_reuse_matching_lvs[0].lv_size | int
+              == storage_volume_reuse_target_bytes
+        )
     fail_msg: >-
       Existing logical volume {{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_requested_volume.lv_name }}
-      has an unexpected identity or size; refusing to shrink or resize it.
+      is missing or has an unexpected identity or size; refusing unapproved creation,
+      shrink, or growth.
   loop: "{{ storage_volume_reuse_requested_volumes }}"
   loop_control:
     loop_var: storage_volume_reuse_requested_volume
@@ -66,6 +72,26 @@
         storage_volume_reuse_lv_rows
         | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
         | list
+      }}
+    storage_volume_reuse_target_bytes: >-
+      {{
+        (
+          storage_volume_reuse_requested_volume.size_gib | int * 1073741824
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+    storage_volume_reuse_source_bytes: >-
+      {{
+        (
+          storage_volume_reuse_requested_volume.grow_from_size_gib
+          | default(storage_volume_reuse_requested_volume.size_gib)
+          | int * 1073741824
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
       }}
 
 - name: Require expected filesystems on requested existing logical volumes
@@ -101,6 +127,13 @@
             )
           | length == 0
         )
+      - >-
+        storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.grow_from_size_gib is not defined
+        or (
+          storage_volume_reuse_mount_target.rc == 0
+          and storage_volume_reuse_mount_target.stdout_lines
+              == [storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.mountpoint]
+        )
     fail_msg: >-
       Existing logical volume {{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.lv_name }}
       is mounted outside its declared mountpoint; refusing to reuse it.
@@ -110,9 +143,78 @@
     label: "{{ storage_volume_reuse_mount_target.storage_volume_reuse_requested_volume.lv_name }}"
   when: not storage_volume_reuse_mount_target.skipped | default(false)
 
+- name: Require expected XFS geometry for requested growth
+  ansible.builtin.assert:
+    that:
+      - storage_volume_reuse_filesystem_size.rc == 0
+      - storage_volume_reuse_filesystem_size_values | length == 2
+      - storage_volume_reuse_filesystem_size_values[0] | int > 0
+      - storage_volume_reuse_filesystem_size_values[1] | int > 0
+      - storage_volume_reuse_filesystem_size_matching_lvs | length == 1
+      - storage_volume_reuse_filesystem_size_rounded_bytes in [storage_volume_reuse_filesystem_size_source_bytes, storage_volume_reuse_filesystem_size_target_bytes]
+      - >-
+        storage_volume_reuse_filesystem_size_matching_lvs[0].lv_size | int
+          != storage_volume_reuse_filesystem_size_source_bytes
+        or storage_volume_reuse_filesystem_size_rounded_bytes
+          == storage_volume_reuse_filesystem_size_source_bytes
+    fail_msg: >-
+      Existing XFS geometry for {{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_filesystem_size_volume.lv_name }}
+      does not match the reviewed source or target size; refusing growth.
+  loop: "{{ storage_volume_reuse_filesystem_sizes.results | default([]) }}"
+  loop_control:
+    loop_var: storage_volume_reuse_filesystem_size
+    label: "{{ storage_volume_reuse_filesystem_size_volume.lv_name }}"
+  when: not storage_volume_reuse_filesystem_size.skipped | default(false)
+  vars:
+    storage_volume_reuse_filesystem_size_volume: >-
+      {{ storage_volume_reuse_filesystem_size.storage_volume_reuse_requested_volume }}
+    storage_volume_reuse_filesystem_size_values: >-
+      {{
+        storage_volume_reuse_filesystem_size.stdout
+        | regex_findall('(?m)^(?:blocksize|dblocks) = ([0-9]+)$')
+      }}
+    storage_volume_reuse_filesystem_size_matching_lvs: >-
+      {{
+        storage_volume_reuse_lv_rows
+        | selectattr('lv_name', 'equalto', storage_volume_reuse_filesystem_size_volume.lv_name)
+        | list
+      }}
+    storage_volume_reuse_filesystem_size_source_bytes: >-
+      {{
+        (
+          storage_volume_reuse_filesystem_size_volume.grow_from_size_gib | int * 1073741824
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+    storage_volume_reuse_filesystem_size_target_bytes: >-
+      {{
+        (
+          storage_volume_reuse_filesystem_size_volume.size_gib | int * 1073741824
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+    storage_volume_reuse_filesystem_size_rounded_bytes: >-
+      {{
+        (
+          storage_volume_reuse_filesystem_size_values[0] | int
+          * storage_volume_reuse_filesystem_size_values[1] | int
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+
 - name: Initialize missing reused storage allocation
   ansible.builtin.set_fact:
     storage_volume_reuse_missing_bytes: 0
+    storage_volume_reuse_growth_bytes: 0
+    storage_volume_reuse_growth_lv_names: []
+    storage_volume_reuse_growth_xfs_names: []
+    storage_volume_reuse_growth_target_bytes: {}
 
 - name: Calculate missing reused storage allocation
   ansible.builtin.set_fact:
@@ -132,10 +234,106 @@
     loop_var: storage_volume_reuse_requested_volume
     label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
   when: >-
+    storage_volume_reuse_requested_volume.grow_from_size_gib is not defined
+    and
     storage_volume_reuse_lv_rows
     | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
     | list
     | length == 0
+
+- name: Calculate approved reused storage growth allocation
+  ansible.builtin.set_fact:
+    storage_volume_reuse_growth_bytes: >-
+      {{
+        storage_volume_reuse_growth_bytes | int
+        + storage_volume_reuse_growth_target_bytes_for_volume
+        - storage_volume_reuse_growth_matching_lvs[0].lv_size | int
+      }}
+    storage_volume_reuse_growth_lv_names: >-
+      {{
+        storage_volume_reuse_growth_lv_names
+        + (
+          [storage_volume_reuse_requested_volume.lv_name]
+          if storage_volume_reuse_growth_matching_lvs[0].lv_size | int
+             < storage_volume_reuse_growth_target_bytes_for_volume
+          else []
+        )
+      }}
+    storage_volume_reuse_growth_target_bytes: >-
+      {{
+        storage_volume_reuse_growth_target_bytes
+        | combine(
+            {
+              storage_volume_reuse_requested_volume.lv_name:
+                storage_volume_reuse_growth_target_bytes_for_volume
+            }
+          )
+      }}
+  loop: "{{ storage_volume_reuse_requested_volumes | selectattr('grow_from_size_gib', 'defined') | list }}"
+  loop_control:
+    loop_var: storage_volume_reuse_requested_volume
+    label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
+  vars:
+    storage_volume_reuse_growth_matching_lvs: >-
+      {{
+        storage_volume_reuse_lv_rows
+        | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
+        | list
+      }}
+    storage_volume_reuse_growth_target_bytes_for_volume: >-
+      {{
+        (
+          storage_volume_reuse_requested_volume.size_gib | int * 1073741824
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+
+- name: Record requested XFS growth
+  ansible.builtin.set_fact:
+    storage_volume_reuse_growth_xfs_names: >-
+      {{
+        storage_volume_reuse_growth_xfs_names
+        + (
+          [storage_volume_reuse_filesystem_size_volume.lv_name]
+          if storage_volume_reuse_filesystem_size_rounded_bytes
+             < storage_volume_reuse_filesystem_size_target_bytes
+          else []
+        )
+      }}
+  loop: "{{ storage_volume_reuse_filesystem_sizes.results | default([]) }}"
+  loop_control:
+    loop_var: storage_volume_reuse_filesystem_size
+    label: "{{ storage_volume_reuse_filesystem_size_volume.lv_name }}"
+  when: not storage_volume_reuse_filesystem_size.skipped | default(false)
+  vars:
+    storage_volume_reuse_filesystem_size_volume: >-
+      {{ storage_volume_reuse_filesystem_size.storage_volume_reuse_requested_volume }}
+    storage_volume_reuse_filesystem_size_values: >-
+      {{
+        storage_volume_reuse_filesystem_size.stdout
+        | regex_findall('(?m)^(?:blocksize|dblocks) = ([0-9]+)$')
+      }}
+    storage_volume_reuse_filesystem_size_target_bytes: >-
+      {{
+        (
+          storage_volume_reuse_filesystem_size_volume.size_gib | int * 1073741824
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
+    storage_volume_reuse_filesystem_size_rounded_bytes: >-
+      {{
+        (
+          storage_volume_reuse_filesystem_size_values[0] | int
+          * storage_volume_reuse_filesystem_size_values[1] | int
+          + storage_volume_reuse_vg_rows[0].vg_extent_size | int - 1
+        )
+        // (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+        * (storage_volume_reuse_vg_rows[0].vg_extent_size | int)
+      }}
 
 - name: Require reused storage capacity before logical volume mutation
   ansible.builtin.assert:
@@ -143,10 +341,12 @@
       - >-
         storage_volume_reuse_vg_rows[0].vg_free | int
         >= storage_volume_reuse_missing_bytes | int
+           + storage_volume_reuse_growth_bytes | int
            + (storage_volume_reuse_layout.required_free_gib | default(0) | int * 1073741824)
     fail_msg: >-
       Reused layout {{ storage_volume_reuse_layout.name }} lacks free VG space for all
-      missing requested logical volumes plus required headroom; no LV was changed.
+      missing requested logical volumes, approved growth, and required headroom;
+      no LV was changed.
 
 - name: Record verified reused storage layout state
   ansible.builtin.set_fact:
@@ -158,6 +358,10 @@
             storage_volume_reuse_layout.name: {
               'existing_lv_names': storage_volume_reuse_lv_rows | map(attribute='lv_name') | list,
               'missing_bytes': storage_volume_reuse_missing_bytes | int,
+              'growth_bytes': storage_volume_reuse_growth_bytes | int,
+              'growth_lv_names': storage_volume_reuse_growth_lv_names,
+              'growth_xfs_names': storage_volume_reuse_growth_xfs_names,
+              'growth_target_bytes': storage_volume_reuse_growth_target_bytes,
               'pv_device': storage_volume_reuse_pv_canonical,
               'vg_free_bytes': storage_volume_reuse_vg_rows[0].vg_free | int,
               'vg_size_bytes': storage_volume_reuse_vg_rows[0].vg_size | int,

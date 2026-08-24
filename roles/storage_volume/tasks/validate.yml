@@ -92,6 +92,37 @@
     loop_var: storage_volume
     label: "{{ storage_volume.name | default('invalid-volume') }}"
 
+- name: Validate requested existing logical volume growth
+  ansible.builtin.assert:
+    that:
+      - storage_volume_growth.layout is defined
+      - storage_volume_growth_layout | length > 0
+      - storage_volume_growth_layout.reuse_existing_vg | default(false) | bool
+      - storage_volume_growth_layout.initialize is defined
+      - not storage_volume_growth_layout.initialize | bool
+      - storage_volume_growth.grow_from_size_gib is integer
+      - storage_volume_growth.grow_from_size_gib | int > 0
+      - storage_volume_growth.size_gib is integer
+      - storage_volume_growth.size_gib | int > storage_volume_growth.grow_from_size_gib | int
+      - storage_volume_growth.lv_size is not defined
+      - storage_volume_growth.fstype | default(storage_volume_default_fstype) == 'xfs'
+      - storage_volume_growth.state | default(storage_volume_default_mount_state) == 'mounted'
+    fail_msg: >-
+      grow_from_size_gib requires an existing-VG layout with initialize: false,
+      integer source and larger size_gib target, no lv_size override, XFS, and mounted state.
+  loop: "{{ storage_volumes | selectattr('grow_from_size_gib', 'defined') | list }}"
+  loop_control:
+    loop_var: storage_volume_growth
+    label: "{{ storage_volume_growth.name | default(storage_volume_growth.lv_name | default('invalid-volume')) }}"
+  vars:
+    storage_volume_growth_layout: >-
+      {{
+        storage_volume_layouts
+        | selectattr('name', 'equalto', storage_volume_growth.layout | default(''))
+        | first
+        | default({})
+      }}
+
 - name: Initialize effective storage logical volume keys
   ansible.builtin.set_fact:
     storage_volume_effective_lv_keys: []

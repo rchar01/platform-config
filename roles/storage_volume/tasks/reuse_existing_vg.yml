@@ -228,5 +228,30 @@
     | list
     | length == 1
 
+- name: Inspect requested existing XFS growth geometry
+  ansible.builtin.command:
+    argv:
+      - xfs_db
+      - -r
+      - -c
+      - sb 0
+      - -c
+      - p blocksize
+      - -c
+      - p dblocks
+      - "/dev/{{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_requested_volume.lv_name }}"
+  loop: "{{ storage_volume_reuse_requested_volumes | selectattr('grow_from_size_gib', 'defined') | list }}"
+  loop_control:
+    loop_var: storage_volume_reuse_requested_volume
+    label: "{{ storage_volume_reuse_requested_volume.lv_name }}"
+  register: storage_volume_reuse_filesystem_sizes
+  changed_when: false
+  check_mode: false
+  when: >-
+    storage_volume_reuse_lv_rows
+    | selectattr('lv_name', 'equalto', storage_volume_reuse_requested_volume.lv_name)
+    | list
+    | length == 1
+
 - name: Verify reused storage topology and capacity
   ansible.builtin.include_tasks: verify_reused_layout.yml

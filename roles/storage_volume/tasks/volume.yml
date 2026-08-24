@@ -59,6 +59,21 @@
         and storage_volume_lv_name
           in storage_volume_reuse_layout_state[storage_volume_matching_layout.name].existing_lv_names
       }}
+    storage_volume_growth_enabled: "{{ storage_volume.grow_from_size_gib is defined }}"
+    storage_volume_growth_lv_pending: >-
+      {{
+        storage_volume.layout is defined
+        and storage_volume_reuse_existing_vg
+        and storage_volume_lv_name
+          in storage_volume_reuse_layout_state[storage_volume_matching_layout.name].growth_lv_names
+      }}
+    storage_volume_growth_xfs_pending: >-
+      {{
+        storage_volume.layout is defined
+        and storage_volume_reuse_existing_vg
+        and storage_volume_lv_name
+          in storage_volume_reuse_layout_state[storage_volume_matching_layout.name].growth_xfs_names
+      }}
 
 - name: Validate storage volume configuration
   ansible.builtin.assert:
@@ -270,6 +285,100 @@
     state: "{{ storage_volume_mount_state }}"
   notify: Reload systemd units
   when: not storage_volume_skip_lvm_tasks | bool
+
+- name: Grow existing XFS storage volume
+  ansible.builtin.command:
+    argv:
+      - xfs_growfs
+      - -d
+      - "{{ storage_volume_mountpoint }}"
+  when:
+    - storage_volume_growth_xfs_pending | bool
+    - not ansible_check_mode
+  changed_when: true
+
+- name: Inspect grown storage logical volume
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - --reportformat
+      - json
+      - --units
+      - b
+      - --nosuffix
+      - -o
+      - vg_name,lv_name,lv_size
+      - "{{ storage_volume_lv_device }}"
+  register: storage_volume_growth_lv_report
+  changed_when: false
+  check_mode: false
+  when:
+    - storage_volume_growth_enabled | bool
+    - not ansible_check_mode
+
+- name: Inspect grown XFS storage geometry
+  ansible.builtin.command:
+    argv:
+      - xfs_db
+      - -r
+      - -c
+      - sb 0
+      - -c
+      - p blocksize
+      - -c
+      - p dblocks
+      - "{{ storage_volume_lv_device }}"
+  register: storage_volume_growth_xfs_report
+  changed_when: false
+  check_mode: false
+  when:
+    - storage_volume_growth_enabled | bool
+    - not ansible_check_mode
+
+- name: Verify grown storage logical volume and XFS geometry
+  ansible.builtin.assert:
+    that:
+      - storage_volume_growth_lv_rows | length == 1
+      - storage_volume_growth_lv_rows[0].vg_name | trim == storage_volume_vg_name
+      - storage_volume_growth_lv_rows[0].lv_name | trim == storage_volume_lv_name
+      - storage_volume_growth_lv_rows[0].lv_size | int == storage_volume_growth_target_bytes
+      - storage_volume_growth_xfs_values | length == 2
+      - storage_volume_growth_xfs_values[0] | int > 0
+      - storage_volume_growth_xfs_values[1] | int > 0
+      - storage_volume_growth_extent_bytes > 0
+      - storage_volume_growth_xfs_bytes <= storage_volume_growth_target_bytes
+      - storage_volume_growth_xfs_bytes > storage_volume_growth_target_bytes - storage_volume_growth_extent_bytes
+    fail_msg: >-
+      {{ storage_volume_lv_device }} or its XFS filesystem did not reach the
+      reviewed target size after growth.
+  vars:
+    storage_volume_growth_lv_rows: >-
+      {{ (storage_volume_growth_lv_report.stdout | from_json).report[0].lv }}
+    storage_volume_growth_xfs_values: >-
+      {{
+        storage_volume_growth_xfs_report.stdout
+        | regex_findall('(?m)^(?:blocksize|dblocks) = ([0-9]+)$')
+      }}
+    storage_volume_growth_target_bytes: >-
+      {{
+        storage_volume_reuse_layout_state[storage_volume_matching_layout.name]
+        .growth_target_bytes[storage_volume_lv_name]
+        | int
+      }}
+    storage_volume_growth_extent_bytes: >-
+      {{
+        storage_volume_reuse_layout_state[storage_volume_matching_layout.name]
+        .vg_extent_bytes
+        | int
+      }}
+    storage_volume_growth_xfs_bytes: >-
+      {{
+        storage_volume_growth_xfs_values[0] | int
+        * storage_volume_growth_xfs_values[1] | int
+      }}
+  when:
+    - storage_volume_growth_enabled | bool
+    - not ansible_check_mode
 
 - name: Ensure mounted storage volume ownership
   ansible.builtin.file:

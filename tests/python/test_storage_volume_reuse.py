@@ -46,6 +46,36 @@ def test_reuse_validation_requires_explicit_noninitialization(
     )
 
 
+def test_growth_validation_is_explicit_and_xfs_only(
+    repo_root: Path, command_runner: CommandRunner
+) -> None:
+    playbook = repo_root / "tests/fixtures/ha-handoff/validate-storage-growth.yml"
+    run_playbook(command_runner, playbook).assert_success()
+
+    for extra_vars in (
+        {"test_reuse_existing_vg": False},
+        {"test_grow_from_size_gib": 8},
+        {"test_grow_from_size_gib": 9},
+        {"test_fstype": "ext4"},
+        {"test_mount_state": "present"},
+        {
+            "storage_volumes": [
+                {
+                    "name": "test_primary",
+                    "layout": "test_data",
+                    "lv_name": "primary",
+                    "grow_from_size_gib": 6,
+                    "size_gib": 8,
+                    "lv_size": "9g",
+                    "mountpoint": "/srv/test/primary",
+                }
+            ]
+        },
+    ):
+        result = run_playbook(command_runner, playbook, extra_vars=(extra_vars,))
+        assert_failed_with(result, "grow_from_size_gib requires an existing-VG layout")
+
+
 def test_reuse_accepts_reviewed_one_pv_and_charges_only_missing_lvs(
     repo_root: Path, command_runner: CommandRunner
 ) -> None:
@@ -63,6 +93,36 @@ def test_reuse_assertions_run_in_check_mode(
             "ansible-playbook",
             repo_root / "tests/fixtures/ha-handoff/verify-storage-reuse.yml",
             "--check",
+        ]
+    ).assert_success()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["valid", "growth_transitional", "growth_converged"],
+)
+def test_reuse_accepts_reviewed_growth_states(
+    scenario: str, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    run_playbook(
+        command_runner,
+        repo_root / "tests/fixtures/ha-handoff/verify-storage-reuse.yml",
+        extra_vars=(
+            {"test_storage_growth": True, "test_storage_reuse_scenario": scenario},
+        ),
+    ).assert_success()
+
+
+def test_reuse_growth_assertions_run_in_check_mode(
+    repo_root: Path, command_runner: CommandRunner
+) -> None:
+    command_runner.run(
+        [
+            "ansible-playbook",
+            repo_root / "tests/fixtures/ha-handoff/verify-storage-reuse.yml",
+            "--check",
+            "--extra-vars",
+            "test_storage_growth=true",
         ]
     ).assert_success()
 
@@ -89,6 +149,31 @@ def test_reuse_rejects_unsafe_live_state_before_mutation(
         command_runner,
         repo_root / "tests/fixtures/ha-handoff/verify-storage-reuse.yml",
         extra_vars=({"test_storage_reuse_scenario": scenario},),
+    )
+    assert_failed_with(result, message)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "message"),
+    [
+        ("wrong_size", "unexpected identity or size"),
+        ("growth_missing", "is missing or has an unexpected identity or size"),
+        ("growth_wrong_geometry", "does not match the reviewed source or target size"),
+        ("insufficient", "lacks free VG space"),
+    ],
+)
+def test_reuse_rejects_unsafe_growth_before_mutation(
+    scenario: str,
+    message: str,
+    repo_root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    result = run_playbook(
+        command_runner,
+        repo_root / "tests/fixtures/ha-handoff/verify-storage-reuse.yml",
+        extra_vars=(
+            {"test_storage_growth": True, "test_storage_reuse_scenario": scenario},
+        ),
     )
     assert_failed_with(result, message)
 
@@ -135,6 +220,7 @@ def test_reuse_preflight_precedes_mutation_and_is_read_only(repo_root: Path) -> 
         "pvs",
         "realpath",
         "vgs",
+        "xfs_db",
     }
     for task in preflight_tasks:
         if "ansible.builtin.command" in task:
@@ -184,6 +270,31 @@ def test_reuse_mode_guards_all_disk_and_vg_mutators(repo_root: Path) -> None:
     assert "vgcreate" not in task_text
     assert "vgextend" not in task_text
     assert "vgreduce" not in task_text
+
+
+def test_growth_runs_after_mount_and_verifies_target_state(repo_root: Path) -> None:
+    tasks = _load_yaml(repo_root / "roles/storage_volume/tasks/volume.yml")
+    names = [task["name"] for task in tasks]
+    logical_volume = _task(tasks, "Create storage logical volume")
+    grow = _task(tasks, "Grow existing XFS storage volume")
+    verify = _task(tasks, "Verify grown storage logical volume and XFS geometry")
+
+    assert logical_volume["community.general.lvol"]["shrink"] is False
+    assert names.index("Mount storage volume by UUID") < names.index(
+        "Grow existing XFS storage volume"
+    )
+    assert names.index("Grow existing XFS storage volume") < names.index(
+        "Verify grown storage logical volume and XFS geometry"
+    )
+    assert grow["ansible.builtin.command"]["argv"] == [
+        "xfs_growfs",
+        "-d",
+        "{{ storage_volume_mountpoint }}",
+    ]
+    assert "storage_volume_growth_xfs_pending | bool" in grow["when"]
+    assert "not ansible_check_mode" in grow["when"]
+    assert "storage_volume_growth_enabled | bool" in verify["when"]
+    assert "not ansible_check_mode" in verify["when"]
 
 
 def test_mounted_volume_restores_only_mount_root_selinux_type(
