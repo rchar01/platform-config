@@ -1,0 +1,68 @@
+---
+- name: Validate staged OpenBao HAProxy activation inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Inspect staged OpenBao HAProxy activation artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_haproxy_activation_artifact_stats
+  loop:
+    - "{{ openbao_haproxy_config_path }}"
+    - "{{ openbao_haproxy_backend_ca_path }}"
+    - "{{ openbao_haproxy_firewalld_manifest_path }}"
+
+- name: Inspect staged OpenBao HAProxy package identity
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - --qf
+      - "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}"
+      - "{{ openbao_haproxy_package_name }}"
+  register: openbao_haproxy_activation_installed_nevra
+  changed_when: false
+
+- name: Validate staged OpenBao HAProxy configuration
+  ansible.builtin.command:
+    argv:
+      - "{{ openbao_haproxy_binary_path }}"
+      - -c
+      - -f
+      - "{{ openbao_haproxy_config_path }}"
+  changed_when: false
+
+- name: Require exact staged OpenBao HAProxy activation evidence
+  ansible.builtin.assert:
+    that:
+      - openbao_haproxy_activation_installed_nevra.stdout == openbao_haproxy_package_nevra
+      - openbao_haproxy_activation_artifact_stats.results[0].stat.exists
+      - openbao_haproxy_activation_artifact_stats.results[0].stat.isreg
+      - openbao_haproxy_activation_artifact_stats.results[0].stat.pw_name == 'root'
+      - openbao_haproxy_activation_artifact_stats.results[0].stat.mode == '0640'
+      - openbao_haproxy_activation_artifact_stats.results[1].stat.exists
+      - openbao_haproxy_activation_artifact_stats.results[1].stat.isreg
+      - >-
+        not openbao_haproxy_firewalld_manage | bool
+        or (
+          openbao_haproxy_activation_artifact_stats.results[2].stat.exists
+          and openbao_haproxy_activation_artifact_stats.results[2].stat.isreg
+        )
+    fail_msg: >-
+      OpenBao HAProxy activation requires the exact staged package,
+      configuration, backend CA, and managed firewall evidence.
+
+- name: Build staged OpenBao HAProxy activation observation
+  ansible.builtin.set_fact:
+    openbao_haproxy_activation_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      package_nevra: "{{ openbao_haproxy_activation_installed_nevra.stdout }}"
+      config_checksum: >-
+        {{ openbao_haproxy_activation_artifact_stats.results[0].stat.checksum }}
+      ca_checksum: >-
+        {{ openbao_haproxy_activation_artifact_stats.results[1].stat.checksum }}
+      firewalld_manifest_checksum: >-
+        {{
+          openbao_haproxy_activation_artifact_stats.results[2].stat.checksum
+          | default('unmanaged')
+        }}

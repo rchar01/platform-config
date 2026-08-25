@@ -1,0 +1,6 @@
+---
+- name: Record mocked OpenBao bootstrap rollback
+  ansible.builtin.copy:
+    dest: "{{ openbao_test_root }}/{{ inventory_hostname }}-rollback"
+    content: rolled-back
+    mode: "0600"

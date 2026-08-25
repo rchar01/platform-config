@@ -1,0 +1,413 @@
+---
+- name: Preflight active OpenBao cluster for HAProxy activation
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact explicit OpenBao HAProxy activation selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames', ansible_limit) | list | sort
+            == groups.get('openbao', []) | list | sort
+          - openbao_haproxy_activation_ready | default(false) | bool
+          - not ansible_check_mode
+          - not openbao_haproxy_service_enabled | default(false) | bool
+          - openbao_haproxy_service_state | default('stopped') == 'stopped'
+          - not keepalived_vip_service_enabled | default(false) | bool
+          - keepalived_vip_service_state | default('stopped') == 'stopped'
+        fail_msg: >-
+          OpenBao HAProxy activation requires explicit readiness, normal apply,
+          exactly all three OpenBao hosts, and inactive Keepalived.
+      run_once: true # noqa run-once[task]
+
+    - name: Inspect exact active OpenBao lifecycle
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+
+    - name: Inspect exact staged OpenBao HAProxy activation
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: activation_preflight.yml
+
+    - name: Collect active OpenBao observations
+      ansible.builtin.set_fact:
+        openbao_haproxy_activation_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_active_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one exact active OpenBao cluster
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_activation_observations | length == 3
+          - >-
+            openbao_haproxy_activation_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            openbao_haproxy_activation_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            openbao_haproxy_activation_observations
+            | map(attribute='node_id') | unique | length == 3
+        fail_msg: OpenBao HAProxy activation requires one exact active cluster.
+      run_once: true # noqa run-once[task]
+
+    - name: Collect staged OpenBao HAProxy observations
+      ansible.builtin.set_fact:
+        openbao_haproxy_activation_edge_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_haproxy_activation_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require strict OpenBao state before HAProxy activation
+      ansible.builtin.include_role:
+        name: openbao_status
+      run_once: true # noqa run-once[task]
+
+    - name: Derive exact OpenBao HAProxy activation signature
+      ansible.builtin.set_fact:
+        openbao_haproxy_activation_signature: >-
+          {{
+            {
+              'cluster': openbao_haproxy_activation_observations,
+              'edge': openbao_haproxy_activation_edge_observations
+            } | to_json | hash('sha256')
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Derive exact OpenBao HAProxy activation approval
+      ansible.builtin.set_fact:
+        openbao_haproxy_activation_expected_approval: >-
+          activate-openbao-haproxy|{{ groups.get('openbao', []) | sort | join(',') }}|{{
+            openbao_haproxy_activation_observations[0].cluster_id
+          }}|{{ openbao_haproxy_activation_signature }}
+      run_once: true # noqa run-once[task]
+
+    - name: Preserve approved OpenBao HAProxy observations
+      ansible.builtin.set_fact:
+        openbao_haproxy_approved_observations: >-
+          {{ openbao_haproxy_activation_observations }}
+        openbao_haproxy_approved_edge_observations: >-
+          {{ openbao_haproxy_activation_edge_observations }}
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Prompt for exact OpenBao HAProxy activation approval
+      ansible.builtin.pause:
+        prompt: "Type exactly {{ openbao_haproxy_activation_expected_approval }}"
+      register: openbao_haproxy_activation_approval
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Require exact OpenBao HAProxy activation approval
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_haproxy_activation_approval.user_input
+            == openbao_haproxy_activation_expected_approval
+        fail_msg: Exact OpenBao HAProxy activation approval did not match.
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+- name: Revalidate OpenBao immediately before HAProxy activation
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Reinspect exact active OpenBao lifecycle
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+
+    - name: Reinspect exact staged OpenBao HAProxy activation
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: activation_preflight.yml
+
+    - name: Require unchanged OpenBao HAProxy activation safety gates
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_activation_ready | default(false) | bool
+          - not openbao_haproxy_service_enabled | default(false) | bool
+          - openbao_haproxy_service_state | default('stopped') == 'stopped'
+          - not keepalived_vip_service_enabled | default(false) | bool
+          - keepalived_vip_service_state | default('stopped') == 'stopped'
+          - >-
+            ansible_facts.get('services', {}).get(
+              keepalived_vip_service_name | default('keepalived.service'), {}
+            ).get('state', 'stopped') != 'running'
+          - >-
+            ansible_facts.get('services', {}).get(
+              openbao_haproxy_service_name | default('haproxy.service'), {}
+            ).get('state', 'stopped') != 'running'
+          - >-
+            not openbao_haproxy_firewalld_manage | default(true) | bool
+            or ansible_facts.get('services', {}).get(
+                 'firewalld.service', {}
+               ).get('state', '') == 'running'
+        fail_msg: >-
+          OpenBao HAProxy activation safety gates changed after approval.
+
+    - name: Require unchanged approved OpenBao HAProxy observations
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_active_observation')
+            | sort(attribute='inventory_host')
+            | list
+            == hostvars['localhost'].openbao_haproxy_approved_observations
+        fail_msg: OpenBao HAProxy activation evidence changed after approval.
+      run_once: true # noqa run-once[task]
+
+    - name: Require unchanged approved OpenBao HAProxy edge observations
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_haproxy_activation_observation')
+            | sort(attribute='inventory_host')
+            | list
+            == hostvars['localhost'].openbao_haproxy_approved_edge_observations
+        fail_msg: OpenBao HAProxy staged evidence changed after approval.
+      run_once: true # noqa run-once[task]
+
+    - name: Requalify strict OpenBao state before HAProxy mutation
+      ansible.builtin.include_role:
+        name: openbao_status
+      run_once: true # noqa run-once[task]
+
+    - name: Require marker and runtime OpenBao cluster identity match
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_health_results.results[0].json.cluster_id
+            == hostvars['localhost'].openbao_haproxy_approved_observations[0].cluster_id
+        fail_msg: OpenBao runtime cluster identity does not match activation markers.
+      run_once: true # noqa run-once[task]
+
+- name: Activate OpenBao HAProxy on every cluster node
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  tasks:
+    - name: Reset local OpenBao HAProxy activation result
+      ansible.builtin.set_fact:
+        openbao_haproxy_local_activation_complete: false
+
+    - name: Activate local OpenBao HAProxy
+      block:
+        - name: Converge active local OpenBao HAProxy
+          ansible.builtin.include_role:
+            name: openbao_haproxy
+          vars:
+            openbao_haproxy_service_enabled: true
+            openbao_haproxy_service_state: started
+
+        - name: Inspect local OpenBao HAProxy boot enablement
+          ansible.builtin.command:
+            argv: [systemctl, is-enabled, "{{ openbao_haproxy_service_name }}"]
+          register: openbao_haproxy_activation_enabled
+          changed_when: false
+
+        - name: Require local OpenBao HAProxy boot enablement
+          ansible.builtin.assert:
+            that:
+              - openbao_haproxy_activation_enabled.stdout == 'enabled'
+            fail_msg: OpenBao HAProxy activation did not persist boot enablement.
+
+        - name: Record completed local OpenBao HAProxy activation
+          ansible.builtin.set_fact:
+            openbao_haproxy_local_activation_complete: true
+      rescue:
+        - name: Record failed local OpenBao HAProxy activation
+          ansible.builtin.set_fact:
+            openbao_haproxy_local_activation_complete: false
+
+    - name: Reactivate unreachable OpenBao HAProxy hosts for rollback
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Initialize failed OpenBao HAProxy activation hosts
+      ansible.builtin.set_fact:
+        openbao_haproxy_failed_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect failed OpenBao HAProxy activation hosts
+      ansible.builtin.set_fact:
+        openbao_haproxy_failed_hosts: >-
+          {{ hostvars['localhost'].openbao_haproxy_failed_hosts + [item] }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when: >-
+        not hostvars[item].openbao_haproxy_local_activation_complete
+        | default(false) | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Roll back OpenBao HAProxy after failed activation
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: activation_rollback.yml
+        apply:
+          ignore_unreachable: true
+      when: hostvars['localhost'].openbao_haproxy_failed_hosts | length > 0
+
+    - name: Initialize unverified OpenBao HAProxy activation rollbacks
+      ansible.builtin.set_fact:
+        openbao_haproxy_unverified_rollback_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect unverified OpenBao HAProxy activation rollbacks
+      ansible.builtin.set_fact:
+        openbao_haproxy_unverified_rollback_hosts: >-
+          {{ hostvars['localhost'].openbao_haproxy_unverified_rollback_hosts + [item] }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when:
+        - hostvars['localhost'].openbao_haproxy_failed_hosts | length > 0
+        - >-
+          not hostvars[item].openbao_haproxy_activation_rollback_confirmed
+          | default(false) | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Require every OpenBao HAProxy host activated
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].openbao_haproxy_failed_hosts | length == 0
+        fail_msg: >-
+          OpenBao HAProxy activation failed. Unverified rollback hosts: {{
+          hostvars['localhost'].openbao_haproxy_unverified_rollback_hosts
+          | join(', ') | default('none', true) }}. OpenBao remained active.
+      run_once: true # noqa run-once[task]
+
+- name: Qualify active OpenBao HAProxy paths
+  hosts: openbao
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Select local OpenBao HAProxy member
+      ansible.builtin.set_fact:
+        openbao_haproxy_local_member: >-
+          {{
+            openbao_cluster_members
+            | selectattr('name', 'equalto', inventory_hostname)
+            | first
+          }}
+
+    - name: Query local OpenBao HAProxy client path
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --noproxy
+          - "*"
+          - --connect-timeout
+          - "{{ openbao_status_request_timeout | default(5) | string }}"
+          - --max-time
+          - "{{ openbao_status_request_timeout | default(5) | string }}"
+          - --cacert
+          - "{{ openbao_tls_ca_src }}"
+          - --resolve
+          - "{{ openbao_service_dns }}:{{ openbao_client_port }}:{{ openbao_haproxy_local_member.address }}"
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - "https://{{ openbao_service_dns }}:{{ openbao_client_port }}/v1/sys/health"
+      delegate_to: localhost
+      become: false
+      register: openbao_haproxy_activation_health
+      changed_when: false
+      failed_when: false
+
+    - name: Record local OpenBao HAProxy path qualification
+      ansible.builtin.set_fact:
+        openbao_haproxy_path_qualified: >-
+          {{
+            openbao_haproxy_activation_health.rc == 0
+            and openbao_haproxy_activation_health.stdout == '200'
+          }}
+
+    - name: Roll back OpenBao HAProxy after failed path qualification
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: activation_rollback.yml
+        apply:
+          become: true
+          ignore_unreachable: true
+      when: >-
+        groups.get('openbao', [])
+        | map('extract', hostvars, 'openbao_haproxy_path_qualified')
+        | select('equalto', false)
+        | list
+        | length > 0
+
+    - name: Initialize OpenBao HAProxy path failure report
+      ansible.builtin.set_fact:
+        openbao_haproxy_failed_path_hosts: []
+        openbao_haproxy_unverified_path_rollback_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect failed OpenBao HAProxy paths
+      ansible.builtin.set_fact:
+        openbao_haproxy_failed_path_hosts: >-
+          {{ hostvars['localhost'].openbao_haproxy_failed_path_hosts + [item] }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when: not hostvars[item].openbao_haproxy_path_qualified | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect unverified OpenBao HAProxy path rollbacks
+      ansible.builtin.set_fact:
+        openbao_haproxy_unverified_path_rollback_hosts: >-
+          {{
+            hostvars['localhost'].openbao_haproxy_unverified_path_rollback_hosts
+            + [item]
+          }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when:
+        - hostvars['localhost'].openbao_haproxy_failed_path_hosts | length > 0
+        - >-
+          not hostvars[item].openbao_haproxy_activation_rollback_confirmed
+          | default(false) | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Require successful OpenBao HAProxy path activation
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].openbao_haproxy_failed_path_hosts | length == 0
+        fail_msg: >-
+          OpenBao HAProxy path qualification failed on {{
+          hostvars['localhost'].openbao_haproxy_failed_path_hosts | join(', ') }}.
+          Unverified rollback hosts: {{
+          hostvars['localhost'].openbao_haproxy_unverified_path_rollback_hosts
+          | join(', ') | default('none', true) }}. OpenBao remained active.
+      run_once: true # noqa run-once[task]

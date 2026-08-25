@@ -1,0 +1,130 @@
+---
+- name: Check active OpenBao and HAProxy state
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact explicit OpenBao smoke selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames', ansible_limit) | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao smoke requires an explicit limit selecting exactly all three
+          OpenBao hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Inspect exact active OpenBao lifecycle
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+
+    - name: Collect active OpenBao smoke observations
+      ansible.builtin.set_fact:
+        openbao_smoke_active_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_active_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one exact marked OpenBao smoke cluster
+      ansible.builtin.assert:
+        that:
+          - openbao_smoke_active_observations | length == 3
+          - >-
+            openbao_smoke_active_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            openbao_smoke_active_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            openbao_smoke_active_observations
+            | map(attribute='node_id') | unique | length == 3
+        fail_msg: OpenBao smoke requires one exact marked active cluster.
+      run_once: true # noqa run-once[task]
+
+    - name: Require active local OpenBao HAProxy service
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_facts.services.get(
+              openbao_haproxy_service_name | default('haproxy.service'), {}
+            ).get('state', '') == 'running'
+        fail_msg: OpenBao smoke requires active HAProxy on every OpenBao host.
+
+    - name: Inspect OpenBao HAProxy boot enablement
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - "{{ openbao_haproxy_service_name | default('haproxy.service') }}"
+      register: openbao_smoke_haproxy_enabled
+      changed_when: false
+
+    - name: Require boot-enabled OpenBao HAProxy service
+      ansible.builtin.assert:
+        that:
+          - openbao_smoke_haproxy_enabled.stdout == 'enabled'
+        fail_msg: OpenBao smoke requires boot-enabled HAProxy on every host.
+
+    - name: Require strict direct OpenBao and Raft status
+      ansible.builtin.include_role:
+        name: openbao_status
+      run_once: true # noqa run-once[task]
+
+    - name: Require marked and runtime OpenBao smoke cluster identity match
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_health_results.results[0].json.cluster_id
+            == openbao_smoke_active_observations[0].cluster_id
+        fail_msg: OpenBao smoke runtime cluster identity does not match active markers.
+      run_once: true # noqa run-once[task]
+
+    - name: Query every OpenBao HAProxy client path
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --noproxy
+          - "*"
+          - --connect-timeout
+          - "{{ openbao_status_request_timeout | default(5) | string }}"
+          - --max-time
+          - "{{ openbao_status_request_timeout | default(5) | string }}"
+          - --cacert
+          - "{{ openbao_tls_ca_src }}"
+          - --resolve
+          - "{{ openbao_service_dns }}:{{ openbao_client_port }}:{{ item.address }}"
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - "https://{{ openbao_service_dns }}:{{ openbao_client_port }}/v1/sys/health"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: openbao_smoke_haproxy_health
+      loop: "{{ openbao_cluster_members }}"
+      loop_control:
+        label: "{{ item.name }}"
+      run_once: true # noqa run-once[task]
+
+    - name: Require every OpenBao HAProxy path routes to active OpenBao
+      ansible.builtin.assert:
+        that:
+          - item.stdout == '200'
+        fail_msg: "OpenBao HAProxy on {{ item.item.name }} failed smoke status."
+      loop: "{{ openbao_smoke_haproxy_health.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      run_once: true # noqa run-once[task]

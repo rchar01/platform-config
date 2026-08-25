@@ -6,6 +6,8 @@ openbao_orchestration_ready: false
 openbao_enabled: false
 openbao_service_enabled: false
 openbao_service_state: stopped
+openbao_bootstrap_ready: false
+openbao_bootstrap_complete_ready: false
 openbao_image_registry: ghcr.io/openbao/openbao
 openbao_image_digest: sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
 openbao_service_dns: bao.example.invalid
@@ -17,6 +19,7 @@ openbao_haproxy_enabled: false
 openbao_haproxy_package_nevra: ""
 openbao_haproxy_service_enabled: false
 openbao_haproxy_service_state: stopped
+openbao_haproxy_activation_ready: false
 openbao_haproxy_client_allowed_sources: []
 openbao_haproxy_stats_allowed_sources:
   - 127.0.0.1/32

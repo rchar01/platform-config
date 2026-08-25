@@ -10,3 +10,8 @@ openbao_status_retries: 10
 openbao_status_retry_delay: 2
 openbao_status_stability_observations: 2
 openbao_status_stability_delay: 1
+openbao_status_expected_audit_devices:
+  file-audit-1/:
+    file_path: /openbao/audit-1/audit.log
+  file-audit-2/:
+    file_path: /openbao/audit-2/audit.log

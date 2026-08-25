@@ -1,32 +1,66 @@
 ---
-- name: Require the canonical OpenBao HA status inventory
-  hosts: localhost
-  gather_facts: false
+- name: Check strict direct-node OpenBao HA status
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
   tasks:
-    - name: Stop before an empty or partial inventory can report success
+    - name: Require exact explicit OpenBao status selection
       ansible.builtin.assert:
         that:
           - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames', ansible_limit) | list | sort
+            == groups.get('openbao', []) | list | sort
         fail_msg: >-
-          Strict OpenBao HA status requires exactly three inventory members.
+          Strict OpenBao HA status requires an explicit limit selecting exactly
+          all three OpenBao hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
 
-- name: Check strict direct-node OpenBao HA status
-  hosts: openbao
-  gather_facts: false
-  any_errors_fatal: true
-  tasks:
+    - name: Inspect exact active OpenBao lifecycle
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+
+    - name: Collect active OpenBao lifecycle observations
+      ansible.builtin.set_fact:
+        openbao_status_active_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_active_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one exact marked OpenBao cluster
+      ansible.builtin.assert:
+        that:
+          - openbao_status_active_observations | length == 3
+          - >-
+            openbao_status_active_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            openbao_status_active_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            openbao_status_active_observations
+            | map(attribute='node_id') | unique | length == 3
+        fail_msg: Strict OpenBao status requires one exact marked active cluster.
+      run_once: true # noqa run-once[task]
+
     - name: Run one controller-side OpenBao cluster status gate
       ansible.builtin.include_role:
         name: openbao_status
       run_once: true # noqa run-once[task]
 
-- name: Reject status checks limited away from OpenBao
-  hosts: all
-  gather_facts: false
-  tasks:
-    - name: Stop before a limited status run can report false success
-      ansible.builtin.fail:
-        msg: >-
-          Strict OpenBao HA status requires an OpenBao inventory host. A limit
-          that excludes the service group is not a valid status result.
-      when: inventory_hostname not in groups.get('openbao', [])
+    - name: Require marked and runtime OpenBao cluster identity match
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_health_results.results[0].json.cluster_id
+            == openbao_status_active_observations[0].cluster_id
+        fail_msg: OpenBao runtime cluster identity does not match active markers.
+      run_once: true # noqa run-once[task]

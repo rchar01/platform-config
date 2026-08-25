@@ -1,0 +1,20 @@
+---
+- name: Count mocked OpenBao HAProxy activation inspections
+  ansible.builtin.set_fact:
+    openbao_haproxy_test_preflight_count: >-
+      {{ openbao_haproxy_test_preflight_count | default(0) | int + 1 }}
+
+- name: Build mocked OpenBao HAProxy activation observation
+  ansible.builtin.set_fact:
+    openbao_haproxy_activation_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      package_nevra: haproxy-0:3.0.0-1.el10.x86_64
+      config_checksum: >-
+        {{
+          'b' * 64
+          if openbao_haproxy_test_config_drift | default(false) | bool
+             and openbao_haproxy_test_preflight_count | int > 1
+          else 'a' * 64
+        }}
+      ca_checksum: "{{ 'c' * 64 }}"
+      firewalld_manifest_checksum: unmanaged

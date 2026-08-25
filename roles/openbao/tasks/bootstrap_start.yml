@@ -1,0 +1,38 @@
+---
+- name: Require approved temporary OpenBao bootstrap start
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_ready | bool
+      - not ansible_check_mode
+      - not openbao_service_enabled | bool
+      - openbao_service_state == 'stopped'
+    fail_msg: OpenBao temporary bootstrap start is not authorized.
+
+- name: Start OpenBao without boot enablement
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_service_name }}"
+    state: started
+
+- name: Require uninitialized sealed OpenBao process
+  ansible.builtin.uri:
+    url: "https://{{ openbao_node_dns }}:{{ openbao_backend_port }}/v1/sys/health"
+    method: GET
+    ca_path: "{{ openbao_tls_ca_path }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code: 501
+    timeout: 5
+  register: openbao_bootstrap_start_health
+  changed_when: false
+  retries: 15
+  delay: 2
+  until:
+    - openbao_bootstrap_start_health.json | default(none) is mapping
+    - openbao_bootstrap_start_health.json.get('initialized') == false
+    - openbao_bootstrap_start_health.json.get('sealed') == true
+
+- name: Record completed temporary OpenBao bootstrap start
+  ansible.builtin.set_fact:
+    openbao_bootstrap_local_start_complete: true

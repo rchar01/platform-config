@@ -61,8 +61,9 @@ data.
 
 ## Activation Boundary
 
-Normal convergence does not initialize or unseal OpenBao, enable audit devices,
-create credentials, restore data, configure HAProxy, or activate a VIP. Leave:
+Normal convergence does not initialize or unseal OpenBao, handle custody
+material, create credentials, restore data, configure HAProxy, or activate a
+VIP. Leave:
 
 ```yaml
 openbao_service_enabled: false
@@ -78,6 +79,23 @@ with the installed CA and DNS identity. It accepts active, standby, sealed, or
 uninitialized health status only as process-readiness evidence; it does not call
 those states cluster acceptance. Post-initialization health, voter membership,
 manual unseal, and rolling restart gates remain separate workflows.
+
+Use `playbooks/maintenance/openbao-bootstrap-start.yml` only once against exact
+pristine staged storage. It requires an explicit full-cluster limit, exact TTY
+approval, immediate revalidation, and three uninitialized sealed TLS processes.
+It leaves the services running without boot enablement and writes root-only
+non-secret markers for the manual custody checkpoint.
+
+Two approved custodians then initialize exactly one node with five Shamir shares
+and threshold three, store shares and the initial root token outside Ansible,
+unseal all voters, enable both file audit devices, create the least-privilege
+status identity, and revoke the initial root token. Neither bootstrap playbook
+accepts shares or the root token.
+
+`playbooks/maintenance/openbao-bootstrap-complete.yml` verifies the unchanged
+pending markers, two audit devices, one active and two standbys, exact stable
+three-voter Raft state, and then renders generated boot enablement. Unknown or
+partially initialized state is preserved for reviewed recovery rather than reset.
 
 Post-initialization changes that may restart OpenBao belong in the explicit
 `playbooks/maintenance/openbao-rolling-restart.yml` workflow. The role reports

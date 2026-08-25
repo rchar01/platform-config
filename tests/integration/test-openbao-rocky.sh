@@ -31,6 +31,7 @@ podman run \
   --systemd=always \
   --privileged \
   --workdir /workspace \
+  --volume /lib/modules:/lib/modules:ro \
   --volume "${ROOT_DIR}:/workspace:ro,Z" \
   "$ROCKY_IMAGE" \
   bash -lc 'dnf -qy install systemd && exec /sbin/init' >/dev/null
@@ -62,7 +63,8 @@ elif [[ "$system_state" != running ]]; then
 fi
 
 podman exec "$CONTAINER" dnf -qy install \
-  iproute openssl podman python3-pip util-linux-core >/dev/null
+  iproute kmod openssl podman python3-pip util-linux-core >/dev/null
+podman exec "$CONTAINER" modprobe --ignore-install overlay >/dev/null
 podman exec "$CONTAINER" bash -c \
   "printf '%s\n' '[storage]' 'driver = \"vfs\"' 'runroot = \"/run/containers/storage\"' 'graphroot = \"/var/lib/containers/storage\"' > /etc/containers/storage.conf"
 podman exec "$CONTAINER" python3 -m pip -q install \
@@ -102,7 +104,11 @@ podman exec "$CONTAINER" cp \
 podman exec "$CONTAINER" bash -c \
   "printf '%s\n' '127.0.0.1 bao-test-1.internal.invalid' >> /etc/hosts"
 
-run_playbook --check >/dev/null
+check_mode_output=""
+if ! check_mode_output="$(run_playbook --check 2>&1)"; then
+  printf '%s\n' "$check_mode_output" >&2
+  fail 'OpenBao check-mode convergence failed'
+fi
 for check_mode_artifact in \
   /etc/openbao \
   /usr/local/libexec/platform/openbao-validate-config \
@@ -114,8 +120,12 @@ for check_mode_artifact in \
     fail "OpenBao check mode created ${check_mode_artifact}"
   fi
 done
-run_playbook \
-  --extra-vars '{"openbao_test_expect_restart_required":false}' >/dev/null
+staged_output=""
+if ! staged_output="$(run_playbook \
+  --extra-vars '{"openbao_test_expect_restart_required":false}' 2>&1)"; then
+  printf '%s\n' "$staged_output" >&2
+  fail 'OpenBao staged convergence failed'
+fi
 
 if podman exec "$CONTAINER" test -e \
   /run/systemd/generator/multi-user.target.wants/openbao.service; then

@@ -10,6 +10,7 @@
       - openbao_haproxy_service_name == 'haproxy.service'
       - openbao_haproxy_enabled is boolean
       - openbao_haproxy_service_enabled is boolean
+      - openbao_haproxy_activation_ready is boolean
       - openbao_haproxy_service_state in ['started', 'stopped']
       - (openbao_haproxy_service_enabled | bool) == (openbao_haproxy_service_state == 'started')
       - not haproxy_workload_lb_enabled | default(false) | bool

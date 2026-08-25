@@ -1,0 +1,29 @@
+---
+- name: Reject mocked strict OpenBao status
+  ansible.builtin.assert:
+    that:
+      - not openbao_bootstrap_test_status_failure | default(false) | bool
+    fail_msg: Mocked strict OpenBao status failed.
+
+- name: Record mocked strict OpenBao status
+  ansible.builtin.set_fact:
+    openbao_bootstrap_test_status_count: >-
+      {{ openbao_bootstrap_test_status_count | default(0) | int + 1 }}
+
+- name: Record mocked strict OpenBao status
+  ansible.builtin.set_fact:
+    openbao_status_active_member:
+      name: bao-bootstrap-1
+      node_id: bao-1
+      address: 127.0.0.11
+      dns: bao-1.test.invalid
+    openbao_status_health_results:
+      results:
+        - json:
+            cluster_id: >-
+              {{
+                'changed-cluster'
+                if openbao_bootstrap_test_final_cluster_drift | default(false)
+                   and openbao_bootstrap_test_status_count | int > 1
+                else 'test-cluster'
+              }}

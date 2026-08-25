@@ -21,6 +21,8 @@
       - openbao_status_stability_observations >= 2
       - openbao_status_stability_delay | type_debug == 'int'
       - openbao_status_stability_delay >= 1
+      - openbao_status_expected_audit_devices is mapping
+      - openbao_status_expected_audit_devices | length == 2
       - openbao_cluster_members | type_debug == 'list'
       - openbao_cluster_members | length == 3
       - openbao_cluster_members | selectattr('name', 'defined') | list | length == 3
@@ -176,3 +178,42 @@
 
 - name: Validate stable OpenBao Raft observations
   ansible.builtin.include_tasks: validate_stability.yml
+
+- name: Query active OpenBao audit devices
+  ansible.builtin.uri:
+    url: >-
+      https://{{ openbao_status_active_member.dns }}:{{ openbao_backend_port
+      }}/v1/sys/audit
+    method: GET
+    headers:
+      X-Vault-Token: "{{ openbao_status_token }}"
+    ca_path: "{{ openbao_tls_ca_src }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code: 200
+    timeout: "{{ openbao_status_request_timeout }}"
+  delegate_to: localhost
+  become: false
+  register: openbao_status_audit_response
+  changed_when: false
+  no_log: true
+
+- name: Require two exact OpenBao file audit devices
+  ansible.builtin.assert:
+    that:
+      - openbao_status_audit_response.json.data is mapping
+      - >-
+        openbao_status_audit_response.json.data.keys() | list | sort
+        == openbao_status_expected_audit_devices.keys() | list | sort
+      - >-
+        openbao_status_audit_response.json.data[item.key].type == 'file'
+      - >-
+        openbao_status_audit_response.json.data[item.key].options.file_path
+        == item.value.file_path
+    fail_msg: OpenBao requires both exact durable file audit devices.
+  loop: "{{ openbao_status_expected_audit_devices | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  no_log: true

@@ -1,0 +1,85 @@
+---
+- name: Inspect active OpenBao lifecycle artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_active_lifecycle_stats
+  loop:
+    - "{{ openbao_bootstrap_marker_path }}"
+    - "{{ openbao_quadlet_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
+    - "{{ openbao_config_path }}"
+    - "{{ openbao_tls_ca_path }}"
+    - "{{ openbao_tls_cert_path }}"
+    - "{{ openbao_tls_key_path }}"
+
+- name: Require private active OpenBao marker
+  ansible.builtin.assert:
+    that:
+      - openbao_active_lifecycle_stats.results[0].stat.exists
+      - openbao_active_lifecycle_stats.results[0].stat.isreg
+      - openbao_active_lifecycle_stats.results[0].stat.pw_name == 'root'
+      - openbao_active_lifecycle_stats.results[0].stat.mode == '0600'
+    fail_msg: OpenBao active lifecycle requires a private completion marker.
+
+- name: Read active OpenBao marker
+  ansible.builtin.slurp:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_active_marker_slurp
+
+- name: Parse active OpenBao marker
+  ansible.builtin.set_fact:
+    openbao_active_marker: >-
+      {{ openbao_active_marker_slurp.content | b64decode | from_json }}
+
+- name: Inspect active OpenBao service state
+  ansible.builtin.service_facts:
+
+- name: Inspect active OpenBao container state
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, inspect, "{{ openbao_container_name }}"]
+  register: openbao_active_container_inspect_command
+  changed_when: false
+
+- name: Parse active OpenBao container state
+  ansible.builtin.set_fact:
+    openbao_active_container_inspect: >-
+      {{ openbao_active_container_inspect_command.stdout | from_json | first }}
+
+- name: Require exact active OpenBao lifecycle
+  ansible.builtin.assert:
+    that:
+      - openbao_active_marker.schema == 1
+      - openbao_active_marker.state == 'active'
+      - openbao_active_marker.inventory_hosts | sort == groups.get('openbao', []) | sort
+      - openbao_active_marker.inventory_host == inventory_hostname
+      - openbao_active_marker.node_id == openbao_node_name
+      - openbao_active_marker.cluster_id is string
+      - openbao_active_marker.cluster_id | length > 0
+      - openbao_active_marker.cluster_signature is string
+      - openbao_active_marker.cluster_signature is match('^[a-f0-9]{64}$')
+      - openbao_active_marker.image_digest == openbao_image_digest
+      - openbao_active_marker.quadlet_checksum == openbao_active_lifecycle_stats.results[1].stat.checksum
+      - openbao_active_marker.config_checksum == openbao_active_lifecycle_stats.results[3].stat.checksum
+      - openbao_active_marker.ca_checksum == openbao_active_lifecycle_stats.results[4].stat.checksum
+      - openbao_active_marker.certificate_checksum == openbao_active_lifecycle_stats.results[5].stat.checksum
+      - openbao_active_marker.key_checksum == openbao_active_lifecycle_stats.results[6].stat.checksum
+      - openbao_active_lifecycle_stats.results[2].stat.exists
+      - openbao_active_lifecycle_stats.results[2].stat.islnk
+      - >-
+        openbao_active_lifecycle_stats.results[2].stat.lnk_source
+        == '/run/systemd/generator/' ~ openbao_service_name
+      - ansible_facts.services.get(openbao_service_name, {}).get('state', '') == 'running'
+      - openbao_active_container_inspect.State.Running | bool
+      - openbao_active_container_inspect.ImageName == openbao_image
+    fail_msg: >-
+      OpenBao active lifecycle marker, Quadlet, service, or container is not exact.
+
+- name: Build active OpenBao lifecycle observation
+  ansible.builtin.set_fact:
+    openbao_active_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_active_marker.node_id }}"
+      cluster_id: "{{ openbao_active_marker.cluster_id }}"
+      cluster_signature: "{{ openbao_active_marker.cluster_signature }}"
+      image_digest: "{{ openbao_active_marker.image_digest }}"

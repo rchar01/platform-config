@@ -1,0 +1,12 @@
+---
+- name: Reject mocked persistent OpenBao activation
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_test_enable_failure_host | default('') != inventory_hostname
+    fail_msg: Mocked persistent OpenBao activation failed.
+
+- name: Write mocked active OpenBao Quadlet
+  ansible.builtin.copy:
+    dest: "{{ openbao_quadlet_path }}"
+    content: active-openbao
+    mode: "0644"

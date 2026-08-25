@@ -1,0 +1,205 @@
+---
+- name: Preflight pristine OpenBao bootstrap
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact explicit OpenBao bootstrap selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames', ansible_limit) | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao bootstrap requires an explicit limit selecting exactly all
+          three OpenBao hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Inspect local pristine OpenBao bootstrap state
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: bootstrap_preflight.yml
+
+    - name: Collect pristine OpenBao bootstrap observations
+      ansible.builtin.set_fact:
+        openbao_bootstrap_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_bootstrap_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require complete pristine OpenBao bootstrap observations
+      ansible.builtin.assert:
+        that:
+          - openbao_bootstrap_observations | length == 3
+          - >-
+            openbao_bootstrap_observations | map(attribute='inventory_host') | list | sort
+            == groups.get('openbao', []) | list | sort
+          - >-
+            openbao_bootstrap_observations | map(attribute='node_id') | unique | length == 3
+          - >-
+            openbao_bootstrap_observations | map(attribute='ca_checksum') | unique | length == 1
+          - >-
+            openbao_bootstrap_observations | map(attribute='image_digest') | unique | length == 1
+        fail_msg: OpenBao bootstrap observations are incomplete or inconsistent.
+      run_once: true # noqa run-once[task]
+
+    - name: Derive exact OpenBao bootstrap approval
+      ansible.builtin.set_fact:
+        openbao_bootstrap_cluster_signature: >-
+          {{ openbao_bootstrap_observations | to_json | hash('sha256') }}
+        openbao_bootstrap_expected_approval: >-
+          start-openbao-bootstrap|{{ groups.get('openbao', []) | sort | join(',') }}|{{
+            openbao_bootstrap_observations | to_json | hash('sha256')
+          }}|shamir-5-of-3
+      run_once: true # noqa run-once[task]
+
+    - name: Preserve approved OpenBao bootstrap observations
+      ansible.builtin.set_fact:
+        openbao_bootstrap_approved_observations: "{{ openbao_bootstrap_observations }}"
+        openbao_bootstrap_approved_signature: "{{ openbao_bootstrap_cluster_signature }}"
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Prompt for exact OpenBao bootstrap approval
+      ansible.builtin.pause:
+        prompt: "Type exactly {{ openbao_bootstrap_expected_approval }}"
+      register: openbao_bootstrap_approval
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Require exact OpenBao bootstrap approval
+      ansible.builtin.assert:
+        that:
+          - openbao_bootstrap_approval.user_input == openbao_bootstrap_expected_approval
+        fail_msg: Exact OpenBao bootstrap approval did not match.
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+- name: Revalidate OpenBao immediately before bootstrap start
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Reinspect pristine OpenBao bootstrap state
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: bootstrap_preflight.yml
+
+    - name: Require unchanged approved OpenBao bootstrap observations
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_bootstrap_observation')
+            | sort(attribute='inventory_host')
+            | list
+            == hostvars['localhost'].openbao_bootstrap_approved_observations
+        fail_msg: OpenBao bootstrap evidence changed after approval.
+      run_once: true # noqa run-once[task]
+
+- name: Start every pristine OpenBao bootstrap member
+  hosts: openbao
+  become: true
+  gather_facts: false
+  any_errors_fatal: false
+  tasks:
+    - name: Reset local OpenBao bootstrap start result
+      ansible.builtin.set_fact:
+        openbao_bootstrap_local_start_complete: false
+
+    - name: Start local pristine OpenBao bootstrap member
+      block:
+        - name: Start local OpenBao bootstrap service
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: bootstrap_start.yml
+      rescue:
+        - name: Record failed local OpenBao bootstrap start
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_start_complete: false
+
+    - name: Reactivate unreachable OpenBao bootstrap members for rollback
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Initialize failed OpenBao bootstrap members
+      ansible.builtin.set_fact:
+        openbao_bootstrap_failed_hosts: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect failed OpenBao bootstrap members
+      ansible.builtin.set_fact:
+        openbao_bootstrap_failed_hosts: >-
+          {{ hostvars['localhost'].openbao_bootstrap_failed_hosts + [item] }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when: not hostvars[item].openbao_bootstrap_local_start_complete | default(false) | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Roll back reachable pristine OpenBao bootstrap members
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: bootstrap_rollback.yml
+      when: hostvars['localhost'].openbao_bootstrap_failed_hosts | length > 0
+
+    - name: Require every pristine OpenBao bootstrap member started
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].openbao_bootstrap_failed_hosts | length == 0
+        fail_msg: >-
+          OpenBao bootstrap failed before initialization. Reachable members were
+          returned to stopped staging.
+      run_once: true # noqa run-once[task]
+
+- name: Publish pending manual-custody markers
+  hosts: openbao
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Write pending OpenBao bootstrap marker
+      ansible.builtin.copy:
+        dest: "{{ openbao_bootstrap_marker_path }}"
+        owner: "{{ openbao_bootstrap_marker_owner }}"
+        group: "{{ openbao_bootstrap_marker_group }}"
+        mode: "0600"
+        content: >-
+          {{
+            {
+              'schema': 1,
+              'state': 'awaiting-manual-custody',
+              'inventory_hosts': groups.get('openbao', []) | sort,
+              'inventory_host': inventory_hostname,
+              'node_id': openbao_bootstrap_observation.node_id,
+              'cluster_signature': hostvars['localhost'].openbao_bootstrap_approved_signature,
+              'config_checksum': openbao_bootstrap_observation.config_checksum,
+              'quadlet_checksum': openbao_bootstrap_observation.quadlet_checksum,
+              'ca_checksum': openbao_bootstrap_observation.ca_checksum,
+              'certificate_checksum': openbao_bootstrap_observation.certificate_checksum,
+              'key_checksum': openbao_bootstrap_observation.key_checksum,
+              'image_digest': openbao_bootstrap_observation.image_digest
+            } | to_nice_json
+          }}
+
+    - name: Report manual OpenBao custody checkpoint
+      ansible.builtin.debug:
+        msg: >-
+          Direct OpenBao processes are running without boot enablement. Two
+          approved custodians must now initialize exactly one node with five
+          shares and threshold three, store all custody material outside Ansible,
+          unseal all three nodes, enable file-audit-1 and file-audit-2, create the
+          least-privilege status token, and revoke the initial root token. Then
+          run openbao-bootstrap-complete.yml.
+      run_once: true # noqa run-once[task]

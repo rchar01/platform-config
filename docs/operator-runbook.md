@@ -973,10 +973,30 @@ After the first login, change the `root` password and create named admin users. 
 
 OpenBao:
 
-```text
-The standalone deployment is retired. The replacement HA playbook is blocked and
-no initialization or unseal workflow is available through normal convergence.
+The replacement three-node service uses a manual custody boundary. First stage
+all three nodes with the stopped service contract and verify idempotency. Then
+set `openbao_bootstrap_ready: true` privately and run:
+
+```bash
+make start-openbao-bootstrap ENV=dev LIMIT=openbao
 ```
+
+The command requires exact TTY approval and leaves three uninitialized sealed
+processes running without boot enablement. It never handles Shamir shares or the
+initial root token. Two approved custodians must then:
+
+1. Initialize exactly one approved node with five shares and threshold three.
+2. Store all five shares and the initial root token in approved outside-Git custody.
+3. Unseal all three nodes with three distinct approved shares.
+4. Enable `file-audit-1` at `/openbao/audit-1/audit.log`.
+5. Enable `file-audit-2` at `/openbao/audit-2/audit.log`.
+6. Create the status policy below and store its token in the owner-private file
+   referenced by `openbao_status_token_src`.
+7. Revoke the initial root token after the status identity is verified.
+
+Do not put shares or the root token in command-line arguments, shell history,
+Ansible variables, task output, or repository files. Use an approved interactive
+OpenBao CLI session and custody procedure.
 
 After an initialized three-node cluster and a dedicated least-privilege status
 identity exist, store its token in an owner-private file outside Git and set
@@ -987,7 +1007,43 @@ The token policy needs only:
 path "sys/storage/raft/configuration" {
   capabilities = ["read"]
 }
+
+path "sys/audit" {
+  capabilities = ["read", "sudo"]
+}
 ```
+
+Set `openbao_bootstrap_complete_ready: true` only after the ceremony, then run:
+
+```bash
+make complete-openbao-bootstrap ENV=dev LIMIT=openbao
+```
+
+Completion requires another exact TTY approval, immediately revalidates all
+pending evidence, requires two exact audit devices and stable three-voter status,
+and only then enables OpenBao at boot. An interrupted publication can recover
+missing markers only while at least one surviving signed marker anchors the
+original guarded start. After success, set the normal private service contract
+to `openbao_service_enabled: true` and
+`openbao_service_state: started`, and close both bootstrap readiness gates.
+
+To enable the client edge while Keepalived remains stopped, start firewalld, set
+`openbao_haproxy_activation_ready: true`, and run:
+
+```bash
+make activate-openbao-haproxy ENV=dev LIMIT=openbao
+```
+
+The approval binds the active OpenBao identity to each node's staged HAProxy
+package, configuration, backend CA, and managed firewalld manifest. A failed
+activation or routing check stops and disables every reachable HAProxy service.
+If any host is unreachable, treat its HAProxy state as unknown: recover access,
+run `sudo systemctl disable --now haproxy.service` there, verify it is inactive
+and disabled, and rerun the guarded activation from the stopped contract.
+
+After success, set the normal private HAProxy service contract to enabled and
+started, close its activation gate, and keep Keepalived disabled until monitoring
+observer and canary acceptance is available.
 
 Run the read-only direct-node and Raft gate with:
 
@@ -995,10 +1051,16 @@ Run the read-only direct-node and Raft gate with:
 make status-openbao ENV=dev LIMIT=openbao
 ```
 
-The gate requires strict TLS, one active node, two standbys, exactly three
-expected voters, one matching leader, and stable repeated Raft observations. It
-does not initialize, unseal, restart, or reconfigure OpenBao, and it is not an
-HAProxy or VIP smoke check.
+The gate requires exact active lifecycle markers, strict TLS, one active node,
+two standbys, exactly three expected voters, one matching leader, stable repeated
+Raft observations, and both audit devices. It does not initialize, unseal,
+restart, or reconfigure OpenBao.
+
+After HAProxy activation, check both direct and node-local proxy paths with:
+
+```bash
+make smoke-openbao ENV=dev LIMIT=openbao
+```
 
 After the cluster has been initialized and live qualification explicitly allows
 a configuration change that may restart voters, use the maintenance-only path:

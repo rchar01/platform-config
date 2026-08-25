@@ -15,6 +15,8 @@ openbao_quadlet_name: openbao.container
 openbao_service_name: openbao.service
 openbao_service_enabled: false
 openbao_service_state: stopped
+openbao_bootstrap_ready: false
+openbao_bootstrap_complete_ready: false
 
 openbao_config_dir: /etc/openbao
 openbao_tls_dir: "{{ openbao_config_dir }}/tls"
@@ -76,3 +78,6 @@ openbao_firewalld_manage: true
 openbao_backend_allowed_sources: []
 openbao_state_dir: /var/lib/platform-config
 openbao_firewalld_manifest_path: "{{ openbao_state_dir }}/openbao-firewalld.yml"
+openbao_bootstrap_marker_path: "{{ openbao_state_dir }}/openbao-bootstrap.json"
+openbao_bootstrap_marker_owner: root
+openbao_bootstrap_marker_group: root

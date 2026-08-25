@@ -54,9 +54,12 @@
           - not openbao_group_example.openbao_enabled | bool
           - not openbao_group_example.openbao_service_enabled | bool
           - openbao_group_example.openbao_service_state == 'stopped'
+          - not openbao_group_example.openbao_bootstrap_ready | bool
+          - not openbao_group_example.openbao_bootstrap_complete_ready | bool
           - not openbao_group_example.openbao_haproxy_enabled | bool
           - not openbao_group_example.openbao_haproxy_service_enabled | bool
           - openbao_group_example.openbao_haproxy_service_state == 'stopped'
+          - not openbao_group_example.openbao_haproxy_activation_ready | bool
           - openbao_group_example.openbao_haproxy_package_nevra | length == 0
           - openbao_group_example.openbao_haproxy_client_allowed_sources | length == 0
           - openbao_group_example.openbao_haproxy_stats_allowed_sources == ['127.0.0.1/32']

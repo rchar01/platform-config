@@ -10,6 +10,7 @@ openbao_haproxy_config_validate_command: "{{ openbao_haproxy_binary_path }} -c -
 openbao_haproxy_service_name: haproxy.service
 openbao_haproxy_service_enabled: false
 openbao_haproxy_service_state: stopped
+openbao_haproxy_activation_ready: false
 
 openbao_haproxy_user: haproxy
 openbao_haproxy_group: haproxy

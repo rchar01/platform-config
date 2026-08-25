@@ -1,0 +1,148 @@
+---
+- name: Require safe OpenBao bootstrap preflight inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_ready | bool
+      - not ansible_check_mode
+      - not openbao_service_enabled | bool
+      - openbao_service_state == 'stopped'
+    fail_msg: >-
+      OpenBao bootstrap start requires explicit readiness, normal apply mode,
+      and the stopped, disabled service contract.
+
+- name: Validate OpenBao bootstrap inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Inspect staged OpenBao bootstrap artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_bootstrap_artifact_stats
+  loop:
+    - "{{ openbao_config_path }}"
+    - "{{ openbao_quadlet_path }}"
+    - "{{ openbao_tls_ca_path }}"
+    - "{{ openbao_tls_cert_path }}"
+    - "{{ openbao_tls_key_path }}"
+
+- name: Require complete staged OpenBao bootstrap artifacts
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: "OpenBao bootstrap artifact {{ item.item }} is not staged."
+  loop: "{{ openbao_bootstrap_artifact_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect OpenBao TLS source checksums
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_bootstrap_tls_source_stats
+  delegate_to: localhost
+  become: false
+  no_log: true
+  loop:
+    - "{{ openbao_tls_ca_src }}"
+    - "{{ openbao_tls_cert_src }}"
+    - "{{ openbao_tls_key_src }}"
+
+- name: Require staged OpenBao TLS files match approved sources
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_tls_source_stats.results[0].stat.checksum == openbao_bootstrap_artifact_stats.results[2].stat.checksum
+      - openbao_bootstrap_tls_source_stats.results[1].stat.checksum == openbao_bootstrap_artifact_stats.results[3].stat.checksum
+      - openbao_bootstrap_tls_source_stats.results[2].stat.checksum == openbao_bootstrap_artifact_stats.results[4].stat.checksum
+    fail_msg: Staged OpenBao TLS files do not match their approved sources.
+  no_log: true
+
+- name: Verify staged OpenBao certificate identities
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - verify
+      - -CAfile
+      - "{{ openbao_tls_ca_src }}"
+      - -verify_hostname
+      - "{{ item }}"
+      - "{{ openbao_tls_cert_src }}"
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  loop:
+    - "{{ openbao_node_dns }}"
+    - "{{ openbao_service_dns }}"
+
+- name: Inspect pristine OpenBao data directory
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ openbao_data_dir }}"
+      - -mindepth
+      - "1"
+      - -maxdepth
+      - "1"
+      - -print
+      - -quit
+  register: openbao_bootstrap_data_entries
+  changed_when: false
+  check_mode: false
+
+- name: Inspect OpenBao bootstrap lifecycle paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: openbao_bootstrap_lifecycle_paths
+  loop:
+    - "{{ openbao_bootstrap_marker_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ openbao_service_name }}"
+
+- name: Inspect OpenBao bootstrap services
+  ansible.builtin.service_facts:
+
+- name: Inspect OpenBao bootstrap container
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, exists, "{{ openbao_container_name }}"]
+  register: openbao_bootstrap_container_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Derive exact staged OpenBao Quadlet checksum
+  ansible.builtin.set_fact:
+    openbao_bootstrap_expected_quadlet_checksum: >-
+      {{ lookup('ansible.builtin.template', 'openbao.container.j2') | hash('sha256') }}
+  vars:
+    openbao_service_enabled: false
+
+- name: Require pristine stopped OpenBao bootstrap state
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_data_entries.stdout | trim | length == 0
+      - not openbao_bootstrap_lifecycle_paths.results[0].stat.exists
+      - not openbao_bootstrap_lifecycle_paths.results[1].stat.exists
+      - not openbao_bootstrap_lifecycle_paths.results[2].stat.exists
+      - >-
+        ansible_facts.services.get(openbao_service_name, {}).get('state', 'stopped')
+        != 'running'
+      - openbao_bootstrap_container_exists.rc != 0
+      - >-
+        openbao_bootstrap_artifact_stats.results[1].stat.checksum
+        == openbao_bootstrap_expected_quadlet_checksum
+    fail_msg: >-
+      OpenBao bootstrap requires pristine data, no lifecycle marker, no boot
+      enablement, and no running service or container. Preserve unknown or
+      partial state for reviewed recovery.
+
+- name: Build local OpenBao bootstrap observation
+  ansible.builtin.set_fact:
+    openbao_bootstrap_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_node_name }}"
+      config_checksum: "{{ openbao_bootstrap_artifact_stats.results[0].stat.checksum }}"
+      quadlet_checksum: "{{ openbao_bootstrap_artifact_stats.results[1].stat.checksum }}"
+      ca_checksum: "{{ openbao_bootstrap_artifact_stats.results[2].stat.checksum }}"
+      certificate_checksum: "{{ openbao_bootstrap_artifact_stats.results[3].stat.checksum }}"
+      key_checksum: "{{ openbao_bootstrap_artifact_stats.results[4].stat.checksum }}"
+      image_digest: "{{ openbao_image_digest }}"

@@ -1,0 +1,29 @@
+---
+- name: Stop OpenBao after failed pristine bootstrap start
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_service_name }}"
+    enabled: false
+    state: stopped
+    daemon_reload: true
+
+- name: Remove failed OpenBao bootstrap marker
+  ansible.builtin.file:
+    path: "{{ openbao_bootstrap_marker_path }}"
+    state: absent
+
+- name: Inspect failed OpenBao bootstrap rollback state
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ openbao_service_name }}"]
+  register: openbao_bootstrap_rollback_active
+  changed_when: false
+  failed_when: openbao_bootstrap_rollback_active.stdout != 'inactive'
+  retries: 10
+  delay: 1
+  until: openbao_bootstrap_rollback_active.stdout == 'inactive'
+
+- name: Inspect failed OpenBao bootstrap container state
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, exists, "{{ openbao_container_name }}"]
+  register: openbao_bootstrap_rollback_container_exists
+  changed_when: false
+  failed_when: openbao_bootstrap_rollback_container_exists.rc == 0

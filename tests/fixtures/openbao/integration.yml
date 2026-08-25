@@ -5,6 +5,7 @@
   gather_facts: true
   vars:
     firewalld_enabled: false
+    podman_host_package_nevra: podman-7:5.8.2-5.el10_2.x86_64
     podman_host_socket_manage: false
     openbao_enabled: true
     openbao_service_enabled: "{{ openbao_test_service_started | default(false) }}"

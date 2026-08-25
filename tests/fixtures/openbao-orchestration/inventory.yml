@@ -5,6 +5,9 @@ all:
     ansible_become: false
     platform_environment: dev
     openbao_orchestration_ready: true
+    openbao_data_dir: "{{ openbao_test_marker_path | dirname }}/data"
+    openbao_bootstrap_marker_path: >-
+      {{ openbao_test_marker_path | dirname }}/openbao-bootstrap.json
     openbao_enabled: true
     openbao_service_enabled: >-
       {{ inventory_hostname == (openbao_test_active_openbao | default('')) }}

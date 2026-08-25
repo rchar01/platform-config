@@ -59,7 +59,7 @@ def test_openbao_orchestration_source_contract(repo_root: Path) -> None:
         assert fragment in playbook
     assert re.search(r"^    - firewalld$", playbook, re.MULTILINE)
     assert re.search(r"^    - keepalived_vip$", playbook, re.MULTILINE)
-    assert not re.search(r"platform_external_probe|grafana_alloy|initialize|unseal", playbook)
+    assert not re.search(r"platform_external_probe|grafana_alloy|operator init|operator unseal", playbook)
 
 
 def test_openbao_orchestration_runs_exact_mocked_role_order(
@@ -74,6 +74,26 @@ def test_openbao_orchestration_runs_exact_mocked_role_order(
         environment=_roles_environment(repo_root),
     ).assert_success()
     assert marker.read_text(encoding="utf-8") == "complete"
+
+
+def test_openbao_orchestration_accepts_absent_pristine_data_directory(
+    repo_root: Path, command_runner: CommandRunner, isolated_test_dir: Path
+) -> None:
+    marker = isolated_test_dir / "converged"
+    run_playbook(
+        command_runner,
+        repo_root / "playbooks/openbao.yml",
+        inventory=repo_root / "tests/fixtures/openbao-orchestration/inventory.yml",
+        extra_vars=(
+            {
+                "openbao_test_marker_path": str(marker),
+                "openbao_test_leave_data_dir_absent": True,
+            },
+        ),
+        environment=_roles_environment(repo_root),
+    ).assert_success()
+    assert marker.read_text(encoding="utf-8") == "complete"
+    assert not (isolated_test_dir / "data").exists()
 
 
 @pytest.mark.parametrize("case", REJECTIONS, ids=lambda case: case.case_id)

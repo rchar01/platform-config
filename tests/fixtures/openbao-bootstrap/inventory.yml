@@ -1,0 +1,58 @@
+---
+all:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    platform_environment: test
+    openbao_bootstrap_ready: true
+    openbao_bootstrap_complete_ready: true
+    openbao_haproxy_activation_ready: true
+    openbao_enabled: true
+    openbao_service_enabled: false
+    openbao_service_state: stopped
+    openbao_service_name: openbao.service
+    openbao_container_name: openbao
+    openbao_image_digest: sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
+    openbao_image: >-
+      ghcr.io/openbao/openbao@sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
+    openbao_bootstrap_marker_path: >-
+      {{ openbao_test_root }}/{{ inventory_hostname }}-bootstrap.json
+    openbao_bootstrap_marker_owner: "{{ ansible_user_id }}"
+    openbao_bootstrap_marker_group: "{{ ansible_user_id }}"
+    openbao_quadlet_path: "{{ openbao_test_root }}/{{ inventory_hostname }}.container"
+    openbao_tls_ca_src: "{{ openbao_test_root }}/ca.crt"
+    openbao_service_dns: bao.test.invalid
+    openbao_client_port: 8200
+    openbao_backend_port: 18200
+    openbao_cluster_port: 8201
+    openbao_haproxy_enabled: true
+    openbao_haproxy_service_name: haproxy.service
+    openbao_haproxy_service_enabled: false
+    openbao_haproxy_service_state: stopped
+    openbao_haproxy_firewalld_manage: false
+    keepalived_vip_service_enabled: false
+    keepalived_vip_service_state: stopped
+    openbao_cluster_members:
+      - name: bao-bootstrap-1
+        node_id: bao-1
+        address: 127.0.0.11
+        dns: bao-1.test.invalid
+      - name: bao-bootstrap-2
+        node_id: bao-2
+        address: 127.0.0.12
+        dns: bao-2.test.invalid
+      - name: bao-bootstrap-3
+        node_id: bao-3
+        address: 127.0.0.13
+        dns: bao-3.test.invalid
+    openbao_node_name: >-
+      {{ (openbao_cluster_members | selectattr('name', 'equalto', inventory_hostname) | first).node_id }}
+  children:
+    openbao:
+      hosts:
+        bao-bootstrap-1:
+        bao-bootstrap-2:
+        bao-bootstrap-3:
+    unrelated:
+      hosts:
+        unrelated-bootstrap:

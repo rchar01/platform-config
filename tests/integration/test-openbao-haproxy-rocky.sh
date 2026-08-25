@@ -182,6 +182,12 @@ idempotent_output="$(run_playbook)"
 grep -qE 'changed=0.*failed=0' <<<"$idempotent_output" \
   || fail 'Second staged OpenBao HAProxy convergence was not idempotent'
 
+run_playbook --extra-vars openbao_haproxy_test_rollback=true >/dev/null
+[[ "$(podman exec "$CONTAINER" systemctl is-active haproxy.service 2>/dev/null)" == inactive ]] \
+  || fail 'Confirmed OpenBao HAProxy rollback did not leave the service inactive'
+[[ "$(podman exec "$CONTAINER" systemctl is-enabled haproxy.service 2>/dev/null)" == disabled ]] \
+  || fail 'Confirmed OpenBao HAProxy rollback did not leave the service disabled'
+
 run_playbook --extra-vars openbao_haproxy_test_client_source=203.0.113.0/24 >/dev/null
 updated_rules="$(podman exec "$CONTAINER" firewall-offline-cmd --zone=public --list-rich-rules)"
 grep -q '203[.]0[.]113[.]0/24.*port="8200"' <<<"$updated_rules" \

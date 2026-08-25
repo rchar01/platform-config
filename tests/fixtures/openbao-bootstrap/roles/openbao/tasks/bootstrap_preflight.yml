@@ -1,0 +1,25 @@
+---
+- name: Reject mocked OpenBao bootstrap preflight
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_test_preflight_failure_host | default('') != inventory_hostname
+    fail_msg: Mocked OpenBao bootstrap preflight failed.
+
+- name: Record mocked OpenBao bootstrap preflight count
+  ansible.builtin.set_fact:
+    openbao_bootstrap_test_preflight_count: >-
+      {{ openbao_bootstrap_test_preflight_count | default(0) | int + 1 }}
+
+- name: Build mocked OpenBao bootstrap observation
+  ansible.builtin.set_fact:
+    openbao_bootstrap_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_node_name }}"
+      config_checksum: >-
+        {{ '9' * 64 if openbao_bootstrap_test_drift | default(false)
+           and openbao_bootstrap_test_preflight_count | int > 1 else '1' * 64 }}
+      quadlet_checksum: "{{ '2' * 64 }}"
+      ca_checksum: "{{ '3' * 64 }}"
+      certificate_checksum: "{{ (inventory_hostname | hash('sha256')) }}"
+      key_checksum: "{{ ('key-' ~ inventory_hostname) | hash('sha256') }}"
+      image_digest: "{{ openbao_image_digest }}"

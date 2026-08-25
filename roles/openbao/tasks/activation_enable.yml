@@ -1,0 +1,59 @@
+---
+- name: Render persistently active OpenBao Quadlet
+  ansible.builtin.template:
+    src: openbao.container.j2
+    dest: "{{ openbao_quadlet_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    openbao_service_enabled: true
+
+- name: Reload persistent OpenBao Quadlet
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Keep persistently active OpenBao service started
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_service_name }}"
+    state: started
+
+- name: Inspect persistent OpenBao activation paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: openbao_activation_enabled_paths
+  loop:
+    - "{{ openbao_quadlet_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ openbao_service_name }}"
+
+- name: Require exact generated OpenBao boot enablement
+  ansible.builtin.assert:
+    that:
+      - openbao_activation_enabled_paths.results[0].stat.exists
+      - openbao_activation_enabled_paths.results[0].stat.isreg
+      - openbao_activation_enabled_paths.results[1].stat.exists
+      - openbao_activation_enabled_paths.results[1].stat.islnk
+      - >-
+        openbao_activation_enabled_paths.results[1].stat.lnk_source
+        == '/run/systemd/generator/' ~ openbao_service_name
+      - not openbao_activation_enabled_paths.results[2].stat.exists
+    fail_msg: OpenBao persistent activation did not generate exact boot enablement.
+
+- name: Inspect active OpenBao container
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, inspect, "{{ openbao_container_name }}"]
+  register: openbao_activation_container_inspect_command
+  changed_when: false
+
+- name: Parse active OpenBao container
+  ansible.builtin.set_fact:
+    openbao_activation_container_inspect: >-
+      {{ openbao_activation_container_inspect_command.stdout | from_json | first }}
+
+- name: Require exact active OpenBao container
+  ansible.builtin.assert:
+    that:
+      - openbao_activation_container_inspect.State.Running | bool
+      - openbao_activation_container_inspect.ImageName == openbao_image
+    fail_msg: OpenBao persistent activation is not running the approved image.

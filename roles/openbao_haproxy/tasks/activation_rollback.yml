@@ -1,0 +1,41 @@
+---
+- name: Default OpenBao HAProxy rollback to unverified
+  ansible.builtin.set_fact:
+    openbao_haproxy_activation_rollback_confirmed: false
+
+- name: Stop, disable, and verify failed OpenBao HAProxy activation
+  block:
+    - name: Stop and disable failed OpenBao HAProxy activation
+      ansible.builtin.systemd_service:
+        name: "{{ openbao_haproxy_service_name }}"
+        enabled: false
+        state: stopped
+
+    - name: Inspect failed OpenBao HAProxy runtime state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ openbao_haproxy_service_name }}"]
+      register: openbao_haproxy_activation_rollback_active
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect failed OpenBao HAProxy boot enablement
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, "{{ openbao_haproxy_service_name }}"]
+      register: openbao_haproxy_activation_rollback_enabled
+      changed_when: false
+      failed_when: false
+
+    - name: Require stopped and disabled OpenBao HAProxy rollback state
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_activation_rollback_active.stdout == 'inactive'
+          - openbao_haproxy_activation_rollback_enabled.stdout == 'disabled'
+        fail_msg: OpenBao HAProxy rollback did not prove stopped and disabled state.
+
+    - name: Record confirmed OpenBao HAProxy rollback
+      ansible.builtin.set_fact:
+        openbao_haproxy_activation_rollback_confirmed: true
+  rescue:
+    - name: Preserve unverified OpenBao HAProxy rollback
+      ansible.builtin.set_fact:
+        openbao_haproxy_activation_rollback_confirmed: false

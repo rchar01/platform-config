@@ -49,8 +49,22 @@ Do not import maintenance playbooks from `playbooks/site.yml`.
 
 Available maintenance playbooks:
 
+- `openbao-bootstrap-start.yml`: requires exact pristine staged state, a
+  full-cluster limit, and exact TTY approval before starting three uninitialized
+  sealed processes without boot enablement. It writes only non-secret pending
+  markers; Shamir shares and the initial root token never enter Ansible.
+- `openbao-bootstrap-complete.yml`: after the two-custodian five-share,
+  threshold-three ceremony, verifies unchanged pending evidence, two file audit
+  devices, and strict stable three-voter state before publishing active markers
+  and generated boot enablement. It never initializes or unseals OpenBao.
+- `openbao-haproxy-activate.yml`: requires exact active OpenBao markers and
+  strict status, binds exact staged package/configuration/CA/firewall evidence
+  to TTY approval, requires inactive Keepalived and active firewalld, and checks
+  routing through every node-local HAProxy. Failure rolls back only reachable
+  HAProxy services and reports unreachable hosts as unverified.
 - `openbao-status.yml`: performs strict controller-side direct-node TLS health
-  and authenticated Raft membership checks for the three-node OpenBao cluster.
+  and authenticated Raft and audit checks for the three-node OpenBao cluster,
+  including exact agreement between all active markers and runtime cluster ID.
   It requires an outside-Git read-only token, does not follow token-bearing
   redirects, and never initializes, unseals, restarts, or reconfigures OpenBao.
   HAProxy, VIP, and firewall connectivity remain separate acceptance gates.

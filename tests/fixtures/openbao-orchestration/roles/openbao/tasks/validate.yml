@@ -4,3 +4,10 @@
     that:
       - openbao_test_invalid_component | default('') != 'openbao'
     fail_msg: Mocked OpenBao inputs are invalid.
+
+- name: Create pristine mocked OpenBao data directory
+  ansible.builtin.file:
+    path: "{{ openbao_data_dir }}"
+    state: directory
+    mode: "0700"
+  when: not openbao_test_leave_data_dir_absent | default(false) | bool

@@ -1,0 +1,131 @@
+---
+- name: Require safe OpenBao bootstrap completion inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_complete_ready | bool
+      - not ansible_check_mode
+      - not openbao_service_enabled | bool
+      - openbao_service_state == 'stopped'
+    fail_msg: >-
+      OpenBao bootstrap completion requires explicit readiness, normal apply
+      mode, and the inventory's stopped, disabled staging contract.
+
+- name: Validate OpenBao bootstrap completion inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Inspect optional OpenBao bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_bootstrap_pending_marker_stat
+
+- name: Require private OpenBao bootstrap marker when present
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_pending_marker_stat.stat.isreg
+      - openbao_bootstrap_pending_marker_stat.stat.pw_name == 'root'
+      - openbao_bootstrap_pending_marker_stat.stat.mode == '0600'
+    fail_msg: OpenBao bootstrap marker is not a private root-owned file.
+  when: openbao_bootstrap_pending_marker_stat.stat.exists
+
+- name: Read existing OpenBao bootstrap marker
+  ansible.builtin.slurp:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_bootstrap_pending_marker_slurp
+  when: openbao_bootstrap_pending_marker_stat.stat.exists
+
+- name: Parse optional OpenBao bootstrap marker
+  ansible.builtin.set_fact:
+    openbao_bootstrap_pending_marker: >-
+      {{
+        openbao_bootstrap_pending_marker_slurp.content | b64decode | from_json
+        if openbao_bootstrap_pending_marker_stat.stat.exists
+        else {}
+      }}
+
+- name: Inspect current OpenBao bootstrap artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_bootstrap_pending_artifact_stats
+  loop:
+    - "{{ openbao_config_path }}"
+    - "{{ openbao_quadlet_path }}"
+    - "{{ openbao_tls_ca_path }}"
+    - "{{ openbao_tls_cert_path }}"
+    - "{{ openbao_tls_key_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
+
+- name: Derive exact inactive OpenBao Quadlet checksum
+  ansible.builtin.set_fact:
+    openbao_bootstrap_expected_inactive_quadlet_checksum: >-
+      {{ lookup('ansible.builtin.template', 'openbao.container.j2') | hash('sha256') }}
+  vars:
+    openbao_service_enabled: false
+
+- name: Derive exact active OpenBao Quadlet checksum
+  ansible.builtin.set_fact:
+    openbao_bootstrap_expected_active_quadlet_checksum: >-
+      {{ lookup('ansible.builtin.template', 'openbao.container.j2') | hash('sha256') }}
+  vars:
+    openbao_service_enabled: true
+
+- name: Inspect pending OpenBao service state
+  ansible.builtin.service_facts:
+
+- name: Inspect pending OpenBao container state
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, exists, "{{ openbao_container_name }}"]
+  register: openbao_bootstrap_pending_container_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require exact resumable OpenBao completion state
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_bootstrap_pending_artifact_stats.results[1].stat.checksum
+        in [
+          openbao_bootstrap_expected_inactive_quadlet_checksum,
+          openbao_bootstrap_expected_active_quadlet_checksum
+        ]
+      - >-
+        (
+          openbao_bootstrap_pending_artifact_stats.results[1].stat.checksum
+          == openbao_bootstrap_expected_active_quadlet_checksum
+        ) == openbao_bootstrap_pending_artifact_stats.results[5].stat.exists
+      - ansible_facts.services.get(openbao_service_name, {}).get('state', '') == 'running'
+      - openbao_bootstrap_pending_container_exists.rc == 0
+    fail_msg: >-
+      OpenBao bootstrap completion requires unchanged exact artifacts, a running
+      direct service, and either exact pending or exact persistent Quadlet state.
+
+- name: Require existing OpenBao marker matches current artifacts
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_pending_marker.schema == 1
+      - openbao_bootstrap_pending_marker.state in ['awaiting-manual-custody', 'active']
+      - openbao_bootstrap_pending_marker.inventory_hosts | sort == groups.get('openbao', []) | sort
+      - openbao_bootstrap_pending_marker.inventory_host == inventory_hostname
+      - openbao_bootstrap_pending_marker.node_id == openbao_node_name
+      - openbao_bootstrap_pending_marker.config_checksum == openbao_bootstrap_pending_artifact_stats.results[0].stat.checksum
+      - openbao_bootstrap_pending_marker.ca_checksum == openbao_bootstrap_pending_artifact_stats.results[2].stat.checksum
+      - openbao_bootstrap_pending_marker.certificate_checksum == openbao_bootstrap_pending_artifact_stats.results[3].stat.checksum
+      - openbao_bootstrap_pending_marker.key_checksum == openbao_bootstrap_pending_artifact_stats.results[4].stat.checksum
+      - openbao_bootstrap_pending_marker.image_digest == openbao_image_digest
+    fail_msg: Existing OpenBao bootstrap marker does not match current artifacts.
+  when: openbao_bootstrap_pending_marker_stat.stat.exists
+
+- name: Build resumable OpenBao bootstrap observation
+  ansible.builtin.set_fact:
+    openbao_bootstrap_pending_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_node_name }}"
+      config_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[0].stat.checksum }}"
+      quadlet_checksum: "{{ openbao_bootstrap_expected_inactive_quadlet_checksum }}"
+      ca_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[2].stat.checksum }}"
+      certificate_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[3].stat.checksum }}"
+      key_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[4].stat.checksum }}"
+      image_digest: "{{ openbao_image_digest }}"
+    openbao_bootstrap_pending_marker_signature: >-
+      {{ openbao_bootstrap_pending_marker.cluster_signature | default('') }}

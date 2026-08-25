@@ -1,0 +1,34 @@
+---
+- name: Inspect mocked pending OpenBao bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_bootstrap_test_pending_marker_stat
+
+- name: Read mocked pending OpenBao bootstrap marker
+  ansible.builtin.slurp:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_bootstrap_test_pending_marker
+  when: openbao_bootstrap_test_pending_marker_stat.stat.exists
+
+- name: Parse optional mocked pending OpenBao bootstrap marker
+  ansible.builtin.set_fact:
+    openbao_bootstrap_pending_marker: >-
+      {{
+        openbao_bootstrap_test_pending_marker.content | b64decode | from_json
+        if openbao_bootstrap_test_pending_marker_stat.stat.exists
+        else {}
+      }}
+
+- name: Build mocked resumable OpenBao bootstrap observation
+  ansible.builtin.set_fact:
+    openbao_bootstrap_pending_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_node_name }}"
+      config_checksum: "{{ '1' * 64 }}"
+      quadlet_checksum: "{{ '2' * 64 }}"
+      ca_checksum: "{{ '3' * 64 }}"
+      certificate_checksum: "{{ inventory_hostname | hash('sha256') }}"
+      key_checksum: "{{ ('key-' ~ inventory_hostname) | hash('sha256') }}"
+      image_digest: "{{ openbao_image_digest }}"
+    openbao_bootstrap_pending_marker_signature: >-
+      {{ openbao_bootstrap_pending_marker.cluster_signature | default('') }}

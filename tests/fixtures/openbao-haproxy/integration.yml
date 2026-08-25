@@ -6,6 +6,7 @@
   vars:
     firewalld_enabled: false
     openbao_haproxy_test_active: false
+    openbao_haproxy_test_rollback: false
     openbao_haproxy_enabled: true
     openbao_haproxy_package_nevra: >-
       {{ openbao_haproxy_test_package_nevra | default('haproxy-0:3.0.5-6.el10_2.1.x86_64') }}
@@ -35,3 +36,17 @@
   roles:
     - firewalld
     - openbao_haproxy
+  post_tasks:
+    - name: Qualify staged OpenBao HAProxy activation evidence
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: activation_preflight.yml
+      when: not ansible_check_mode
+
+    - name: Exercise confirmed OpenBao HAProxy rollback
+      ansible.builtin.include_role:
+        name: openbao_haproxy
+        tasks_from: activation_rollback.yml
+      when:
+        - not ansible_check_mode
+        - openbao_haproxy_test_rollback | bool

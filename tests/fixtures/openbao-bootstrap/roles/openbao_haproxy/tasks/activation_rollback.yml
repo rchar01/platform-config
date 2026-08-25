@@ -1,0 +1,18 @@
+---
+- name: Default mocked OpenBao HAProxy rollback to unverified
+  ansible.builtin.set_fact:
+    openbao_haproxy_activation_rollback_confirmed: false
+
+- name: Record mocked OpenBao HAProxy rollback
+  ansible.builtin.copy:
+    dest: "{{ openbao_test_root }}/{{ inventory_hostname }}-haproxy-rollback"
+    content: rolled-back
+    mode: "0600"
+  when: >-
+    openbao_haproxy_test_rollback_failure_host | default('') != inventory_hostname
+
+- name: Confirm mocked OpenBao HAProxy rollback
+  ansible.builtin.set_fact:
+    openbao_haproxy_activation_rollback_confirmed: true
+  when: >-
+    openbao_haproxy_test_rollback_failure_host | default('') != inventory_hostname

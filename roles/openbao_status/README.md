@@ -16,7 +16,8 @@ The role:
   redirects, and suppresses token-bearing task output;
 - requires exactly the expected three unique Raft voters, expected cluster
   addresses, one leader, and agreement between the API active node and Raft
-  leader; and
+  leader;
+- requires exactly the two approved durable file audit devices; and
 - repeats the strict Raft observation to reject changing membership, leadership,
   or configuration index.
 
@@ -25,6 +26,10 @@ The token needs only this policy:
 ```hcl
 path "sys/storage/raft/configuration" {
   capabilities = ["read"]
+}
+
+path "sys/audit" {
+  capabilities = ["read", "sudo"]
 }
 ```
 

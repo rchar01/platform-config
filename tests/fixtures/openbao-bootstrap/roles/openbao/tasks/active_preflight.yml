@@ -1,0 +1,50 @@
+---
+- name: Read mocked active OpenBao marker
+  ansible.builtin.slurp:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_bootstrap_test_active_marker
+
+- name: Parse mocked active OpenBao marker
+  ansible.builtin.set_fact:
+    openbao_active_marker: >-
+      {{ openbao_bootstrap_test_active_marker.content | b64decode | from_json }}
+    openbao_active_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_node_name }}"
+      cluster_id: >-
+        {{ (openbao_bootstrap_test_active_marker.content | b64decode | from_json).cluster_id }}
+      cluster_signature: >-
+        {{ (openbao_bootstrap_test_active_marker.content | b64decode | from_json).cluster_signature }}
+      image_digest: "{{ openbao_image_digest }}"
+
+- name: Require mocked active OpenBao marker identity
+  ansible.builtin.assert:
+    that:
+      - openbao_active_observation.cluster_id is string
+      - openbao_active_observation.cluster_id | length > 0
+      - openbao_active_observation.cluster_signature is string
+      - openbao_active_observation.cluster_signature is match('^[a-f0-9]{64}$')
+    fail_msg: Mocked active OpenBao marker identity is invalid.
+
+- name: Record mocked OpenBao edge service facts
+  ansible.builtin.set_fact:
+    ansible_facts: >-
+      {{
+        ansible_facts
+        | combine(
+            {
+              'services': {
+                'firewalld.service': {'state': 'running'},
+                'haproxy.service': {'state': 'stopped'},
+                'keepalived.service': {
+                  'state': (
+                    'running'
+                    if openbao_haproxy_test_keepalived_running | default(false)
+                    else 'stopped'
+                  )
+                }
+              }
+            },
+            recursive=true
+          )
+      }}

@@ -61,6 +61,7 @@ make test-monitoring-garage-mimir
 make test-monitoring-grafana-postgresql
 make test-openbao-image
 make test-openbao-rocky
+./scripts/in-container pytest -q tests/python/test_openbao_bootstrap.py
 ```
 
 Focused synthetic storage acceptance checks run inside the development

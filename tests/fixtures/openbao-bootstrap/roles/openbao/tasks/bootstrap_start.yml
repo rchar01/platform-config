@@ -1,0 +1,10 @@
+---
+- name: Reject mocked OpenBao bootstrap start
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_test_start_failure_host | default('') != inventory_hostname
+    fail_msg: Mocked OpenBao bootstrap start failed.
+
+- name: Record mocked OpenBao bootstrap start
+  ansible.builtin.set_fact:
+    openbao_bootstrap_local_start_complete: true

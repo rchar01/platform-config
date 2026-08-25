@@ -112,6 +112,12 @@ after stable-device review and explicit initialization approval. Set
 `openbao_orchestration_ready` only after the resulting mounts and every remaining
 role input are complete.
 
+Keep `openbao_bootstrap_ready`, `openbao_bootstrap_complete_ready`, and
+`openbao_haproxy_activation_ready` false by default. Open only the gate for the
+current attended transition, close it after success, and then record the active
+OpenBao or HAProxy service state in private inventory. Keep Keepalived stopped
+until monitoring observer and canary acceptance is available.
+
 The same three OpenBao hosts also model the independent external monitoring
 observer role. `openbao_observers_orchestration_ready` gates convergence, while
 the required boolean `openbao_observers_activate` is the single source for the

@@ -1,0 +1,10 @@
+---
+- name: Reject mocked OpenBao HAProxy activation
+  ansible.builtin.assert:
+    that:
+      - openbao_haproxy_test_failure_host | default('') != inventory_hostname
+    fail_msg: Mocked OpenBao HAProxy activation failed.
+
+- name: Record mocked OpenBao HAProxy activation
+  ansible.builtin.set_fact:
+    openbao_haproxy_local_activation_complete: true

@@ -77,6 +77,46 @@
         name: keepalived_vip
         tasks_from: validate.yml
 
+    - name: Inspect OpenBao lifecycle marker before staging
+      become: true
+      ansible.builtin.stat:
+        path: "{{ openbao_bootstrap_marker_path }}"
+      register: openbao_staging_bootstrap_marker
+
+    - name: Inspect OpenBao data directory before staging
+      become: true
+      ansible.builtin.stat:
+        path: "{{ openbao_data_dir }}"
+      register: openbao_staging_data_dir
+
+    - name: Inspect OpenBao data before staging
+      become: true
+      ansible.builtin.command:
+        argv:
+          - find
+          - "{{ openbao_data_dir }}"
+          - -mindepth
+          - "1"
+          - -maxdepth
+          - "1"
+          - -print
+          - -quit
+      register: openbao_staging_data_entries
+      changed_when: false
+      check_mode: false
+      when: openbao_staging_data_dir.stat.exists
+
+    - name: Refuse staging over initialized or partial OpenBao state
+      ansible.builtin.assert:
+        that:
+          - not openbao_staging_bootstrap_marker.stat.exists
+          - >-
+            not openbao_staging_data_dir.stat.exists
+            or openbao_staging_data_entries.stdout | default('') | trim | length == 0
+        fail_msg: >-
+          OpenBao staging refuses lifecycle markers or non-pristine Raft data.
+          Use status, rolling maintenance, or a reviewed recovery procedure.
+
     - name: Inspect existing OpenBao HA services
       ansible.builtin.service_facts:
 
