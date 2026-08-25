@@ -160,6 +160,11 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "Install target-local GitLab certificate components when transport is required"
     ) < names.index("Download and install the authenticated schema-2 response")
     assert names.index("Read post-download target-local status") < names.index(
+        "Prepare reviewed local Zot validation CA directory"
+    )
+    assert names.index(
+        "Prepare reviewed local Zot validation CA directory"
+    ) < names.index(
         "Install reviewed local Zot validation CA"
     )
     assert names.index("Install reviewed local Zot validation CA") < names.index(
@@ -176,6 +181,16 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
     ]
     assert download["no_log"] is True
 
+    prepare_ca_dir = task_named(
+        activation, "Prepare reviewed local Zot validation CA directory"
+    )
+    assert prepare_ca_dir["ansible.builtin.file"] == {
+        "path": "{{ pki_host_local_certificate_reviewed_ca_target_path | dirname }}",
+        "state": "directory",
+        "owner": "root",
+        "group": "root",
+        "mode": "0755",
+    }
     install_ca = task_named(
         activation, "Install reviewed local Zot validation CA"
     )
@@ -207,6 +222,19 @@ def test_activation_validates_reviewed_ca_source_and_digest(repo_root: Path) -> 
     assert validation["vars"]["pki_host_local_certificate_absolute_path_pattern"] == (
         "^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$"
     )
+
+
+def test_activation_prefixes_san_arguments_without_backreferences(
+    repo_root: Path,
+) -> None:
+    source = (
+        repo_root / "roles/pki_host_local_certificate/tasks/response_activate.yml"
+    ).read_text()
+
+    assert "--dns-san=\\\\1" not in source
+    assert "--ip-san=\\\\1" not in source
+    assert source.count("map('regex_replace', '^', '--dns-san=')") == 7
+    assert source.count("map('regex_replace', '^', '--ip-san=')") == 7
 
 
 def test_gitlab_token_is_validated_by_metadata_without_entering_ansible(

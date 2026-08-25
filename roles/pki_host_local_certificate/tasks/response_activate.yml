@@ -38,8 +38,8 @@
           '--common-name', pki_host_local_certificate_common_name,
           '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_initial_status_result
   changed_when: false
@@ -86,8 +86,8 @@
           '--common-name', pki_host_local_certificate_common_name,
           '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_target_recovery_result
   changed_when: >-
@@ -143,8 +143,8 @@
           '--common-name', pki_host_local_certificate_common_name,
           '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_actionable_status_result
   changed_when: false
@@ -232,8 +232,8 @@
           '--common-name', pki_host_local_certificate_common_name,
           '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_post_download_status_result
   changed_when: false
@@ -260,6 +260,19 @@
   vars:
     pki_host_local_certificate_post_download_status: >-
       {{ pki_host_local_certificate_post_download_status_result.stdout | from_json }}
+
+- name: Prepare reviewed local Zot validation CA directory
+  ansible.builtin.file:
+    path: "{{ pki_host_local_certificate_reviewed_ca_target_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: >-
+    [(pki_host_local_certificate_post_download_status_result.stdout | from_json).status,
+     (pki_host_local_certificate_post_download_status_result.stdout | from_json).required_action]
+    in [['response-ready', 'activate-response'],
+        ['activating', 'complete-local-validation']]
 
 - name: Install reviewed local Zot validation CA
   platform_pki_reviewed_ca:
@@ -294,8 +307,8 @@
           '--reviewed-ca-mode', pki_host_local_certificate_reviewed_ca_mode,
           '--rollback-seconds', pki_host_local_certificate_rollback_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_activation_start_result
   changed_when: >-
@@ -343,8 +356,8 @@
           '--reviewed-ca', pki_host_local_certificate_reviewed_ca_target_path,
           '--reviewed-ca-mode', pki_host_local_certificate_reviewed_ca_mode
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_activation_complete_result
   changed_when: true
@@ -388,8 +401,8 @@
           '--common-name', pki_host_local_certificate_common_name,
           '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^(.*)$', '--dns-san=\\1') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^(.*)$', '--ip-san=\\1') | list)
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_final_status_result
   changed_when: false
