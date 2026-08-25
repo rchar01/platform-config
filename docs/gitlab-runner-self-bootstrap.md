@@ -148,11 +148,15 @@ and rebuild with `CONTROLLER_ROOT`. A controller cannot initially run from the
 filesystem it is expected to create.
 
 On an SELinux host, the containers-storage contract requires an exact fcontext
-equivalence followed by a recursive relabel. For the fictional path above:
+equivalence from the canonical rootful storage source
+`/var/lib/containers/storage`, followed by a recursive relabel. This applies
+the standard container-storage labels to the selected rootless graphroot; it
+does not redirect either rootless or rootful Podman storage. For the fictional
+path above:
 
 ```bash
 sudo semanage fcontext -a -e \
-  "$HOME/.local/share/containers" \
+  /var/lib/containers/storage \
   /srv/example-bootstrap/containers/storage
 sudo restorecon -R -v /srv/example-bootstrap/containers/storage
 ```

@@ -292,7 +292,7 @@ def _controller_check_fixture(
     )
     equivalences = tmp_path / "selinux-equivalences.txt"
     equivalences.write_text(
-        f"{graphroot} = {home}/.local/share/containers\n", encoding="utf-8"
+        f"{graphroot} = /var/lib/containers/storage\n", encoding="utf-8"
     )
     username = pwd.getpwuid(os.getuid()).pw_name
     subuid = tmp_path / "subuid"
@@ -398,6 +398,7 @@ def test_controller_check_accepts_the_complete_dedicated_storage_contract(
         ("transient-home", "HOME must match"),
         ("transient-runtime", "XDG_RUNTIME_DIR must match"),
         ("transient-config", "XDG_CONFIG_HOME must match"),
+        ("legacy-rootless-equivalence", "missing SELinux fcontext equivalence"),
         ("missing-equivalence", "missing SELinux fcontext equivalence"),
     ),
 )
@@ -447,6 +448,11 @@ def test_controller_check_rejects_incomplete_or_mismatched_storage_state(
         environment["XDG_RUNTIME_DIR"] = str(tmp_path / "alternate-runtime")
     elif tamper == "transient-config":
         environment["XDG_CONFIG_HOME"] = str(tmp_path / "alternate-config")
+    elif tamper == "legacy-rootless-equivalence":
+        paths["equivalences"].write_text(
+            f"{paths['graphroot']} = {paths['home']}/.local/share/containers\n",
+            encoding="utf-8",
+        )
     else:
         paths["equivalences"].write_text("", encoding="utf-8")
     paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")

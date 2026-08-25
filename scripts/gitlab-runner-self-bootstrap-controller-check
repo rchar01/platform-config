@@ -317,7 +317,7 @@ def validate(
     if not podman_mapping_valid(mappings.get("gidmap"), os.getgid(), gid_ranges):
         raise ValidationError("effective Podman GID mapping does not match current subordinate IDs")
 
-    selinux_source = account_home / ".local/share/containers"
+    selinux_source = Path("/var/lib/containers/storage")
     exact_selinux_equivalence(
         arguments.selinux_equivalences, selinux_source, expected_graphroot
     )
