@@ -1,6 +1,7 @@
 ---
 zot_registry_smoke_base_url: "{{ platform_registry_url }}"
-# Remove this override after installing the registry CA on client hosts.
-zot_registry_smoke_validate_certs: false
+registry_ca_trust_source: /absolute/reviewed/registry-ca.pem
+registry_ca_trust_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+zot_registry_smoke_validate_certs: true
 zot_registry_smoke_image_enabled: true
 zot_registry_smoke_helm_enabled: true

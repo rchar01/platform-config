@@ -1,0 +1,43 @@
+---
+- name: Validate registry CA trust inputs
+  ansible.builtin.assert:
+    that:
+      - registry_ca_trust_source is string
+      - registry_ca_trust_sha256 is string
+      - registry_ca_trust_target is string
+      - registry_ca_trust_target is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+      - >-
+        (registry_ca_trust_source | length == 0
+         and registry_ca_trust_sha256 | length == 0)
+        or
+        (registry_ca_trust_source is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+         and registry_ca_trust_sha256 is match('^[0-9a-f]{64}$'))
+    fail_msg: Registry CA trust inputs are incomplete or unsafe.
+
+- name: Prepare registry CA trust anchor directory
+  ansible.builtin.file:
+    path: "{{ registry_ca_trust_target | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: registry_ca_trust_source | length > 0
+
+- name: Install reviewed registry CA trust anchor
+  platform_pki_reviewed_ca:
+    source: "{{ registry_ca_trust_source }}"
+    sha256: "{{ registry_ca_trust_sha256 }}"
+    dest: "{{ registry_ca_trust_target }}"
+    mode: "0644"
+  register: registry_ca_trust_install
+  when: registry_ca_trust_source | length > 0
+
+- name: Refresh system CA trust
+  ansible.builtin.command:
+    argv:
+      - update-ca-trust
+      - extract
+  changed_when: registry_ca_trust_install is changed
+  when:
+    - registry_ca_trust_source | length > 0
+    - not ansible_check_mode

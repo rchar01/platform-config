@@ -106,14 +106,18 @@ Enable optional image and Helm checks in private inventory vars for `registry_cl
 
 ```yaml
 zot_registry_smoke_base_url: "{{ platform_registry_url }}"
-zot_registry_smoke_validate_certs: false
+registry_ca_trust_source: /absolute/reviewed/registry-ca.pem
+registry_ca_trust_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+zot_registry_smoke_validate_certs: true
 zot_registry_smoke_image_enabled: true
 zot_registry_smoke_helm_enabled: true
 zot_registry_smoke_username: registry-admin
 zot_registry_smoke_password: "replace-with-secret-password"
 ```
 
-`zot_registry_smoke_validate_certs: false` makes Podman use `--tls-verify=false` and Helm use `--insecure-skip-tls-verify` during smoke tests. Keep this aligned with whether the client host trusts the registry CA.
+`registry_ca_trust` installs the reviewed CA on registry and registry-client
+hosts. Keep `zot_registry_smoke_validate_certs: true` so URI, Podman, and Helm
+smoke checks use normal system trust without insecure flags.
 
 Set both `zot_registry_smoke_username` and `zot_registry_smoke_password`, or
 neither. Authenticated registries require both values for raw OCI API, Podman,
@@ -160,7 +164,7 @@ registry listener broadly.
 | Area | Current Dev Setup | Production Recommendation |
 |---|---|---|
 | TLS | Enabled with platform PKI service certificate. | Enabled with a CA trusted by all users, CI hosts, and Kubernetes nodes. |
-| Client certificate validation | Smoke tests disable validation with client flags. | Do not use `--tls-verify=false` or `--insecure-skip-tls-verify`; install the registry CA instead. |
+| Client certificate validation | The reviewed registry CA is installed in system trust; smoke tests use normal certificate validation. | Do not use `--tls-verify=false` or `--insecure-skip-tls-verify`; install the registry CA instead. |
 | Authentication | Required for broad exposure unless explicitly overridden. | Enable registry authentication before exposing beyond trusted admin networks. |
 | Authorization | Example policy grants a registry admin full access. | Use least-privilege repository policies for humans, CI, and admins. |
 | Image signing | Not configured. | Sign release images and enforce signed-only deployment with registry trust and Kubernetes admission policy. |

@@ -6,9 +6,11 @@
     - firewalld
     - podman_host
     - zot_registry
+    - registry_ca_trust
 
 - name: Configure OCI registry client hosts
   hosts: registry_clients
   become: true
   roles:
     - registry_client_tools
+    - registry_ca_trust

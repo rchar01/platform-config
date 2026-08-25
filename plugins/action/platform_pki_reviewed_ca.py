@@ -62,15 +62,43 @@ class ActionModule(ActionBase):
             )
         if mode not in {"0600", "0644"}:
             raise AnsibleActionFail("reviewed CA mode must be 0600 or 0644")
-        if self._task.check_mode:
-            raise AnsibleActionFail(
-                "reviewed CA installation is unavailable in check mode"
-            )
-
         pinned = pin_source(source, digest)
         remote_tmp = None
         try:
             pinned.recheck()
+            if self._task.check_mode:
+                module_result = self._execute_module(
+                    module_name="ansible.legacy.stat",
+                    module_args={
+                        "path": destination,
+                        "follow": False,
+                        "get_checksum": True,
+                        "checksum_algorithm": "sha256",
+                        "get_attributes": False,
+                        "get_mime": False,
+                    },
+                    task_vars=task_vars,
+                )
+                pinned.recheck()
+                if module_result.get("failed"):
+                    return module_result
+                destination_stat = module_result.get("stat", {})
+                current = (
+                    destination_stat.get("exists") is True
+                    and destination_stat.get("isreg") is True
+                    and destination_stat.get("islnk") is False
+                    and destination_stat.get("uid") == 0
+                    and destination_stat.get("gid") == 0
+                    and destination_stat.get("nlink") == 1
+                    and destination_stat.get("mode") == mode
+                    and destination_stat.get("checksum") == digest
+                )
+                result.update(
+                    changed=not current,
+                    status="current" if current else "would-install",
+                )
+                return result
+
             remote_tmp = self._make_tmp_path()
             remote_source = self._connection._shell.join_path(
                 remote_tmp, ".reviewed-ca"

@@ -1,0 +1,4 @@
+---
+registry_ca_trust_source: ""
+registry_ca_trust_sha256: ""
+registry_ca_trust_target: /etc/pki/ca-trust/source/anchors/platform-registry-ca.crt

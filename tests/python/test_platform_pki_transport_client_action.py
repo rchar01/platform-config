@@ -237,6 +237,71 @@ def test_reviewed_ca_action_installs_pinned_bytes_with_selected_mode(
     assert events[-1] == ("cleanup", "/remote/tmp")
 
 
+@pytest.mark.parametrize(
+    ("destination_stat", "changed", "status"),
+    (
+        ({"exists": False}, True, "would-install"),
+        (
+            {
+                "exists": True,
+                "isreg": True,
+                "islnk": False,
+                "uid": 0,
+                "gid": 0,
+                "nlink": 1,
+                "mode": "0644",
+                "checksum": "0" * 64,
+            },
+            False,
+            "current",
+        ),
+    ),
+)
+def test_reviewed_ca_action_validates_destination_in_check_mode(
+    repo_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    destination_stat: dict[str, Any],
+    changed: bool,
+    status: str,
+) -> None:
+    plugin = load_plugin(repo_root, "platform_pki_reviewed_ca")
+    pinned = FakePinned(data=b"reviewed CA bytes\n")
+    action, events = make_action(
+        plugin,
+        monkeypatch,
+        pinned,
+        module_result={"changed": False, "stat": destination_stat},
+        task_args={
+            "source": "/outside-git/reviewed-ca.crt",
+            "sha256": "0" * 64,
+            "dest": "/etc/platform-config/reviewed-ca.crt",
+            "mode": "0644",
+        },
+    )
+    action._task.check_mode = True
+
+    assert action.run() == {"changed": changed, "status": status}
+    assert pinned.rechecks == 2
+    assert pinned.closed
+    assert events == [
+        (
+            "module",
+            {
+                "module_name": "ansible.legacy.stat",
+                "module_args": {
+                    "path": "/etc/platform-config/reviewed-ca.crt",
+                    "follow": False,
+                    "get_checksum": True,
+                    "checksum_algorithm": "sha256",
+                    "get_attributes": False,
+                    "get_mime": False,
+                },
+                "task_vars": {},
+            },
+        )
+    ]
+
+
 def test_reviewed_ca_action_returns_module_failure_and_cleans_up(
     repo_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -29,5 +29,7 @@ zot_registry_extra_config:
           - update
           - delete
 zot_registry_smoke_url: https://registry.example.test/v2/
-# The first dev iteration skips validation until clients trust the registry CA.
-zot_registry_smoke_validate_certs: false
+# Install the reviewed CA before requiring strict registry smoke validation.
+registry_ca_trust_source: /absolute/reviewed/registry-ca.pem
+registry_ca_trust_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+zot_registry_smoke_validate_certs: true
