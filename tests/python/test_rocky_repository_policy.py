@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import io
 import json
 import sys
 from pathlib import Path
@@ -143,10 +144,59 @@ def test_requires_exact_releasever(helper: ModuleType) -> None:
         helper.validate_releasever("10\n2", "10.2")
 
 
+def test_allows_http_only_with_explicit_exception(helper: ModuleType) -> None:
+    candidate = policy()
+    candidate["10_0-BaseOS-x86_64"] = candidate.pop("baseos")
+    candidate["10_0-BaseOS-x86_64"]["baseurl"] = [
+        "http://repo.example.test/rocky/10/BaseOS/x86_64/os/"
+    ]
+
+    with pytest.raises(helper.PolicyError):
+        helper.decode_policy(json.dumps(candidate))
+
+    assert helper.decode_policy(json.dumps(candidate), allow_http=True) == candidate
+
+    candidate["10_0-BaseOS-x86_64"]["gpgkey"] = [
+        "http://repo.example.test/RPM-GPG-KEY-Rocky-10"
+    ]
+    with pytest.raises(helper.PolicyError, match="local gpgkey"):
+        helper.decode_policy(json.dumps(candidate), allow_http=True)
+
+    for field in ("mirrorlist", "metalink"):
+        candidate = policy()
+        candidate["baseos"]["baseurl"] = []
+        candidate["baseos"][field] = "http://repo.example.test/metadata"
+        with pytest.raises(helper.PolicyError):
+            helper.decode_policy(json.dumps(candidate), allow_http=True)
+
+
+@pytest.mark.parametrize(
+    ("allow_http_argument", "expected_status"),
+    [(None, 1), ("false", 1), ("true", 0)],
+)
+def test_cli_http_exception_is_disabled_by_default(
+    helper: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    allow_http_argument: str | None,
+    expected_status: int,
+) -> None:
+    candidate = policy()
+    candidate["baseos"]["baseurl"] = ["http://repo.example.test/baseos/"]
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(candidate)))
+    monkeypatch.setattr(
+        helper, "collect_repositories", lambda: ("10", candidate)
+    )
+    arguments = ["validate", "--releasever", "10"]
+    if allow_http_argument is not None:
+        arguments.extend(["--allow-http", allow_http_argument])
+
+    assert helper.main(arguments) == expected_status
+
+
 @pytest.mark.parametrize(
     "mutator",
     [
-        lambda value: value.update({"Extras": value["baseos"]}),
+        lambda value: value.update({"bad/id": value["baseos"]}),
         lambda value: value["baseos"].update({"gpgcheck": False}),
         lambda value: value["baseos"].update({"baseurl": ["http://repo.test/"]}),
         lambda value: value["baseos"].update(
@@ -224,16 +274,19 @@ def test_role_runs_read_only_validation_in_check_mode(repo_root: Path) -> None:
 
     assert defaults == {
         "rocky_repository_policy_enabled": False,
+        "rocky_repository_policy_allow_http": False,
         "rocky_repository_policy_releasever": None,
         "rocky_repository_policy": {},
     }
     validation_block = tasks[1]["block"][1]["block"]
     command_task = validation_block[2]
     command = command_task["ansible.builtin.command"]
-    assert command["argv"][-3:] == [
+    assert command["argv"][-5:] == [
         "validate",
         "--releasever",
         "{{ rocky_repository_policy_releasever }}",
+        "--allow-http",
+        "{{ rocky_repository_policy_allow_http | ternary('true', 'false') }}",
     ]
     assert command["stdin"] == "{{ rocky_repository_policy | to_json }}"
     assert command_task["changed_when"] is False

@@ -3,7 +3,8 @@
   ansible.builtin.assert:
     that:
       - rocky_repository_policy_enabled | type_debug == 'bool'
-    fail_msg: rocky_repository_policy_enabled must be a boolean.
+      - rocky_repository_policy_allow_http | type_debug == 'bool'
+    fail_msg: Rocky repository policy selectors must be booleans.
 
 - name: Validate the effective Rocky repository policy
   when: rocky_repository_policy_enabled
@@ -47,6 +48,8 @@
               - validate
               - --releasever
               - "{{ rocky_repository_policy_releasever }}"
+              - --allow-http
+              - "{{ rocky_repository_policy_allow_http | ternary('true', 'false') }}"
             stdin: "{{ rocky_repository_policy | to_json }}"
             stdin_add_newline: false
           register: rocky_repository_policy_validation

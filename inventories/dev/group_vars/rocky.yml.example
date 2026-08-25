@@ -10,6 +10,7 @@ nfs_client_package: nfs-utils
 # Repository definitions remain externally managed. Enable this read-only gate
 # only with an exact private policy matching the effective host configuration.
 rocky_repository_policy_enabled: false
+rocky_repository_policy_allow_http: false
 rocky_repository_policy_releasever: null
 rocky_repository_policy: {}
 

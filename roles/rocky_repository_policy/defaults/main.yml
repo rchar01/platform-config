@@ -1,4 +1,5 @@
 ---
 rocky_repository_policy_enabled: false
+rocky_repository_policy_allow_http: false
 rocky_repository_policy_releasever: null
 rocky_repository_policy: {}

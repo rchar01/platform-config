@@ -17,7 +17,7 @@ POLICY_FIELDS = {
     "mirrorlist",
     "repo_gpgcheck",
 }
-REPOSITORY_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]*")
+REPOSITORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*")
 SENSITIVE_QUERY_KEY = re.compile(
     r"(?:auth|credential|key|pass|secret|signature|token)", re.IGNORECASE
 )
@@ -34,7 +34,9 @@ def _contains_control(value: str) -> bool:
     )
 
 
-def _validate_https_url(repository_id: str, field: str, value: str) -> None:
+def _validate_origin_url(
+    repository_id: str, field: str, value: str, allow_http: bool
+) -> None:
     if _contains_control(value):
         raise PolicyError(f"repository {repository_id} has an invalid {field}")
     try:
@@ -44,8 +46,11 @@ def _validate_https_url(repository_id: str, field: str, value: str) -> None:
         raise PolicyError(
             f"repository {repository_id} has an invalid {field}"
         ) from error
+    allowed_schemes = {"https"}
+    if allow_http and field == "baseurl":
+        allowed_schemes.add("http")
     if (
-        parsed.scheme != "https"
+        parsed.scheme not in allowed_schemes
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
@@ -79,7 +84,9 @@ def _validate_gpgkey(repository_id: str, value: str) -> None:
         )
 
 
-def decode_policy(value: str) -> dict[str, dict[str, Any]]:
+def decode_policy(
+    value: str, allow_http: bool = False
+) -> dict[str, dict[str, Any]]:
     try:
         policy = json.loads(value)
     except json.JSONDecodeError as error:
@@ -128,10 +135,12 @@ def decode_policy(value: str) -> dict[str, dict[str, Any]]:
                 f"repository {repository_id} must use exactly one origin method"
             )
         for origin in expected["baseurl"]:
-            _validate_https_url(repository_id, "baseurl", origin)
+            _validate_origin_url(repository_id, "baseurl", origin, allow_http)
         for field in ("metalink", "mirrorlist"):
             if expected[field]:
-                _validate_https_url(repository_id, field, expected[field])
+                _validate_origin_url(
+                    repository_id, field, expected[field], allow_http
+                )
         if not expected["gpgkey"]:
             raise PolicyError(f"repository {repository_id} requires a local gpgkey")
         for key in expected["gpgkey"]:
@@ -266,6 +275,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers.add_parser("inspect")
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("--releasever", required=True)
+    validate_parser.add_argument(
+        "--allow-http", choices=("false", "true"), default="false"
+    )
     return parser.parse_args(argv)
 
 
@@ -273,7 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_arguments(argv)
     try:
         expected = (
-            decode_policy(sys.stdin.read())
+            decode_policy(
+                sys.stdin.read(), allow_http=args.allow_http == "true"
+            )
             if args.operation == "validate"
             else None
         )

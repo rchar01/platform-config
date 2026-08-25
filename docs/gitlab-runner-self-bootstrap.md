@@ -178,8 +178,9 @@ The current runner path expects:
 
 When private inventory enables `rocky_repository_policy`, every package-consuming
 role first validates the exact effective DNF release version, repository IDs,
-HTTPS origins, local signing keys, and signature-check settings. The validation
-does not edit repository files or refresh metadata.
+origins, local signing keys, and signature-check settings. HTTPS is required
+unless private inventory explicitly enables the temporary HTTP `baseurl`
+exception. The validation does not edit repository files or refresh metadata.
 
 Run any OS migration that reboots and performs post-reboot verification from an
 external controller. A development container on the managed VM is terminated by

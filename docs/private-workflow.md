@@ -149,9 +149,11 @@ PLATFORM_CONFIG_INVENTORY=../platform-private/config/inventories/homelab/hosts.y
 
 Repository files remain externally managed. Private inventory may enable the
 `rocky_repository_policy` role with the exact effective DNF release version,
-repository IDs, HTTPS origins, local signing-key URLs, and signature-check
-settings. The policy must not contain credentials. Package-consuming roles
-invoke this read-only gate before DNF operations; they do not repair drift.
+repository IDs, origins, local signing-key URLs, and signature-check settings.
+Origins require HTTPS unless private inventory explicitly enables the temporary
+HTTP `baseurl` exception; mirrorlists, metalinks, and signing keys remain strict.
+The policy must not contain credentials. Package-consuming roles invoke this
+read-only gate before DNF operations; they do not repair drift.
 
 Validate one host without running package roles:
 
