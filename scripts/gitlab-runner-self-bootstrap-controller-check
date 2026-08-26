@@ -52,6 +52,12 @@ def current_user_directory(path: Path, label: str) -> None:
         raise ValidationError(f"{label} must not be group- or other-writable")
 
 
+def exact_current_user_directory(path: Path, label: str) -> None:
+    current_user_directory(path, label)
+    if stat.S_IMODE(path.stat().st_mode) != 0o700:
+        raise ValidationError(f"{label} must have mode 0700")
+
+
 def nested_path(path: Path, parent: Path, label: str) -> None:
     if path == parent or not path.is_relative_to(parent):
         raise ValidationError(f"{label} must be below {parent}")
@@ -140,7 +146,7 @@ def storage_configuration(
     expected_graphroot: Path,
     expected_runroot: Path,
     effective_driver: str,
-) -> None:
+) -> str | None:
     try:
         metadata = path.lstat()
     except OSError as error:
@@ -177,6 +183,7 @@ def storage_configuration(
     configured_driver = storage.get("driver")
     if configured_driver != effective_driver:
         raise ValidationError("configured storage driver does not match effective Podman state")
+    return configured_runroot
 
 
 def exact_selinux_equivalence(path: Path, source: Path, destination: Path) -> None:
@@ -199,6 +206,8 @@ def validate(
     *,
     account: object | None = None,
     expected_runtime_root: Path | None = None,
+    expected_temporary_root: Path = Path("/tmp"),
+    expected_temporary_root_owner: int = 0,
     subuid_file: Path = Path("/etc/subuid"),
     subgid_file: Path = Path("/etc/subgid"),
 ) -> dict[str, str]:
@@ -287,11 +296,43 @@ def validate(
         raise ValidationError("XDG_RUNTIME_DIR must match the account runtime directory")
     runtime_root = exact_directory(str(runtime_root), "runtime root")
     expected_runroot = runtime_root / "containers"
-    runroot = exact_directory(str(expected_runroot), "Podman runroot")
     current_user_directory(runtime_root, "runtime root")
-    current_user_directory(runroot, "Podman runroot")
-    if store.get("runRoot") != str(runroot):
-        raise ValidationError("effective Podman runroot is not the default runtime path")
+    effective_runroot = store.get("runRoot")
+    database_fallback = False
+    if effective_runroot == str(expected_runroot):
+        runroot = exact_directory(str(expected_runroot), "Podman runroot")
+        current_user_directory(runroot, "Podman runroot")
+    else:
+        temporary_root = exact_directory(
+            str(expected_temporary_root), "temporary runtime root"
+        )
+        temporary_metadata = temporary_root.stat()
+        if temporary_metadata.st_uid != expected_temporary_root_owner:
+            raise ValidationError("temporary runtime root must be root-owned")
+        if stat.S_IMODE(temporary_metadata.st_mode) != 0o1777:
+            raise ValidationError("temporary runtime root must have mode 1777")
+        fallback_parent = temporary_root / f"storage-run-{user.pw_uid}"
+        expected_fallback_runroot = fallback_parent / "containers"
+        if effective_runroot != str(expected_fallback_runroot):
+            raise ValidationError("effective Podman runroot is not a supported runtime path")
+        fallback_parent = exact_directory(
+            str(fallback_parent), "Podman fallback runtime directory"
+        )
+        runroot = exact_directory(
+            str(expected_fallback_runroot), "Podman fallback runroot"
+        )
+        exact_current_user_directory(
+            fallback_parent, "Podman fallback runtime directory"
+        )
+        exact_current_user_directory(runroot, "Podman fallback runroot")
+        if (
+            fallback_parent.stat().st_dev != temporary_metadata.st_dev
+            or runroot.stat().st_dev != temporary_metadata.st_dev
+        ):
+            raise ValidationError(
+                "Podman fallback runroot must use the temporary filesystem"
+            )
+        database_fallback = True
     if runroot.is_relative_to(controller_root):
         raise ValidationError("Podman runroot must remain outside persistent controller storage")
 
@@ -311,7 +352,13 @@ def validate(
     )
     if store.get("configFile") != str(expected_config):
         raise ValidationError("Podman is not using the expected per-user storage.conf")
-    storage_configuration(expected_config, expected_graphroot, expected_runroot, driver)
+    configured_runroot = storage_configuration(
+        expected_config, expected_graphroot, expected_runroot, driver
+    )
+    if database_fallback and configured_runroot is not None:
+        raise ValidationError(
+            "configured runroot must be omitted when Podman uses its database fallback"
+        )
 
     mappings = host.get("idMappings")
     if not isinstance(mappings, dict):

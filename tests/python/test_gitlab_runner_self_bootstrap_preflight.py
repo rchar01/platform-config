@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import os
 import pwd
@@ -229,6 +230,9 @@ def _controller_check_fixture(
     graphroot = controller_root / "containers/storage"
     runtime_root = tmp_path / "runtime"
     runroot = runtime_root / "containers"
+    temporary_root = tmp_path / "tmp"
+    fallback_parent = temporary_root / f"storage-run-{os.getuid()}"
+    fallback_runroot = fallback_parent / "containers"
     home = tmp_path / "home"
     config_root = home / ".config"
     storage_config = config_root / "containers/storage.conf"
@@ -237,10 +241,14 @@ def _controller_check_fixture(
         private_root,
         graphroot,
         runroot,
+        fallback_runroot,
         storage_config.parent,
         home,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+    temporary_root.chmod(0o1777)
+    fallback_parent.chmod(0o700)
+    fallback_runroot.chmod(0o700)
     in_container = public_root / "scripts/in-container"
     in_container.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
     in_container.chmod(0o755)
@@ -334,6 +342,8 @@ def _controller_check_fixture(
     paths = {
         "controller_root": controller_root,
         "equivalences": equivalences,
+        "fallback_parent": fallback_parent,
+        "fallback_runroot": fallback_runroot,
         "graphroot": graphroot,
         "home": home,
         "mount_info": mount_info,
@@ -342,6 +352,7 @@ def _controller_check_fixture(
         "storage_config": storage_config,
         "subgid": subgid,
         "subuid": subuid,
+        "temporary_root": temporary_root,
     }
     return arguments, environment, paths
 
@@ -352,6 +363,7 @@ def _validate_controller_check_fixture(
     environment: dict[str, str],
     paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
+    temporary_root_owner: int | None = None,
 ) -> dict[str, str]:
     for name in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
         if name in environment:
@@ -369,6 +381,10 @@ def _validate_controller_check_fixture(
         parsed,
         account=account,
         expected_runtime_root=paths["runtime_root"],
+        expected_temporary_root=paths["temporary_root"],
+        expected_temporary_root_owner=(
+            os.getuid() if temporary_root_owner is None else temporary_root_owner
+        ),
         subuid_file=paths["subuid"],
         subgid_file=paths["subgid"],
     )
@@ -393,6 +409,15 @@ def test_controller_check_accepts_the_complete_dedicated_storage_contract(
     }
 
 
+def test_controller_check_locks_down_production_temporary_root_defaults(
+    controller_check_module: object,
+) -> None:
+    signature = inspect.signature(controller_check_module.validate)
+
+    assert signature.parameters["expected_temporary_root"].default == Path("/tmp")
+    assert signature.parameters["expected_temporary_root_owner"].default == 0
+
+
 def test_controller_check_accepts_the_exact_explicit_runtime_runroot(
     tmp_path: Path,
     repo_root: Path,
@@ -414,6 +439,24 @@ def test_controller_check_accepts_the_exact_explicit_runtime_runroot(
     assert result["runroot"] == f"{paths['runtime_root']}/containers"
 
 
+def test_controller_check_accepts_the_safe_database_fallback_runroot(
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    podman = json.loads(paths["podman_info"].read_text(encoding="utf-8"))
+    podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+    paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")
+
+    result = _validate_controller_check_fixture(
+        controller_check_module, arguments, environment, paths, monkeypatch
+    )
+
+    assert result["runroot"] == str(paths["fallback_runroot"])
+
+
 @pytest.mark.parametrize(
     ("tamper", "message"),
     (
@@ -423,7 +466,13 @@ def test_controller_check_accepts_the_exact_explicit_runtime_runroot(
         ("small-effective-map", "effective Podman UID mapping does not match"),
         ("stale-effective-map", "effective Podman UID mapping does not match"),
         ("configured-runroot", "configured runroot does not match"),
-        ("fallback-runroot", "effective Podman runroot is not"),
+        ("unexpected-runroot", "effective Podman runroot is not a supported"),
+        ("fallback-configured-runroot", "configured runroot must be omitted"),
+        ("unsafe-temporary-mode", "temporary runtime root must have mode 1777"),
+        ("unsafe-fallback-parent-mode", "runtime directory must have mode 0700"),
+        ("unsafe-fallback-runroot-mode", "fallback runroot must have mode 0700"),
+        ("fallback-parent-symlink", "must be a real canonical directory"),
+        ("fallback-runroot-symlink", "must be a real canonical directory"),
         ("wrong-driver", "configured storage driver does not match"),
         ("effective-vfs", "must use the overlay storage driver"),
         ("nested-mount", "must not contain nested mounts"),
@@ -463,8 +512,40 @@ def test_controller_check_rejects_incomplete_or_mismatched_storage_state(
         config = config.replace(
             "[storage]\n", f'[storage]\nrunroot = "{tmp_path}/wrong-runroot"\n'
         )
-    elif tamper == "fallback-runroot":
-        podman["store"]["runRoot"] = f"/tmp/storage-run-{os.getuid()}/containers"
+    elif tamper == "unexpected-runroot":
+        podman["store"]["runRoot"] = str(
+            paths["temporary_root"] / "storage-run-unexpected/containers"
+        )
+    elif tamper == "fallback-configured-runroot":
+        podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+        config = config.replace(
+            "[storage]\n",
+            f'[storage]\nrunroot = "{paths["runtime_root"]}/containers"\n',
+        )
+    elif tamper == "unsafe-temporary-mode":
+        podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+        paths["temporary_root"].chmod(0o777)
+    elif tamper == "unsafe-fallback-parent-mode":
+        podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+        paths["fallback_parent"].chmod(0o750)
+    elif tamper == "unsafe-fallback-runroot-mode":
+        podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+        paths["fallback_runroot"].chmod(0o750)
+    elif tamper == "fallback-parent-symlink":
+        podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+        paths["fallback_runroot"].rmdir()
+        paths["fallback_parent"].rmdir()
+        replacement = paths["temporary_root"] / "replacement"
+        (replacement / "containers").mkdir(parents=True)
+        replacement.chmod(0o700)
+        (replacement / "containers").chmod(0o700)
+        paths["fallback_parent"].symlink_to(replacement, target_is_directory=True)
+    elif tamper == "fallback-runroot-symlink":
+        podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+        paths["fallback_runroot"].rmdir()
+        paths["fallback_runroot"].symlink_to(
+            paths["runtime_root"] / "containers", target_is_directory=True
+        )
     elif tamper == "wrong-driver":
         config = config.replace('driver = "overlay"', 'driver = "vfs"')
     elif tamper == "effective-vfs":
@@ -502,6 +583,134 @@ def test_controller_check_rejects_incomplete_or_mismatched_storage_state(
         )
 
     assert message in str(error.value)
+
+
+def test_controller_check_rejects_wrong_temporary_root_owner(
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    podman = json.loads(paths["podman_info"].read_text(encoding="utf-8"))
+    podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+    paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")
+
+    with pytest.raises(controller_check_module.ValidationError) as error:
+        _validate_controller_check_fixture(
+            controller_check_module,
+            arguments,
+            environment,
+            paths,
+            monkeypatch,
+            temporary_root_owner=os.getuid() + 1,
+        )
+
+    assert "temporary runtime root must be root-owned" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("path_key", "message"),
+    (
+        ("fallback_parent", "fallback runtime directory must be owned"),
+        ("fallback_runroot", "fallback runroot must be owned"),
+    ),
+)
+def test_controller_check_rejects_wrong_fallback_directory_owner(
+    path_key: str,
+    message: str,
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    podman = json.loads(paths["podman_info"].read_text(encoding="utf-8"))
+    podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+    paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")
+    original_stat = Path.stat
+
+    def stat_with_wrong_owner(path: Path, *args: object, **kwargs: object) -> object:
+        metadata = original_stat(path, *args, **kwargs)
+        if path == paths[path_key]:
+            return SimpleNamespace(
+                st_uid=metadata.st_uid + 1,
+                st_mode=metadata.st_mode,
+                st_dev=metadata.st_dev,
+            )
+        return metadata
+
+    monkeypatch.setattr(Path, "stat", stat_with_wrong_owner)
+
+    with pytest.raises(controller_check_module.ValidationError) as error:
+        _validate_controller_check_fixture(
+            controller_check_module, arguments, environment, paths, monkeypatch
+        )
+
+    assert message in str(error.value)
+
+
+def test_controller_check_rejects_fallback_on_another_filesystem(
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    podman = json.loads(paths["podman_info"].read_text(encoding="utf-8"))
+    podman["store"]["runRoot"] = str(paths["fallback_runroot"])
+    paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")
+    original_stat = Path.stat
+
+    def stat_with_wrong_device(path: Path, *args: object, **kwargs: object) -> object:
+        metadata = original_stat(path, *args, **kwargs)
+        if path == paths["fallback_runroot"]:
+            return SimpleNamespace(
+                st_uid=metadata.st_uid,
+                st_mode=metadata.st_mode,
+                st_dev=metadata.st_dev + 1,
+            )
+        return metadata
+
+    monkeypatch.setattr(Path, "stat", stat_with_wrong_device)
+
+    with pytest.raises(controller_check_module.ValidationError) as error:
+        _validate_controller_check_fixture(
+            controller_check_module, arguments, environment, paths, monkeypatch
+        )
+
+    assert "fallback runroot must use the temporary filesystem" in str(error.value)
+
+
+def test_controller_check_rejects_fallback_below_controller_root(
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    temporary_root = paths["controller_root"] / "tmp"
+    fallback_parent = temporary_root / f"storage-run-{os.getuid()}"
+    fallback_runroot = fallback_parent / "containers"
+    fallback_runroot.mkdir(parents=True)
+    temporary_root.chmod(0o1777)
+    fallback_parent.chmod(0o700)
+    fallback_runroot.chmod(0o700)
+    paths["temporary_root"] = temporary_root
+    paths["fallback_parent"] = fallback_parent
+    paths["fallback_runroot"] = fallback_runroot
+    podman = json.loads(paths["podman_info"].read_text(encoding="utf-8"))
+    podman["store"]["runRoot"] = str(fallback_runroot)
+    paths["podman_info"].write_text(json.dumps(podman) + "\n", encoding="utf-8")
+
+    with pytest.raises(controller_check_module.ValidationError) as error:
+        _validate_controller_check_fixture(
+            controller_check_module, arguments, environment, paths, monkeypatch
+        )
+
+    assert "runroot must remain outside persistent controller storage" in str(
+        error.value
+    )
 
 
 @pytest.mark.parametrize(
