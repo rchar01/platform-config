@@ -1,16 +1,49 @@
 #!/bin/bash
 set -euo pipefail
 
-candidate="${1:?candidate configuration path is required}"
+kind="${1:?candidate kind is required}"
+candidate="${2:?candidate path is required}"
+base_config={{ openbao_config_path | quote }}
+listener_config={{ openbao_listener_path | quote }}
+umask 077
+candidate_dir="$(mktemp -d "${TMPDIR:-/tmp}/openbao-config-validation.XXXXXXXX")"
 
-exec /usr/bin/podman run \
+cleanup() {
+  rm -rf -- "${candidate_dir}"
+}
+trap cleanup EXIT
+
+case "${kind}" in
+  base)
+    install -m 0644 -- "${candidate}" "${candidate_dir}/openbao.hcl"
+    install -m 0644 -- "${listener_config}" "${candidate_dir}/listener.hcl"
+    ;;
+  base-dormant)
+    install -m 0644 -- "${candidate}" "${candidate_dir}/openbao.hcl"
+    cat > "${candidate_dir}/listener.hcl" <<'OPENBAO_DORMANT_LISTENER'
+{% include 'listener.hcl.j2' %}{{ '\n' }}
+OPENBAO_DORMANT_LISTENER
+    chmod 0644 "${candidate_dir}/listener.hcl"
+    ;;
+  listener)
+    install -m 0644 -- "${base_config}" "${candidate_dir}/openbao.hcl"
+    install -m 0644 -- "${candidate}" "${candidate_dir}/listener.hcl"
+    ;;
+  *)
+    printf 'candidate kind must be base, base-dormant, or listener\n' >&2
+    exit 2
+    ;;
+esac
+
+/usr/bin/podman run \
   --rm \
   --network none \
   --pull never \
   --read-only \
   --user 0:0 \
+  --cap-drop all \
   --security-opt no-new-privileges \
   --entrypoint /usr/bin/bao \
-  --volume "${candidate}:/tmp/openbao.hcl:ro,Z" \
+  --volume "${candidate_dir}:/openbao/config:ro,Z" \
   {{ openbao_image }} \
-  operator validate-config -config=/tmp/openbao.hcl
+  operator validate-config -config=/openbao/config

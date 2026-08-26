@@ -484,6 +484,65 @@ def option(argv: list[str], name: str) -> str:
     return argv[argv.index(name) + 1]
 
 
+def schema_3_openbao_config(case: GitLabCase) -> dict[str, Any]:
+    config = dict(case.config)
+    del config["zot_config"]
+    config.update({
+        "schema": 3,
+        "service": "openbao-test-01",
+        "operation": "issue",
+        "common_name": "bao-1.test",
+        "dns_sans": ["bao-1.test"],
+        "ip_sans": ["192.0.2.10"],
+        "service_adapter": "openbao-pristine-v1",
+        "service_unit": "openbao.service",
+        "service_config": "/etc/openbao/listener.hcl",
+        "node_dns": "bao-1.test",
+        "node_address": "192.0.2.10",
+        "backend_port": 18200,
+        "cluster_port": 8201,
+        "container_versions_root": "/openbao/config/tls-versions",
+        "base_config_dir": "/openbao/config",
+        "raft_data_dir": "/var/lib/openbao",
+        "bootstrap_marker_path": (
+            "/var/lib/platform-config/openbao-bootstrap.json"
+        ),
+    })
+    return config
+
+
+def test_schema_3_openbao_accepts_dns_only_certificate_identity(
+    gitlab_case: GitLabCase,
+) -> None:
+    namespace = runpy.run_path(str(gitlab_case.facade))
+    config = schema_3_openbao_config(gitlab_case)
+    config["ip_sans"] = []
+
+    validated = namespace["validate_config"](config)
+
+    assert validated["ip_sans"] == []
+
+
+def schema_3_zot_config(case: GitLabCase) -> dict[str, Any]:
+    config = dict(case.config)
+    del config["zot_config"]
+    config.update({
+        "schema": 3,
+        "service_adapter": "zot-v1",
+        "service_unit": "zot.service",
+        "service_config": "/etc/zot/config.json",
+        "node_dns": None,
+        "node_address": None,
+        "backend_port": None,
+        "cluster_port": None,
+        "container_versions_root": None,
+        "base_config_dir": None,
+        "raft_data_dir": None,
+        "bootstrap_marker_path": None,
+    })
+    return config
+
+
 def test_gitlab_process_timeout_covers_maximum_retry_schedule(
     repo_root: Path,
 ) -> None:
@@ -500,6 +559,106 @@ def test_gitlab_process_timeout_covers_maximum_retry_schedule(
     })
 
     assert timeout == 22590
+
+
+def test_schema_2_zot_config_preserves_legacy_lifecycle_argv(
+    gitlab_case: GitLabCase,
+) -> None:
+    namespace = runpy.run_path(str(gitlab_case.facade))
+    config = namespace["validate_config"](dict(gitlab_case.config))
+
+    assert namespace["common_lifecycle"](config) == [
+        "--state-root", str(gitlab_case.root / "state"),
+        "--pending-root", str(gitlab_case.pending),
+        "--versions-root", str(gitlab_case.versions),
+        "--service", "registry-test",
+        "--target", "target.test",
+    ]
+    assert namespace["service_config_arguments"](config) == [
+        "--zot-config", str(gitlab_case.root / "zot.json"),
+    ]
+
+
+def test_schema_3_zot_config_builds_explicit_fixed_adapter_argv(
+    gitlab_case: GitLabCase,
+) -> None:
+    namespace = runpy.run_path(str(gitlab_case.facade))
+    config = namespace["validate_config"](schema_3_zot_config(gitlab_case))
+
+    assert namespace["common_lifecycle"](config)[-2:] == [
+        "--service-adapter", "zot-v1",
+    ]
+    assert namespace["service_config_arguments"](config) == [
+        "--zot-config", "/etc/zot/config.json",
+    ]
+
+
+def test_schema_3_openbao_config_parses_and_builds_fixed_adapter_argv(
+    repo_root: Path, gitlab_case: GitLabCase,
+) -> None:
+    namespace = runpy.run_path(str(gitlab_case.facade))
+    config = namespace["validate_config"](schema_3_openbao_config(gitlab_case))
+
+    arguments = namespace["common_lifecycle"](config)
+    assert arguments == [
+        "--state-root", str(gitlab_case.root / "state"),
+        "--pending-root", str(gitlab_case.pending),
+        "--versions-root", str(gitlab_case.versions),
+        "--service", "openbao-test-01",
+        "--target", "target.test",
+        "--service-adapter", "openbao-pristine-v1",
+        "--service-unit", "openbao.service",
+        "--service-config", "/etc/openbao/listener.hcl",
+        "--node-dns", "bao-1.test",
+        "--node-address", "192.0.2.10",
+        "--backend-port", "18200",
+        "--cluster-port", "8201",
+        "--container-versions-root", "/openbao/config/tls-versions",
+        "--base-config-dir", "/openbao/config",
+        "--raft-data-dir", "/var/lib/openbao",
+        "--bootstrap-marker-path",
+        "/var/lib/platform-config/openbao-bootstrap.json",
+    ]
+    assert namespace["service_config_arguments"](config) == []
+    assert "--zot-config" not in arguments
+
+    lifecycle = runpy.run_path(str(
+        repo_root
+        / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
+    ))
+    parsed = lifecycle["build_parser"]().parse_args([
+        "target-status", *arguments, *namespace["candidate_arguments"](config),
+    ])
+    lifecycle["validate_arguments"](parsed)
+    assert parsed.service_adapter == "openbao-pristine-v1"
+    assert parsed.service_config == "/etc/openbao/listener.hcl"
+
+
+@pytest.mark.parametrize("node_dns", ("bao..test", "-bao.test", "bao-.test"))
+def test_schema_3_openbao_rejects_noncanonical_node_dns(
+    gitlab_case: GitLabCase, node_dns: str,
+) -> None:
+    namespace = runpy.run_path(str(gitlab_case.facade))
+    config = schema_3_openbao_config(gitlab_case)
+    config["node_dns"] = node_dns
+    config["dns_sans"] = [node_dns]
+
+    with pytest.raises(namespace["FacadeError"]):
+        namespace["validate_config"](config)
+
+
+@pytest.mark.parametrize(
+    "field", ("request_id", "package_version", "service_command", "validator")
+)
+def test_schema_3_openbao_rejects_coordinate_and_command_injection_fields(
+    gitlab_case: GitLabCase, field: str,
+) -> None:
+    namespace = runpy.run_path(str(gitlab_case.facade))
+    config = schema_3_openbao_config(gitlab_case)
+    config[field] = "/tmp/injected"
+
+    with pytest.raises(namespace["FacadeError"]):
+        namespace["validate_config"](config)
 
 
 def test_request_publish_uses_schema_2_transport_and_cleans_export(

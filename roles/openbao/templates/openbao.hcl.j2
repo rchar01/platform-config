@@ -18,18 +18,6 @@ storage "raft" {
 {% endfor %}
 }
 
-listener "tcp" {
-  address = "{{ openbao_node_address }}:{{ openbao_backend_port }}"
-  cluster_address = "{{ openbao_node_address }}:{{ openbao_cluster_port }}"
-  tls_cert_file = "{{ openbao_container_config_dir }}/tls/tls.crt"
-  tls_key_file = "{{ openbao_container_config_dir }}/tls/tls.key"
-  tls_min_version = "{{ openbao_tls_min_version }}"
-  tls_max_version = "{{ openbao_tls_max_version }}"
-  tls_disable_client_certs = {{ openbao_tls_disable_client_certs | bool | lower }}
-  disable_unauthed_rekey_endpoints = true
-  disable_unauthed_generate_root_endpoints = true
-}
-
 telemetry {
   prometheus_retention_time = "{{ openbao_telemetry_prometheus_retention_time }}"
   disable_hostname = {{ openbao_telemetry_disable_hostname | bool | lower }}

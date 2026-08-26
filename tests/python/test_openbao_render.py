@@ -25,6 +25,7 @@ def rendered_openbao(
         name: (output / path).read_text(encoding="utf-8")
         for name, path in {
             "config": "openbao.hcl",
+            "listener": "listener.hcl",
             "quadlet": "openbao.container",
             "validator": "validate-config",
         }.items()
@@ -47,8 +48,6 @@ def test_openbao_hcl_render_contract(rendered_openbao: dict[str, str]) -> None:
     for pattern in (
         r'^api_addr = "https://bao[.]example[.]invalid:8200"$',
         r'^cluster_addr = "https://bao-1[.]internal[.]invalid:8201"$',
-        r'^  address = "192[.]0[.]2[.]10:18200"$',
-        r'^  cluster_address = "192[.]0[.]2[.]10:8201"$',
         r"^  performance_multiplier = 1$",
         r'leader_api_addr = "https://bao-2[.]internal[.]invalid:18200"',
         r'leader_api_addr = "https://bao-3[.]internal[.]invalid:18200"',
@@ -63,8 +62,25 @@ def test_openbao_hcl_render_contract(rendered_openbao: dict[str, str]) -> None:
         r'leader_api_addr = "https://bao-1[.]internal[.]invalid',
         r'leader_api_addr = "https://bao[.]example[.]invalid',
         r"192[.]0[.]2[.]100",
+        r'^listener "tcp"',
     ):
         assert not re.search(pattern, config, re.MULTILINE), pattern
+
+
+def test_openbao_dormant_listener_is_exact(rendered_openbao: dict[str, str]) -> None:
+    assert rendered_openbao["listener"] == (
+        'listener "tcp" {\n'
+        '  address = "192.0.2.10:18200"\n'
+        '  cluster_address = "192.0.2.10:8201"\n'
+        '  tls_cert_file = "/openbao/config/tls/tls.crt"\n'
+        '  tls_key_file = "/openbao/config/tls/tls.key"\n'
+        '  tls_min_version = "tls12"\n'
+        '  tls_max_version = "tls13"\n'
+        '  tls_disable_client_certs = true\n'
+        '  disable_unauthed_rekey_endpoints = true\n'
+        '  disable_unauthed_generate_root_endpoints = true\n'
+        '}\n'
+    )
 
 
 def test_openbao_quadlet_render_contract(rendered_openbao: dict[str, str]) -> None:
@@ -74,6 +90,8 @@ def test_openbao_quadlet_render_contract(rendered_openbao: dict[str, str]) -> No
         r"^User=100:1000$",
         r"^Network=host$",
         r"^Environment=SKIP_CHOWN=true$",
+        r"^Volume=/etc/openbao:/openbao/config:ro,Z$",
+        r"^Exec=server$",
         r"^MemorySwapMax=0$",
     ):
         assert re.search(pattern, quadlet, re.MULTILINE), pattern
@@ -84,11 +102,67 @@ def test_openbao_validator_render_contract(rendered_openbao: dict[str, str]) -> 
     validator = rendered_openbao["validator"]
     for pattern in (
         r"^#!/bin/bash$",
+        r'^case "[$]\{kind\}" in$',
+        r'^  base\)$',
+        r'^  base-dormant\)$',
+        r'^  listener\)$',
         r"^  --network none \\$",
         r"^  --pull never \\$",
-        r"^  operator validate-config -config=/tmp/openbao[.]hcl$",
+        r"^  --read-only \\$",
+        r"^  --user 0:0 \\$",
+        r"^  --security-opt no-new-privileges \\$",
+        r"^  operator validate-config -config=/openbao/config$",
     ):
         assert re.search(pattern, validator, re.MULTILINE), pattern
+
+
+def test_openbao_role_validates_base_with_existing_listener(repo_root: Path) -> None:
+    role = (repo_root / "roles/openbao/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert role.index("Authenticate OpenBao lifecycle state before role mutation") < (
+        role.index("Write validated OpenBao configuration")
+    )
+    assert role.index("Require pristine stopped state before dormant listener staging") < (
+        role.index("Write validated OpenBao configuration")
+    )
+    first_mutation = role.index("Ensure OpenBao configuration directories exist")
+    assert role.index("Require pristine stopped state before dormant listener staging") < (
+        first_mutation
+    )
+    assert role.index("Authenticate OpenBao lifecycle state before role mutation") < (
+        first_mutation
+    )
+    assert "openbao_base_config_validate_command" in role
+    assert "openbao_dormant_base_config_validate_command" in role
+    assert "openbao_config_validate_command" in role
+
+
+def test_openbao_custody_checks_canonical_ca_chain(repo_root: Path) -> None:
+    custody = (repo_root / "roles/openbao/tasks/custody.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/{{ openbao_tls_custody.request_id }}/ca-chain.crt" in custody
+    assert "/{{ openbao_tls_custody.request_id }}/chain.crt" not in custody
+
+
+def test_openbao_role_has_no_controller_leaf_transfer(repo_root: Path) -> None:
+    role_root = repo_root / "roles/openbao"
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in role_root.rglob("*")
+        if path.is_file()
+    )
+    assert "openbao_tls_cert_src" not in sources
+    assert "openbao_tls_key_src" not in sources
+    assert "ansible.builtin.fetch:" not in sources
+    assert not re.search(
+        r"ansible[.]builtin[.](?:copy|slurp):[\s\S]{0,240}"
+        r"(?:host_key_path|tls[.]key|fullchain[.]crt)",
+        sources,
+    )
 
 
 @pytest.mark.parametrize(

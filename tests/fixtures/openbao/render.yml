@@ -47,8 +47,24 @@
         openbao_cluster_port: "{{ openbao_test_cluster_port }}"
         openbao_seal_type: "{{ openbao_test_seal_type }}"
         openbao_tls_ca_src: /outside-git/openbao/ca.crt
-        openbao_tls_cert_src: /outside-git/openbao/tls.crt
-        openbao_tls_key_src: /outside-git/openbao/tls.key
+        pki_host_local_certificate_state_root: /var/lib/platform-config/pki/openbao
+        pki_host_local_certificate_pending_root: /var/lib/platform-config/pki/openbao-pending
+        pki_host_local_certificate_versions_root: /etc/openbao/tls-versions
+        pki_host_local_certificate_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
+        pki_host_local_certificate_service: openbao-test-01
+        pki_host_local_certificate_target: localhost
+        pki_host_local_certificate_service_adapter: openbao-pristine-v1
+        pki_host_local_certificate_service_unit: openbao.service
+        pki_host_local_certificate_service_config_path: /etc/openbao/listener.hcl
+        pki_host_local_certificate_reviewed_ca_target_path: /etc/platform-config/openbao-validation-ca.crt
+        pki_host_local_certificate_openbao_node_dns: bao-1.internal.invalid
+        pki_host_local_certificate_openbao_node_address: 192.0.2.10
+        pki_host_local_certificate_openbao_backend_port: 18200
+        pki_host_local_certificate_openbao_cluster_port: "{{ openbao_test_cluster_port }}"
+        pki_host_local_certificate_openbao_container_versions_root: /openbao/config/tls-versions
+        pki_host_local_certificate_openbao_base_config_dir: /openbao/config
+        pki_host_local_certificate_openbao_raft_data_dir: /var/lib/openbao
+        pki_host_local_certificate_openbao_bootstrap_marker_path: /var/lib/platform-config/openbao-bootstrap.json
         openbao_backend_allowed_sources:
           - 198.51.100.0/24
 
@@ -66,6 +82,21 @@
         src: "{{ openbao_role_dir }}/templates/openbao.container.j2"
         dest: "{{ openbao_test_output_dir }}/openbao.container"
         mode: "0600"
+
+    - name: Render dormant OpenBao listener fixture
+      ansible.builtin.template:
+        src: "{{ openbao_role_dir }}/templates/listener.hcl.j2"
+        dest: "{{ openbao_test_output_dir }}/listener.hcl"
+        mode: "0600"
+
+    - name: Select rendered OpenBao base config for validator fixture
+      ansible.builtin.set_fact:
+        openbao_config_path: >-
+          {{
+            openbao_test_validator_base_path
+            | default(openbao_test_output_dir ~ '/openbao.hcl')
+          }}
+        openbao_listener_path: "{{ openbao_test_output_dir }}/listener.hcl"
 
     - name: Render OpenBao validator fixture
       ansible.builtin.template:

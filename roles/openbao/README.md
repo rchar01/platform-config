@@ -9,7 +9,7 @@ The role owns:
 - the immutable OpenBao `2.6.1` `linux/amd64` image reference;
 - canonical three-node identity and retry-join validation;
 - host-network backend and cluster listeners;
-- outside-Git CA, node certificate, and private-key installation;
+- outside-Git public CA installation and authenticated host-local leaf custody;
 - manual Shamir sealing by omission of any Auto Unseal stanza;
 - non-root Quadlet execution with swap disabled at the service boundary;
 - native `operator validate-config` candidate validation inside the pinned
@@ -25,8 +25,8 @@ source.
 
 ## Required Inputs
 
-Set `openbao_enabled: true` only after the controller-side TLS files and all
-four service mounts exist. Provide exactly three canonical members:
+Set `openbao_enabled: true` only after the public CA source and all four service
+mounts exist. Provide exactly three canonical members:
 
 ```yaml
 openbao_cluster_members:
@@ -59,6 +59,20 @@ The role never creates, formats, or mounts service storage. It sets ownership
 only on the existing mount roots and does not recursively rewrite persisted
 data.
 
+The stable `/etc/openbao/openbao.hcl` base configuration and adapter-owned
+`/etc/openbao/listener.hcl` are mounted together at `/openbao/config`. Before a
+host-local PKI request exists, the role may stage only the exact dormant
+listener on pristine storage while the service is stopped and disabled. Its
+`/openbao/config/tls/tls.crt` and `tls.key` selections must remain absent; the
+role never creates placeholders or transfers leaf material from the controller.
+
+Once lifecycle state exists, the role invokes the fixed
+`openbao-pristine-v1` `openbao-custody` adapter and accepts only its strict
+authenticated schema-2 result. Authenticated versions remain under
+`/etc/openbao/tls-versions/<request-id>/`, visible through the existing config
+directory mount at `/openbao/config/tls-versions/<request-id>/`. Normal
+convergence validates but does not replace the adapter-owned active listener.
+
 ## Activation Boundary
 
 Normal convergence does not initialize or unseal OpenBao, handle custody
@@ -81,10 +95,11 @@ those states cluster acceptance. Post-initialization health, voter membership,
 manual unseal, and rolling restart gates remain separate workflows.
 
 Use `playbooks/maintenance/openbao-bootstrap-start.yml` only once against exact
-pristine staged storage. It requires an explicit full-cluster limit, exact TTY
-approval, immediate revalidation, and three uninitialized sealed TLS processes.
-It leaves the services running without boot enablement and writes root-only
-non-secret markers for the manual custody checkpoint.
+pristine staged storage. It requires the private bootstrap readiness gate, an
+explicit full-cluster limit, canonical member DNS resolution, immediate evidence
+revalidation, and three uninitialized sealed TLS processes. It leaves the
+services running without boot enablement and writes root-only non-secret markers
+for the manual custody checkpoint.
 
 Two approved custodians then initialize exactly one node with five Shamir shares
 and threshold three, store shares and the initial root token outside Ansible,

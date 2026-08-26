@@ -80,13 +80,14 @@
     - name: Inspect OpenBao lifecycle marker before staging
       become: true
       ansible.builtin.stat:
-        path: "{{ openbao_bootstrap_marker_path }}"
+        path: >-
+          {{ openbao_bootstrap_marker_path | default('/var/lib/platform-config/openbao-bootstrap.json') }}
       register: openbao_staging_bootstrap_marker
 
     - name: Inspect OpenBao data directory before staging
       become: true
       ansible.builtin.stat:
-        path: "{{ openbao_data_dir }}"
+        path: "{{ openbao_data_dir | default('/var/lib/openbao') }}"
       register: openbao_staging_data_dir
 
     - name: Inspect OpenBao data before staging
@@ -94,7 +95,7 @@
       ansible.builtin.command:
         argv:
           - find
-          - "{{ openbao_data_dir }}"
+          - "{{ openbao_data_dir | default('/var/lib/openbao') }}"
           - -mindepth
           - "1"
           - -maxdepth
@@ -116,6 +117,11 @@
         fail_msg: >-
           OpenBao staging refuses lifecycle markers or non-pristine Raft data.
           Use status, rolling maintenance, or a reviewed recovery procedure.
+
+    - name: Authenticate OpenBao lifecycle state before service mutation
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: lifecycle_preflight.yml
 
     - name: Inspect existing OpenBao HA services
       ansible.builtin.service_facts:
@@ -168,13 +174,13 @@
     - openbao_haproxy
     - keepalived_vip
   post_tasks:
-    - name: Unmask the successfully staged disabled OpenBao service
+    - name: Mask the successfully staged disabled OpenBao service
       ansible.builtin.systemd_service:
         name: "{{ openbao_service_name | default('openbao.service') }}"
-        masked: false
+        masked: true
         state: stopped
         daemon_reload: true
-      when: openbao_staging_service_was_present | bool
+      when: not ansible_check_mode
 
 - name: Reject limits that exclude OpenBao in managed environments
   hosts: all

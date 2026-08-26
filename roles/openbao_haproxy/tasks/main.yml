@@ -14,8 +14,20 @@
     - name: Assert OpenBao HAProxy backend CA exists
       ansible.builtin.assert:
         that:
-          - openbao_haproxy_backend_ca_stat.stat.exists
-          - openbao_haproxy_backend_ca_stat.stat.isreg
+          - >-
+            openbao_haproxy_backend_ca_stat.stat.exists
+            or (
+              ansible_check_mode
+              and openbao_tls_ca_result is defined
+              and openbao_tls_ca_result is changed
+            )
+          - >-
+            openbao_haproxy_backend_ca_stat.stat.isreg | default(false)
+            or (
+              ansible_check_mode
+              and openbao_tls_ca_result is defined
+              and openbao_tls_ca_result is changed
+            )
         fail_msg: >-
           OpenBao HAProxy requires the installed backend CA before configuration
           can be staged.
@@ -55,7 +67,15 @@
     - name: Track OpenBao HAProxy binary readiness
       ansible.builtin.set_fact:
         openbao_haproxy_binary_ready: >-
-          {{ not (ansible_check_mode and openbao_haproxy_package_result is changed) }}
+          {{
+            not (
+              ansible_check_mode
+              and (
+                openbao_haproxy_package_result is changed
+                or not openbao_haproxy_backend_ca_stat.stat.exists
+              )
+            )
+          }}
 
     - name: Verify installed OpenBao HAProxy package identity
       ansible.builtin.command:

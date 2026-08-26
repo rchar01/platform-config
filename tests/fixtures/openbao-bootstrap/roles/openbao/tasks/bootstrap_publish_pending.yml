@@ -1,0 +1,32 @@
+---
+- name: Reject mocked OpenBao marker publication
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_bootstrap_test_publish_failure_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked OpenBao marker publication failed.
+
+- name: Write mocked pending OpenBao bootstrap marker
+  ansible.builtin.copy:
+    dest: "{{ openbao_bootstrap_marker_path }}"
+    owner: "{{ openbao_bootstrap_marker_owner }}"
+    group: "{{ openbao_bootstrap_marker_group }}"
+    mode: "0600"
+    content: >-
+      {{
+        {
+          'schema': 1,
+          'state': 'awaiting-manual-custody',
+          'inventory_hosts': groups.get('openbao', []) | sort,
+          'inventory_host': inventory_hostname,
+          'node_id': openbao_bootstrap_observation.node_id,
+          'cluster_signature': hostvars['localhost'].openbao_bootstrap_validated_signature,
+          'config_checksum': openbao_bootstrap_observation.config_checksum,
+          'quadlet_checksum': openbao_bootstrap_observation.quadlet_checksum,
+          'ca_checksum': openbao_bootstrap_observation.ca_checksum,
+          'certificate_checksum': openbao_bootstrap_observation.certificate_checksum,
+          'key_checksum': openbao_bootstrap_observation.key_checksum,
+          'image_digest': openbao_bootstrap_observation.image_digest
+        } | to_nice_json
+      }}

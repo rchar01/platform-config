@@ -2,6 +2,15 @@
 - name: Load target-local GitLab certificate validation
   ansible.builtin.import_tasks: validate_target_local.yml
 
+- name: Prepare fixed OpenBao PKI parent directory
+  ansible.builtin.file:
+    path: /etc/openbao
+    state: directory
+    owner: root
+    group: "1000"
+    mode: "0750"
+  when: pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
+
 - name: Install target-local certificate trust
   ansible.builtin.import_tasks: trust.yml
 

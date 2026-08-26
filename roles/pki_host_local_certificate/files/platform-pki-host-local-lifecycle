@@ -118,6 +118,17 @@ PROFILE = "server-p384-sha384-v1"
 MIN_ROLLBACK_SECONDS = 1209600
 LOCAL_READY_SECONDS = 30
 MAX_SIZE = 1024 * 1024
+OPENBAO_BODY_MAX_SIZE = 65536
+OPENBAO_VERSION = "2.6.1"
+OPENBAO_GID = 1000
+OPENBAO_BASE_CONFIG_DIR = "/openbao/config"
+OPENBAO_CONTAINER_VERSIONS_ROOT = "/openbao/config/tls-versions"
+OPENBAO_VALIDATOR_PATH = "/usr/local/libexec/platform/openbao-validate-config"
+OPENBAO_GENERATED_UNIT_FRAGMENT = "/run/systemd/generator/openbao.service"
+OPENBAO_QUADLET_SOURCE = "/etc/containers/systemd/openbao.container"
+ZOT_ADAPTER = "zot-v1"
+OPENBAO_ADAPTER = "openbao-pristine-v1"
+SERVICE_ADAPTERS = (ZOT_ADAPTER, OPENBAO_ADAPTER)
 HEX_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
 IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
@@ -146,6 +157,63 @@ def canonical_path(value: str, label: str) -> str:
     ):
         fail(f"{label} must be an absolute canonical non-root path")
     return value
+
+
+def require_absent_canonical_path(
+    path: str,
+    label: str,
+    *,
+    allowed_ancestor_gid: int | None = None,
+) -> None:
+    canonical_path(path, label)
+    descriptors: list[int] = []
+    identities: list[tuple[int, ...]] = []
+    try:
+        descriptor = os.open(
+            "/", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+        )
+        descriptors.append(descriptor)
+        identities.append(dir_identity(os.fstat(descriptor)))
+        for component in path.split("/")[1:]:
+            try:
+                descriptor = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=descriptors[-1],
+                )
+            except FileNotFoundError:
+                try:
+                    os.stat(component, dir_fd=descriptors[-1], follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    fail(f"{label} appeared during absent-path validation")
+                for opened, identity in zip(descriptors, identities, strict=True):
+                    if dir_identity(os.fstat(opened)) != identity:
+                        fail(f"{label} ancestor changed during absent-path validation")
+                return
+            except OSError:
+                fail(f"{label} has an unsafe or non-directory ancestor")
+            descriptors.append(descriptor)
+            metadata = os.fstat(descriptor)
+            mode = stat.S_IMODE(metadata.st_mode)
+            allowed_gids = (
+                trusted_ancestor_owners() | {allowed_ancestor_gid}
+                if allowed_ancestor_gid is not None
+                else trusted_ancestor_owners()
+            )
+            if (
+                metadata.st_uid not in trusted_ancestor_owners()
+                or metadata.st_gid not in allowed_gids
+                or (mode & 0o022 and not mode & stat.S_ISVTX)
+            ):
+                fail(f"{label} has an unsafe ancestor")
+            identities.append(dir_identity(metadata))
+        fail(f"{label} must be absent")
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def validate_roots(state_root: str, pending_root: str, versions_root: str) -> None:
@@ -208,8 +276,11 @@ class PinnedDirectory:
         *,
         private: bool = True,
         allowed_owner_uids: set[int] | None = None,
+        allowed_owner_gids: set[int] | None = None,
+        allowed_final_owner_uids: set[int] | None = None,
+        allowed_final_owner_gids: set[int] | None = None,
         final_owner_uid: int = 0,
-        owner_uid_only: bool = False,
+        final_owner_uid_only: bool = False,
     ) -> "PinnedDirectory":
         canonical_path(path, label)
         descriptors: list[int] = []
@@ -223,7 +294,19 @@ class PinnedDirectory:
                 trusted_ancestor_owners()
                 if allowed_owner_uids is None else allowed_owner_uids
             )
-            for component in components:
+            ancestor_groups = (
+                trusted_ancestor_owners()
+                if allowed_owner_gids is None else allowed_owner_gids
+            )
+            final_owners = (
+                ancestor_owners
+                if allowed_final_owner_uids is None else allowed_final_owner_uids
+            )
+            final_groups = (
+                ancestor_groups
+                if allowed_final_owner_gids is None else allowed_final_owner_gids
+            )
+            for index, component in enumerate(components):
                 descriptor = os.open(
                     component,
                     os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -232,9 +315,15 @@ class PinnedDirectory:
                 descriptors.append(descriptor)
                 metadata = os.fstat(descriptor)
                 mode = stat.S_IMODE(metadata.st_mode)
+                is_final = index == len(components) - 1
+                component_owners = final_owners if is_final else ancestor_owners
+                component_groups = final_groups if is_final else ancestor_groups
                 if (
-                    metadata.st_uid not in ancestor_owners
-                    or (not owner_uid_only and metadata.st_gid not in ancestor_owners)
+                    metadata.st_uid not in component_owners
+                    or (
+                        not (is_final and final_owner_uid_only)
+                        and metadata.st_gid not in component_groups
+                    )
                     or (mode & 0o022 and not mode & stat.S_ISVTX)
                 ):
                     fail(f"{label} has an unsafe ancestor")
@@ -243,7 +332,7 @@ class PinnedDirectory:
             if private and (
                 stat.S_IMODE(final.st_mode) != 0o700
                 or final.st_uid != final_owner_uid
-                or (not owner_uid_only and final.st_gid not in ancestor_owners)
+                or (not final_owner_uid_only and final.st_gid not in final_groups)
             ):
                 fail(f"{label} has invalid private-directory ownership or mode")
             result = cls(path, descriptors, components, identities)
@@ -474,9 +563,22 @@ def write_new_at(
             os.close(descriptor)
 
 
-def atomic_replace_at(directory: PinnedDirectory, name: str, data: bytes, label: str, *, mode: int = 0o600, expected: tuple[int, ...] | None = None) -> None:
+def atomic_replace_at(
+    directory: PinnedDirectory,
+    name: str,
+    data: bytes,
+    label: str,
+    *,
+    mode: int = 0o600,
+    owner_uid: int = 0,
+    owner_gid: int = 0,
+    expected: tuple[int, ...] | None = None,
+) -> None:
     temporary = f".lifecycle-{name}-{secrets.token_hex(16)}"
-    temporary_identity = write_new_at(directory, temporary, data, f"temporary {label}", mode=mode)
+    temporary_identity = write_new_at(
+        directory, temporary, data, f"temporary {label}", mode=mode,
+        owner_uid=owner_uid, owner_gid=owner_gid,
+    )
     try:
         if expected is None:
             try:
@@ -629,8 +731,31 @@ def load_trust(state: PinnedDirectory, trust_id: str, target: str) -> tuple[dict
         trust_root.close()
 
 
-def open_exact_tree(path: str, names: Sequence[str], label: str, modes: Mapping[str, int] | None = None) -> tuple[PinnedDirectory, dict[str, bytes], dict[str, tuple[int, ...]]]:
-    directory = PinnedDirectory.open(path, label)
+def open_exact_tree(
+    path: str,
+    names: Sequence[str],
+    label: str,
+    modes: Mapping[str, int] | None = None,
+    owner_gids: Mapping[str, int] | None = None,
+    *,
+    directory_mode: int = 0o700,
+    directory_gid: int = 0,
+    allowed_ancestor_gid: int | None = None,
+) -> tuple[PinnedDirectory, dict[str, bytes], dict[str, tuple[int, ...]]]:
+    directory = PinnedDirectory.open(
+        path, label, private=directory_mode == 0o700 and directory_gid == 0,
+        allowed_owner_gids=(
+            trusted_ancestor_owners() | {allowed_ancestor_gid}
+            if allowed_ancestor_gid is not None else None
+        ),
+    )
+    metadata = os.fstat(directory.fd)
+    if (
+        metadata.st_uid != 0 or metadata.st_gid != directory_gid
+        or stat.S_IMODE(metadata.st_mode) != directory_mode
+    ):
+        directory.close()
+        fail(f"{label} directory has unsafe metadata")
     actual = scan(directory, label)
     if set(actual) != set(names):
         directory.close()
@@ -640,7 +765,10 @@ def open_exact_tree(path: str, names: Sequence[str], label: str, modes: Mapping[
     try:
         for name in names:
             mode = modes[name] if modes is not None else 0o600
-            contents[name], identities[name] = read_at(directory, name, f"{label} file {name}", mode=mode)
+            contents[name], identities[name] = read_at(
+                directory, name, f"{label} file {name}", mode=mode,
+                owner_gid=owner_gids[name] if owner_gids is not None else 0,
+            )
         directory.recheck(label)
         return directory, contents, identities
     except Exception:
@@ -786,8 +914,14 @@ def validate_pending(
     *,
     now: int | None = None,
     expected_request_id: str | None = None,
+    allowed_ancestor_gid: int | None = None,
 ) -> dict[str, object]:
-    directory, files, identities = open_exact_tree(path, PENDING_NAMES, "pending request")
+    directory, files, identities = open_exact_tree(
+        path,
+        PENDING_NAMES,
+        "pending request",
+        allowed_ancestor_gid=allowed_ancestor_gid,
+    )
     try:
         request = parse_record(files["request"], REQUEST_V2_FIELDS, "pending request record")
         current = int(time.time()) if now is None else now
@@ -837,6 +971,7 @@ def validate_response_files(files: Mapping[str, bytes], pending: Mapping[str, ob
     request = pending["record"]
     request_files = pending["files"]
     assert isinstance(request, dict) and isinstance(request_files, dict)
+    require_adapter_operation(args, request)
     response = parse_record(files["response"], RESPONSE_V2_FIELDS, "response")
     artifact = parse_record(files["artifact"], ARTIFACT_FIELDS, "artifact")
     current = int(time.time()) if now is None else now
@@ -959,14 +1094,87 @@ def validate_response_files(files: Mapping[str, bytes], pending: Mapping[str, ob
     }
 
 
-def version_modes() -> dict[str, int]:
-    return {name: (0o644 if name in CERTIFICATE_NAMES else 0o600) for name in VERSION_NAMES}
+def service_adapter(args) -> str:
+    return getattr(args, "service_adapter", ZOT_ADAPTER)
 
 
-def validate_version(path: str, expected_request_id: str | None = None) -> tuple[PinnedDirectory, dict[str, bytes], dict[str, tuple[int, ...]]]:
+def version_modes(adapter: str = ZOT_ADAPTER) -> dict[str, int]:
+    modes = {name: (0o644 if name in CERTIFICATE_NAMES else 0o600) for name in VERSION_NAMES}
+    if adapter == OPENBAO_ADAPTER:
+        modes["tls.key"] = 0o640
+    return modes
+
+
+def version_owner_gids(adapter: str = ZOT_ADAPTER) -> dict[str, int]:
+    return {name: (OPENBAO_GID if adapter == OPENBAO_ADAPTER and name == "tls.key" else 0) for name in VERSION_NAMES}
+
+
+def version_directory_metadata(adapter: str) -> tuple[int, int]:
+    return (0o750, OPENBAO_GID) if adapter == OPENBAO_ADAPTER else (0o700, 0)
+
+
+def open_versions_root(args, label: str = "versions root") -> PinnedDirectory:
+    adapter = service_adapter(args)
+    mode, gid = version_directory_metadata(adapter)
+    directory = PinnedDirectory.open(
+        args.versions_root, label, private=adapter == ZOT_ADAPTER,
+        allowed_owner_gids=(
+            trusted_ancestor_owners() | {OPENBAO_GID}
+            if adapter == OPENBAO_ADAPTER else None
+        ),
+    )
+    metadata = os.fstat(directory.fd)
+    if metadata.st_uid != 0 or metadata.st_gid != gid or stat.S_IMODE(metadata.st_mode) != mode:
+        directory.close()
+        fail(f"{label} has invalid adapter ownership or mode")
+    return directory
+
+
+def create_versions_root(args) -> None:
+    adapter = service_adapter(args)
+    if adapter == ZOT_ADAPTER:
+        create_private_directory(args.versions_root, "versions root")
+        return
+    parent = PinnedDirectory.open(
+        os.path.dirname(args.versions_root), "parent of versions root",
+        private=False,
+        allowed_owner_gids=trusted_ancestor_owners() | {OPENBAO_GID},
+    )
+    try:
+        os.mkdir(os.path.basename(args.versions_root), 0o750, dir_fd=parent.fd)
+        descriptor = os.open(
+            os.path.basename(args.versions_root),
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent.fd,
+        )
+        try:
+            os.fchmod(descriptor, 0o750)
+            os.fchown(descriptor, 0, OPENBAO_GID)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.fsync(parent.fd)
+    except FileExistsError:
+        pass
+    except OSError as error:
+        fail(f"cannot create versions root: {error.strerror}")
+    finally:
+        parent.close()
+    open_versions_root(args).close()
+
+
+def validate_version(
+    path: str,
+    expected_request_id: str | None = None,
+    adapter: str = ZOT_ADAPTER,
+) -> tuple[PinnedDirectory, dict[str, bytes], dict[str, tuple[int, ...]]]:
     if expected_request_id is not None and os.path.basename(path) != expected_request_id:
         fail("version path request identity is invalid")
-    return open_exact_tree(path, VERSION_NAMES, "immutable certificate version", version_modes())
+    mode, gid = version_directory_metadata(adapter)
+    return open_exact_tree(
+        path, VERSION_NAMES, "immutable certificate version", version_modes(adapter),
+        version_owner_gids(adapter), directory_mode=mode, directory_gid=gid,
+    )
 
 
 def parse_active(data: bytes, args) -> dict[str, str]:
@@ -1023,6 +1231,152 @@ def parse_zot_config(data: bytes) -> tuple[dict[str, object], str, str]:
     return value, cert, key
 
 
+def openbao_listener_bytes(args, certificate_path: str, key_path: str) -> bytes:
+    certificate = canonical_path(certificate_path, "OpenBao listener certificate path")
+    key = canonical_path(key_path, "OpenBao listener key path")
+    return (
+        'listener "tcp" {\n'
+        f'  address = "{args.node_address}:{args.backend_port}"\n'
+        f'  cluster_address = "{args.node_address}:{args.cluster_port}"\n'
+        f'  tls_cert_file = "{certificate}"\n'
+        f'  tls_key_file = "{key}"\n'
+        '  tls_min_version = "tls12"\n'
+        '  tls_max_version = "tls13"\n'
+        '  tls_disable_client_certs = true\n'
+        '  disable_unauthed_rekey_endpoints = true\n'
+        '  disable_unauthed_generate_root_endpoints = true\n'
+        '}\n'
+    ).encode("ascii")
+
+
+def parse_openbao_listener(data: bytes, args) -> tuple[dict[str, object], str, str]:
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        fail("OpenBao listener configuration is not ASCII")
+    match = re.fullmatch(
+        r'listener "tcp" \{\n'
+        + re.escape(f'  address = "{args.node_address}:{args.backend_port}"\n')
+        + re.escape(f'  cluster_address = "{args.node_address}:{args.cluster_port}"\n')
+        + r'  tls_cert_file = "([^"\n]+)"\n'
+        + r'  tls_key_file = "([^"\n]+)"\n'
+        + re.escape(
+            '  tls_min_version = "tls12"\n'
+            '  tls_max_version = "tls13"\n'
+            '  tls_disable_client_certs = true\n'
+            '  disable_unauthed_rekey_endpoints = true\n'
+            '  disable_unauthed_generate_root_endpoints = true\n'
+            '}\n'
+        ),
+        text,
+        re.ASCII,
+    )
+    if match is None:
+        fail("OpenBao listener configuration is not the exact adapter-owned HCL")
+    certificate = canonical_path(match.group(1), "OpenBao listener certificate path")
+    key = canonical_path(match.group(2), "OpenBao listener key path")
+    if openbao_listener_bytes(args, certificate, key) != data:
+        fail("OpenBao listener configuration is not canonical")
+    return {"listener": "tcp"}, certificate, key
+
+
+def service_config_path(args) -> str:
+    if service_adapter(args) == OPENBAO_ADAPTER:
+        return args.service_config
+    override = os.environ.get("PLATFORM_PKI_LIFECYCLE_TEST_ZOT_CONFIG")
+    if override is not None:
+        if os.environ.get("PLATFORM_PKI_LIFECYCLE_TESTING") != "1":
+            fail("Zot configuration test seam requires explicit synthetic-test mode")
+        return canonical_path(override, "Zot configuration test seam")
+    return args.zot_config
+
+
+def service_config_metadata(args) -> tuple[int, int]:
+    return (0o640, OPENBAO_GID) if service_adapter(args) == OPENBAO_ADAPTER else (0o644, 0)
+
+
+def read_service_config(args, label: str = "service configuration") -> tuple[bytes, tuple[int, ...]]:
+    mode, gid = service_config_metadata(args)
+    path = service_config_path(args)
+    parent = PinnedDirectory.open(
+        os.path.dirname(path), f"parent of {label}", private=False,
+        allowed_owner_gids=(
+            trusted_ancestor_owners() | {OPENBAO_GID}
+            if service_adapter(args) == OPENBAO_ADAPTER else None
+        ),
+    )
+    try:
+        data, identity = read_at(
+            parent, os.path.basename(path), label, mode=mode, owner_gid=gid
+        )
+        parent.recheck(f"parent of {label}")
+        require_snapshot(parent, os.path.basename(path), identity, label)
+        return data, identity
+    finally:
+        parent.close()
+
+
+def parse_service_config(data: bytes, args) -> tuple[dict[str, object], str, str]:
+    if service_adapter(args) == OPENBAO_ADAPTER:
+        return parse_openbao_listener(data, args)
+    return parse_zot_config(data)
+
+
+def validate_openbao_candidate_config(args, candidate: bytes) -> None:
+    path = service_config_path(args)
+    parent = PinnedDirectory.open(
+        os.path.dirname(path), "OpenBao listener configuration parent",
+        private=False,
+        allowed_owner_gids=trusted_ancestor_owners() | {OPENBAO_GID},
+    )
+    name = f".platform-pki-listener-{secrets.token_hex(16)}.hcl"
+    identity: tuple[int, ...] | None = None
+    try:
+        identity = write_new_at(
+            parent, name, candidate, "OpenBao candidate listener",
+            mode=0o640, owner_gid=OPENBAO_GID,
+        )
+        run(
+            (
+                OPENBAO_VALIDATOR_PATH,
+                "listener",
+                os.path.join(parent.path, name),
+            ),
+            "fixed OpenBao candidate configuration validation",
+        )
+        require_snapshot(parent, name, identity, "OpenBao candidate listener")
+    finally:
+        try:
+            if identity is not None:
+                cleanup_error: LifecycleError | None = None
+                try:
+                    require_snapshot(parent, name, identity, "OpenBao candidate listener")
+                except LifecycleError as error:
+                    cleanup_error = error
+                os.unlink(name, dir_fd=parent.fd)
+                os.fsync(parent.fd)
+                if cleanup_error is not None:
+                    raise cleanup_error
+            else:
+                try:
+                    os.unlink(name, dir_fd=parent.fd)
+                except FileNotFoundError:
+                    pass
+                else:
+                    os.fsync(parent.fd)
+        finally:
+            parent.close()
+
+
+def selected_version_paths(args, request_id: str) -> tuple[str, str]:
+    root = (
+        args.container_versions_root
+        if service_adapter(args) == OPENBAO_ADAPTER else args.versions_root
+    )
+    version = os.path.join(root, request_id)
+    return os.path.join(version, "fullchain.crt"), os.path.join(version, "tls.key")
+
+
 def authenticate_active(state: PinnedDirectory, args, *, require_config: bool = True) -> dict[str, object] | None:
     active_data, _identity = read_optional_state(state, "active")
     if active_data is None:
@@ -1031,7 +1385,9 @@ def authenticate_active(state: PinnedDirectory, args, *, require_config: bool = 
     expected_path = os.path.join(args.versions_root, active["request_id"])
     if active["version_path"] != expected_path:
         fail("active record does not use the canonical version path")
-    version, files, identities = validate_version(expected_path, active["request_id"])
+    version, files, identities = validate_version(
+        expected_path, active["request_id"], service_adapter(args)
+    )
     try:
         metadata = os.fstat(version.fd)
         if str(metadata.st_dev) != active["version_device"] or str(metadata.st_ino) != active["version_inode"]:
@@ -1051,10 +1407,11 @@ def authenticate_active(state: PinnedDirectory, args, *, require_config: bool = 
         if spki_digest(leaf.public_key()) != active["certificate_spki_sha256"]:
             fail("active certificate and key SPKI differ")
         if require_config:
-            config_data, _ = read_path(args.zot_config, "Zot configuration", mode=0o644)
-            _config, cert_path, key_path = parse_zot_config(config_data)
-            if cert_path != os.path.join(expected_path, "fullchain.crt") or key_path != os.path.join(expected_path, "tls.key") or sha256(config_data) != active["zot_config_sha256"]:
-                fail("Zot configuration does not select the authenticated active version")
+            config_data, _ = read_service_config(args)
+            _config, cert_path, key_path = parse_service_config(config_data, args)
+            expected_cert, expected_key = selected_version_paths(args, active["request_id"])
+            if cert_path != expected_cert or key_path != expected_key or sha256(config_data) != active["zot_config_sha256"]:
+                fail("service configuration does not select the authenticated active version")
         return {
             "record": active, "record_bytes": active_data, "files": files,
             "not_before_epoch": int(leaf.not_valid_before_utc.timestamp()),
@@ -1087,6 +1444,11 @@ def common_open(args, *, shared: bool = False):
     return state, lock
 
 
+def require_adapter_operation(args, request: Mapping[str, str]) -> None:
+    if service_adapter(args) == OPENBAO_ADAPTER and request["operation"] != "issue":
+        fail("openbao-pristine-v1 supports issue only; renewal is forbidden")
+
+
 def json_output(value: Mapping[str, object]) -> None:
     print(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
 
@@ -1104,9 +1466,9 @@ def prepare_collection_output(
     output = PinnedDirectory.open(
         args.output_dir,
         f"{label} output directory",
-        allowed_owner_uids=trusted_ancestor_owners() | {args.output_owner_uid},
+        allowed_final_owner_uids={args.output_owner_uid},
         final_owner_uid=args.output_owner_uid,
-        owner_uid_only=True,
+        final_owner_uid_only=True,
     )
     try:
         entries = scan(output, f"{label} output directory")
@@ -1167,11 +1529,14 @@ def collection_prepare(args) -> None:
             fail("unresolved lifecycle state blocks request collection")
         trust, policy = load_trust(state, args.trust_id, args.target)
         pending_path = os.path.join(args.pending_root, require_request_id(args.request_id))
-        pending = validate_pending(pending_path, trust)
+        pending = validate_pending(
+            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args)
+        )
         if pending["expired"]:
             fail("expired pending request cannot be collected")
         request = pending["record"]
         assert isinstance(request, dict)
+        require_adapter_operation(args, request)
         if request["service"] != args.service or request["target"] != args.target or request["response_principal"] != policy["response_principal"]:
             fail("pending request differs from collection bindings")
         names = ("tls.csr", "request", "request.sig")
@@ -1180,7 +1545,11 @@ def collection_prepare(args) -> None:
             names,
             {name: pending["files"][name] for name in names},
             "collection",
-            lambda: validate_pending(pending_path, trust),
+            lambda: validate_pending(
+                pending_path,
+                trust,
+                allowed_ancestor_gid=pending_ancestor_gid(args),
+            ),
         )
         json_output({"status": status_value, "request_id": args.request_id, "request_sha256": sha256(pending["files"]["request"]), "csr_sha256": sha256(pending["files"]["tls.csr"]), "request_signature_sha256": sha256(pending["files"]["request.sig"])})
     finally:
@@ -1199,12 +1568,15 @@ def response_prepare(args) -> None:
         if not os.path.lexists(args.versions_root):
             if args.check:
                 fail("versions root is absent in check mode")
-            create_private_directory(args.versions_root, "versions root")
-        versions = PinnedDirectory.open(args.versions_root, "versions root")
+            create_versions_root(args)
+        versions = open_versions_root(args)
         ingress_name = f".ingress-{request_id}"
         entries = scan(versions, "versions root")
         if request_id in entries:
-            validate_version(os.path.join(args.versions_root, request_id), request_id)[0].close()
+            validate_version(
+                os.path.join(args.versions_root, request_id), request_id,
+                service_adapter(args),
+            )[0].close()
             json_output({"status": "installed", "request_id": request_id, "ingress_dir": "none"})
             return
         trust, _policy = load_trust(state, args.trust_id, args.target)
@@ -1212,9 +1584,11 @@ def response_prepare(args) -> None:
             os.path.join(args.pending_root, request_id),
             trust,
             expected_request_id=request_id,
+            allowed_ancestor_gid=pending_ancestor_gid(args),
         )
         if pending["expired"]:
             fail("expired pending request cannot receive a response")
+        require_adapter_operation(args, pending["record"])
         if (
             pending["record"]["service"] != args.service
             or pending["record"]["target"] != args.target
@@ -1229,7 +1603,13 @@ def response_prepare(args) -> None:
             status = "prepared"
         else:
             status = "existing"
-        ingress = PinnedDirectory.open(os.path.join(args.versions_root, ingress_name), "response ingress")
+        ingress = PinnedDirectory.open(
+            os.path.join(args.versions_root, ingress_name), "response ingress",
+            allowed_owner_gids=(
+                trusted_ancestor_owners() | {OPENBAO_GID}
+                if service_adapter(args) == OPENBAO_ADAPTER else None
+            ),
+        )
         actual = scan(ingress, "response ingress")
         if not set(actual).issubset(set(RESPONSE_NAMES)):
             fail("response ingress contains unexpected entries")
@@ -1273,21 +1653,31 @@ def response_install(args) -> None:
         request_id = require_request_id(args.request_id)
         require_digest(args.artifact_sha256, "artifact pin")
         pending_path = os.path.join(args.pending_root, request_id)
-        pending = validate_pending(pending_path, trust)
+        pending = validate_pending(
+            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args)
+        )
         if pending["expired"]:
             fail("expired pending request cannot consume a response")
+        require_adapter_operation(args, pending["record"])
         if pending["record"]["service"] != args.service or pending["record"]["target"] != args.target:
             fail("pending request differs from response installation bindings")
-        versions = PinnedDirectory.open(args.versions_root, "versions root")
+        versions = open_versions_root(args)
         if os.fstat(versions.fd).st_dev != os.lstat(args.pending_root).st_dev:
             fail("pending and versions roots are not on one filesystem")
         ingress_name = f".ingress-{request_id}"
         ingress_path = os.path.join(args.versions_root, ingress_name)
-        ingress, response_files, ingress_identities = open_exact_tree(ingress_path, RESPONSE_NAMES, "response ingress")
+        ingress, response_files, ingress_identities = open_exact_tree(
+            ingress_path, RESPONSE_NAMES, "response ingress",
+            allowed_ancestor_gid=(
+                OPENBAO_GID if service_adapter(args) == OPENBAO_ADAPTER else None
+            ),
+        )
         validated = validate_response_files(response_files, pending, trust, args)
         destination = os.path.join(args.versions_root, request_id)
         if request_id in scan(versions, "versions root"):
-            existing, existing_files, _ = validate_version(destination, request_id)
+            existing, existing_files, _ = validate_version(
+                destination, request_id, service_adapter(args)
+            )
             try:
                 expected = {"tls.key": pending["files"]["tls.key"], "tls.csr": pending["files"]["tls.csr"], **response_files}
                 if existing_files != expected:
@@ -1304,18 +1694,47 @@ def response_install(args) -> None:
             json_output({"status": "would-install", "request_id": request_id, "version_path": destination, "artifact_sha256": validated["artifact_sha256"], "certificate_sha256": validated["certificate_sha256"], "certificate_spki_sha256": validated["certificate_spki_sha256"]})
             return
         stage_name = f".stage-{request_id}-{secrets.token_hex(16)}"
-        os.mkdir(stage_name, 0o700, dir_fd=versions.fd)
+        stage_mode, stage_gid = version_directory_metadata(service_adapter(args))
+        os.mkdir(stage_name, stage_mode, dir_fd=versions.fd)
+        if service_adapter(args) == OPENBAO_ADAPTER:
+            stage_descriptor = os.open(
+                stage_name,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=versions.fd,
+            )
+            try:
+                os.fchmod(stage_descriptor, stage_mode)
+                os.fchown(stage_descriptor, 0, stage_gid)
+                os.fsync(stage_descriptor)
+            finally:
+                os.close(stage_descriptor)
         os.fsync(versions.fd)
-        stage = PinnedDirectory.open(os.path.join(args.versions_root, stage_name), "version stage")
+        stage = PinnedDirectory.open(
+            os.path.join(args.versions_root, stage_name), "version stage",
+            private=service_adapter(args) == ZOT_ADAPTER,
+            allowed_owner_gids=(
+                trusted_ancestor_owners() | {OPENBAO_GID}
+                if service_adapter(args) == OPENBAO_ADAPTER else None
+            ),
+        )
         stage_identity = dir_identity(os.fstat(stage.fd))
         publication = {"tls.key": pending["files"]["tls.key"], "tls.csr": pending["files"]["tls.csr"], **response_files}
         for name in VERSION_NAMES:
-            write_new_at(stage, name, publication[name], f"version file {name}", mode=version_modes()[name])
-        staged, staged_files, _ = validate_version(stage.path)
+            write_new_at(
+                stage, name, publication[name], f"version file {name}",
+                mode=version_modes(service_adapter(args))[name],
+                owner_gid=version_owner_gids(service_adapter(args))[name],
+            )
+        staged, staged_files, _ = validate_version(
+            stage.path, adapter=service_adapter(args)
+        )
         staged.close()
         if staged_files != publication:
             fail("staged version bytes changed")
-        validate_pending(pending_path, trust)
+        validate_pending(
+            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args)
+        )
         for name, identity in ingress_identities.items():
             require_snapshot(ingress, name, identity, f"response ingress file {name}")
         fault("before-version-publication")
@@ -1324,7 +1743,7 @@ def response_install(args) -> None:
         stage.path = destination
         if dir_identity(os.stat(request_id, dir_fd=versions.fd, follow_symlinks=False)) != stage_identity:
             fail("published version identity changed")
-        validate_version(destination, request_id)[0].close()
+        validate_version(destination, request_id, service_adapter(args))[0].close()
         remove_exact_tree(versions, ingress_name, ingress, ingress_identities, "response ingress")
         ingress.close()
         ingress = None
@@ -1403,39 +1822,203 @@ def systemctl_path() -> str:
     return "/usr/bin/systemctl"
 
 
-def service_state() -> str:
-    result = run((systemctl_path(), "is-active", "zot.service"), "Zot service-state query", accepted=frozenset((0, 3)))
+def service_unit(args) -> str:
+    return args.service_unit if service_adapter(args) == OPENBAO_ADAPTER else "zot.service"
+
+
+def service_label(args) -> str:
+    return "OpenBao" if service_adapter(args) == OPENBAO_ADAPTER else "Zot"
+
+
+def service_state(args, *, allow_absent: bool = False) -> str:
+    label = service_label(args)
+    result = run(
+        (systemctl_path(), "is-active", service_unit(args)),
+        f"{label} service-state query",
+        accepted=frozenset((0, 3, 4)) if allow_absent else frozenset((0, 3)),
+    )
     try:
-        value = result.stdout.decode("ascii").strip()
+        value = result.stdout.decode("ascii")
     except UnicodeDecodeError:
-        fail("Zot service state is not ASCII")
-    if value not in {"active", "inactive"}:
-        fail("Zot service state is not canonical active/inactive")
-    return value
+        fail(f"{label} service state is not ASCII")
+    states = {(0, "active\n"): "active", (3, "inactive\n"): "inactive"}
+    if allow_absent:
+        states[(4, "unknown\n")] = "absent"
+        states[(4, "inactive\n")] = "absent"
+    state = states.get((result.returncode, value))
+    if state is None:
+        fail(f"{label} service state is not canonical active/inactive")
+    return state
 
 
-def service_enabled_state() -> str:
-    result = run((systemctl_path(), "is-enabled", "zot.service"), "Zot service enablement query", accepted=frozenset((0, 1)))
+def service_enabled_state(args, *, allow_absent: bool = False) -> str:
+    label = service_label(args)
+    result = run(
+        (systemctl_path(), "is-enabled", service_unit(args)),
+        f"{label} service enablement query",
+        accepted=frozenset((0, 1, 4)) if allow_absent else frozenset((0, 1)),
+    )
     try:
-        value = result.stdout.decode("ascii").strip()
+        value = result.stdout.decode("ascii")
     except UnicodeDecodeError:
-        fail("Zot service enablement state is not ASCII")
-    if value not in {"enabled", "disabled", "generated", "masked"}:
-        fail("Zot service enablement state is not canonical")
-    return value
+        fail(f"{label} service enablement state is not ASCII")
+    states = {
+        (0, "enabled\n"): "enabled",
+        (0, "generated\n"): "generated",
+        (1, "disabled\n"): "disabled",
+        (1, "masked\n"): "masked",
+    }
+    if allow_absent:
+        states[(4, "not-found\n")] = "absent"
+    state = states.get((result.returncode, value))
+    if state is None:
+        fail(f"{label} service enablement state is not canonical")
+    return state
 
 
-def service_action(action: str) -> None:
-    if action not in {"restart", "stop", "enable-start", "disable-stop"}:
+def require_openbao_generated_unit(args) -> None:
+    result = run(
+        (
+            systemctl_path(), "show",
+            "--property=LoadState", "--property=UnitFileState",
+            "--property=FragmentPath", "--property=SourcePath",
+            service_unit(args),
+        ),
+        "OpenBao generated service provenance query",
+    )
+    try:
+        output = result.stdout.decode("ascii")
+    except UnicodeDecodeError:
+        fail("OpenBao generated service provenance is not ASCII")
+    if not output.endswith("\n") or output.endswith("\n\n"):
+        fail("OpenBao generated service provenance is not canonical")
+    lines = output.splitlines()
+    properties: dict[str, str] = {}
+    expected_names = {"LoadState", "UnitFileState", "FragmentPath", "SourcePath"}
+    for line in lines:
+        name, separator, value = line.partition("=")
+        if not separator or name not in expected_names or name in properties:
+            fail("OpenBao generated service provenance is not canonical")
+        properties[name] = value
+    if properties != {
+        "LoadState": "loaded",
+        "UnitFileState": "generated",
+        "FragmentPath": OPENBAO_GENERATED_UNIT_FRAGMENT,
+        "SourcePath": OPENBAO_QUADLET_SOURCE,
+    }:
+        fail("OpenBao generated service provenance is not canonical")
+    read_path(OPENBAO_QUADLET_SOURCE, "OpenBao Quadlet source", mode=0o644)
+
+
+def service_action(args, action: str) -> None:
+    if action not in {"restart", "start", "stop", "enable-start", "disable-stop"}:
         fail("service recovery action is invalid")
+    unit = service_unit(args)
     commands = {
-        "restart": (("restart", "zot.service"),),
-        "stop": (("stop", "zot.service"),),
-        "enable-start": (("unmask", "zot.service"), ("start", "zot.service")),
-        "disable-stop": (("stop", "zot.service"), ("mask", "zot.service")),
+        "restart": (("restart", unit),),
+        "start": (("start", unit),),
+        "stop": (("stop", unit),),
+        "enable-start": (("unmask", unit), ("start", unit)),
+        "disable-stop": (("stop", unit), ("mask", unit)),
     }[action]
     for command in commands:
         run((systemctl_path(), *command), f"systemctl {' '.join(command)}")
+
+
+def require_openbao_inactive_disabled(args) -> None:
+    state = service_state(args)
+    enabled = service_enabled_state(args)
+    if state != "inactive" or enabled not in {"disabled", "generated"}:
+        fail("OpenBao must be inactive, unmasked, and without persistent enablement")
+    if enabled == "generated":
+        require_openbao_generated_unit(args)
+
+
+def require_openbao_inactive_custody_state(
+    args, *, allow_absent: bool = False
+) -> None:
+    state = service_state(args, allow_absent=True) if allow_absent else service_state(args)
+    if allow_absent and state == "absent":
+        return
+    enabled = (
+        service_enabled_state(args, allow_absent=True)
+        if allow_absent else service_enabled_state(args)
+    )
+    if allow_absent and state == "inactive" and enabled == "absent":
+        return
+    if (
+        state != "inactive"
+        or enabled not in {"disabled", "masked"}
+    ):
+        fail("OpenBao custody requires an inactive, disabled or masked service")
+
+
+def require_openbao_active_disabled(args) -> None:
+    state = service_state(args)
+    enabled = service_enabled_state(args)
+    if state != "active" or enabled not in {"disabled", "generated"}:
+        fail("OpenBao must be active, unmasked, and without persistent enablement during validation")
+    if enabled == "generated":
+        require_openbao_generated_unit(args)
+
+
+def validate_openbao_raft_directory(args) -> None:
+    directory = PinnedDirectory.open(
+        args.raft_data_dir, "OpenBao Raft data directory", private=False,
+        allowed_final_owner_uids={100},
+        allowed_final_owner_gids={OPENBAO_GID},
+    )
+    try:
+        metadata = os.fstat(directory.fd)
+        if (
+            metadata.st_uid != 100 or metadata.st_gid != OPENBAO_GID
+            or stat.S_IMODE(metadata.st_mode) != 0o750
+        ):
+            fail("OpenBao Raft data directory has unsafe metadata")
+        if scan(directory, "OpenBao Raft data directory"):
+            fail("OpenBao pristine activation requires an empty Raft data directory")
+    finally:
+        directory.close()
+
+
+def validate_openbao_preconditions(
+    args,
+    request: Mapping[str, str],
+    prior_active: bytes | None,
+    prior_rollback: bytes | None,
+    prior_config: bytes,
+) -> tuple[str, str]:
+    require_adapter_operation(args, request)
+    if prior_active is not None or prior_rollback is not None:
+        fail("OpenBao pristine issue requires no predecessor lifecycle state")
+    if request["current_cert_sha256"] != "none" or request["predecessor_request_id"] != "none":
+        fail("OpenBao pristine issue request must not bind a predecessor")
+    require_openbao_inactive_disabled(args)
+    if os.path.lexists(args.bootstrap_marker_path):
+        fail("OpenBao pristine activation requires an absent bootstrap marker")
+    validate_openbao_raft_directory(args)
+    _config, prior_cert, prior_key = parse_openbao_listener(prior_config, args)
+    expected_cert = os.path.join(args.base_config_dir, "tls", "tls.crt")
+    expected_key = os.path.join(args.base_config_dir, "tls", "tls.key")
+    if (prior_cert, prior_key) != (expected_cert, expected_key):
+        fail("OpenBao pristine listener does not select the exact base TLS paths")
+    return prior_cert, prior_key
+
+
+def openbao_validation_cycle(
+    args, expected_certificate: str, expected_intermediate: str
+) -> dict[str, str]:
+    require_openbao_inactive_disabled(args)
+    service_action(args, "start")
+    try:
+        require_openbao_active_disabled(args)
+        local = strict_local_validation(
+            args, expected_certificate, expected_intermediate
+        )
+    finally:
+        service_action(args, "stop")
+        require_openbao_inactive_disabled(args)
+    return local
 
 
 def wait_for_tls_listener(
@@ -1444,6 +2027,7 @@ def wait_for_tls_listener(
     *,
     timeout_seconds: float = LOCAL_READY_SECONDS,
     interval_seconds: float = 0.25,
+    label: str = "Zot",
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -1453,23 +2037,14 @@ def wait_for_tls_listener(
             )
         except OSError:
             if time.monotonic() >= deadline:
-                fail("Zot TLS listener did not become ready after restart")
+                fail(f"{label} TLS listener did not become ready after start")
             time.sleep(interval_seconds)
             continue
         connection.close()
         return
 
 
-def strict_local_validation(args, expected_certificate: str, expected_intermediate: str) -> dict[str, str]:
-    seam = os.environ.get("PLATFORM_PKI_LIFECYCLE_TEST_LOCAL_VALIDATION")
-    if seam is not None:
-        if os.environ.get("PLATFORM_PKI_LIFECYCLE_TESTING") != "1":
-            fail("local validation test seam requires explicit synthetic-test mode")
-        data, _ = read_path(seam, "local validation test seam")
-        record = parse_record(data, ("schema", "service_result", "tls_result", "served_certificate_sha256", "served_intermediate_sha256"), "local validation test seam")
-        if record != {"schema": "2", "service_result": "passed", "tls_result": "passed", "served_certificate_sha256": expected_certificate, "served_intermediate_sha256": expected_intermediate}:
-            fail("local validation test observation does not match the active candidate")
-        return record
+def strict_zot_validation(args, expected_certificate: str, expected_intermediate: str) -> dict[str, str]:
     ca_data, _ = read_path(args.reviewed_ca, "reviewed validation CA", mode=args.reviewed_ca_mode)
     certificates = pem_certificates(ca_data, 2, "reviewed validation CA")
     if sha256(certificates[0].public_bytes(serialization.Encoding.PEM)) != expected_intermediate:
@@ -1528,6 +2103,121 @@ def strict_local_validation(args, expected_certificate: str, expected_intermedia
     return {"schema": "2", "service_result": "passed", "tls_result": "passed", "served_certificate_sha256": served, "served_intermediate_sha256": sha256(served_intermediate)}
 
 
+def validate_openbao_health_response(status: int, body: bytes) -> None:
+    if status != 501:
+        fail("local OpenBao health response did not return exact HTTP 501")
+    if len(body) > OPENBAO_BODY_MAX_SIZE:
+        fail("local OpenBao health response body exceeds the fixed limit")
+    try:
+        health = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("local OpenBao health response is not valid JSON")
+    if not isinstance(health, dict):
+        fail("local OpenBao health response is not a JSON mapping")
+    if (
+        health.get("initialized") is not False
+        or health.get("sealed") is not True
+        or health.get("standby") is not True
+        or health.get("version") != OPENBAO_VERSION
+    ):
+        fail("local OpenBao health response differs from the pristine 2.6.1 contract")
+
+
+def validate_openbao_served_chain(
+    data: bytes, expected_certificate: str, expected_intermediate: str
+) -> tuple[bytes, bytes]:
+    served_matches = tuple(PEM_CERT_RE.finditer(data))
+    if len(served_matches) != 2:
+        fail("strict local OpenBao TLS validation did not return exactly leaf and intermediate")
+    served_leaf = served_matches[0].group(0)
+    served_intermediate = served_matches[1].group(0)
+    if sha256(served_leaf) != expected_certificate or sha256(served_intermediate) != expected_intermediate:
+        fail("strict local OpenBao TLS chain does not match the active candidate")
+    return served_leaf, served_intermediate
+
+
+def strict_openbao_validation(args, expected_certificate: str, expected_intermediate: str) -> dict[str, str]:
+    ca_data, _ = read_path(args.reviewed_ca, "reviewed validation CA", mode=args.reviewed_ca_mode)
+    certificates = pem_certificates(ca_data, 2, "reviewed validation CA")
+    if sha256(certificates[0].public_bytes(serialization.Encoding.PEM)) != expected_intermediate:
+        fail("reviewed validation CA does not begin with the expected intermediate")
+    wait_for_tls_listener(args.node_address, args.backend_port, label="OpenBao")
+    ca_descriptor = memfd(ca_data, "reviewed-validation-ca")
+    try:
+        handshake = run(
+            (
+                "openssl", "s_client", "-connect",
+                f"{args.node_address}:{args.backend_port}", "-servername", args.node_dns,
+                "-verify_hostname", args.node_dns, "-verify_return_error", "-CAfile",
+                f"/proc/self/fd/{ca_descriptor}", "-showcerts",
+            ),
+            "strict local OpenBao TLS chain validation", input_data=b"",
+            pass_fds=(ca_descriptor,),
+        )
+    finally:
+        os.close(ca_descriptor)
+    _served_leaf, served_intermediate = validate_openbao_served_chain(
+        handshake.stdout, expected_certificate, expected_intermediate
+    )
+
+    context = ssl.create_default_context(cadata=ca_data.decode("ascii"))
+    raw_socket: socket.socket | None = None
+    tls_socket: ssl.SSLSocket | None = None
+    response: http.client.HTTPResponse | None = None
+    try:
+        raw_socket = socket.create_connection(
+            (args.node_address, args.backend_port), timeout=10
+        )
+        tls_socket = context.wrap_socket(raw_socket, server_hostname=args.node_dns)
+        raw_socket = None
+        tls_socket.settimeout(10)
+        served = sha256(
+            ssl.DER_cert_to_PEM_cert(tls_socket.getpeercert(binary_form=True)).encode("ascii")
+        )
+        request = (
+            "GET /v1/sys/health HTTP/1.1\r\n"
+            f"Host: {args.node_dns}:{args.backend_port}\r\n"
+            "Accept: application/json\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        tls_socket.sendall(request)
+        response = http.client.HTTPResponse(tls_socket)
+        response.begin()
+        body = response.read(OPENBAO_BODY_MAX_SIZE + 1)
+    except (OSError, ssl.SSLError, http.client.HTTPException):
+        fail("strict local OpenBao health validation failed")
+    finally:
+        if response is not None:
+            response.close()
+        if tls_socket is not None:
+            tls_socket.close()
+        if raw_socket is not None:
+            raw_socket.close()
+    if served != expected_certificate:
+        fail("local OpenBao response served a certificate outside the candidate pin")
+    validate_openbao_health_response(response.status, body)
+    return {
+        "schema": "2", "service_result": "passed", "tls_result": "passed",
+        "served_certificate_sha256": served,
+        "served_intermediate_sha256": sha256(served_intermediate),
+    }
+
+
+def strict_local_validation(args, expected_certificate: str, expected_intermediate: str) -> dict[str, str]:
+    seam = os.environ.get("PLATFORM_PKI_LIFECYCLE_TEST_LOCAL_VALIDATION")
+    if seam is not None:
+        if os.environ.get("PLATFORM_PKI_LIFECYCLE_TESTING") != "1":
+            fail("local validation test seam requires explicit synthetic-test mode")
+        data, _ = read_path(seam, "local validation test seam")
+        record = parse_record(data, ("schema", "service_result", "tls_result", "served_certificate_sha256", "served_intermediate_sha256"), "local validation test seam")
+        if record != {"schema": "2", "service_result": "passed", "tls_result": "passed", "served_certificate_sha256": expected_certificate, "served_intermediate_sha256": expected_intermediate}:
+            fail("local validation test observation does not match the active candidate")
+        return record
+    if service_adapter(args) == OPENBAO_ADAPTER:
+        return strict_openbao_validation(args, expected_certificate, expected_intermediate)
+    return strict_zot_validation(args, expected_certificate, expected_intermediate)
+
+
 def journal_record(data: bytes, args) -> dict[str, str]:
     record = parse_record(data, ACTIVATION_JOURNAL_FIELDS, "activation journal")
     if (
@@ -1575,9 +2265,14 @@ def journal_record(data: bytes, args) -> dict[str, str]:
         parse_active(decoded["prior_active"], args)
     if decoded["prior_rollback"] is not None:
         parse_rollback(decoded["prior_rollback"], args)
-    prior_config, _prior_cert, _prior_key = parse_zot_config(decoded["prior_zot_config"])
+    prior_config, _prior_cert, _prior_key = parse_service_config(
+        decoded["prior_zot_config"], args
+    )
     del prior_config
-    _target_config, target_cert, target_key = parse_zot_config(decoded["target_zot_config"])
+    _target_config, target_cert, target_key = parse_service_config(
+        decoded["target_zot_config"], args
+    )
+    expected_cert, expected_key = selected_version_paths(args, record["request_id"])
     if (
         new_active["request_id"] != record["request_id"]
         or new_active["artifact_manifest_sha256"] != record["artifact_manifest_sha256"]
@@ -1596,8 +2291,8 @@ def journal_record(data: bytes, args) -> dict[str, str]:
         or new_rollback["activating_artifact_manifest_sha256"] != record["artifact_manifest_sha256"]
         or new_rollback["activation_epoch"] != record["created_epoch"]
         or new_rollback["rollback_deadline_epoch"] != record["rollback_deadline_epoch"]
-        or target_cert != os.path.join(record["target_version_path"], "fullchain.crt")
-        or target_key != os.path.join(record["target_version_path"], "tls.key")
+        or target_cert != expected_cert
+        or target_key != expected_key
     ):
         fail("activation journal cross-binding is invalid")
     return record
@@ -1632,20 +2327,37 @@ def replace_state_bytes(state: PinnedDirectory, name: str, prior: bytes | None, 
         atomic_replace_at(state, name, target, label, expected=identity)
 
 
-def replace_config_bytes(path: str, prior: bytes, target: bytes) -> None:
-    parent = PinnedDirectory.open(os.path.dirname(path), "Zot configuration parent", private=False)
+def replace_config_bytes(args, prior: bytes, target: bytes) -> None:
+    path = service_config_path(args)
+    mode, gid = service_config_metadata(args)
+    parent = PinnedDirectory.open(
+        os.path.dirname(path), "service configuration parent", private=False,
+        allowed_owner_gids=(
+            trusted_ancestor_owners() | {OPENBAO_GID}
+            if service_adapter(args) == OPENBAO_ADAPTER else None
+        ),
+    )
     try:
-        current, identity = read_at(parent, os.path.basename(path), "Zot configuration", mode=0o644)
+        current, identity = read_at(
+            parent, os.path.basename(path), "service configuration", mode=mode,
+            owner_gid=gid,
+        )
         if current == target:
             return
         if current != prior:
-            fail("Zot configuration identity no longer matches the journal")
-        atomic_replace_at(parent, os.path.basename(path), target, "Zot configuration", mode=0o644, expected=identity)
+            fail("service configuration identity no longer matches the journal")
+        atomic_replace_at(
+            parent, os.path.basename(path), target, "service configuration",
+            mode=mode, owner_gid=gid, expected=identity,
+        )
     finally:
         parent.close()
 
 
 def restore_from_journal(state: PinnedDirectory, data: bytes, identity: tuple[int, ...], args, *, remove: bool = True) -> str:
+    if service_adapter(args) == OPENBAO_ADAPTER:
+        service_action(args, "stop")
+        require_openbao_inactive_disabled(args)
     record = journal_record(data, args)
     prior_active = decode_bound_bytes(record["prior_active_b64"], record["prior_active_sha256"], "prior active", allow_none=True)
     new_active = decode_bound_bytes(record["new_active_b64"], record["new_active_sha256"], "new active")
@@ -1654,26 +2366,29 @@ def restore_from_journal(state: PinnedDirectory, data: bytes, identity: tuple[in
     prior_config = decode_bound_bytes(record["prior_zot_config_b64"], record["prior_zot_config_sha256"], "prior Zot config")
     target_config = decode_bound_bytes(record["target_zot_config_b64"], record["target_zot_config_sha256"], "target Zot config")
     assert new_active is not None and new_rollback is not None and prior_config is not None and target_config is not None
-    current_config, _ = read_path(args.zot_config, "Zot configuration", mode=0o644)
+    current_config, _ = read_service_config(args)
     current_active, _ = read_optional_state(state, "active")
     current_rollback, _ = read_optional_state(state, "rollback")
     if current_config not in {prior_config, target_config}:
-        fail("Zot configuration identity no longer matches the journal")
+        fail("service configuration identity no longer matches the journal")
     if current_active not in {prior_active, new_active}:
         fail("active record identity no longer matches the journal")
     if current_rollback not in {prior_rollback, new_rollback}:
         fail("rollback record identity no longer matches the journal")
-    replace_config_bytes(args.zot_config, target_config, prior_config)
+    replace_config_bytes(args, target_config, prior_config)
     replace_state_bytes(state, "active", new_active, prior_active, "active record")
     replace_state_bytes(state, "rollback", new_rollback, prior_rollback, "rollback record")
     rollback = parse_rollback(new_rollback, args)
     predecessor_free = rollback["predecessor_kind"] == "none"
     if record["prior_service_state"] == "active":
-        service_action("restart")
+        service_action(args, "restart")
     elif predecessor_free:
-        service_action("disable-stop")
+        if service_adapter(args) == ZOT_ADAPTER:
+            service_action(args, "disable-stop")
     else:
-        service_action("stop")
+        service_action(args, "stop")
+    if service_adapter(args) == OPENBAO_ADAPTER:
+        require_openbao_inactive_disabled(args)
     if remove:
         current, current_identity = read_at(state, "activation-journal", "activation journal")
         current_record = journal_record(current, args)
@@ -1763,16 +2478,23 @@ def activate_start(args) -> None:
         trust, _policy = load_trust(state, args.trust_id, args.target)
         request_id = require_request_id(args.request_id)
         require_digest(args.artifact_sha256, "artifact pin")
-        pending = validate_pending(os.path.join(args.pending_root, request_id), trust)
-        version, version_files, _ = validate_version(os.path.join(args.versions_root, request_id), request_id)
+        pending = validate_pending(
+            os.path.join(args.pending_root, request_id),
+            trust,
+            allowed_ancestor_gid=pending_ancestor_gid(args),
+        )
+        version, version_files, _ = validate_version(
+            os.path.join(args.versions_root, request_id), request_id,
+            service_adapter(args),
+        )
         response_files = {name: version_files[name] for name in RESPONSE_NAMES}
         validated = validate_response_files(response_files, pending, trust, args)
         if validated["request"]["operation"] != args.operation:
             fail("candidate operation differs from the requested lifecycle operation")
         if pending["record"]["service"] != args.service or pending["record"]["target"] != args.target:
             fail("candidate does not match activation service and target")
-        prior_config, prior_config_identity = read_path(args.zot_config, "Zot configuration", mode=0o644)
-        config, prior_cert, prior_key = parse_zot_config(prior_config)
+        prior_config, prior_config_identity = read_service_config(args)
+        config, prior_cert, prior_key = parse_service_config(prior_config, args)
         prior_active, _prior_active_identity = read_optional_state(state, "active")
         prior_rollback, _prior_rollback_identity = read_optional_state(state, "rollback")
         if prior_active is not None:
@@ -1792,10 +2514,14 @@ def activate_start(args) -> None:
                 fail("issue activation requires no authenticated active version")
         elif prior_rollback is not None:
             fail("rollback state exists without an authenticated active version")
-        prior_state = service_state()
+        prior_state = service_state(args)
         initial_issue = prior_active is None and args.operation == "issue"
-        if initial_issue:
-            if prior_state != "inactive" or service_enabled_state() != "masked":
+        if service_adapter(args) == OPENBAO_ADAPTER:
+            prior_cert, prior_key = validate_openbao_preconditions(
+                args, pending["record"], prior_active, prior_rollback, prior_config
+            )
+        elif initial_issue:
+            if prior_state != "inactive" or service_enabled_state(args) != "masked":
                 fail("predecessor-free issue requires masked and inactive Zot")
             if os.path.lexists(prior_cert) or os.path.lexists(prior_key):
                 fail("predecessor-free issue requires absent dormant TLS material")
@@ -1803,9 +2529,17 @@ def activate_start(args) -> None:
             fail("Zot must be active before certificate activation")
         if prior_active is None and args.operation == "renew":
             fail("renew requires an authenticated active version")
-        target_config_value = copy.deepcopy(config)
-        target_config_value["http"]["tls"] = {"cert": os.path.join(version.path, "fullchain.crt"), "key": os.path.join(version.path, "tls.key")}
-        target_config = canonical_json(target_config_value)
+        target_cert, target_key = selected_version_paths(args, request_id)
+        if service_adapter(args) == OPENBAO_ADAPTER:
+            target_config = openbao_listener_bytes(args, target_cert, target_key)
+        else:
+            target_config_value = copy.deepcopy(config)
+            target_config_value["http"]["tls"] = {
+                "cert": target_cert, "key": target_key,
+            }
+            target_config = canonical_json(target_config_value)
+        if service_adapter(args) == OPENBAO_ADAPTER:
+            validate_openbao_candidate_config(args, target_config)
         created = int(time.time())
         deadline = created + args.rollback_seconds
         active_data, rollback_data = activation_records(args, validated, version, prior_active, prior_config, prior_cert, prior_key, created, deadline, target_config)
@@ -1841,13 +2575,34 @@ def activate_start(args) -> None:
             replace_state_bytes(state, "rollback", prior_rollback, rollback_data, "rollback record")
             journal_data, journal_identity = set_journal_checkpoint(state, journal_data, journal_identity, "records-written", args)
             fault("after-active-records")
-            replace_config_bytes(args.zot_config, prior_config, target_config)
+            replace_config_bytes(args, prior_config, target_config)
             journal_data, journal_identity = set_journal_checkpoint(state, journal_data, journal_identity, "config-written", args)
             fault("after-config")
-            service_action("enable-start" if initial_issue else "restart")
-            journal_data, journal_identity = set_journal_checkpoint(state, journal_data, journal_identity, "restarted", args)
-            fault("after-restart")
-            local = strict_local_validation(args, str(validated["certificate_sha256"]), str(validated["intermediate_sha256"]))
+            if service_adapter(args) == OPENBAO_ADAPTER:
+                service_action(args, "start")
+                require_openbao_active_disabled(args)
+                journal_data, journal_identity = set_journal_checkpoint(
+                    state, journal_data, journal_identity, "restarted", args
+                )
+                fault("after-restart")
+                try:
+                    local = strict_local_validation(
+                        args, str(validated["certificate_sha256"]),
+                        str(validated["intermediate_sha256"]),
+                    )
+                finally:
+                    service_action(args, "stop")
+                    require_openbao_inactive_disabled(args)
+            else:
+                service_action(args, "enable-start" if initial_issue else "restart")
+                journal_data, journal_identity = set_journal_checkpoint(
+                    state, journal_data, journal_identity, "restarted", args
+                )
+                fault("after-restart")
+                local = strict_local_validation(
+                    args, str(validated["certificate_sha256"]),
+                    str(validated["intermediate_sha256"]),
+                )
             if int(time.time()) > created + 300:
                 fail("local validation exceeded the activation ordering window")
             authenticate_active(state, args)
@@ -1974,6 +2729,146 @@ def zot_custody(args) -> None:
         state.close()
 
 
+def require_active_rollback(
+    state: PinnedDirectory, args, active: Mapping[str, str]
+) -> dict[str, str]:
+    rollback_data, _ = read_optional_state(state, "rollback")
+    if rollback_data is None:
+        fail("authenticated active state lacks its rollback record")
+    rollback = parse_rollback(rollback_data, args)
+    if (
+        rollback["activating_request_id"] != active["request_id"]
+        or rollback["activating_artifact_manifest_sha256"]
+        != active["artifact_manifest_sha256"]
+        or rollback["activating_certificate_sha256"]
+        != active["certificate_sha256"]
+        or rollback["activating_version_path"] != active["version_path"]
+        or rollback["activating_version_device"] != active["version_device"]
+        or rollback["activating_version_inode"] != active["version_inode"]
+        or rollback["activation_epoch"] != active["activation_epoch"]
+        or rollback["rollback_deadline_epoch"] != active["rollback_deadline_epoch"]
+    ):
+        fail("active and rollback records do not bind one activation")
+    return rollback
+
+
+def openbao_custody(args) -> None:
+    state, lock = common_open(args, shared=True)
+    try:
+        entries = state_entries(state)
+        if entries & {
+            "activation-journal", "request.journal", "trust-install.journal",
+        }:
+            fail("unresolved lifecycle state blocks OpenBao TLS custody selection")
+        authenticated = authenticate_active(state, args)
+        if authenticated is None:
+            if "rollback" in entries:
+                fail("rollback state exists without an authenticated active version")
+            listener, _ = read_service_config(args, "OpenBao dormant listener")
+            _config, container_cert, container_key = parse_openbao_listener(
+                listener, args
+            )
+            dormant_cert = os.path.join(
+                OPENBAO_BASE_CONFIG_DIR, "tls", "tls.crt"
+            )
+            dormant_key = os.path.join(
+                OPENBAO_BASE_CONFIG_DIR, "tls", "tls.key"
+            )
+            if (container_cert, container_key) != (dormant_cert, dormant_key):
+                fail("dormant OpenBao listener does not select the exact base TLS paths")
+            require_openbao_inactive_custody_state(args, allow_absent=True)
+            if os.path.lexists(args.bootstrap_marker_path):
+                fail("dormant OpenBao custody requires an absent bootstrap marker")
+            validate_openbao_raft_directory(args)
+            host_tls = os.path.join(os.path.dirname(args.service_config), "tls")
+            json_output({
+                "schema": "2", "kind": "platform-config-openbao-tls-custody",
+                "custody": "dormant", "request_id": "none",
+                "host_cert_path": os.path.join(host_tls, "tls.crt"),
+                "host_key_path": os.path.join(host_tls, "tls.key"),
+                "container_cert_path": dormant_cert,
+                "container_key_path": dormant_key,
+                "artifact_sha256": "none", "certificate_sha256": "none",
+                "spki_sha256": "none", "chain_sha256": "none",
+                "fullchain_sha256": "none", "listener_sha256": sha256(listener),
+            })
+            return
+
+        active = authenticated["record"]
+        assert isinstance(active, dict)
+        require_active_rollback(state, args, active)
+        require_openbao_inactive_custody_state(args)
+        container_cert, container_key = selected_version_paths(
+            args, active["request_id"]
+        )
+        json_output({
+            "schema": "2", "kind": "platform-config-openbao-tls-custody",
+            "custody": "host-local", "request_id": active["request_id"],
+            "host_cert_path": os.path.join(active["version_path"], "fullchain.crt"),
+            "host_key_path": os.path.join(active["version_path"], "tls.key"),
+            "container_cert_path": container_cert,
+            "container_key_path": container_key,
+            "artifact_sha256": active["artifact_manifest_sha256"],
+            "certificate_sha256": active["certificate_sha256"],
+            "spki_sha256": active["certificate_spki_sha256"],
+            "chain_sha256": active["chain_sha256"],
+            "fullchain_sha256": active["fullchain_sha256"],
+            "listener_sha256": active["zot_config_sha256"],
+        })
+    finally:
+        os.close(lock)
+        state.close()
+
+
+def openbao_staging_preflight(args) -> None:
+    require_absent_canonical_path(
+        args.service_config,
+        "OpenBao listener configuration",
+        allowed_ancestor_gid=OPENBAO_GID,
+    )
+    if not os.path.lexists(args.state_root):
+        require_absent_canonical_path(
+            args.state_root, "OpenBao lifecycle state root"
+        )
+        json_output({
+            "schema": "1",
+            "kind": "platform-config-openbao-staging-preflight",
+            "status": "absent",
+            "service": args.service,
+            "target": args.target,
+        })
+        return
+
+    state, lock = common_open(args, shared=True)
+    trust_root = None
+    try:
+        if state_entries(state) != {"lock", "trust"}:
+            fail("OpenBao pre-staging lifecycle state is not exactly trust-only")
+        trust_root = PinnedDirectory.open(
+            os.path.join(state.path, "trust"),
+            "OpenBao pre-staging trust root",
+        )
+        if set(scan(trust_root, "OpenBao pre-staging trust root")) != {
+            args.trust_id
+        }:
+            fail("OpenBao pre-staging trust root does not select one exact trust ID")
+        load_trust(state, args.trust_id, args.target)
+        state.recheck("OpenBao pre-staging state root")
+        trust_root.recheck("OpenBao pre-staging trust root")
+        json_output({
+            "schema": "1",
+            "kind": "platform-config-openbao-staging-preflight",
+            "status": "trust-only",
+            "service": args.service,
+            "target": args.target,
+        })
+    finally:
+        if trust_root is not None:
+            trust_root.close()
+        os.close(lock)
+        state.close()
+
+
 def target_terminal_history(
     state: PinnedDirectory, args
 ) -> dict[str, tuple[bytes, dict[str, str]]]:
@@ -2019,7 +2914,14 @@ def target_excluded_request_ids(args) -> set[str]:
 
 def target_pending_request_ids(args, excluded: set[str] | None = None) -> tuple[str, ...]:
     excluded_ids = target_excluded_request_ids(args) if excluded is None else excluded
-    root = PinnedDirectory.open(args.pending_root, "target-local pending root")
+    root = PinnedDirectory.open(
+        args.pending_root,
+        "target-local pending root",
+        allowed_owner_gids=(
+            trusted_ancestor_owners() | {OPENBAO_GID}
+            if service_adapter(args) == OPENBAO_ADAPTER else None
+        ),
+    )
     try:
         entries = scan(root, "target-local pending root")
         for request_id, metadata in entries.items():
@@ -2028,6 +2930,10 @@ def target_pending_request_ids(args, excluded: set[str] | None = None) -> tuple[
         return tuple(sorted(set(entries) - excluded_ids))
     finally:
         root.close()
+
+
+def pending_ancestor_gid(args) -> int | None:
+    return OPENBAO_GID if service_adapter(args) == OPENBAO_ADAPTER else None
 
 
 def target_pending_request_id(args) -> str:
@@ -2042,6 +2948,11 @@ def target_artifact_digest(args, request_id: str, *, ingress: bool) -> str:
     directory = PinnedDirectory.open(
         os.path.join(args.versions_root, name),
         "target-local response ingress" if ingress else "target-local immutable version",
+        private=not (service_adapter(args) == OPENBAO_ADAPTER and not ingress),
+        allowed_owner_gids=(
+            trusted_ancestor_owners() | {OPENBAO_GID}
+            if service_adapter(args) == OPENBAO_ADAPTER else None
+        ),
     )
     try:
         artifact, _ = read_at(directory, "artifact", "target-local artifact")
@@ -2074,8 +2985,11 @@ def target_activate_start(args) -> None:
     try:
         trust, _policy = load_trust(state, args.trust_id, args.target)
         pending = validate_pending(
-            os.path.join(args.pending_root, current_request_id), trust
+            os.path.join(args.pending_root, current_request_id),
+            trust,
+            allowed_ancestor_gid=pending_ancestor_gid(args),
         )
+        require_adapter_operation(args, pending["record"])
         args.operation = pending["record"]["operation"]
         if "activation-journal" in state_entries(state):
             journal_data, journal_identity = read_at(
@@ -2116,9 +3030,13 @@ def target_activate_start(args) -> None:
                     "certificate_sha256": validated["certificate_sha256"],
                 })
                 return
-            local = strict_local_validation(
-                args,
-                str(validated["certificate_sha256"]),
+            validation = (
+                openbao_validation_cycle
+                if service_adapter(args) == OPENBAO_ADAPTER
+                else strict_local_validation
+            )
+            local = validation(
+                args, str(validated["certificate_sha256"]),
                 str(validated["intermediate_sha256"]),
             )
             json_output({
@@ -2199,9 +3117,11 @@ def authenticate_target_candidate(state: PinnedDirectory, args, trust: Mapping[s
     pending = validate_pending(
         os.path.join(args.pending_root, args.request_id), trust,
         expected_request_id=args.request_id,
+        allowed_ancestor_gid=pending_ancestor_gid(args),
     )
     version, version_files, _ = validate_version(
-        os.path.join(args.versions_root, args.request_id), args.request_id
+        os.path.join(args.versions_root, args.request_id), args.request_id,
+        service_adapter(args),
     )
     try:
         args.artifact_sha256 = sha256(version_files["artifact"])
@@ -2323,7 +3243,11 @@ def validate_target_completion(
     args,
     validated: Mapping[str, object],
 ) -> dict[str, str]:
-    local = strict_local_validation(
+    validation = (
+        openbao_validation_cycle
+        if service_adapter(args) == OPENBAO_ADAPTER else strict_local_validation
+    )
+    local = validation(
         args, str(validated["certificate_sha256"]),
         str(validated["intermediate_sha256"]),
     )
@@ -2487,6 +3411,9 @@ def target_activate_complete(args) -> None:
 def target_recover(args) -> None:
     state, lock = common_open(args)
     try:
+        if service_adapter(args) == OPENBAO_ADAPTER:
+            service_action(args, "stop")
+            require_openbao_inactive_disabled(args)
         entries = state_entries(state)
         terminal_data, _ = read_optional_state(state, "target-terminal")
         if terminal_data is not None:
@@ -2573,7 +3500,12 @@ def target_status(args) -> None:
                 selected, action = "recovery-required", "recover"
         elif pending_request_ids:
             request_id = pending_request_ids[0]
-            pending = validate_pending(os.path.join(args.pending_root, request_id), trust)
+            pending = validate_pending(
+                os.path.join(args.pending_root, request_id),
+                trust,
+                allowed_ancestor_gid=pending_ancestor_gid(args),
+            )
+            require_adapter_operation(args, pending["record"])
             if pending["expired"]:
                 selected, action = "request-expired", "reset-required"
                 request_id = "none"
@@ -2587,6 +3519,10 @@ def target_status(args) -> None:
                     ingress, files, _ = open_exact_tree(
                         os.path.join(args.versions_root, f".ingress-{request_id}"),
                         RESPONSE_NAMES, "target response ingress",
+                        allowed_ancestor_gid=(
+                            OPENBAO_GID
+                            if service_adapter(args) == OPENBAO_ADAPTER else None
+                        ),
                     )
                     ingress.close()
                     args.artifact_sha256 = sha256(files["artifact"])
@@ -2615,8 +3551,21 @@ def add_common(parser: argparse.ArgumentParser, *, config: bool = False) -> None
     parser.add_argument("--versions-root", required=True)
     parser.add_argument("--service", required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument(
+        "--service-adapter", choices=SERVICE_ADAPTERS, default=ZOT_ADAPTER
+    )
+    parser.add_argument("--service-unit")
+    parser.add_argument("--service-config", "--service-config-path", dest="service_config")
+    parser.add_argument("--node-dns")
+    parser.add_argument("--node-address")
+    parser.add_argument("--backend-port", type=int)
+    parser.add_argument("--cluster-port", type=int)
+    parser.add_argument("--container-versions-root")
+    parser.add_argument("--base-config-dir", "--base-config-directory", dest="base_config_dir")
+    parser.add_argument("--raft-data-dir")
+    parser.add_argument("--bootstrap-marker-path")
     if config:
-        parser.add_argument("--zot-config", required=True)
+        parser.add_argument("--zot-config")
 
 
 def add_target_candidate(parser: argparse.ArgumentParser) -> None:
@@ -2665,7 +3614,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common(target_start, config=True)
     add_target_candidate(target_start)
-    target_start.add_argument("--endpoint", required=True)
+    target_start.add_argument("--endpoint")
     target_start.add_argument("--reviewed-ca", required=True)
     target_start.add_argument("--reviewed-ca-mode", type=lambda value: int(value, 8), default=0o600)
     target_start.add_argument("--prior-certificate-mode", type=lambda value: int(value, 8), default=0o644)
@@ -2679,7 +3628,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common(target_complete, config=True)
     add_target_candidate(target_complete)
-    target_complete.add_argument("--endpoint", required=True)
+    target_complete.add_argument("--endpoint")
     target_complete.add_argument("--reviewed-ca", required=True)
     target_complete.add_argument("--reviewed-ca-mode", type=lambda value: int(value, 8), default=0o600)
     target_complete.add_argument("--check", action="store_true")
@@ -2719,6 +3668,20 @@ def build_parser() -> argparse.ArgumentParser:
     custody.add_argument("--managed-key", required=True)
     custody.add_argument("--managed-config-sha256", required=True)
     custody.set_defaults(function=zot_custody)
+
+    openbao_custody_parser = commands.add_parser(
+        "openbao-custody",
+        help="derive exact dormant or authenticated host-local OpenBao TLS custody",
+    )
+    add_common(openbao_custody_parser, config=True)
+    openbao_custody_parser.set_defaults(function=openbao_custody)
+    openbao_staging_parser = commands.add_parser(
+        "openbao-staging-preflight",
+        help="authenticate absent or exact trust-only state before dormant staging",
+    )
+    add_common(openbao_staging_parser)
+    openbao_staging_parser.add_argument("--trust-id", required=True)
+    openbao_staging_parser.set_defaults(function=openbao_staging_preflight)
     return parser
 
 
@@ -2738,7 +3701,72 @@ def validate_arguments(args) -> None:
     if hasattr(args, "rollback_seconds") and args.rollback_seconds < MIN_ROLLBACK_SECONDS:
         fail(f"rollback seconds must be at least {MIN_ROLLBACK_SECONDS}")
     if hasattr(args, "zot_config"):
-        args.zot_config = canonical_path(args.zot_config, "Zot configuration")
+        if service_adapter(args) == ZOT_ADAPTER:
+            if args.zot_config is None:
+                fail("zot-v1 requires --zot-config")
+            args.zot_config = canonical_path(args.zot_config, "Zot configuration")
+            if args.zot_config != "/etc/zot/config.json":
+                fail("zot-v1 requires exact /etc/zot/config.json")
+        elif args.zot_config is not None:
+            fail("openbao-pristine-v1 does not accept --zot-config")
+
+    openbao_names = (
+        "service_unit", "service_config", "node_dns", "node_address",
+        "backend_port", "cluster_port", "container_versions_root",
+        "base_config_dir", "raft_data_dir", "bootstrap_marker_path",
+    )
+    if service_adapter(args) == ZOT_ADAPTER:
+        if args.command == "openbao-custody":
+            fail("openbao-custody supports openbao-pristine-v1 only")
+        if any(getattr(args, name) is not None for name in openbao_names):
+            fail("zot-v1 does not accept OpenBao adapter arguments")
+        if getattr(args, "endpoint", None) is None and args.command in {
+            "target-activate-start", "target-activate-complete",
+        }:
+            fail("zot-v1 requires --endpoint")
+        return
+    if args.command == "zot-custody":
+        fail("zot-custody supports zot-v1 only")
+    missing = [name for name in openbao_names if getattr(args, name) is None]
+    if missing:
+        fail("openbao-pristine-v1 requires its complete fixed adapter argument set")
+    if getattr(args, "endpoint", None) is not None:
+        fail("openbao-pristine-v1 does not accept an endpoint URL")
+    if args.service_unit != "openbao.service":
+        fail("openbao-pristine-v1 requires exact openbao.service")
+    args.service_config = canonical_path(args.service_config, "OpenBao listener configuration")
+    args.container_versions_root = canonical_path(
+        args.container_versions_root, "container-visible versions root"
+    )
+    args.base_config_dir = canonical_path(args.base_config_dir, "OpenBao base config directory")
+    args.raft_data_dir = canonical_path(args.raft_data_dir, "OpenBao Raft data directory")
+    args.bootstrap_marker_path = canonical_path(
+        args.bootstrap_marker_path, "OpenBao bootstrap marker path"
+    )
+    args.node_dns = validate_dns(args.node_dns, "OpenBao node DNS name")
+    try:
+        address = ipaddress.ip_address(args.node_address)
+    except ValueError:
+        fail("OpenBao node address is not a canonical IPv4 address")
+    if not isinstance(address, ipaddress.IPv4Address) or str(address) != args.node_address:
+        fail("OpenBao node address is not a canonical IPv4 address")
+    if any(port < 1 or port > 65535 for port in (args.backend_port, args.cluster_port)):
+        fail("OpenBao direct ports must be in the range 1..65535")
+    if args.backend_port == args.cluster_port:
+        fail("OpenBao backend and cluster ports must differ")
+    if args.container_versions_root != OPENBAO_CONTAINER_VERSIONS_ROOT:
+        fail("openbao-pristine-v1 requires exact /openbao/config/tls-versions")
+    if args.base_config_dir != OPENBAO_BASE_CONFIG_DIR:
+        fail("openbao-pristine-v1 requires exact /openbao/config base directory")
+    host_paths = (
+        args.service_config, args.versions_root, args.raft_data_dir,
+        args.bootstrap_marker_path,
+    )
+    for index, left in enumerate(host_paths):
+        for right in host_paths[index + 1:]:
+            common = os.path.commonpath((left, right))
+            if common in {left, right}:
+                fail("OpenBao adapter host paths must be disjoint")
 
 
 def main() -> None:

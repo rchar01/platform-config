@@ -158,16 +158,33 @@ if grep -q '198[.]51[.]100[.]1/32.*port="18200"' <<< "$updated_rules"; then
   fail 'Obsolete OpenBao backend source rule remained staged'
 fi
 
-config_hash_before="$(podman exec "$CONTAINER" sha256sum /etc/openbao/openbao.hcl)"
-if run_playbook \
-  --extra-vars openbao_log_level=debug \
-  --extra-vars 'openbao_config_validate_command=/bin/false %s' \
-  >/dev/null 2>&1; then
-  fail 'OpenBao role accepted a candidate rejected by its validator'
+listener_hash_before="$(podman exec "$CONTAINER" sha256sum /etc/openbao/listener.hcl)"
+podman exec "$CONTAINER" cp \
+  /etc/openbao/listener.hcl /tmp/openbao-test/invalid-listener.hcl
+podman exec "$CONTAINER" bash -c \
+  "printf '%s\n' 'listener \"tcp\" {' >> /tmp/openbao-test/invalid-listener.hcl"
+if podman exec "$CONTAINER" \
+  /usr/local/libexec/platform/openbao-validate-config \
+  listener /tmp/openbao-test/invalid-listener.hcl >/dev/null 2>&1; then
+  fail 'OpenBao role validator accepted an invalid listener candidate'
 fi
-config_hash_after="$(podman exec "$CONTAINER" sha256sum /etc/openbao/openbao.hcl)"
-[[ "$config_hash_before" == "$config_hash_after" ]] \
-  || fail 'Rejected OpenBao candidate replaced the last valid configuration'
+listener_hash_after="$(podman exec "$CONTAINER" sha256sum /etc/openbao/listener.hcl)"
+[[ "$listener_hash_before" == "$listener_hash_after" ]] \
+  || fail 'Rejected OpenBao listener candidate replaced the active configuration'
+
+base_hash_before="$(podman exec "$CONTAINER" sha256sum /etc/openbao/openbao.hcl)"
+podman exec "$CONTAINER" cp \
+  /etc/openbao/openbao.hcl /tmp/openbao-test/invalid-openbao.hcl
+podman exec "$CONTAINER" bash -c \
+  "printf '%s\n' 'storage \"raft\" {' >> /tmp/openbao-test/invalid-openbao.hcl"
+if podman exec "$CONTAINER" \
+  /usr/local/libexec/platform/openbao-validate-config \
+  base /tmp/openbao-test/invalid-openbao.hcl >/dev/null 2>&1; then
+  fail 'OpenBao role validator accepted an invalid base configuration candidate'
+fi
+base_hash_after="$(podman exec "$CONTAINER" sha256sum /etc/openbao/openbao.hcl)"
+[[ "$base_hash_before" == "$base_hash_after" ]] \
+  || fail 'Rejected OpenBao base candidate replaced the active configuration'
 
 podman exec "$CONTAINER" umount /var/lib/openbao-backup-staging
 if run_playbook >/dev/null 2>&1; then
@@ -179,9 +196,77 @@ podman exec "$CONTAINER" mount \
   tmpfs \
   /var/lib/openbao-backup-staging
 
-run_playbook \
+podman exec "$CONTAINER" mkdir -p \
+  /var/lib/platform-config/pki/openbao \
+  /var/lib/platform-config/pki/openbao-pending \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef \
+  /usr/local/libexec
+podman exec "$CONTAINER" cp \
+  /workspace/tests/fixtures/openbao/openbao-custody-helper \
+  /usr/local/libexec/platform-pki-host-local-lifecycle
+podman exec "$CONTAINER" chmod 0755 \
+  /usr/local/libexec/platform-pki-host-local-lifecycle
+podman exec "$CONTAINER" cp \
+  /tmp/openbao-test/tls.crt \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/tls.crt
+podman exec "$CONTAINER" cp \
+  /tmp/openbao-test/tls.crt \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/chain.crt
+podman exec "$CONTAINER" cp \
+  /tmp/openbao-test/tls.crt \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/fullchain.crt
+podman exec "$CONTAINER" cp \
+  /tmp/openbao-test/tls.key \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/tls.key
+podman exec "$CONTAINER" cp \
+  /tmp/openbao-test/tls.crt \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/artifact
+podman exec "$CONTAINER" chown root:1000 \
+  /etc/openbao/tls-versions \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/tls.key
+podman exec "$CONTAINER" chmod 0750 \
+  /etc/openbao/tls-versions \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef
+podman exec "$CONTAINER" chmod 0640 \
+  /etc/openbao/tls-versions/0123456789abcdef0123456789abcdef/tls.key
+podman exec "$CONTAINER" bash -c \
+  "printf '%s\n' \
+    'listener \"tcp\" {' \
+    '  address = \"127.0.0.1:18200\"' \
+    '  cluster_address = \"127.0.0.1:8201\"' \
+    '  tls_cert_file = \"/openbao/config/tls-versions/0123456789abcdef0123456789abcdef/fullchain.crt\"' \
+    '  tls_key_file = \"/openbao/config/tls-versions/0123456789abcdef0123456789abcdef/tls.key\"' \
+    '  tls_min_version = \"tls12\"' \
+    '  tls_max_version = \"tls13\"' \
+    '  tls_disable_client_certs = true' \
+    '  disable_unauthed_rekey_endpoints = true' \
+    '  disable_unauthed_generate_root_endpoints = true' \
+    '}' > /etc/openbao/listener.hcl"
+podman exec "$CONTAINER" chown root:1000 /etc/openbao/listener.hcl
+podman exec "$CONTAINER" chmod 0640 /etc/openbao/listener.hcl
+
+podman exec "$CONTAINER" systemctl mask openbao.service >/dev/null
+custody_output=""
+if ! custody_output="$(run_playbook \
+  --extra-vars '{"openbao_test_expect_restart_required":false}' 2>&1)"; then
+  printf '%s\n' "$custody_output" >&2
+  fail 'OpenBao masked custody resolution failed'
+fi
+if [[ "$(podman exec "$CONTAINER" systemctl is-enabled openbao.service 2>/dev/null || true)" != masked ]]; then
+  fail 'OpenBao custody resolution did not restore the fail-closed staging mask'
+fi
+podman exec "$CONTAINER" systemctl unmask openbao.service >/dev/null
+
+active_output=""
+if ! active_output="$(run_playbook \
   --extra-vars '{"openbao_test_service_started":true,"openbao_test_expect_restart_required":true}' \
-  >/dev/null
+  2>&1)"; then
+  printf '%s\n' "$active_output" >&2
+  podman exec "$CONTAINER" systemctl status openbao.service --no-pager >&2 || true
+  podman exec "$CONTAINER" journalctl -u openbao.service --no-pager >&2 || true
+  fail 'OpenBao authenticated host-local activation failed'
+fi
 podman exec "$CONTAINER" test -e \
   /run/systemd/generator/multi-user.target.wants/openbao.service \
   || fail 'OpenBao Quadlet did not gain its explicit activation target'
@@ -208,10 +293,9 @@ grep -qE 'changed=0.*failed=0' <<< "$active_idempotent_output" \
 
 podman exec "$CONTAINER" systemctl mask --now openbao.service >/dev/null
 if run_playbook \
-  --extra-vars openbao_log_level=debug \
-  --extra-vars 'openbao_config_validate_command=/bin/false %s' \
+  --extra-vars openbao_tls_ca_src=/tmp/openbao-test/absent-ca.crt \
   >/dev/null 2>&1; then
-  fail 'OpenBao accepted a staged candidate rejected before Quadlet replacement'
+  fail 'OpenBao accepted a failed pre-Quadlet staging attempt'
 fi
 podman exec "$CONTAINER" systemctl daemon-reload
 if podman exec "$CONTAINER" systemctl is-active --quiet openbao.service; then

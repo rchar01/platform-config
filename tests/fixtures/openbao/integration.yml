@@ -19,8 +19,25 @@
     openbao_service_dns: bao-test.internal.invalid
     openbao_service_vip: 192.0.2.100
     openbao_tls_ca_src: /tmp/openbao-test/ca.crt
-    openbao_tls_cert_src: /tmp/openbao-test/tls.crt
-    openbao_tls_key_src: /tmp/openbao-test/tls.key
+    pki_host_local_certificate_state_root: /var/lib/platform-config/pki/openbao
+    pki_host_local_certificate_pending_root: /var/lib/platform-config/pki/openbao-pending
+    pki_host_local_certificate_versions_root: /etc/openbao/tls-versions
+    pki_host_local_certificate_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
+    pki_host_local_certificate_service: openbao-test-01
+    pki_host_local_certificate_target: localhost
+    pki_host_local_certificate_service_adapter: openbao-pristine-v1
+    pki_host_local_certificate_service_unit: openbao.service
+    pki_host_local_certificate_service_config_path: /etc/openbao/listener.hcl
+    pki_host_local_certificate_trust_id: openbao-test-v1
+    pki_host_local_certificate_reviewed_ca_target_path: /etc/platform-config/openbao-validation-ca.crt
+    pki_host_local_certificate_openbao_node_dns: bao-test-1.internal.invalid
+    pki_host_local_certificate_openbao_node_address: 127.0.0.1
+    pki_host_local_certificate_openbao_backend_port: 18200
+    pki_host_local_certificate_openbao_cluster_port: 8201
+    pki_host_local_certificate_openbao_container_versions_root: /openbao/config/tls-versions
+    pki_host_local_certificate_openbao_base_config_dir: /openbao/config
+    pki_host_local_certificate_openbao_raft_data_dir: /var/lib/openbao
+    pki_host_local_certificate_openbao_bootstrap_marker_path: /var/lib/platform-config/openbao-bootstrap.json
     openbao_cluster_members:
       - name: localhost
         node_id: bao-test-1
@@ -34,6 +51,15 @@
         node_id: bao-test-3
         address: 127.0.0.3
         dns: bao-test-3.internal.invalid
+  pre_tasks:
+    - name: Install fixed OpenBao custody fixture helper
+      ansible.builtin.copy:
+        src: openbao-custody-helper
+        dest: /usr/local/libexec/platform-pki-host-local-lifecycle
+        owner: root
+        group: root
+        mode: "0755"
+      check_mode: false
   roles:
     - firewalld
     - podman_host

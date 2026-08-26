@@ -1,0 +1,58 @@
+---
+- name: Authenticate absent or trust-only OpenBao staging state
+  ansible.builtin.command:
+    argv:
+      - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+      - openbao-staging-preflight
+      - --state-root
+      - "{{ pki_host_local_certificate_state_root }}"
+      - --pending-root
+      - "{{ pki_host_local_certificate_pending_root }}"
+      - --versions-root
+      - "{{ pki_host_local_certificate_versions_root }}"
+      - --service
+      - "{{ pki_host_local_certificate_service }}"
+      - --target
+      - "{{ pki_host_local_certificate_target }}"
+      - --service-adapter
+      - "{{ pki_host_local_certificate_service_adapter }}"
+      - --service-unit
+      - "{{ pki_host_local_certificate_service_unit }}"
+      - --service-config
+      - "{{ pki_host_local_certificate_service_config_path }}"
+      - --node-dns
+      - "{{ pki_host_local_certificate_openbao_node_dns }}"
+      - --node-address
+      - "{{ pki_host_local_certificate_openbao_node_address }}"
+      - --backend-port
+      - "{{ pki_host_local_certificate_openbao_backend_port | string }}"
+      - --cluster-port
+      - "{{ pki_host_local_certificate_openbao_cluster_port | string }}"
+      - --container-versions-root
+      - "{{ pki_host_local_certificate_openbao_container_versions_root }}"
+      - --base-config-dir
+      - "{{ pki_host_local_certificate_openbao_base_config_dir }}"
+      - --raft-data-dir
+      - "{{ pki_host_local_certificate_openbao_raft_data_dir }}"
+      - --bootstrap-marker-path
+      - "{{ pki_host_local_certificate_openbao_bootstrap_marker_path }}"
+      - --trust-id
+      - "{{ pki_host_local_certificate_trust_id }}"
+  register: openbao_staging_lifecycle_preflight_result
+  changed_when: false
+  check_mode: false
+
+- name: Require authenticated OpenBao staging lifecycle state
+  ansible.builtin.assert:
+    that:
+      - openbao_staging_lifecycle_preflight_result.stderr | length == 0
+      - openbao_staging_lifecycle_preflight.keys() | list | sort == ['kind', 'schema', 'service', 'status', 'target']
+      - openbao_staging_lifecycle_preflight.schema == '1'
+      - openbao_staging_lifecycle_preflight.kind == 'platform-config-openbao-staging-preflight'
+      - openbao_staging_lifecycle_preflight.status in ['absent', 'trust-only']
+      - openbao_staging_lifecycle_preflight.service == pki_host_local_certificate_service
+      - openbao_staging_lifecycle_preflight.target == pki_host_local_certificate_target
+    fail_msg: OpenBao staging lifecycle preflight returned unsafe metadata.
+  vars:
+    openbao_staging_lifecycle_preflight: >-
+      {{ openbao_staging_lifecycle_preflight_result.stdout | from_json }}

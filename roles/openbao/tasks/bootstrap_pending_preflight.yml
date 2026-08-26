@@ -42,6 +42,37 @@
         else {}
       }}
 
+- name: Read authenticated OpenBao listener selection
+  ansible.builtin.slurp:
+    path: "{{ openbao_listener_path }}"
+  register: openbao_bootstrap_pending_listener_slurp
+
+- name: Derive authenticated OpenBao listener request
+  ansible.builtin.set_fact:
+    openbao_bootstrap_pending_listener: >-
+      {{ openbao_bootstrap_pending_listener_slurp.content | b64decode }}
+    openbao_bootstrap_pending_request_ids: >-
+      {{
+        openbao_bootstrap_pending_listener_slurp.content
+        | b64decode
+        | regex_findall('/openbao/config/tls-versions/([0-9a-f]{32})/(?:fullchain[.]crt|tls[.]key)')
+      }}
+
+- name: Require one exact host-local OpenBao listener request
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_pending_request_ids | length == 2
+      - openbao_bootstrap_pending_request_ids | unique | length == 1
+    fail_msg: OpenBao bootstrap completion rejects dormant or ambiguous TLS custody.
+
+- name: Select authenticated OpenBao custody host paths
+  ansible.builtin.set_fact:
+    openbao_bootstrap_pending_request_id: "{{ openbao_bootstrap_pending_request_ids | first }}"
+    openbao_bootstrap_pending_cert_path: >-
+      /etc/openbao/tls-versions/{{ openbao_bootstrap_pending_request_ids | first }}/fullchain.crt
+    openbao_bootstrap_pending_key_path: >-
+      /etc/openbao/tls-versions/{{ openbao_bootstrap_pending_request_ids | first }}/tls.key
+
 - name: Inspect current OpenBao bootstrap artifacts
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -49,10 +80,11 @@
   register: openbao_bootstrap_pending_artifact_stats
   loop:
     - "{{ openbao_config_path }}"
+    - "{{ openbao_listener_path }}"
     - "{{ openbao_quadlet_path }}"
     - "{{ openbao_tls_ca_path }}"
-    - "{{ openbao_tls_cert_path }}"
-    - "{{ openbao_tls_key_path }}"
+    - "{{ openbao_bootstrap_pending_cert_path }}"
+    - "{{ openbao_bootstrap_pending_key_path }}"
     - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
 
 - name: Derive exact inactive OpenBao Quadlet checksum
@@ -84,16 +116,16 @@
   ansible.builtin.assert:
     that:
       - >-
-        openbao_bootstrap_pending_artifact_stats.results[1].stat.checksum
+        openbao_bootstrap_pending_artifact_stats.results[2].stat.checksum
         in [
           openbao_bootstrap_expected_inactive_quadlet_checksum,
           openbao_bootstrap_expected_active_quadlet_checksum
         ]
       - >-
         (
-          openbao_bootstrap_pending_artifact_stats.results[1].stat.checksum
+          openbao_bootstrap_pending_artifact_stats.results[2].stat.checksum
           == openbao_bootstrap_expected_active_quadlet_checksum
-        ) == openbao_bootstrap_pending_artifact_stats.results[5].stat.exists
+        ) == openbao_bootstrap_pending_artifact_stats.results[6].stat.exists
       - ansible_facts.services.get(openbao_service_name, {}).get('state', '') == 'running'
       - openbao_bootstrap_pending_container_exists.rc == 0
     fail_msg: >-
@@ -108,10 +140,15 @@
       - openbao_bootstrap_pending_marker.inventory_hosts | sort == groups.get('openbao', []) | sort
       - openbao_bootstrap_pending_marker.inventory_host == inventory_hostname
       - openbao_bootstrap_pending_marker.node_id == openbao_node_name
-      - openbao_bootstrap_pending_marker.config_checksum == openbao_bootstrap_pending_artifact_stats.results[0].stat.checksum
-      - openbao_bootstrap_pending_marker.ca_checksum == openbao_bootstrap_pending_artifact_stats.results[2].stat.checksum
-      - openbao_bootstrap_pending_marker.certificate_checksum == openbao_bootstrap_pending_artifact_stats.results[3].stat.checksum
-      - openbao_bootstrap_pending_marker.key_checksum == openbao_bootstrap_pending_artifact_stats.results[4].stat.checksum
+      - >-
+        openbao_bootstrap_pending_marker.config_checksum
+        == ({
+              'base_config_sha256': openbao_bootstrap_pending_artifact_stats.results[0].stat.checksum,
+              'listener_sha256': openbao_bootstrap_pending_artifact_stats.results[1].stat.checksum
+            } | to_json | hash('sha256'))
+      - openbao_bootstrap_pending_marker.ca_checksum == openbao_bootstrap_pending_artifact_stats.results[3].stat.checksum
+      - openbao_bootstrap_pending_marker.certificate_checksum == openbao_bootstrap_pending_artifact_stats.results[4].stat.checksum
+      - openbao_bootstrap_pending_marker.key_checksum == openbao_bootstrap_pending_artifact_stats.results[5].stat.checksum
       - openbao_bootstrap_pending_marker.image_digest == openbao_image_digest
     fail_msg: Existing OpenBao bootstrap marker does not match current artifacts.
   when: openbao_bootstrap_pending_marker_stat.stat.exists
@@ -121,11 +158,18 @@
     openbao_bootstrap_pending_observation:
       inventory_host: "{{ inventory_hostname }}"
       node_id: "{{ openbao_node_name }}"
-      config_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[0].stat.checksum }}"
+      config_checksum: >-
+        {{
+          {
+            'base_config_sha256': openbao_bootstrap_pending_artifact_stats.results[0].stat.checksum,
+            'listener_sha256': openbao_bootstrap_pending_artifact_stats.results[1].stat.checksum
+          } | to_json | hash('sha256')
+        }}
       quadlet_checksum: "{{ openbao_bootstrap_expected_inactive_quadlet_checksum }}"
-      ca_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[2].stat.checksum }}"
-      certificate_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[3].stat.checksum }}"
-      key_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[4].stat.checksum }}"
+      ca_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[3].stat.checksum }}"
+      certificate_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[4].stat.checksum }}"
+      key_checksum: "{{ openbao_bootstrap_pending_artifact_stats.results[5].stat.checksum }}"
       image_digest: "{{ openbao_image_digest }}"
     openbao_bootstrap_pending_marker_signature: >-
       {{ openbao_bootstrap_pending_marker.cluster_signature | default('') }}
+    openbao_bootstrap_pending_custody: host-local

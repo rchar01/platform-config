@@ -8,6 +8,12 @@
       - openbao_service_state == 'stopped'
     fail_msg: OpenBao temporary bootstrap start is not authorized.
 
+- name: Unmask OpenBao for temporary bootstrap start
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_service_name }}"
+    masked: false
+    state: stopped
+
 - name: Start OpenBao without boot enablement
   ansible.builtin.systemd_service:
     name: "{{ openbao_service_name }}"

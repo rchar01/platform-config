@@ -21,12 +21,15 @@ openbao_bootstrap_complete_ready: false
 openbao_config_dir: /etc/openbao
 openbao_tls_dir: "{{ openbao_config_dir }}/tls"
 openbao_config_path: "{{ openbao_config_dir }}/openbao.hcl"
+openbao_listener_path: "{{ openbao_config_dir }}/listener.hcl"
 openbao_tls_ca_path: "{{ openbao_tls_dir }}/ca.crt"
-openbao_tls_cert_path: "{{ openbao_tls_dir }}/tls.crt"
-openbao_tls_key_path: "{{ openbao_tls_dir }}/tls.key"
+openbao_dormant_tls_cert_path: "{{ openbao_tls_dir }}/tls.crt"
+openbao_dormant_tls_key_path: "{{ openbao_tls_dir }}/tls.key"
 openbao_validator_dir: /usr/local/libexec/platform
 openbao_validator_path: "{{ openbao_validator_dir }}/openbao-validate-config"
-openbao_config_validate_command: "{{ openbao_validator_path }} %s"
+openbao_base_config_validate_command: "{{ openbao_validator_path }} base %s"
+openbao_dormant_base_config_validate_command: "{{ openbao_validator_path }} base-dormant %s"
+openbao_config_validate_command: "{{ openbao_validator_path }} listener %s"
 
 openbao_data_dir: /var/lib/openbao
 openbao_audit_1_dir: /var/log/openbao/audit-1
@@ -53,8 +56,6 @@ openbao_backend_port: 18200
 openbao_cluster_port: 8201
 
 openbao_tls_ca_src: ""
-openbao_tls_cert_src: ""
-openbao_tls_key_src: ""
 openbao_tls_min_version: tls12
 openbao_tls_max_version: tls13
 openbao_tls_disable_client_certs: true
@@ -81,3 +82,11 @@ openbao_firewalld_manifest_path: "{{ openbao_state_dir }}/openbao-firewalld.yml"
 openbao_bootstrap_marker_path: "{{ openbao_state_dir }}/openbao-bootstrap.json"
 openbao_bootstrap_marker_owner: root
 openbao_bootstrap_marker_group: root
+
+pki_host_local_certificate_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
+pki_host_local_certificate_openbao_backend_port: "{{ openbao_backend_port }}"
+pki_host_local_certificate_openbao_cluster_port: "{{ openbao_cluster_port }}"
+pki_host_local_certificate_openbao_container_versions_root: /openbao/config/tls-versions
+pki_host_local_certificate_openbao_base_config_dir: /openbao/config
+pki_host_local_certificate_openbao_raft_data_dir: "{{ openbao_data_dir }}"
+pki_host_local_certificate_openbao_bootstrap_marker_path: "{{ openbao_bootstrap_marker_path }}"

@@ -1,4 +1,10 @@
 ---
+- name: Require mocked OpenBao bootstrap readiness
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_ready | bool
+    fail_msg: OpenBao bootstrap start requires explicit readiness.
+
 - name: Reject mocked OpenBao bootstrap preflight
   ansible.builtin.assert:
     that:

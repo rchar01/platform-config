@@ -117,6 +117,7 @@ def test_target_local_parser_routes_do_not_accept_manual_coordinates(
         ["target-activate-complete", *common, *config, *candidate, "--endpoint", ENDPOINT, "--reviewed-ca", "/ca.pem"],
         ["target-recover", *common, *config, *candidate],
         ["target-status", *common, *config, *candidate],
+        ["openbao-staging-preflight", *common, "--trust-id", "reviewed-v2"],
     )
 
     parsed = tuple(parser.parse_args(command) for command in commands)
@@ -131,13 +132,16 @@ def test_target_local_parser_routes_do_not_accept_manual_coordinates(
         "target-status",
         "active-paths",
         "zot-custody",
+        "openbao-custody",
+        "openbao-staging-preflight",
     }
     assert tuple(value.command for value in parsed) == (
         "target-request-export", "target-response-prepare", "target-response-install",
         "target-activate-start", "target-activate-complete", "target-recover",
-        "target-status",
+        "target-status", "openbao-staging-preflight",
     )
     assert all(not hasattr(value, "target_local") for value in parsed)
+    assert all(value.service_adapter == "zot-v1" for value in parsed)
     assert all(getattr(value, "request_id", None) is None for value in parsed)
     assert all(getattr(value, "artifact_sha256", None) is None for value in parsed)
     assert getattr(parsed[3], "operation", None) is None
@@ -197,7 +201,7 @@ class LifecycleCase:
             "--target", TARGET,
         ]
         if config:
-            argv.extend(("--zot-config", self.zot_config))
+            argv.extend(("--zot-config", "/etc/zot/config.json"))
         return argv
 
     def environment(self, additions: dict[str, str] | None = None) -> dict[str, str]:
@@ -206,6 +210,7 @@ class LifecycleCase:
             "PLATFORM_PKI_LIFECYCLE_TEST_SYSTEMCTL": str(self.systemctl),
             "PLATFORM_PKI_LIFECYCLE_TEST_LOCAL_VALIDATION": str(self.local_observation),
             "PLATFORM_PKI_LIFECYCLE_TEST_SERVICE_LOG": str(self.service_log),
+            "PLATFORM_PKI_LIFECYCLE_TEST_ZOT_CONFIG": str(self.zot_config),
         }
         if additions:
             result.update(additions)
@@ -789,6 +794,7 @@ def test_completion_value_error_restores_predecessor_and_terminalizes(
         "PLATFORM_PKI_LIFECYCLE_TESTING": "1",
         "PLATFORM_PKI_LIFECYCLE_TEST_SYSTEMCTL": str(case.systemctl),
         "PLATFORM_PKI_LIFECYCLE_TEST_SERVICE_LOG": str(case.service_log),
+        "PLATFORM_PKI_LIFECYCLE_TEST_ZOT_CONFIG": str(case.zot_config),
     }))
 
     assert failed["status"] == "rolled-back"

@@ -1,0 +1,267 @@
+---
+- name: Inspect OpenBao host-local custody prerequisites
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_custody_prerequisite_stats
+  loop:
+    - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+    - "{{ pki_host_local_certificate_state_root }}"
+    - "{{ openbao_listener_path }}"
+
+- name: Require the exact OpenBao listener artifact
+  ansible.builtin.assert:
+    that:
+      - openbao_custody_prerequisite_stats.results[2].stat.exists
+      - openbao_custody_prerequisite_stats.results[2].stat.isreg
+      - openbao_custody_prerequisite_stats.results[2].stat.pw_name == 'root'
+      - openbao_custody_prerequisite_stats.results[2].stat.gid == openbao_container_gid | int
+      - openbao_custody_prerequisite_stats.results[2].stat.mode == '0640'
+    fail_msg: OpenBao custody requires the private adapter-owned listener artifact.
+
+- name: Inspect absent OpenBao lifecycle state paths
+  ansible.builtin.stat:
+    path: "{{ pki_host_local_certificate_state_root }}/{{ item }}"
+  register: openbao_absent_lifecycle_path_stats
+  loop:
+    - active
+    - rollback
+    - activation-journal
+    - request.journal
+    - trust-install.journal
+  when: not openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Inspect dormant OpenBao leaf paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: openbao_dormant_leaf_stats
+  loop:
+    - "{{ openbao_dormant_tls_cert_path }}"
+    - "{{ openbao_dormant_tls_key_path }}"
+
+- name: Inspect dormant OpenBao data
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ openbao_data_dir }}"
+      - -mindepth
+      - "1"
+      - -maxdepth
+      - "1"
+      - -print
+      - -quit
+  register: openbao_dormant_data_entries
+  changed_when: false
+  check_mode: false
+  when: not openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Inspect dormant OpenBao lifecycle marker and enablement
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: openbao_dormant_lifecycle_stats
+  loop:
+    - "{{ openbao_bootstrap_marker_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ openbao_service_name }}"
+  when: not openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Inspect dormant OpenBao service state
+  ansible.builtin.service_facts:
+  when: not openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Resolve exact absent-state OpenBao custody
+  ansible.builtin.set_fact:
+    openbao_tls_custody:
+      schema: "2"
+      kind: platform-config-openbao-tls-custody
+      custody: dormant
+      request_id: none
+      host_cert_path: /etc/openbao/tls/tls.crt
+      host_key_path: /etc/openbao/tls/tls.key
+      container_cert_path: /openbao/config/tls/tls.crt
+      container_key_path: /openbao/config/tls/tls.key
+      artifact_sha256: none
+      certificate_sha256: none
+      spki_sha256: none
+      chain_sha256: none
+      fullchain_sha256: none
+      listener_sha256: "{{ openbao_custody_prerequisite_stats.results[2].stat.checksum }}"
+  when: not openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Require exact pristine absent-state OpenBao custody
+  ansible.builtin.assert:
+    that:
+      - openbao_absent_lifecycle_path_stats.results | rejectattr('stat.exists', 'equalto', false) | list | length == 0
+      - openbao_dormant_leaf_stats.results | rejectattr('stat.exists', 'equalto', false) | list | length == 0
+      - openbao_dormant_data_entries.stdout | trim | length == 0
+      - openbao_dormant_lifecycle_stats.results | rejectattr('stat.exists', 'equalto', false) | list | length == 0
+      - ansible_facts.services.get(openbao_service_name, {}).get('state', 'stopped') != 'running'
+      - not openbao_service_enabled | bool
+      - openbao_service_state == 'stopped'
+      - openbao_tls_custody.listener_sha256 == (lookup('ansible.builtin.template', 'listener.hcl.j2') | hash('sha256'))
+    fail_msg: >-
+      Absent OpenBao lifecycle state permits only the exact dormant listener,
+      absent leaf material and lifecycle artifacts, pristine Raft data, and a
+      stopped, disabled service.
+  when: not openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Require available OpenBao lifecycle helper for existing state
+  ansible.builtin.assert:
+    that:
+      - openbao_custody_prerequisite_stats.results[0].stat.exists
+      - openbao_custody_prerequisite_stats.results[0].stat.isreg
+      - openbao_custody_prerequisite_stats.results[0].stat.pw_name == 'root'
+      - openbao_custody_prerequisite_stats.results[0].stat.gr_name == 'root'
+      - openbao_custody_prerequisite_stats.results[0].stat.mode == '0755'
+    fail_msg: Existing OpenBao lifecycle state requires the exact root-owned helper.
+  when: openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Resolve authenticated OpenBao host-local custody
+  ansible.builtin.command:
+    argv:
+      - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+      - openbao-custody
+      - --state-root
+      - "{{ pki_host_local_certificate_state_root }}"
+      - --pending-root
+      - "{{ pki_host_local_certificate_pending_root }}"
+      - --versions-root
+      - "{{ pki_host_local_certificate_versions_root }}"
+      - --service
+      - "{{ pki_host_local_certificate_service }}"
+      - --target
+      - "{{ pki_host_local_certificate_target }}"
+      - --service-adapter
+      - "{{ pki_host_local_certificate_service_adapter }}"
+      - --service-unit
+      - "{{ pki_host_local_certificate_service_unit }}"
+      - --service-config
+      - "{{ pki_host_local_certificate_service_config_path }}"
+      - --node-dns
+      - "{{ pki_host_local_certificate_openbao_node_dns }}"
+      - --node-address
+      - "{{ pki_host_local_certificate_openbao_node_address }}"
+      - --backend-port
+      - "{{ pki_host_local_certificate_openbao_backend_port | string }}"
+      - --cluster-port
+      - "{{ pki_host_local_certificate_openbao_cluster_port | string }}"
+      - --container-versions-root
+      - "{{ pki_host_local_certificate_openbao_container_versions_root }}"
+      - --base-config-dir
+      - "{{ pki_host_local_certificate_openbao_base_config_dir }}"
+      - --raft-data-dir
+      - "{{ pki_host_local_certificate_openbao_raft_data_dir }}"
+      - --bootstrap-marker-path
+      - "{{ pki_host_local_certificate_openbao_bootstrap_marker_path }}"
+  register: openbao_custody_command
+  changed_when: false
+  check_mode: false
+  when: openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Parse authenticated OpenBao custody
+  ansible.builtin.set_fact:
+    openbao_tls_custody: "{{ openbao_custody_command.stdout | from_json }}"
+  when: openbao_custody_prerequisite_stats.results[1].stat.exists
+
+- name: Validate strict OpenBao custody schema
+  ansible.builtin.assert:
+    that:
+      - openbao_custody_command.stderr | length == 0
+      - openbao_tls_custody.keys() | list | sort == openbao_custody_schema_keys
+      - openbao_tls_custody.schema == '2'
+      - openbao_tls_custody.kind == 'platform-config-openbao-tls-custody'
+      - openbao_tls_custody.custody in ['dormant', 'host-local']
+      - openbao_tls_custody.listener_sha256 == openbao_custody_prerequisite_stats.results[2].stat.checksum
+    fail_msg: OpenBao lifecycle helper returned invalid or stale custody metadata.
+  when: openbao_custody_prerequisite_stats.results[1].stat.exists
+  vars:
+    openbao_custody_schema_keys:
+      - artifact_sha256
+      - certificate_sha256
+      - chain_sha256
+      - container_cert_path
+      - container_key_path
+      - custody
+      - fullchain_sha256
+      - host_cert_path
+      - host_key_path
+      - kind
+      - listener_sha256
+      - request_id
+      - schema
+      - spki_sha256
+
+- name: Validate dormant OpenBao custody metadata
+  ansible.builtin.assert:
+    that:
+      - openbao_tls_custody.request_id == 'none'
+      - openbao_tls_custody.host_cert_path == '/etc/openbao/tls/tls.crt'
+      - openbao_tls_custody.host_key_path == '/etc/openbao/tls/tls.key'
+      - openbao_tls_custody.container_cert_path == '/openbao/config/tls/tls.crt'
+      - openbao_tls_custody.container_key_path == '/openbao/config/tls/tls.key'
+      - openbao_tls_custody.artifact_sha256 == 'none'
+      - openbao_tls_custody.certificate_sha256 == 'none'
+      - openbao_tls_custody.spki_sha256 == 'none'
+      - openbao_tls_custody.chain_sha256 == 'none'
+      - openbao_tls_custody.fullchain_sha256 == 'none'
+      - openbao_dormant_leaf_stats.results | rejectattr('stat.exists', 'equalto', false) | list | length == 0
+      - not openbao_service_enabled | bool
+      - openbao_service_state == 'stopped'
+    fail_msg: Dormant OpenBao custody is not exact or contains leaf material.
+  when: openbao_tls_custody.custody == 'dormant'
+
+- name: Inspect authenticated OpenBao custody artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_host_local_artifact_stats
+  loop:
+    - "{{ pki_host_local_certificate_versions_root }}"
+    - "{{ pki_host_local_certificate_versions_root }}/{{ openbao_tls_custody.request_id }}"
+    - "{{ pki_host_local_certificate_versions_root }}/{{ openbao_tls_custody.request_id }}/artifact"
+    - "{{ pki_host_local_certificate_versions_root }}/{{ openbao_tls_custody.request_id }}/tls.crt"
+    - "{{ pki_host_local_certificate_versions_root }}/{{ openbao_tls_custody.request_id }}/ca-chain.crt"
+    - "{{ openbao_tls_custody.host_cert_path }}"
+    - "{{ openbao_tls_custody.host_key_path }}"
+  when: openbao_tls_custody.custody == 'host-local'
+
+- name: Require exact authenticated OpenBao host-local custody
+  ansible.builtin.assert:
+    that:
+      - openbao_tls_custody.request_id is match('^[0-9a-f]{32}$')
+      - openbao_tls_custody.host_cert_path == '/etc/openbao/tls-versions/' ~ openbao_tls_custody.request_id ~ '/fullchain.crt'
+      - openbao_tls_custody.host_key_path == '/etc/openbao/tls-versions/' ~ openbao_tls_custody.request_id ~ '/tls.key'
+      - openbao_tls_custody.container_cert_path == '/openbao/config/tls-versions/' ~ openbao_tls_custody.request_id ~ '/fullchain.crt'
+      - openbao_tls_custody.container_key_path == '/openbao/config/tls-versions/' ~ openbao_tls_custody.request_id ~ '/tls.key'
+      - openbao_tls_custody.artifact_sha256 is match('^[0-9a-f]{64}$')
+      - openbao_tls_custody.certificate_sha256 is match('^[0-9a-f]{64}$')
+      - openbao_tls_custody.spki_sha256 is match('^[0-9a-f]{64}$')
+      - openbao_tls_custody.chain_sha256 is match('^[0-9a-f]{64}$')
+      - openbao_tls_custody.fullchain_sha256 is match('^[0-9a-f]{64}$')
+      - openbao_host_local_artifact_stats.results | rejectattr('stat.exists', 'equalto', true) | list | length == 0
+      - openbao_host_local_artifact_stats.results[0].stat.isdir
+      - openbao_host_local_artifact_stats.results[0].stat.pw_name == 'root'
+      - openbao_host_local_artifact_stats.results[0].stat.gid == openbao_container_gid | int
+      - openbao_host_local_artifact_stats.results[0].stat.mode == '0750'
+      - openbao_host_local_artifact_stats.results[1].stat.isdir
+      - openbao_host_local_artifact_stats.results[1].stat.pw_name == 'root'
+      - openbao_host_local_artifact_stats.results[1].stat.gid == openbao_container_gid | int
+      - openbao_host_local_artifact_stats.results[1].stat.mode == '0750'
+      - openbao_host_local_artifact_stats.results[2].stat.checksum == openbao_tls_custody.artifact_sha256
+      - openbao_host_local_artifact_stats.results[3].stat.checksum == openbao_tls_custody.certificate_sha256
+      - openbao_host_local_artifact_stats.results[4].stat.checksum == openbao_tls_custody.chain_sha256
+      - openbao_host_local_artifact_stats.results[5].stat.checksum == openbao_tls_custody.fullchain_sha256
+      - openbao_host_local_artifact_stats.results[5].stat.mode == '0644'
+      - openbao_host_local_artifact_stats.results[6].stat.pw_name == 'root'
+      - openbao_host_local_artifact_stats.results[6].stat.gid == openbao_container_gid | int
+      - openbao_host_local_artifact_stats.results[6].stat.mode == '0640'
+    fail_msg: Authenticated OpenBao custody paths, digests, files, or metadata are invalid.
+  when: openbao_tls_custody.custody == 'host-local'
+
+- name: Require host-local custody before OpenBao activation
+  ansible.builtin.assert:
+    that:
+      - openbao_tls_custody.custody == 'host-local'
+    fail_msg: Any started or enabled OpenBao service requires authenticated host-local custody.
+  when:
+    - openbao_service_enabled | bool or openbao_service_state == 'started'

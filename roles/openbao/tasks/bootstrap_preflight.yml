@@ -13,6 +13,15 @@
 - name: Validate OpenBao bootstrap inputs
   ansible.builtin.include_tasks: validate.yml
 
+- name: Resolve authenticated OpenBao bootstrap custody
+  ansible.builtin.include_tasks: custody.yml
+
+- name: Reject dormant OpenBao bootstrap custody
+  ansible.builtin.assert:
+    that:
+      - openbao_tls_custody.custody == 'host-local'
+    fail_msg: OpenBao bootstrap requires authenticated host-local TLS custody.
+
 - name: Inspect staged OpenBao bootstrap artifacts
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -20,10 +29,13 @@
   register: openbao_bootstrap_artifact_stats
   loop:
     - "{{ openbao_config_path }}"
+    - "{{ openbao_listener_path }}"
     - "{{ openbao_quadlet_path }}"
     - "{{ openbao_tls_ca_path }}"
-    - "{{ openbao_tls_cert_path }}"
-    - "{{ openbao_tls_key_path }}"
+    - "{{ openbao_tls_custody.host_cert_path }}"
+    - "{{ openbao_tls_custody.host_key_path }}"
+    - "{{ openbao_tls_custody.host_cert_path | dirname }}/tls.crt"
+    - "{{ openbao_tls_custody.host_cert_path | dirname }}/ca-chain.crt"
 
 - name: Require complete staged OpenBao bootstrap artifacts
   ansible.builtin.assert:
@@ -35,27 +47,21 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Inspect OpenBao TLS source checksums
+- name: Inspect OpenBao CA source checksum
   ansible.builtin.stat:
-    path: "{{ item }}"
+    path: "{{ openbao_tls_ca_src }}"
     checksum_algorithm: sha256
-  register: openbao_bootstrap_tls_source_stats
+  register: openbao_bootstrap_ca_source_stat
   delegate_to: localhost
   become: false
-  no_log: true
-  loop:
-    - "{{ openbao_tls_ca_src }}"
-    - "{{ openbao_tls_cert_src }}"
-    - "{{ openbao_tls_key_src }}"
+  vars:
+    ansible_become: false
 
-- name: Require staged OpenBao TLS files match approved sources
+- name: Require staged OpenBao CA matches its approved source
   ansible.builtin.assert:
     that:
-      - openbao_bootstrap_tls_source_stats.results[0].stat.checksum == openbao_bootstrap_artifact_stats.results[2].stat.checksum
-      - openbao_bootstrap_tls_source_stats.results[1].stat.checksum == openbao_bootstrap_artifact_stats.results[3].stat.checksum
-      - openbao_bootstrap_tls_source_stats.results[2].stat.checksum == openbao_bootstrap_artifact_stats.results[4].stat.checksum
-    fail_msg: Staged OpenBao TLS files do not match their approved sources.
-  no_log: true
+      - openbao_bootstrap_ca_source_stat.stat.checksum == openbao_bootstrap_artifact_stats.results[3].stat.checksum
+    fail_msg: Staged OpenBao CA does not match its approved source.
 
 - name: Verify staged OpenBao certificate identities
   ansible.builtin.command:
@@ -63,16 +69,57 @@
       - openssl
       - verify
       - -CAfile
-      - "{{ openbao_tls_ca_src }}"
+      - "{{ openbao_tls_ca_path }}"
+      - -untrusted
+      - "{{ openbao_tls_custody.host_cert_path | dirname }}/ca-chain.crt"
       - -verify_hostname
       - "{{ item }}"
-      - "{{ openbao_tls_cert_src }}"
+      - "{{ openbao_tls_custody.host_cert_path | dirname }}/tls.crt"
   changed_when: false
-  delegate_to: localhost
-  become: false
   loop:
     - "{{ openbao_node_dns }}"
     - "{{ openbao_service_dns }}"
+
+- name: Resolve canonical OpenBao bootstrap member addresses
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ item.dns }}"
+  register: openbao_bootstrap_member_resolution
+  changed_when: false
+  failed_when: false
+  loop: "{{ openbao_cluster_members }}"
+  loop_control:
+    label: "{{ item.dns }}"
+
+- name: Require canonical OpenBao bootstrap member resolution
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - >-
+        item.item.address in
+        (item.stdout_lines | default([]) | map('split') | map('first') | list)
+      - >-
+        (
+          item.stdout_lines
+          | default([])
+          | map('split')
+          | map('first')
+          | unique
+          | difference(
+              [item.item.address]
+              + (['127.0.0.1'] if item.item.name == inventory_hostname else [])
+            )
+          | list
+          | length
+        ) == 0
+    fail_msg: >-
+      OpenBao bootstrap member {{ item.item.dns }} must resolve to its canonical
+      IPv4 address {{ item.item.address }} on every cluster host.
+  loop: "{{ openbao_bootstrap_member_resolution.results }}"
+  loop_control:
+    label: "{{ item.item.dns }}"
 
 - name: Inspect pristine OpenBao data directory
   ansible.builtin.command:
@@ -128,7 +175,7 @@
         != 'running'
       - openbao_bootstrap_container_exists.rc != 0
       - >-
-        openbao_bootstrap_artifact_stats.results[1].stat.checksum
+        openbao_bootstrap_artifact_stats.results[2].stat.checksum
         == openbao_bootstrap_expected_quadlet_checksum
     fail_msg: >-
       OpenBao bootstrap requires pristine data, no lifecycle marker, no boot
@@ -140,9 +187,15 @@
     openbao_bootstrap_observation:
       inventory_host: "{{ inventory_hostname }}"
       node_id: "{{ openbao_node_name }}"
-      config_checksum: "{{ openbao_bootstrap_artifact_stats.results[0].stat.checksum }}"
-      quadlet_checksum: "{{ openbao_bootstrap_artifact_stats.results[1].stat.checksum }}"
-      ca_checksum: "{{ openbao_bootstrap_artifact_stats.results[2].stat.checksum }}"
-      certificate_checksum: "{{ openbao_bootstrap_artifact_stats.results[3].stat.checksum }}"
-      key_checksum: "{{ openbao_bootstrap_artifact_stats.results[4].stat.checksum }}"
+      config_checksum: >-
+        {{
+          {
+            'base_config_sha256': openbao_bootstrap_artifact_stats.results[0].stat.checksum,
+            'listener_sha256': openbao_bootstrap_artifact_stats.results[1].stat.checksum
+          } | to_json | hash('sha256')
+        }}
+      quadlet_checksum: "{{ openbao_bootstrap_artifact_stats.results[2].stat.checksum }}"
+      ca_checksum: "{{ openbao_bootstrap_artifact_stats.results[3].stat.checksum }}"
+      certificate_checksum: "{{ openbao_bootstrap_artifact_stats.results[4].stat.checksum }}"
+      key_checksum: "{{ openbao_bootstrap_artifact_stats.results[5].stat.checksum }}"
       image_digest: "{{ openbao_image_digest }}"

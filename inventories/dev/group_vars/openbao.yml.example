@@ -66,6 +66,47 @@ openbao_cluster_members:
     address: 192.0.2.74
     dns: bao-3.internal.invalid
 
+# Host-local OpenBao PKI remains denied until private inventory supplies every
+# reviewed outside-Git trust, GitLab package, transport-client, and CA input.
+# Do not replace empty digests with illustrative values that could validate.
+pki_host_local_certificate_service: "openbao-{{ inventory_hostname }}"
+pki_host_local_certificate_target: "{{ inventory_hostname }}"
+pki_host_local_certificate_operation: issue
+pki_host_local_certificate_inventory_sha256: ""
+pki_host_local_certificate_current_cert_sha256: none
+pki_host_local_certificate_current_cert_path: ""
+pki_host_local_certificate_requester_principal: "{{ inventory_hostname }}"
+pki_host_local_certificate_response_principal: ""
+pki_host_local_certificate_common_name: "{{ openbao_node_dns }}"
+pki_host_local_certificate_dns_sans:
+  - "{{ openbao_service_dns }}"
+  - "{{ openbao_node_dns }}"
+pki_host_local_certificate_ip_sans:
+  - "{{ openbao_node_address }}"
+pki_host_local_certificate_trust_id: ""
+pki_host_local_certificate_trust_paths: {}
+pki_host_local_certificate_trust_sha256: {}
+pki_host_local_certificate_trust_sources: {}
+pki_host_local_certificate_state_root: /var/lib/platform-config/pki/openbao
+pki_host_local_certificate_pending_root: /etc/openbao/tls-pending
+pki_host_local_certificate_versions_root: /etc/openbao/tls-versions
+pki_host_local_certificate_gitlab_project_record_source: ""
+pki_host_local_certificate_gitlab_ca_source: ""
+pki_host_local_certificate_platform_pki_source: ""
+pki_host_local_certificate_platform_pki_sha256: ""
+pki_host_local_certificate_reviewed_ca_source: ""
+pki_host_local_certificate_reviewed_ca_target_path: /etc/platform-config/openbao-validation-ca.crt
+pki_host_local_certificate_reviewed_ca_sha256: ""
+pki_host_local_certificate_reviewed_ca_mode: ""
+pki_host_local_certificate_minimum_remaining_lifetime_seconds: 0
+pki_host_local_certificate_rollback_seconds: 0
+pki_host_local_certificate_endpoint: ""
+pki_host_local_certificate_service_adapter: openbao-pristine-v1
+pki_host_local_certificate_service_unit: openbao.service
+pki_host_local_certificate_service_config_path: /etc/openbao/listener.hcl
+pki_host_local_certificate_openbao_node_dns: "{{ openbao_node_dns }}"
+pki_host_local_certificate_openbao_node_address: "{{ openbao_node_address }}"
+
 # Fresh OpenBao hosts can stage the observer roles after the monitoring VIP,
 # authenticated endpoints, remote-write receiver, and outside-Git identities
 # exist. Keep activation false for the first apply. The observer playbook derives

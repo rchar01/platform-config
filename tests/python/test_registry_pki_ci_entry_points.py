@@ -111,6 +111,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
 ) -> None:
     root = repo_root / "roles/pki_host_local_certificate/tasks"
     request = load_yaml(root / "request_publish.yml")
+    preflight = load_yaml(root / "response_preflight.yml")
     activation = load_yaml(root / "response_activate.yml")
 
     assert [
@@ -147,7 +148,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         }
     }
 
-    names = [task["name"] for task in activation]
+    names = [task["name"] for task in preflight + activation]
     assert names.index("Read initial authenticated target-local status") < names.index(
         "Recover target-local activation journal without operator coordinates"
     )
@@ -160,16 +161,16 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "Install target-local GitLab certificate components when transport is required"
     ) < names.index("Download and install the authenticated schema-2 response")
     assert names.index("Read post-download target-local status") < names.index(
-        "Prepare reviewed local Zot validation CA directory"
+        "Prepare reviewed local service validation CA directory"
     )
     assert names.index(
-        "Prepare reviewed local Zot validation CA directory"
+        "Prepare reviewed local service validation CA directory"
     ) < names.index(
-        "Install reviewed local Zot validation CA"
+        "Install reviewed local service validation CA"
     )
-    assert names.index("Install reviewed local Zot validation CA") < names.index(
-        "Start and locally validate target-local certificate activation"
-    )
+    assert names.index(
+        "Install reviewed local service validation CA"
+    ) < names.index("Start and locally validate target-local certificate activation")
     download = task_named(
         activation, "Download and install the authenticated schema-2 response"
     )
@@ -182,7 +183,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
     assert download["no_log"] is True
 
     prepare_ca_dir = task_named(
-        activation, "Prepare reviewed local Zot validation CA directory"
+        activation, "Prepare reviewed local service validation CA directory"
     )
     assert prepare_ca_dir["ansible.builtin.file"] == {
         "path": "{{ pki_host_local_certificate_reviewed_ca_target_path | dirname }}",
@@ -192,7 +193,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "mode": "0755",
     }
     install_ca = task_named(
-        activation, "Install reviewed local Zot validation CA"
+        activation, "Install reviewed local service validation CA"
     )
     assert install_ca["platform_pki_reviewed_ca"] == {
         "source": "{{ pki_host_local_certificate_reviewed_ca_source }}",
@@ -206,7 +207,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
 
 def test_activation_validates_reviewed_ca_source_and_digest(repo_root: Path) -> None:
     tasks = load_yaml(
-        repo_root / "roles/pki_host_local_certificate/tasks/response_activate.yml"
+        repo_root / "roles/pki_host_local_certificate/tasks/response_preflight.yml"
     )
     validation = task_named(tasks, "Validate local activation inputs")
     checks = validation["ansible.builtin.assert"]["that"]
@@ -228,13 +229,13 @@ def test_activation_prefixes_san_arguments_without_backreferences(
     repo_root: Path,
 ) -> None:
     source = (
-        repo_root / "roles/pki_host_local_certificate/tasks/response_activate.yml"
+        repo_root / "roles/pki_host_local_certificate/tasks/response_preflight.yml"
     ).read_text()
 
     assert "--dns-san=\\\\1" not in source
     assert "--ip-san=\\\\1" not in source
-    assert source.count("map('regex_replace', '^', '--dns-san=')") == 7
-    assert source.count("map('regex_replace', '^', '--ip-san=')") == 7
+    assert source.count("map('regex_replace', '^', '--dns-san=')") == 1
+    assert source.count("map('regex_replace', '^', '--ip-san=')") == 1
 
 
 def test_gitlab_token_is_validated_by_metadata_without_entering_ansible(
@@ -365,7 +366,16 @@ def test_gitlab_facade_config_renders_typed_json(
     run_playbook(command_runner, playbook).assert_success()
     rendered = json.loads(output.read_text(encoding="utf-8"))
 
-    assert rendered["schema"] == 2
+    assert rendered["schema"] == 3
+    assert rendered["service_adapter"] == "zot-v1"
+    assert rendered["service_unit"] == "zot.service"
+    assert rendered["service_config"] == "/etc/zot/config.json"
+    for field in (
+        "node_dns", "node_address", "backend_port", "cluster_port",
+        "container_versions_root", "base_config_dir", "raft_data_dir",
+        "bootstrap_marker_path",
+    ):
+        assert rendered[field] is None
     assert rendered["dns_sans"] == ["registry.test", "target.test"]
     for field, expected in (
         ("request_ttl_seconds", 3600),

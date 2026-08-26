@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+case " ${*} " in
+  *" show "*)
+    cat <<'EOF'
+LoadState=loaded
+ActiveState=inactive
+SubState=dead
+UnitFileState=disabled
+EOF
+    ;;
+  *" is-enabled "*)
+    printf '%s\n' disabled
+    exit 1
+    ;;
+  *" is-active "*)
+    printf '%s\n' inactive
+    exit 3
+    ;;
+esac

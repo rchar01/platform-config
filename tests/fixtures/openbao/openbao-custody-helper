@@ -1,0 +1,72 @@
+#!/bin/bash
+set -euo pipefail
+
+request_id=0123456789abcdef0123456789abcdef
+version_root="/etc/openbao/tls-versions/${request_id}"
+command="${1:-}"
+shift || true
+common=(
+  --state-root /var/lib/platform-config/pki/openbao
+  --pending-root /var/lib/platform-config/pki/openbao-pending
+  --versions-root /etc/openbao/tls-versions
+  --service openbao-test-01
+  --target localhost
+  --service-adapter openbao-pristine-v1
+  --service-unit openbao.service
+  --service-config /etc/openbao/listener.hcl
+  --node-dns bao-test-1.internal.invalid
+  --node-address 127.0.0.1
+  --backend-port 18200
+  --cluster-port 8201
+  --container-versions-root /openbao/config/tls-versions
+  --base-config-dir /openbao/config
+  --raft-data-dir /var/lib/openbao
+  --bootstrap-marker-path /var/lib/platform-config/openbao-bootstrap.json
+)
+
+case "$command" in
+  openbao-staging-preflight)
+    expected=("${common[@]}" --trust-id openbao-test-v1)
+    [[ "$#" -eq "${#expected[@]}" ]] || exit 64
+    actual=("$@")
+    for index in "${!expected[@]}"; do
+      [[ "${actual[index]}" == "${expected[index]}" ]] || exit 64
+    done
+    printf '%s\n' '{"kind":"platform-config-openbao-staging-preflight","schema":"1","service":"openbao-test-01","status":"absent","target":"localhost"}'
+    exit 0
+    ;;
+  openbao-custody)
+    expected=("${common[@]}")
+    [[ "$#" -eq "${#expected[@]}" ]] || exit 64
+    actual=("$@")
+    for index in "${!expected[@]}"; do
+      [[ "${actual[index]}" == "${expected[index]}" ]] || exit 64
+    done
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+
+digest() {
+  sha256sum "$1" | cut -d ' ' -f 1
+}
+
+if [[ ! -d "$version_root" ]]; then
+  printf '{"artifact_sha256":"none","certificate_sha256":"none","chain_sha256":"none","container_cert_path":"/openbao/config/tls/tls.crt","container_key_path":"/openbao/config/tls/tls.key","custody":"dormant","fullchain_sha256":"none","host_cert_path":"/etc/openbao/tls/tls.crt","host_key_path":"/etc/openbao/tls/tls.key","kind":"platform-config-openbao-tls-custody","listener_sha256":"%s","request_id":"none","schema":"2","spki_sha256":"none"}\n' \
+    "$(digest /etc/openbao/listener.hcl)"
+  exit 0
+fi
+
+printf '{"artifact_sha256":"%s","certificate_sha256":"%s","chain_sha256":"%s","container_cert_path":"/openbao/config/tls-versions/%s/fullchain.crt","container_key_path":"/openbao/config/tls-versions/%s/tls.key","custody":"host-local","fullchain_sha256":"%s","host_cert_path":"%s/fullchain.crt","host_key_path":"%s/tls.key","kind":"platform-config-openbao-tls-custody","listener_sha256":"%s","request_id":"%s","schema":"2","spki_sha256":"%s"}\n' \
+  "$(digest "${version_root}/artifact")" \
+  "$(digest "${version_root}/tls.crt")" \
+  "$(digest "${version_root}/chain.crt")" \
+  "$request_id" \
+  "$request_id" \
+  "$(digest "${version_root}/fullchain.crt")" \
+  "$version_root" \
+  "$version_root" \
+  "$(digest /etc/openbao/listener.hcl)" \
+  "$request_id" \
+  "$(digest "${version_root}/tls.crt")"

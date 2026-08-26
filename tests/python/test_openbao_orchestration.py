@@ -42,24 +42,35 @@ def _roles_environment(repo_root: Path) -> dict[str, str]:
     return {
         "ANSIBLE_ROLES_PATH": os.pathsep.join(
             [str(repo_root / "tests/fixtures/openbao-orchestration/roles"), str(repo_root / "roles")]
-        )
+        ),
+        "PATH": os.pathsep.join(
+            [
+                str(repo_root / "tests/fixtures/openbao-orchestration/bin"),
+                os.environ["PATH"],
+            ]
+        ),
     }
 
 
 def test_openbao_orchestration_source_contract(repo_root: Path) -> None:
     playbook = (repo_root / "playbooks/openbao.yml").read_text(encoding="utf-8")
+    role = (repo_root / "roles/openbao/tasks/main.yml").read_text(encoding="utf-8")
     for fragment in (
         "openbao_orchestration_ready",
         "ansible_play_hosts_all",
         "Inspect existing OpenBao HA services",
         "Disable and stop existing OpenBao HA edge services",
         "Mask and stop an existing OpenBao service before staging",
-        "Unmask the successfully staged disabled OpenBao service",
+        "Mask the successfully staged disabled OpenBao service",
     ):
         assert fragment in playbook
     assert re.search(r"^    - firewalld$", playbook, re.MULTILINE)
     assert re.search(r"^    - keepalived_vip$", playbook, re.MULTILINE)
     assert not re.search(r"platform_external_probe|grafana_alloy|operator init|operator unseal", playbook)
+    assert "include_tasks: custody.yml" in role
+    assert "Stage exact dormant OpenBao listener" in role
+    assert "Install OpenBao node certificate" not in role
+    assert "Install OpenBao node private key" not in role
 
 
 def test_openbao_orchestration_runs_exact_mocked_role_order(

@@ -1,0 +1,143 @@
+---
+- name: Require one canonical OpenBao PKI activation host
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require an explicit one-host OpenBao limit
+      ansible.builtin.assert:
+        that:
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - openbao_pki_selected_hosts == [ansible_limit | default('')]
+          - >-
+            openbao_pki_selected_hosts
+            | difference(groups.get('openbao', []))
+            | length == 0
+        fail_msg: >-
+          OpenBao PKI activation requires an explicit limit naming exactly one
+          canonical OpenBao inventory host and no other inventory host.
+      vars:
+        openbao_pki_selected_hosts: >-
+          {{ query('ansible.builtin.inventory_hostnames', ansible_limit | default('all')) }}
+      run_once: true # noqa run-once[task]
+
+- name: Activate one target-local OpenBao certificate response while masked
+  hosts: openbao
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the admitted one-host OpenBao activation selection
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - inventory_hostname in groups.get('openbao', [])
+        fail_msg: OpenBao PKI activation selection changed after admission.
+
+    - name: Authenticate target-local response before service mutation
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: response_preflight
+
+    - name: Inspect the staged OpenBao unit before activation
+      ansible.builtin.systemd_service:
+        name: openbao.service
+      register: openbao_pki_activation_initial_unit
+
+    - name: Require stopped and masked OpenBao staging
+      ansible.builtin.assert:
+        that:
+          - openbao_pki_activation_initial_unit.status.ActiveState == 'inactive'
+          - openbao_pki_activation_initial_unit.status.UnitFileState == 'masked'
+        fail_msg: >-
+          OpenBao PKI activation requires openbao.service to be inactive and
+          masked before any response activation mutation.
+
+    - name: Initialize OpenBao PKI activation failure reporting
+      ansible.builtin.set_fact:
+        openbao_pki_activation_failures: []
+
+    - name: Run the fail-closed OpenBao response activation transaction
+      block:
+        - name: Temporarily unmask stopped OpenBao for fixed activation
+          block:
+            - name: Unmask stopped OpenBao for local certificate validation
+              ansible.builtin.systemd_service:
+                name: openbao.service
+                masked: false
+                state: stopped
+          rescue:
+            - name: Record temporary OpenBao unmask failure
+              ansible.builtin.set_fact:
+                openbao_pki_activation_failures: >-
+                  {{ openbao_pki_activation_failures + ['temporary unmask failed'] }}
+
+        - name: Run structurally fixed target-local response activation
+          when: openbao_pki_activation_failures | length == 0
+          block:
+            - name: Activate the authenticated OpenBao response
+              ansible.builtin.include_role:
+                name: pki_host_local_certificate
+                tasks_from: response_activate
+          rescue:
+            - name: Record fixed OpenBao response activation failure
+              ansible.builtin.set_fact:
+                openbao_pki_activation_failures: >-
+                  {{ openbao_pki_activation_failures + ['fixed response activation failed'] }}
+      always:
+        - name: Stop OpenBao after local certificate validation
+          block:
+            - name: Stop the temporarily unmasked OpenBao unit
+              ansible.builtin.systemd_service:
+                name: openbao.service
+                state: stopped
+          rescue:
+            - name: Record OpenBao stop restoration failure
+              ansible.builtin.set_fact:
+                openbao_pki_activation_failures: >-
+                  {{ openbao_pki_activation_failures + ['stop restoration failed'] }}
+
+        - name: Restore the fail-closed OpenBao staging mask
+          block:
+            - name: Mask the stopped OpenBao unit
+              ansible.builtin.systemd_service:
+                name: openbao.service
+                masked: true
+          rescue:
+            - name: Record OpenBao mask restoration failure
+              ansible.builtin.set_fact:
+                openbao_pki_activation_failures: >-
+                  {{ openbao_pki_activation_failures + ['mask restoration failed'] }}
+
+        - name: Inspect final OpenBao staging state
+          block:
+            - name: Read the restored OpenBao unit state
+              ansible.builtin.systemd_service:
+                name: openbao.service
+              register: openbao_pki_activation_final_unit
+          rescue:
+            - name: Record final OpenBao unit inspection failure
+              ansible.builtin.set_fact:
+                openbao_pki_activation_failures: >-
+                  {{ openbao_pki_activation_failures + ['final unit inspection failed'] }}
+                openbao_pki_activation_final_unit:
+                  status: {}
+
+        - name: Require inactive masked OpenBao after activation
+          ansible.builtin.assert:
+            that:
+              - openbao_pki_activation_failures | length == 0
+              - >-
+                openbao_pki_activation_final_unit.status.ActiveState
+                | default('unknown') == 'inactive'
+              - >-
+                openbao_pki_activation_final_unit.status.UnitFileState
+                | default('unknown') == 'masked'
+            fail_msg: >-
+              OpenBao PKI activation did not complete safely. Stop and mask
+              restoration was attempted; failures={{
+                openbao_pki_activation_failures | join(', ')
+                if openbao_pki_activation_failures | length > 0
+                else 'final unit state was not inactive and masked'
+              }}. Inspect the selected host before retrying.

@@ -62,7 +62,17 @@ make test-monitoring-grafana-postgresql
 make test-openbao-image
 make test-openbao-rocky
 ./scripts/in-container pytest -q tests/python/test_openbao_bootstrap.py
+./scripts/in-container pytest -q tests/python/test_openbao_pki_ci_entry_points.py
+./scripts/in-container ansible-playbook -i inventories/dev/hosts.yml.example playbooks/openbao-pki-request.yml --syntax-check
+./scripts/in-container ansible-playbook -i inventories/dev/hosts.yml.example playbooks/openbao-pki-activate.yml --syntax-check
 ```
+
+The OpenBao PKI tests cover per-node request and response entry points. Their
+`LIMIT` must literally name one canonical OpenBao host and no unrelated host.
+That differs from `playbooks/openbao.yml` staging and the bootstrap maintenance
+playbooks, which require the complete OpenBao cluster. The PKI activation source
+contract also requires inactive masked staging, temporary unmasking only around
+the fixed role route, and unconditional stop/remask restoration.
 
 Focused synthetic storage acceptance checks run inside the development
 container and do not contact hosts or mutate disks:

@@ -1,0 +1,13 @@
+---
+- name: Reject mocked OpenBao marker cleanup
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_bootstrap_test_cleanup_failure_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked OpenBao marker cleanup failed.
+
+- name: Remove mocked pending OpenBao bootstrap marker
+  ansible.builtin.file:
+    path: "{{ openbao_bootstrap_marker_path }}"
+    state: absent

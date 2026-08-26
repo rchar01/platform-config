@@ -44,9 +44,14 @@
       - openbao_bootstrap_ready is boolean
       - openbao_bootstrap_complete_ready is boolean
       - openbao_tls_ca_src is match('^/.+$')
-      - openbao_tls_cert_src is match('^/.+$')
-      - openbao_tls_key_src is match('^/.+$')
       - openbao_config_path is match('^/[A-Za-z0-9_./-]+$')
+      - openbao_config_path == '/etc/openbao/openbao.hcl'
+      - openbao_listener_path == '/etc/openbao/listener.hcl'
+      - openbao_config_dir == '/etc/openbao'
+      - openbao_tls_dir == '/etc/openbao/tls'
+      - openbao_dormant_tls_cert_path == '/etc/openbao/tls/tls.crt'
+      - openbao_dormant_tls_key_path == '/etc/openbao/tls/tls.key'
+      - openbao_container_config_dir == '/openbao/config'
       - openbao_data_dir is match('^/[A-Za-z0-9_./-]+$')
       - openbao_bootstrap_marker_path is match('^/[A-Za-z0-9_./-]+$')
       - openbao_bootstrap_marker_owner == 'root'
@@ -75,6 +80,25 @@
         ]
         | difference(openbao_required_mounts)
         | length == 0
+      - pki_host_local_certificate_state_root is match('^/[A-Za-z0-9_./-]+$')
+      - pki_host_local_certificate_pending_root is match('^/[A-Za-z0-9_./-]+$')
+      - pki_host_local_certificate_versions_root == '/etc/openbao/tls-versions'
+      - pki_host_local_certificate_lifecycle_helper_path == '/usr/local/libexec/platform-pki-host-local-lifecycle'
+      - pki_host_local_certificate_service is match('^openbao-[a-z0-9][a-z0-9-]{0,53}$')
+      - pki_host_local_certificate_target == inventory_hostname
+      - pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
+      - pki_host_local_certificate_service_unit == 'openbao.service'
+      - pki_host_local_certificate_service_config_path == '/etc/openbao/listener.hcl'
+      - pki_host_local_certificate_reviewed_ca_target_path == '/etc/platform-config/openbao-validation-ca.crt'
+      - pki_host_local_certificate_reviewed_ca_target_path != openbao_tls_ca_path
+      - pki_host_local_certificate_openbao_node_dns == openbao_node_dns
+      - pki_host_local_certificate_openbao_node_address == openbao_node_address
+      - pki_host_local_certificate_openbao_backend_port == openbao_backend_port
+      - pki_host_local_certificate_openbao_cluster_port == openbao_cluster_port
+      - pki_host_local_certificate_openbao_container_versions_root == '/openbao/config/tls-versions'
+      - pki_host_local_certificate_openbao_base_config_dir == '/openbao/config'
+      - pki_host_local_certificate_openbao_raft_data_dir == openbao_data_dir
+      - pki_host_local_certificate_openbao_bootstrap_marker_path == openbao_bootstrap_marker_path
     fail_msg: >-
       OpenBao HA requires the approved immutable amd64 2.6.1 image, Shamir
       seal, explicit unique ports, safe node/service identities, strict TLS,

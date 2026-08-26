@@ -3,6 +3,7 @@
   ansible.builtin.systemd_service:
     name: "{{ openbao_service_name }}"
     enabled: false
+    masked: true
     state: stopped
     daemon_reload: true
 

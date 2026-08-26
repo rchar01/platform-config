@@ -9,6 +9,7 @@
       - pki_host_local_certificate_requester_principal == inventory_hostname
       - pki_host_local_certificate_response_principal is match('^[a-z0-9][a-z0-9.-]{0,252}$')
       - pki_host_local_certificate_operation in ['issue', 'renew']
+      - pki_host_local_certificate_service_adapter in ['zot-v1', 'openbao-pristine-v1']
       - pki_host_local_certificate_profile == 'server-p384-sha384-v1'
       - pki_host_local_certificate_request_namespace == 'platform-pki-csr-request-v2'
       - pki_host_local_certificate_inventory_sha256 is match('^[0-9a-f]{64}$')
@@ -26,6 +27,7 @@
       - pki_host_local_certificate_pending_root is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_versions_root is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_request_signing_key_path is match(pki_host_local_certificate_absolute_path_pattern)
+      - pki_host_local_certificate_service_config_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_zot_config_path == '/etc/zot/config.json'
       - pki_host_local_certificate_minimum_remaining_lifetime_seconds is integer
       - pki_host_local_certificate_minimum_remaining_lifetime_seconds > 0
@@ -47,7 +49,36 @@
       - pki_host_local_certificate_trust_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_lifecycle_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_reviewed_ca_target_path is match(pki_host_local_certificate_absolute_path_pattern)
+      - >-
+        (pki_host_local_certificate_service_adapter == 'zot-v1'
+         and pki_host_local_certificate_service_unit == 'zot.service'
+         and pki_host_local_certificate_service_config_path == '/etc/zot/config.json'
+         and pki_host_local_certificate_zot_config_path == pki_host_local_certificate_service_config_path
+         and pki_host_local_certificate_endpoint is match('^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?/v2/$'))
+        or
+        (pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
+         and pki_host_local_certificate_service is match('^openbao-[a-z0-9][a-z0-9-]{0,53}$')
+         and pki_host_local_certificate_operation == 'issue'
+         and pki_host_local_certificate_service_unit == 'openbao.service'
+         and pki_host_local_certificate_service_config_path == '/etc/openbao/listener.hcl'
+         and pki_host_local_certificate_reviewed_ca_target_path == '/etc/platform-config/openbao-validation-ca.crt'
+         and pki_host_local_certificate_endpoint | length == 0
+         and pki_host_local_certificate_openbao_node_dns | length <= 253
+         and pki_host_local_certificate_openbao_valid_dns_labels | length
+             == pki_host_local_certificate_openbao_dns_labels | length
+         and pki_host_local_certificate_openbao_node_dns in pki_host_local_certificate_dns_sans
+         and pki_host_local_certificate_openbao_node_address is match(pki_host_local_certificate_ipv4_pattern)
+         and pki_host_local_certificate_openbao_node_address.split('.') | map('int') | select('gt', 255) | list | length == 0
+         and pki_host_local_certificate_openbao_backend_port is integer
+         and pki_host_local_certificate_openbao_backend_port == 18200
+         and pki_host_local_certificate_openbao_cluster_port is integer
+         and pki_host_local_certificate_openbao_cluster_port == 8201
+         and pki_host_local_certificate_openbao_container_versions_root == '/openbao/config/tls-versions'
+         and pki_host_local_certificate_openbao_base_config_dir == '/openbao/config'
+         and pki_host_local_certificate_openbao_raft_data_dir == '/var/lib/openbao'
+         and pki_host_local_certificate_openbao_bootstrap_marker_path == '/var/lib/platform-config/openbao-bootstrap.json')
       - pki_host_local_certificate_all_paths | select('search', '(^|/)\\.\\.?(/|$)') | list | length == 0
+      - pki_host_local_certificate_adapter_host_paths | unique | length == pki_host_local_certificate_adapter_host_paths | length
       - pki_host_local_certificate_file_destinations | unique | length == pki_host_local_certificate_file_destinations | length
       - pki_host_local_certificate_gitlab_timeout is integer
       - pki_host_local_certificate_gitlab_timeout > 0
@@ -69,6 +100,16 @@
   vars:
     pki_host_local_certificate_absolute_path_pattern: >-
       ^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$
+    pki_host_local_certificate_ipv4_pattern: >-
+      ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$
+    pki_host_local_certificate_openbao_dns_labels: >-
+      {{ pki_host_local_certificate_openbao_node_dns.split('.') }}
+    pki_host_local_certificate_openbao_valid_dns_labels: >-
+      {{
+        pki_host_local_certificate_openbao_dns_labels
+        | select('match', '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+        | list
+      }}
     pki_host_local_certificate_required_trust_names:
       - approvers.allowed_signers
       - policy
@@ -96,8 +137,26 @@
           pki_host_local_certificate_lifecycle_helper_path,
           pki_host_local_certificate_reviewed_ca_source,
           pki_host_local_certificate_reviewed_ca_target_path,
-          pki_host_local_certificate_zot_config_path
+          pki_host_local_certificate_service_config_path,
+          pki_host_local_certificate_zot_config_path,
+          pki_host_local_certificate_openbao_container_versions_root,
+          pki_host_local_certificate_openbao_base_config_dir,
+          pki_host_local_certificate_openbao_raft_data_dir,
+          pki_host_local_certificate_openbao_bootstrap_marker_path
         ] + (pki_host_local_certificate_trust_sources.values() | list)
+      }}
+    pki_host_local_certificate_adapter_host_paths: >-
+      {{
+        [
+          pki_host_local_certificate_service_config_path,
+          pki_host_local_certificate_versions_root,
+          pki_host_local_certificate_openbao_raft_data_dir,
+          pki_host_local_certificate_openbao_bootstrap_marker_path
+        ]
+        if pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
+        else [
+          pki_host_local_certificate_service_config_path
+        ]
       }}
     pki_host_local_certificate_file_destinations:
       - "{{ pki_host_local_certificate_request_signing_key_path }}"
@@ -115,7 +174,7 @@
       - "{{ pki_host_local_certificate_trust_helper_path }}"
       - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
       - "{{ pki_host_local_certificate_reviewed_ca_target_path }}"
-      - "{{ pki_host_local_certificate_zot_config_path }}"
+      - "{{ pki_host_local_certificate_service_config_path }}"
 
 - name: Validate target-local trust bindings
   ansible.builtin.assert:

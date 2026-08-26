@@ -1,0 +1,4 @@
+---
+- name: Record mocked OpenBao lifecycle preflight
+  ansible.builtin.debug:
+    msg: Mocked OpenBao lifecycle preflight passed.

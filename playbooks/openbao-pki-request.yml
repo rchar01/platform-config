@@ -1,0 +1,46 @@
+---
+- name: Require one canonical OpenBao PKI request host
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require an explicit one-host OpenBao limit
+      ansible.builtin.assert:
+        that:
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - openbao_pki_selected_hosts == [ansible_limit | default('')]
+          - >-
+            openbao_pki_selected_hosts
+            | difference(groups.get('openbao', []))
+            | length == 0
+        fail_msg: >-
+          OpenBao PKI requests require an explicit limit naming exactly one
+          canonical OpenBao inventory host and no other inventory host.
+      vars:
+        openbao_pki_selected_hosts: >-
+          {{ query('ansible.builtin.inventory_hostnames', ansible_limit | default('all')) }}
+      run_once: true # noqa run-once[task]
+
+- name: Create and publish one target-local OpenBao certificate request
+  hosts: openbao
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    openbao_pki_request_ttl_seconds: 3600
+    pki_host_local_certificate_request_ttl_seconds: >-
+      {{ openbao_pki_request_ttl_seconds | int }}
+    pki_host_local_certificate_rollback_seconds: 0
+  tasks:
+    - name: Require the admitted one-host OpenBao request selection
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - inventory_hostname in groups.get('openbao', [])
+        fail_msg: OpenBao PKI request selection changed after admission.
+
+    - name: Run structurally fixed target-local request publication
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: request_publish

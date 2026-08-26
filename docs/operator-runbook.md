@@ -512,6 +512,42 @@ is rejected and requires a separately authorized reset or target recreation.
 Run `make smoke-registry ENV=dev` separately after activation when required. It
 does not participate in rollback.
 
+### Host-Local OpenBao Certificate Workflow
+
+OpenBao reuses the same target-local registry request/response role and the
+separately authorized `platform-pki gitlab-package` boundary. There is no
+OpenBao-specific `platform-tools` command. Private inventory must replace every
+default-deny trust, project-record, CA, transport-client, digest, and response
+principal input before either route can run.
+The reviewed two-certificate validation bundle is installed at the fixed
+`/etc/platform-config/openbao-validation-ca.crt` path. It must not replace the
+OpenBao role-owned runtime CA at `/etc/openbao/tls/ca.crt`.
+
+Run each node separately with its literal canonical inventory hostname:
+
+```bash
+make openbao-pki-request-publish ENV=dev LIMIT=<one-openbao-host> [REQUEST_TTL_SECONDS=1..604800]
+make openbao-pki-response-activate ENV=dev LIMIT=<the-same-openbao-host>
+```
+
+Between these routes, perform the separately authorized request, approval,
+signing, and response publication stages using `platform-pki gitlab-package`.
+Carry the authenticated request ID through those offline stages only. The
+activation route accepts no request ID, digest, package version, response
+directory, adapter, endpoint, or arbitrary extra Ansible arguments; it derives
+coordinates from authenticated target state.
+
+The selected OpenBao Quadlet must enter activation inactive and masked. The
+activation playbook temporarily unmasks it only around the fixed
+`response_activate` role route. Its `always` path stops OpenBao, restores the
+mask, and requires the final unit to be inactive and masked. It does not enable
+OpenBao and does not initialize or bootstrap the cluster.
+
+These commands use a one-node PKI limit. In contrast, `playbooks/openbao.yml`,
+`start-openbao-bootstrap`, and `complete-openbao-bootstrap` require an explicit
+full-cluster OpenBao limit. None of the host-local PKI entry points is imported
+by `site.yml`.
+
 ## Make Targets
 
 Common commands:
@@ -981,9 +1017,11 @@ set `openbao_bootstrap_ready: true` privately and run:
 make start-openbao-bootstrap ENV=dev LIMIT=openbao
 ```
 
-The command requires exact TTY approval and leaves three uninitialized sealed
-processes running without boot enablement. It never handles Shamir shares or the
-initial root token. Two approved custodians must then:
+The command is non-interactive. Its private readiness gate, explicit
+full-cluster limit, canonical member resolution, and immediate evidence
+revalidation must all pass before it leaves three uninitialized sealed processes
+running without boot enablement. It never handles Shamir shares or the initial
+root token. Two approved custodians must then:
 
 1. Initialize exactly one approved node with five shares and threshold three.
 2. Store all five shares and the initial root token in approved outside-Git custody.
@@ -997,6 +1035,58 @@ initial root token. Two approved custodians must then:
 Do not put shares or the root token in command-line arguments, shell history,
 Ansible variables, task output, or repository files. Use an approved interactive
 OpenBao CLI session and custody procedure.
+
+#### Initialize and Unseal
+
+Run initialization exactly once, on the approved first node, from a terminal
+that is not recorded. Replace the placeholders with that node's certificate DNS
+name and configured backend port:
+
+```bash
+sudo podman exec -it openbao bao operator init \
+  -address=https://<first-node-dns>:<backend-port> \
+  -ca-cert=/openbao/config/tls/ca.crt \
+  -key-shares=5 \
+  -key-threshold=3
+```
+
+The command prints five Shamir unseal shares and one initial root token. Before
+closing the terminal or continuing:
+
+- place all five shares and the initial root token directly into approved
+  outside-Git custody;
+- keep the material off the OpenBao nodes and separate from Raft backups;
+- avoid a plaintext file containing all five shares; and
+- distribute access so one person cannot retrieve three shares when dual
+  control is required.
+
+If fewer than three shares were retained, stop. Do not initialize another node
+or place data in the cluster; use the separately authorized reset procedure.
+
+After initialization, run the following command three times on each cluster
+node. Enter one distinct share at each hidden prompt, using any three of the
+same five shares for every node:
+
+```bash
+sudo podman exec -it openbao bao operator unseal \
+  -address=https://<node-dns>:<backend-port> \
+  -ca-cert=/openbao/config/tls/ca.crt
+```
+
+Do not append a share to the command. Command arguments can be exposed through
+shell history, process listings, auditing, or session logs. Verify each node
+after its third share:
+
+```bash
+sudo podman exec openbao bao status \
+  -address=https://<node-dns>:<backend-port> \
+  -ca-cert=/openbao/config/tls/ca.crt
+```
+
+Each node must report `Initialized` as `true`, `Sealed` as `false`, storage type
+`raft`, and HA enabled. Back up OpenBao data separately with reviewed Raft
+snapshot procedures; unseal shares are necessary recovery material but are not
+a data backup.
 
 After an initialized three-node cluster and a dedicated least-privilege status
 identity exist, store its token in an owner-private file outside Git and set

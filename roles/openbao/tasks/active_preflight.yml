@@ -9,9 +9,8 @@
     - "{{ openbao_quadlet_path }}"
     - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
     - "{{ openbao_config_path }}"
+    - "{{ openbao_listener_path }}"
     - "{{ openbao_tls_ca_path }}"
-    - "{{ openbao_tls_cert_path }}"
-    - "{{ openbao_tls_key_path }}"
 
 - name: Require private active OpenBao marker
   ansible.builtin.assert:
@@ -31,6 +30,36 @@
   ansible.builtin.set_fact:
     openbao_active_marker: >-
       {{ openbao_active_marker_slurp.content | b64decode | from_json }}
+
+- name: Read active OpenBao listener selection
+  ansible.builtin.slurp:
+    path: "{{ openbao_listener_path }}"
+  register: openbao_active_listener_slurp
+
+- name: Derive active OpenBao host-local request
+  ansible.builtin.set_fact:
+    openbao_active_request_ids: >-
+      {{
+        openbao_active_listener_slurp.content
+        | b64decode
+        | regex_findall('/openbao/config/tls-versions/([0-9a-f]{32})/(?:fullchain[.]crt|tls[.]key)')
+      }}
+
+- name: Require one exact active OpenBao host-local request
+  ansible.builtin.assert:
+    that:
+      - openbao_active_request_ids | length == 2
+      - openbao_active_request_ids | unique | length == 1
+    fail_msg: Active OpenBao lifecycle rejects dormant or ambiguous TLS custody.
+
+- name: Inspect active OpenBao host-local leaf files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_active_leaf_stats
+  loop:
+    - "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/fullchain.crt"
+    - "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/tls.key"
 
 - name: Inspect active OpenBao service state
   ansible.builtin.service_facts:
@@ -60,10 +89,15 @@
       - openbao_active_marker.cluster_signature is match('^[a-f0-9]{64}$')
       - openbao_active_marker.image_digest == openbao_image_digest
       - openbao_active_marker.quadlet_checksum == openbao_active_lifecycle_stats.results[1].stat.checksum
-      - openbao_active_marker.config_checksum == openbao_active_lifecycle_stats.results[3].stat.checksum
-      - openbao_active_marker.ca_checksum == openbao_active_lifecycle_stats.results[4].stat.checksum
-      - openbao_active_marker.certificate_checksum == openbao_active_lifecycle_stats.results[5].stat.checksum
-      - openbao_active_marker.key_checksum == openbao_active_lifecycle_stats.results[6].stat.checksum
+      - >-
+        openbao_active_marker.config_checksum
+        == ({
+              'base_config_sha256': openbao_active_lifecycle_stats.results[3].stat.checksum,
+              'listener_sha256': openbao_active_lifecycle_stats.results[4].stat.checksum
+            } | to_json | hash('sha256'))
+      - openbao_active_marker.ca_checksum == openbao_active_lifecycle_stats.results[5].stat.checksum
+      - openbao_active_marker.certificate_checksum == openbao_active_leaf_stats.results[0].stat.checksum
+      - openbao_active_marker.key_checksum == openbao_active_leaf_stats.results[1].stat.checksum
       - openbao_active_lifecycle_stats.results[2].stat.exists
       - openbao_active_lifecycle_stats.results[2].stat.islnk
       - >-

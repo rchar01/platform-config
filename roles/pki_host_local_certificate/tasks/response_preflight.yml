@@ -1,0 +1,101 @@
+---
+- name: Load target-local GitLab certificate validation
+  ansible.builtin.import_tasks: validate_target_local.yml
+
+- name: Validate local activation inputs
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_reviewed_ca_source is match(pki_host_local_certificate_absolute_path_pattern)
+      - pki_host_local_certificate_reviewed_ca_sha256 is match('^[0-9a-f]{64}$')
+      - pki_host_local_certificate_reviewed_ca_mode in ['0600', '0644']
+      - pki_host_local_certificate_rollback_seconds is integer
+      - pki_host_local_certificate_rollback_seconds >= 1209600
+    fail_msg: Local activation inputs are incomplete or unsafe.
+  vars:
+    pki_host_local_certificate_absolute_path_pattern: >-
+      ^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$
+
+- name: Build fixed service lifecycle arguments
+  ansible.builtin.set_fact:
+    pki_host_local_certificate_lifecycle_common_argv: >-
+      {{
+        [
+          '--state-root', pki_host_local_certificate_state_root,
+          '--pending-root', pki_host_local_certificate_pending_root,
+          '--versions-root', pki_host_local_certificate_versions_root,
+          '--service', pki_host_local_certificate_service,
+          '--target', pki_host_local_certificate_target,
+          '--service-adapter', pki_host_local_certificate_service_adapter
+        ]
+        + (
+          [
+            '--service-unit', pki_host_local_certificate_service_unit,
+            '--service-config', pki_host_local_certificate_service_config_path,
+            '--node-dns', pki_host_local_certificate_openbao_node_dns,
+            '--node-address', pki_host_local_certificate_openbao_node_address,
+            '--backend-port', pki_host_local_certificate_openbao_backend_port | string,
+            '--cluster-port', pki_host_local_certificate_openbao_cluster_port | string,
+            '--container-versions-root', pki_host_local_certificate_openbao_container_versions_root,
+            '--base-config-dir', pki_host_local_certificate_openbao_base_config_dir,
+            '--raft-data-dir', pki_host_local_certificate_openbao_raft_data_dir,
+            '--bootstrap-marker-path', pki_host_local_certificate_openbao_bootstrap_marker_path
+          ]
+          if pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
+          else []
+        )
+      }}
+    pki_host_local_certificate_lifecycle_config_argv: >-
+      {{
+        ['--zot-config', pki_host_local_certificate_service_config_path]
+        if pki_host_local_certificate_service_adapter == 'zot-v1'
+        else []
+      }}
+    pki_host_local_certificate_lifecycle_candidate_argv: >-
+      {{
+        [
+          '--trust-id', pki_host_local_certificate_trust_id,
+          '--common-name', pki_host_local_certificate_common_name,
+          '--minimum-remaining-lifetime-seconds',
+          pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
+        ]
+        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
+      }}
+
+- name: Read initial authenticated target-local status
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-status']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
+      }}
+  register: pki_host_local_certificate_initial_status_result
+  changed_when: false
+  check_mode: false
+
+- name: Validate initial target-local status
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_initial_status_result.stderr | length == 0
+      - pki_host_local_certificate_initial_status.keys() | list | sort == ['kind', 'request_id', 'required_action', 'schema', 'service', 'status', 'target']
+      - pki_host_local_certificate_initial_status.schema == '2'
+      - pki_host_local_certificate_initial_status.kind == 'platform-config-target-local-certificate-status'
+      - pki_host_local_certificate_initial_status.service == pki_host_local_certificate_service
+      - pki_host_local_certificate_initial_status.target == pki_host_local_certificate_target
+      - >-
+        [pki_host_local_certificate_initial_status.status,
+         pki_host_local_certificate_initial_status.required_action]
+        in [['request-pending', 'await-response'],
+            ['response-ready', 'install-response'],
+            ['response-ready', 'activate-response'],
+            ['activating', 'complete-local-validation'],
+            ['recovery-required', 'recover'],
+            ['not-activated', 'recover'],
+            ['rolled-back', 'recover'],
+            ['complete', 'none']]
+    fail_msg: Target-local response is not ready for safe activation or recovery.
+  vars:
+    pki_host_local_certificate_initial_status: >-
+      {{ pki_host_local_certificate_initial_status_result.stdout | from_json }}

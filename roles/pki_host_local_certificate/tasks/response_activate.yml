@@ -1,93 +1,18 @@
 ---
-- name: Load target-local GitLab certificate validation
-  ansible.builtin.import_tasks: validate_target_local.yml
-
-- name: Validate local activation inputs
-  ansible.builtin.assert:
-    that:
-      - pki_host_local_certificate_reviewed_ca_source is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_reviewed_ca_sha256 is match('^[0-9a-f]{64}$')
-      - pki_host_local_certificate_reviewed_ca_mode in ['0600', '0644']
-      - pki_host_local_certificate_endpoint is match('^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?/v2/$')
-      - pki_host_local_certificate_rollback_seconds is integer
-      - pki_host_local_certificate_rollback_seconds >= 1209600
-    fail_msg: Local activation inputs are incomplete or unsafe.
-  vars:
-    pki_host_local_certificate_absolute_path_pattern: >-
-      ^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$
+- name: Authenticate target-local response state before mutation
+  ansible.builtin.import_tasks: response_preflight.yml
 
 - name: Install target-local certificate trust
   ansible.builtin.import_tasks: trust.yml
-
-- name: Read initial authenticated target-local status
-  ansible.builtin.command:
-    argv: "{{ pki_host_local_certificate_status_argv }}"
-  vars:
-    pki_host_local_certificate_status_argv: >-
-      {{
-        [
-          pki_host_local_certificate_lifecycle_helper_path,
-          'target-status',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
-        ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
-      }}
-  register: pki_host_local_certificate_initial_status_result
-  changed_when: false
-
-- name: Validate initial target-local status
-  ansible.builtin.assert:
-    that:
-      - pki_host_local_certificate_initial_status_result.stderr | length == 0
-      - pki_host_local_certificate_initial_status.keys() | list | sort == ['kind', 'request_id', 'required_action', 'schema', 'service', 'status', 'target']
-      - pki_host_local_certificate_initial_status.schema == '2'
-      - pki_host_local_certificate_initial_status.kind == 'platform-config-target-local-certificate-status'
-      - pki_host_local_certificate_initial_status.service == pki_host_local_certificate_service
-      - pki_host_local_certificate_initial_status.target == pki_host_local_certificate_target
-      - >-
-        [pki_host_local_certificate_initial_status.status,
-         pki_host_local_certificate_initial_status.required_action]
-        in [['request-pending', 'await-response'],
-            ['response-ready', 'install-response'],
-            ['response-ready', 'activate-response'],
-            ['activating', 'complete-local-validation'],
-            ['recovery-required', 'recover'],
-            ['not-activated', 'recover'],
-            ['rolled-back', 'recover'],
-            ['complete', 'none']]
-    fail_msg: Target-local response is not ready for safe activation or recovery.
-  vars:
-    pki_host_local_certificate_initial_status: >-
-      {{ pki_host_local_certificate_initial_status_result.stdout | from_json }}
 
 - name: Recover target-local activation journal without operator coordinates
   ansible.builtin.command:
     argv: >-
       {{
-        [
-          pki_host_local_certificate_lifecycle_helper_path,
-          'target-recover',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
-        ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-recover']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
       }}
   register: pki_host_local_certificate_target_recovery_result
   changed_when: >-
@@ -126,25 +51,12 @@
 
 - name: Read post-recovery target-local status
   ansible.builtin.command:
-    argv: "{{ pki_host_local_certificate_status_argv }}"
-  vars:
-    pki_host_local_certificate_status_argv: >-
+    argv: >-
       {{
-        [
-          pki_host_local_certificate_lifecycle_helper_path,
-          'target-status',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
-        ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-status']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
       }}
   register: pki_host_local_certificate_actionable_status_result
   changed_when: false
@@ -215,25 +127,12 @@
 
 - name: Read post-download target-local status
   ansible.builtin.command:
-    argv: "{{ pki_host_local_certificate_status_argv }}"
-  vars:
-    pki_host_local_certificate_status_argv: >-
+    argv: >-
       {{
-        [
-          pki_host_local_certificate_lifecycle_helper_path,
-          'target-status',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
-        ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-status']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
       }}
   register: pki_host_local_certificate_post_download_status_result
   changed_when: false
@@ -261,7 +160,7 @@
     pki_host_local_certificate_post_download_status: >-
       {{ pki_host_local_certificate_post_download_status_result.stdout | from_json }}
 
-- name: Prepare reviewed local Zot validation CA directory
+- name: Prepare reviewed local service validation CA directory
   ansible.builtin.file:
     path: "{{ pki_host_local_certificate_reviewed_ca_target_path | dirname }}"
     state: directory
@@ -274,7 +173,7 @@
     in [['response-ready', 'activate-response'],
         ['activating', 'complete-local-validation']]
 
-- name: Install reviewed local Zot validation CA
+- name: Install reviewed local service validation CA
   platform_pki_reviewed_ca:
     source: "{{ pki_host_local_certificate_reviewed_ca_source }}"
     sha256: "{{ pki_host_local_certificate_reviewed_ca_sha256 }}"
@@ -293,22 +192,20 @@
         [
           pki_host_local_certificate_lifecycle_helper_path,
           'target-activate-start',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string,
-          '--endpoint', pki_host_local_certificate_endpoint,
+        ]
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
+        + (
+          ['--endpoint', pki_host_local_certificate_endpoint]
+          if pki_host_local_certificate_service_adapter == 'zot-v1'
+          else []
+        )
+        + [
           '--reviewed-ca', pki_host_local_certificate_reviewed_ca_target_path,
           '--reviewed-ca-mode', pki_host_local_certificate_reviewed_ca_mode,
           '--rollback-seconds', pki_host_local_certificate_rollback_seconds | string
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_activation_start_result
   changed_when: >-
@@ -322,7 +219,13 @@
   ansible.builtin.assert:
     that:
       - pki_host_local_certificate_activation_start_result.stderr | length == 0
-      - (pki_host_local_certificate_activation_start_result.stdout | from_json).keys() | list | sort == ['activation_epoch', 'artifact_sha256', 'certificate_sha256', 'request_id', 'rollback_deadline_epoch', 'served_certificate_sha256', 'served_intermediate_sha256', 'status']
+      - >-
+        (pki_host_local_certificate_activation_start_result.stdout
+         | from_json).keys() | list | sort
+        == ['activation_epoch', 'artifact_sha256', 'certificate_sha256',
+            'request_id', 'rollback_deadline_epoch',
+            'served_certificate_sha256', 'served_intermediate_sha256',
+            'status']
       - (pki_host_local_certificate_activation_start_result.stdout | from_json).status == 'local-validated'
       - >-
         (pki_host_local_certificate_activation_start_result.stdout | from_json).request_id
@@ -343,21 +246,19 @@
         [
           pki_host_local_certificate_lifecycle_helper_path,
           'target-activate-complete',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string,
-          '--endpoint', pki_host_local_certificate_endpoint,
+        ]
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
+        + (
+          ['--endpoint', pki_host_local_certificate_endpoint]
+          if pki_host_local_certificate_service_adapter == 'zot-v1'
+          else []
+        )
+        + [
           '--reviewed-ca', pki_host_local_certificate_reviewed_ca_target_path,
           '--reviewed-ca-mode', pki_host_local_certificate_reviewed_ca_mode
         ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
       }}
   register: pki_host_local_certificate_activation_complete_result
   changed_when: true
@@ -384,25 +285,12 @@
 
 - name: Read final authenticated target-local status
   ansible.builtin.command:
-    argv: "{{ pki_host_local_certificate_status_argv }}"
-  vars:
-    pki_host_local_certificate_status_argv: >-
+    argv: >-
       {{
-        [
-          pki_host_local_certificate_lifecycle_helper_path,
-          'target-status',
-          '--state-root', pki_host_local_certificate_state_root,
-          '--pending-root', pki_host_local_certificate_pending_root,
-          '--versions-root', pki_host_local_certificate_versions_root,
-          '--service', pki_host_local_certificate_service,
-          '--target', pki_host_local_certificate_target,
-          '--zot-config', pki_host_local_certificate_zot_config_path,
-          '--trust-id', pki_host_local_certificate_trust_id,
-          '--common-name', pki_host_local_certificate_common_name,
-          '--minimum-remaining-lifetime-seconds', pki_host_local_certificate_minimum_remaining_lifetime_seconds | string
-        ]
-        + (pki_host_local_certificate_dns_sans | map('regex_replace', '^', '--dns-san=') | list)
-        + (pki_host_local_certificate_ip_sans | map('regex_replace', '^', '--ip-san=') | list)
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-status']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_config_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
       }}
   register: pki_host_local_certificate_final_status_result
   changed_when: false

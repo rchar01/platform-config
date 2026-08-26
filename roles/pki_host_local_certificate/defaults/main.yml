@@ -51,4 +51,15 @@ pki_host_local_certificate_reviewed_ca_sha256: ""
 pki_host_local_certificate_reviewed_ca_mode: ""
 pki_host_local_certificate_endpoint: ""
 pki_host_local_certificate_minimum_remaining_lifetime_seconds: 0
+pki_host_local_certificate_service_adapter: zot-v1
+pki_host_local_certificate_service_unit: zot.service
+pki_host_local_certificate_service_config_path: /etc/zot/config.json
 pki_host_local_certificate_zot_config_path: /etc/zot/config.json
+pki_host_local_certificate_openbao_node_dns: ""
+pki_host_local_certificate_openbao_node_address: ""
+pki_host_local_certificate_openbao_backend_port: 18200
+pki_host_local_certificate_openbao_cluster_port: 8201
+pki_host_local_certificate_openbao_container_versions_root: /openbao/config/tls-versions
+pki_host_local_certificate_openbao_base_config_dir: /openbao/config
+pki_host_local_certificate_openbao_raft_data_dir: /var/lib/openbao
+pki_host_local_certificate_openbao_bootstrap_marker_path: /var/lib/platform-config/openbao-bootstrap.json

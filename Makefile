@@ -54,8 +54,8 @@ help:
 	@printf '  %-24s %s\n' 'ENV_FILE' 'Private env file, default follows ENV'
 	@printf '  %-24s %s\n' 'INVENTORY' 'Inventory path, default follows ENV'
 	@printf '  %-24s %s\n' 'PLAYBOOK' 'Playbook for syntax/check/apply, default: playbooks/site.yml'
-	@printf '  %-24s %s\n' 'LIMIT' 'Optional Ansible --limit value'
-	@printf '  %-24s %s\n' 'EXTRA_ARGS' 'Extra arguments passed to Ansible commands'
+	@printf '  %-24s %s\n' 'LIMIT' 'OpenBao PKI: one node; OpenBao staging/bootstrap: full cluster'
+	@printf '  %-24s %s\n' 'EXTRA_ARGS' 'Generic Ansible arguments; not accepted by PKI routes'
 	@printf '  %-24s %s\n' 'STAGING_MODE' 'Issuer workflow mode: preflight, rollback_rehearsal, or validate'
 	@printf '  %-24s %s\n' 'TEST_WORKERS' 'Parallel pytest worker count, default: 2'
 	@printf '  %-24s %s\n' 'MIN_CONTROLLER_FREE_GIB' 'Required controller/rootless-Podman free-space gate'
@@ -239,6 +239,7 @@ test-openbao-rocky:
 	@bash tests/integration/test-openbao-rocky.sh
 
 .PHONY: registry-pki-request-publish registry-pki-response-activate syntax-registry-pki-ci
+.PHONY: openbao-pki-request-publish openbao-pki-response-activate
 
 ## Run all local static checks
 verify: check-dev-toolchain check-test-container-profile check-container-wrapper yamllint lint test
@@ -253,6 +254,14 @@ registry-pki-request-publish: _guard-pki-env _guard-pki-limit _guard-pki-request
 ## Download and locally activate the only authenticated schema-2 response
 registry-pki-response-activate: _guard-pki-env _guard-pki-limit
 	@$(MAKE) apply PLAYBOOK=playbooks/registry-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=
+
+## Publish one OpenBao node PKI request (requires one-host LIMIT)
+openbao-pki-request-publish: _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
+	@$(MAKE) apply PLAYBOOK=playbooks/openbao-pki-request.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,-e openbao_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+
+## Activate one OpenBao node PKI response and restore its staging mask
+openbao-pki-response-activate: _guard-pki-env _guard-pki-limit
+	@$(MAKE) apply PLAYBOOK=playbooks/openbao-pki-activate.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=
 
 ## Run read-only pristine storage fixture checks
 storage-test-preflight: _guard-storage-test
@@ -304,11 +313,11 @@ status-monitoring-etcd:
 status-openbao:
 	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-status.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
-## Start the pristine OpenBao manual-custody bootstrap
+## Start pristine OpenBao bootstrap (requires full-cluster LIMIT)
 start-openbao-bootstrap:
 	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-bootstrap-start.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
-## Complete and persist the manually initialized OpenBao cluster
+## Complete OpenBao bootstrap (requires full-cluster LIMIT)
 complete-openbao-bootstrap:
 	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-bootstrap-complete.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
@@ -394,7 +403,7 @@ _guard-pki-env:
 	@value=$(call sh_quote,$(ENV)); test "$${#value}" -le 63 && case "$$value" in [a-z0-9]*) true ;; *) false ;; esac && case "$$value" in *[!a-z0-9._-]*) false ;; *) true ;; esac || { printf '%s\n' 'ENV must be one canonical lowercase environment name.' >&2; exit 1; }
 
 _guard-pki-limit:
-	@value=$(call sh_quote,$(LIMIT)); test "$${#value}" -le 253 && case "$$value" in [a-z0-9]*) true ;; *) false ;; esac && case "$$value" in *[!a-z0-9.-]*) false ;; *) true ;; esac || { printf '%s\n' 'LIMIT must name one canonical lowercase registry inventory host.' >&2; exit 1; }
+	@value=$(call sh_quote,$(LIMIT)); test "$${#value}" -le 253 && case "$$value" in [a-z0-9]*) true ;; *) false ;; esac && case "$$value" in *[!a-z0-9.-]*) false ;; *) true ;; esac || { printf '%s\n' 'LIMIT must name one canonical lowercase inventory host.' >&2; exit 1; }
 
 _guard-pki-request-ttl:
 	@value=$(call sh_quote,$(REQUEST_TTL_SECONDS)); test "$${#value}" -le 6 && case "$$value" in 0|0*|*[!0-9]*) false ;; *) true ;; esac && test "$$value" -le 604800 || { printf '%s\n' 'REQUEST_TTL_SECONDS must be a canonical integer from 1 through 604800.' >&2; exit 1; }

@@ -1,0 +1,11 @@
+listener "tcp" {
+  address = "{{ openbao_node_address }}:{{ openbao_backend_port }}"
+  cluster_address = "{{ openbao_node_address }}:{{ openbao_cluster_port }}"
+  tls_cert_file = "/openbao/config/tls/tls.crt"
+  tls_key_file = "/openbao/config/tls/tls.key"
+  tls_min_version = "tls12"
+  tls_max_version = "tls13"
+  tls_disable_client_certs = true
+  disable_unauthed_rekey_endpoints = true
+  disable_unauthed_generate_root_endpoints = true
+}

@@ -51,38 +51,19 @@
         fail_msg: OpenBao bootstrap observations are incomplete or inconsistent.
       run_once: true # noqa run-once[task]
 
-    - name: Derive exact OpenBao bootstrap approval
+    - name: Derive exact OpenBao bootstrap evidence
       ansible.builtin.set_fact:
         openbao_bootstrap_cluster_signature: >-
           {{ openbao_bootstrap_observations | to_json | hash('sha256') }}
-        openbao_bootstrap_expected_approval: >-
-          start-openbao-bootstrap|{{ groups.get('openbao', []) | sort | join(',') }}|{{
-            openbao_bootstrap_observations | to_json | hash('sha256')
-          }}|shamir-5-of-3
       run_once: true # noqa run-once[task]
 
-    - name: Preserve approved OpenBao bootstrap observations
+    - name: Preserve validated OpenBao bootstrap observations
       ansible.builtin.set_fact:
-        openbao_bootstrap_approved_observations: "{{ openbao_bootstrap_observations }}"
-        openbao_bootstrap_approved_signature: "{{ openbao_bootstrap_cluster_signature }}"
+        openbao_bootstrap_validated_observations: "{{ openbao_bootstrap_observations }}"
+        openbao_bootstrap_validated_signature: "{{ openbao_bootstrap_cluster_signature }}"
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true
-
-    - name: Prompt for exact OpenBao bootstrap approval
-      ansible.builtin.pause:
-        prompt: "Type exactly {{ openbao_bootstrap_expected_approval }}"
-      register: openbao_bootstrap_approval
-      run_once: true # noqa run-once[task]
-      no_log: true
-
-    - name: Require exact OpenBao bootstrap approval
-      ansible.builtin.assert:
-        that:
-          - openbao_bootstrap_approval.user_input == openbao_bootstrap_expected_approval
-        fail_msg: Exact OpenBao bootstrap approval did not match.
-      run_once: true # noqa run-once[task]
-      no_log: true
 
 - name: Revalidate OpenBao immediately before bootstrap start
   hosts: openbao
@@ -95,7 +76,7 @@
         name: openbao
         tasks_from: bootstrap_preflight.yml
 
-    - name: Require unchanged approved OpenBao bootstrap observations
+    - name: Require unchanged validated OpenBao bootstrap observations
       ansible.builtin.assert:
         that:
           - >-
@@ -103,8 +84,8 @@
             | map('extract', hostvars, 'openbao_bootstrap_observation')
             | sort(attribute='inventory_host')
             | list
-            == hostvars['localhost'].openbao_bootstrap_approved_observations
-        fail_msg: OpenBao bootstrap evidence changed after approval.
+            == hostvars['localhost'].openbao_bootstrap_validated_observations
+        fail_msg: OpenBao bootstrap evidence changed after initial validation.
       run_once: true # noqa run-once[task]
 
 - name: Start every pristine OpenBao bootstrap member
@@ -127,21 +108,40 @@
         - name: Record failed local OpenBao bootstrap start
           ansible.builtin.set_fact:
             openbao_bootstrap_local_start_complete: false
+            openbao_bootstrap_local_start_failure:
+              task: "{{ ansible_failed_task.name | default('unknown task') }}"
+              message: >-
+                {{ ansible_failed_result.msg | default('No failure message was returned.') }}
 
     - name: Reactivate unreachable OpenBao bootstrap members for rollback
       ansible.builtin.meta: clear_host_errors
 
-    - name: Initialize failed OpenBao bootstrap members
+    - name: Initialize failed OpenBao bootstrap results
       ansible.builtin.set_fact:
-        openbao_bootstrap_failed_hosts: []
+        openbao_bootstrap_failures: []
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true
 
-    - name: Collect failed OpenBao bootstrap members
+    - name: Collect failed OpenBao bootstrap results
       ansible.builtin.set_fact:
-        openbao_bootstrap_failed_hosts: >-
-          {{ hostvars['localhost'].openbao_bootstrap_failed_hosts + [item] }}
+        openbao_bootstrap_failures: >-
+          {{
+            hostvars['localhost'].openbao_bootstrap_failures
+            + [
+              {
+                'host': item,
+                'task': (
+                  hostvars[item].openbao_bootstrap_local_start_failure
+                  | default({})
+                ).get('task', 'unreachable host'),
+                'message': (
+                  hostvars[item].openbao_bootstrap_local_start_failure
+                  | default({})
+                ).get('message', 'The host returned no failure details.')
+              }
+            ]
+          }}
       loop: "{{ groups.get('openbao', []) }}"
       when: not hostvars[item].openbao_bootstrap_local_start_complete | default(false) | bool
       run_once: true # noqa run-once[task]
@@ -152,46 +152,217 @@
       ansible.builtin.include_role:
         name: openbao
         tasks_from: bootstrap_rollback.yml
-      when: hostvars['localhost'].openbao_bootstrap_failed_hosts | length > 0
+      when: hostvars['localhost'].openbao_bootstrap_failures | length > 0
 
     - name: Require every pristine OpenBao bootstrap member started
       ansible.builtin.assert:
         that:
-          - hostvars['localhost'].openbao_bootstrap_failed_hosts | length == 0
+          - hostvars['localhost'].openbao_bootstrap_failures | length == 0
         fail_msg: >-
           OpenBao bootstrap failed before initialization. Reachable members were
-          returned to stopped staging.
+          returned to stopped staging. Failures: {{
+            hostvars['localhost'].openbao_bootstrap_failures | to_json
+          }}
       run_once: true # noqa run-once[task]
 
 - name: Publish pending manual-custody markers
   hosts: openbao
   become: true
   gather_facts: false
-  any_errors_fatal: true
+  any_errors_fatal: false
   tasks:
-    - name: Write pending OpenBao bootstrap marker
-      ansible.builtin.copy:
-        dest: "{{ openbao_bootstrap_marker_path }}"
-        owner: "{{ openbao_bootstrap_marker_owner }}"
-        group: "{{ openbao_bootstrap_marker_group }}"
-        mode: "0600"
-        content: >-
+    - name: Reset local OpenBao marker publication result
+      ansible.builtin.set_fact:
+        openbao_bootstrap_local_publish_complete: false
+
+    - name: Publish local pending OpenBao bootstrap state
+      block:
+        - name: Write local pending OpenBao bootstrap marker
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: bootstrap_publish_pending.yml
+
+        - name: Record completed local OpenBao marker publication
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_publish_complete: true
+      rescue:
+        - name: Record failed local OpenBao marker publication
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_publish_complete: false
+            openbao_bootstrap_local_publish_failure:
+              task: "{{ ansible_failed_task.name | default('unknown task') }}"
+              message: >-
+                {{ ansible_failed_result.msg | default('No failure message was returned.') }}
+
+    - name: Reactivate unreachable OpenBao marker publication members
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Initialize failed OpenBao marker publication results
+      ansible.builtin.set_fact:
+        openbao_bootstrap_publish_failures: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect failed OpenBao marker publication results
+      ansible.builtin.set_fact:
+        openbao_bootstrap_publish_failures: >-
           {{
-            {
-              'schema': 1,
-              'state': 'awaiting-manual-custody',
-              'inventory_hosts': groups.get('openbao', []) | sort,
-              'inventory_host': inventory_hostname,
-              'node_id': openbao_bootstrap_observation.node_id,
-              'cluster_signature': hostvars['localhost'].openbao_bootstrap_approved_signature,
-              'config_checksum': openbao_bootstrap_observation.config_checksum,
-              'quadlet_checksum': openbao_bootstrap_observation.quadlet_checksum,
-              'ca_checksum': openbao_bootstrap_observation.ca_checksum,
-              'certificate_checksum': openbao_bootstrap_observation.certificate_checksum,
-              'key_checksum': openbao_bootstrap_observation.key_checksum,
-              'image_digest': openbao_bootstrap_observation.image_digest
-            } | to_nice_json
+            hostvars['localhost'].openbao_bootstrap_publish_failures
+            + [
+              {
+                'host': item,
+                'task': (
+                  hostvars[item].openbao_bootstrap_local_publish_failure
+                  | default({})
+                ).get('task', 'unreachable host'),
+                'message': (
+                  hostvars[item].openbao_bootstrap_local_publish_failure
+                  | default({})
+                ).get('message', 'The host returned no failure details.')
+              }
+            ]
           }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when: not hostvars[item].openbao_bootstrap_local_publish_complete | default(false) | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Reset local OpenBao marker recovery results
+      ansible.builtin.set_fact:
+        openbao_bootstrap_local_publish_rollback_complete: false
+        openbao_bootstrap_local_publish_cleanup_complete: false
+      when: hostvars['localhost'].openbao_bootstrap_publish_failures | length > 0
+
+    - name: Roll back local OpenBao member after marker publication failure
+      when: hostvars['localhost'].openbao_bootstrap_publish_failures | length > 0
+      block:
+        - name: Stop and remask local OpenBao member
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: bootstrap_rollback.yml
+
+        - name: Record completed local OpenBao publication rollback
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_publish_rollback_complete: true
+      rescue:
+        - name: Record failed local OpenBao publication rollback
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_publish_rollback_complete: false
+            openbao_bootstrap_local_publish_rollback_failure:
+              task: "{{ ansible_failed_task.name | default('unknown task') }}"
+              message: >-
+                {{ ansible_failed_result.msg | default('No failure message was returned.') }}
+
+    - name: Reactivate unreachable OpenBao publication rollback members
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Remove local partial pending OpenBao bootstrap marker
+      when: hostvars['localhost'].openbao_bootstrap_publish_failures | length > 0
+      block:
+        - name: Remove local pending OpenBao bootstrap marker
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: bootstrap_remove_pending.yml
+
+        - name: Record completed local OpenBao marker cleanup
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_publish_cleanup_complete: true
+      rescue:
+        - name: Record failed local OpenBao marker cleanup
+          ansible.builtin.set_fact:
+            openbao_bootstrap_local_publish_cleanup_complete: false
+            openbao_bootstrap_local_publish_cleanup_failure:
+              task: "{{ ansible_failed_task.name | default('unknown task') }}"
+              message: >-
+                {{ ansible_failed_result.msg | default('No failure message was returned.') }}
+
+    - name: Reactivate unreachable OpenBao marker cleanup members
+      ansible.builtin.meta: clear_host_errors
+
+    - name: Initialize failed OpenBao marker recovery results
+      ansible.builtin.set_fact:
+        openbao_bootstrap_publish_recovery_failures: []
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect failed OpenBao publication rollback results
+      ansible.builtin.set_fact:
+        openbao_bootstrap_publish_recovery_failures: >-
+          {{
+            hostvars['localhost'].openbao_bootstrap_publish_recovery_failures
+            + [
+              {
+                'host': item,
+                'phase': 'service rollback',
+                'task': (
+                  hostvars[item].openbao_bootstrap_local_publish_rollback_failure
+                  | default({})
+                ).get('task', 'unreachable host'),
+                'message': (
+                  hostvars[item].openbao_bootstrap_local_publish_rollback_failure
+                  | default({})
+                ).get('message', 'The host returned no failure details.')
+              }
+            ]
+          }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when:
+        - hostvars['localhost'].openbao_bootstrap_publish_failures | length > 0
+        - >-
+          not hostvars[item].openbao_bootstrap_local_publish_rollback_complete
+          | default(false)
+          | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Collect failed OpenBao marker cleanup results
+      ansible.builtin.set_fact:
+        openbao_bootstrap_publish_recovery_failures: >-
+          {{
+            hostvars['localhost'].openbao_bootstrap_publish_recovery_failures
+            + [
+              {
+                'host': item,
+                'phase': 'marker cleanup',
+                'task': (
+                  hostvars[item].openbao_bootstrap_local_publish_cleanup_failure
+                  | default({})
+                ).get('task', 'unreachable host'),
+                'message': (
+                  hostvars[item].openbao_bootstrap_local_publish_cleanup_failure
+                  | default({})
+                ).get('message', 'The host returned no failure details.')
+              }
+            ]
+          }}
+      loop: "{{ groups.get('openbao', []) }}"
+      when:
+        - hostvars['localhost'].openbao_bootstrap_publish_failures | length > 0
+        - >-
+          not hostvars[item].openbao_bootstrap_local_publish_cleanup_complete
+          | default(false)
+          | bool
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Require every pending OpenBao bootstrap marker published
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].openbao_bootstrap_publish_failures | length == 0
+        fail_msg: >-
+          OpenBao pending-marker publication failed. Service rollback and marker
+          cleanup were attempted independently on every reachable member.
+          Publication failures: {{
+            hostvars['localhost'].openbao_bootstrap_publish_failures | to_json
+          }}. Recovery failures: {{
+            hostvars['localhost'].openbao_bootstrap_publish_recovery_failures | to_json
+          }}.
+      run_once: true # noqa run-once[task]
 
     - name: Report manual OpenBao custody checkpoint
       ansible.builtin.debug:

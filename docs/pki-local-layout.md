@@ -1,12 +1,13 @@
 # Target-Local PKI Layout
 
-The current host-local Zot workflow does not use a controller exchange or
-same-workstation transport layout. Package transport and lifecycle state are
-target-local; offline signer custody remains outside these Ansible routes.
+The current host-local Zot and pristine OpenBao workflows do not use a controller
+exchange or same-workstation transport layout. Package transport and lifecycle
+state are target-local; offline signer custody remains outside these Ansible
+routes.
 
 ## Target-Owned State
 
-The registry target owns:
+Each registry or OpenBao target owns:
 
 - the leaf private key and pending request state;
 - immutable certificate versions and authenticated active state;
@@ -34,6 +35,13 @@ contains `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, and
 `response.sig`. Each `stage-manifest` uses schema 2 and is transport metadata.
 The target exchanges request and response bytes directly with one private GitLab
 Generic Package project; Ansible never carries them.
+
+Both fixed adapters reuse the same request, approval, and response package
+contract and the `platform-pki gitlab-package` boundary. OpenBao has no separate
+operator command or package-coordinate input. Its Ansible routes operate on one
+canonical node at a time. Response activation temporarily unmasks the staged
+unit for fixed local validation, then stops it and restores the mask without
+enabling it.
 
 ## Outside-Git Inputs
 

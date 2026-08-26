@@ -1,4 +1,10 @@
 ---
+- name: Require authenticated custody before persistent OpenBao activation
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_pending_custody == 'host-local'
+    fail_msg: Persistent OpenBao activation requires authenticated host-local custody.
+
 - name: Render persistently active OpenBao Quadlet
   ansible.builtin.template:
     src: openbao.container.j2

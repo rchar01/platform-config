@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
@@ -74,7 +75,7 @@ def test_schema2_target_local_contract_uses_exact_four_file_trust(
         "{{ pki_host_local_certificate_trust_paths['requesters.allowed_signers'] }}",
         "{{ pki_host_local_certificate_trust_paths['responses.allowed_signers'] }}",
         "{{ pki_host_local_certificate_reviewed_ca_target_path }}",
-        "{{ pki_host_local_certificate_zot_config_path }}",
+        "{{ pki_host_local_certificate_service_config_path }}",
     } <= set(destinations)
     assert (
         set(contract["vars"]["pki_host_local_certificate_required_trust_names"])
@@ -87,6 +88,86 @@ def test_schema2_target_local_contract_uses_exact_four_file_trust(
 
     plugin = load_script(repo_root / "plugins/action/platform_pki_trust_ingress.py")
     assert set(plugin.TRUST_NAMES) == TRUST_NAMES
+
+
+def test_fixed_service_adapter_defaults_and_validation_are_closed(
+    repo_root: Path,
+) -> None:
+    role = repo_root / "roles/pki_host_local_certificate"
+    defaults = load_yaml(role / "defaults/main.yml")
+    validation = load_yaml(role / "tasks/validate_target_local.yml")
+    contract = task_named(
+        validation, "Validate target-local GitLab certificate contract"
+    )
+    checks = contract["ansible.builtin.assert"]["that"]
+    adapter_contract = next(
+        check for check in checks
+        if isinstance(check, str)
+        and "pki_host_local_certificate_service_adapter == 'zot-v1'" in check
+        and "openbao-pristine-v1" in check
+    )
+
+    assert defaults["pki_host_local_certificate_service_adapter"] == "zot-v1"
+    assert defaults["pki_host_local_certificate_service_unit"] == "zot.service"
+    assert defaults["pki_host_local_certificate_service_config_path"] == (
+        "/etc/zot/config.json"
+    )
+    assert defaults["pki_host_local_certificate_openbao_backend_port"] == 18200
+    assert defaults["pki_host_local_certificate_openbao_cluster_port"] == 8201
+    assert "pki_host_local_certificate_operation == 'issue'" in adapter_contract
+    assert "pki_host_local_certificate_service is match('^openbao-" in adapter_contract
+    assert "pki_host_local_certificate_service_unit == 'openbao.service'" in (
+        adapter_contract
+    )
+    assert (
+        "pki_host_local_certificate_reviewed_ca_target_path == "
+        "'/etc/platform-config/openbao-validation-ca.crt'"
+    ) in adapter_contract
+    assert "'/etc/openbao/listener.hcl'" in adapter_contract
+    assert "pki_host_local_certificate_endpoint | length == 0" in adapter_contract
+    assert "pki_host_local_certificate_openbao_backend_port == 18200" in (
+        adapter_contract
+    )
+    assert "pki_host_local_certificate_openbao_cluster_port == 8201" in (
+        adapter_contract
+    )
+    assert "pki_host_local_certificate_service_adapter in ['zot-v1', 'openbao-pristine-v1']" in checks
+
+
+def test_legacy_zot_facade_argv_and_bounded_output_remain_exact(
+    repo_root: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    facade = load_script(
+        repo_root
+        / "roles/pki_host_local_certificate/files/platform-pki-host-local-gitlab"
+    )
+    config = {
+        "schema": 2,
+        "state_root": "/state",
+        "pending_root": "/tls-pending",
+        "versions_root": "/tls-versions",
+        "service": "registry",
+        "target": "registry.test",
+        "zot_config": "/etc/zot/config.json",
+    }
+
+    assert facade.common_lifecycle(config) == [
+        "--state-root", "/state",
+        "--pending-root", "/tls-pending",
+        "--versions-root", "/tls-versions",
+        "--service", "registry",
+        "--target", "registry.test",
+    ]
+    assert facade.service_config_arguments(config) == [
+        "--zot-config", "/etc/zot/config.json",
+    ]
+    facade.status("response-download", "installed")
+    assert json.loads(capsys.readouterr().out) == {
+        "schema": 2,
+        "kind": "platform-config-target-local-gitlab-status",
+        "command": "response-download",
+        "status": "installed",
+    }
 
 
 def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> None:
@@ -102,6 +183,7 @@ def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> 
         "request_helper.yml",
         "request_publish.yml",
         "response_activate.yml",
+        "response_preflight.yml",
         "trust.yml",
         "validate_target_local.yml",
         "validate_trust.yml",

@@ -5,29 +5,24 @@
     - name: Validate OpenBao HA inputs
       ansible.builtin.include_tasks: validate.yml
 
-    - name: Check OpenBao TLS source files
+    - name: Check OpenBao CA source file
       ansible.builtin.stat:
-        path: "{{ item }}"
+        path: "{{ openbao_tls_ca_src }}"
       delegate_to: localhost
       become: false
+      vars:
+        ansible_become: false
       check_mode: false
-      register: openbao_tls_source_stats
+      register: openbao_tls_ca_source_stat
       no_log: true
-      loop:
-        - "{{ openbao_tls_ca_src }}"
-        - "{{ openbao_tls_cert_src }}"
-        - "{{ openbao_tls_key_src }}"
 
-    - name: Assert OpenBao TLS source files exist
+    - name: Assert OpenBao CA source file exists
       ansible.builtin.assert:
         that:
-          - item.stat.exists
-          - item.stat.isreg
-        fail_msg: "Required outside-Git OpenBao TLS source {{ item.item }} is unavailable."
+          - openbao_tls_ca_source_stat.stat.exists
+          - openbao_tls_ca_source_stat.stat.isreg
+        fail_msg: Required outside-Git OpenBao CA source is unavailable.
       no_log: true
-      loop: "{{ openbao_tls_source_stats.results }}"
-      loop_control:
-        label: "{{ item.item }}"
 
     - name: Check OpenBao service directories
       ansible.builtin.stat:
@@ -77,6 +72,46 @@
           OpenBao node address {{ openbao_node_address }} is not assigned to
           {{ inventory_hostname }} and cannot be used with host networking.
 
+    - name: Authenticate OpenBao lifecycle state before role mutation
+      ansible.builtin.include_tasks: lifecycle_preflight.yml
+
+    - name: Inspect pristine OpenBao data before dormant staging
+      ansible.builtin.command:
+        argv:
+          - find
+          - "{{ openbao_data_dir }}"
+          - -mindepth
+          - "1"
+          - -maxdepth
+          - "1"
+          - -print
+          - -quit
+      register: openbao_listener_staging_data_entries
+      changed_when: false
+      check_mode: false
+      when: not openbao_listener_staging_stats.results[0].stat.exists
+
+    - name: Inspect OpenBao service before dormant staging
+      ansible.builtin.service_facts:
+      when: not openbao_listener_staging_stats.results[0].stat.exists
+
+    - name: Require pristine stopped state before dormant listener staging
+      ansible.builtin.assert:
+        that:
+          - not openbao_service_enabled | bool
+          - openbao_service_state == 'stopped'
+          - >-
+            not openbao_listener_staging_stats.results[1].stat.exists
+            or openbao_staging_lifecycle_preflight_result is succeeded
+          - openbao_listener_staging_stats.results[2:] | rejectattr('stat.exists', 'equalto', false) | list | length == 0
+          - openbao_listener_staging_data_entries.stdout | trim | length == 0
+          - ansible_facts.services.get(openbao_service_name, {}).get('state', 'stopped') != 'running'
+        fail_msg: >-
+          The exact dormant OpenBao listener may be staged only with absent
+          lifecycle state and marker, absent leaf files and enablement, pristine
+          Raft data, and a stopped, disabled service.
+      when: not openbao_listener_staging_stats.results[0].stat.exists
+
     - name: Ensure OpenBao configuration directories exist
       ansible.builtin.file:
         path: "{{ item.path }}"
@@ -118,27 +153,6 @@
         group: root
         mode: "0644"
       register: openbao_tls_ca_result
-      notify: Restart OpenBao HA service
-
-    - name: Install OpenBao node certificate
-      ansible.builtin.copy:
-        src: "{{ openbao_tls_cert_src }}"
-        dest: "{{ openbao_tls_cert_path }}"
-        owner: root
-        group: root
-        mode: "0644"
-      register: openbao_tls_cert_result
-      notify: Restart OpenBao HA service
-
-    - name: Install OpenBao node private key
-      ansible.builtin.copy:
-        src: "{{ openbao_tls_key_src }}"
-        dest: "{{ openbao_tls_key_path }}"
-        owner: root
-        group: "{{ openbao_container_gid }}"
-        mode: "0640"
-      register: openbao_tls_key_result
-      no_log: true
       notify: Restart OpenBao HA service
 
     - name: Check exact OpenBao image availability
@@ -221,9 +235,35 @@
         group: "{{ openbao_container_gid }}"
         mode: "0640"
         validate: >-
-          {{ openbao_config_validate_command if openbao_image_ready | bool else omit }}
+          {{
+            (
+              openbao_base_config_validate_command
+              if openbao_listener_staging_stats.results[0].stat.exists
+              else openbao_dormant_base_config_validate_command
+            )
+            if openbao_image_ready | bool
+            else omit
+          }}
       register: openbao_config_result
       notify: Restart OpenBao HA service
+
+    - name: Stage exact dormant OpenBao listener
+      ansible.builtin.template:
+        src: listener.hcl.j2
+        dest: "{{ openbao_listener_path }}"
+        owner: root
+        group: "{{ openbao_container_gid }}"
+        mode: "0640"
+        validate: >-
+          {{ openbao_config_validate_command if openbao_image_ready | bool else omit }}
+      register: openbao_dormant_listener_result
+      when: not openbao_listener_staging_stats.results[0].stat.exists
+
+    - name: Resolve newly staged dormant OpenBao TLS custody
+      ansible.builtin.include_tasks: custody.yml
+      when:
+        - not openbao_listener_staging_stats.results[0].stat.exists
+        - not ansible_check_mode
 
     - name: Write OpenBao Quadlet unit
       ansible.builtin.template:
@@ -243,8 +283,6 @@
             and openbao_service_state == 'started'
             and (
               openbao_tls_ca_result is changed
-              or openbao_tls_cert_result is changed
-              or openbao_tls_key_result is changed
               or openbao_config_result is changed
               or openbao_quadlet_result is changed
             )
@@ -397,6 +435,10 @@
         state: absent
       when: not (openbao_service_enabled | bool)
 
+    - name: Apply pending OpenBao HA restart before readiness checks
+      ansible.builtin.meta: flush_handlers
+      when: openbao_service_state == 'started'
+
     - name: Manage staged OpenBao HA service
       ansible.builtin.systemd_service:
         name: "{{ openbao_service_name }}"
@@ -404,10 +446,6 @@
       when:
         - openbao_image_ready | bool
         - not (ansible_check_mode and openbao_quadlet_result is changed)
-
-    - name: Apply pending OpenBao HA restart before readiness checks
-      ansible.builtin.meta: flush_handlers
-      when: openbao_service_state == 'started'
 
     - name: Verify OpenBao pre-initialization TLS process readiness
       ansible.builtin.uri:
@@ -424,6 +462,10 @@
           - 503
       register: openbao_preinitialization_health
       changed_when: false
+      retries: 15
+      delay: 2
+      until:
+        - openbao_preinitialization_health.status | default(-1) in [200, 429, 501, 503]
       when:
         - openbao_service_state == 'started'
         - not ansible_check_mode

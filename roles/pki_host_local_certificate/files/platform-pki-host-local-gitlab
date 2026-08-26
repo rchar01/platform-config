@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -21,7 +22,7 @@ from typing import NoReturn
 
 
 DEFAULT_CONFIG = "/etc/platform-config/pki-host-local-gitlab.json"
-CONFIG_FIELDS = (
+CONFIG_FIELDS_V2 = (
     "schema", "kind", "service", "target", "operation", "profile",
     "inventory_sha256", "current_cert_sha256", "current_cert_path",
     "common_name", "dns_sans", "ip_sans", "response_principal",
@@ -31,6 +32,14 @@ CONFIG_FIELDS = (
     "ca_file", "spool_root", "request_helper", "lifecycle_helper",
     "platform_pki", "timeout", "processing_attempts",
     "processing_interval",
+)
+CONFIG_FIELDS = CONFIG_FIELDS_V2
+CONFIG_FIELDS_V3 = tuple(
+    field for field in CONFIG_FIELDS_V2 if field != "zot_config"
+) + (
+    "service_adapter", "service_unit", "service_config", "node_dns",
+    "node_address", "backend_port", "cluster_port", "container_versions_root",
+    "base_config_dir", "raft_data_dir", "bootstrap_marker_path",
 )
 REQUEST_FIELDS = (
     "schema", "request_id", "nonce", "created_epoch", "expires_epoch",
@@ -79,6 +88,23 @@ def canonical_path(value: object) -> str:
     ):
         fail()
     return value
+
+
+def canonical_dns(value: object) -> str:
+    if not isinstance(value, str) or not value.isascii() or len(value) > 253:
+        fail()
+    if any(
+        re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label, re.ASCII
+        ) is None
+        for label in value.split(".")
+    ):
+        fail()
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return value
+    fail()
 
 
 def identity(metadata: os.stat_result) -> tuple[int, ...]:
@@ -298,9 +324,17 @@ def require_int(value: object, minimum: int, maximum: int) -> int:
 
 
 def validate_config(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != set(CONFIG_FIELDS):
+    if not isinstance(value, dict):
         fail()
-    if value["schema"] != 2 or value["kind"] != "platform-config-target-local-gitlab":
+    if value.get("schema") == 2:
+        if set(value) != set(CONFIG_FIELDS_V2):
+            fail()
+    elif value.get("schema") == 3:
+        if set(value) != set(CONFIG_FIELDS_V3):
+            fail()
+    else:
+        fail()
+    if value["kind"] != "platform-config-target-local-gitlab":
         fail()
     if not isinstance(value["service"], str) or SERVICE.fullmatch(value["service"]) is None:
         fail()
@@ -332,11 +366,62 @@ def validate_config(value: object) -> dict[str, object]:
     require_int(value["timeout"], 1, 120)
     require_int(value["processing_attempts"], 1, 20)
     require_int(value["processing_interval"], 0, 60)
-    path_fields = (
+    path_fields = [
         "request_signing_key", "state_root", "pending_root", "versions_root",
-        "zot_config", "project_record", "token_file", "ca_file", "spool_root",
+        "project_record", "token_file", "ca_file", "spool_root",
         "request_helper", "lifecycle_helper", "platform_pki",
-    )
+    ]
+    if value["schema"] == 2:
+        path_fields.append("zot_config")
+    else:
+        adapter = value["service_adapter"]
+        if adapter == "zot-v1":
+            if (
+                value["service_unit"] != "zot.service"
+                or value["service_config"] != "/etc/zot/config.json"
+                or any(value[field] is not None for field in (
+                    "node_dns", "node_address", "backend_port", "cluster_port",
+                    "container_versions_root", "base_config_dir", "raft_data_dir",
+                    "bootstrap_marker_path",
+                ))
+            ):
+                fail()
+        elif adapter == "openbao-pristine-v1":
+            if (
+                re.fullmatch(
+                    r"openbao-[a-z0-9][a-z0-9-]{0,53}",
+                    value["service"],
+                    re.ASCII,
+                ) is None
+                or value["operation"] != "issue"
+                or value["service_unit"] != "openbao.service"
+                or value["service_config"] != "/etc/openbao/listener.hcl"
+                or value["backend_port"] != 18200
+                or value["cluster_port"] != 8201
+                or value["container_versions_root"]
+                != "/openbao/config/tls-versions"
+                or value["base_config_dir"] != "/openbao/config"
+                or value["raft_data_dir"] != "/var/lib/openbao"
+                or value["bootstrap_marker_path"]
+                != "/var/lib/platform-config/openbao-bootstrap.json"
+                or value["node_dns"] not in value["dns_sans"]
+                or not isinstance(value["node_address"], str)
+            ):
+                fail()
+            value["node_dns"] = canonical_dns(value["node_dns"])
+            try:
+                address = ipaddress.ip_address(value["node_address"])
+            except ValueError:
+                fail()
+            if not isinstance(address, ipaddress.IPv4Address) or str(address) != value["node_address"]:
+                fail()
+            path_fields.extend((
+                "container_versions_root", "base_config_dir", "raft_data_dir",
+                "bootstrap_marker_path",
+            ))
+        else:
+            fail()
+        path_fields.append("service_config")
     for field in path_fields:
         value[field] = canonical_path(value[field])
     current_digest = value["current_cert_sha256"]
@@ -400,13 +485,38 @@ def gitlab_process_timeout(config: Mapping[str, object]) -> int:
 
 
 def common_lifecycle(config: Mapping[str, object]) -> list[str]:
-    return [
+    arguments = [
         "--state-root", str(config["state_root"]),
         "--pending-root", str(config["pending_root"]),
         "--versions-root", str(config["versions_root"]),
         "--service", str(config["service"]),
         "--target", str(config["target"]),
     ]
+    if config["schema"] == 3:
+        arguments.extend(("--service-adapter", str(config["service_adapter"])))
+        if config["service_adapter"] == "openbao-pristine-v1":
+            for option, field in (
+                ("--service-unit", "service_unit"),
+                ("--service-config", "service_config"),
+                ("--node-dns", "node_dns"),
+                ("--node-address", "node_address"),
+                ("--backend-port", "backend_port"),
+                ("--cluster-port", "cluster_port"),
+                ("--container-versions-root", "container_versions_root"),
+                ("--base-config-dir", "base_config_dir"),
+                ("--raft-data-dir", "raft_data_dir"),
+                ("--bootstrap-marker-path", "bootstrap_marker_path"),
+            ):
+                arguments.extend((option, str(config[field])))
+    return arguments
+
+
+def service_config_arguments(config: Mapping[str, object]) -> list[str]:
+    if config["schema"] == 2:
+        return ["--zot-config", str(config["zot_config"])]
+    if config["service_adapter"] == "zot-v1":
+        return ["--zot-config", str(config["service_config"])]
+    return []
 
 
 def read_record(data: bytes, fields: Sequence[str]) -> dict[str, str]:
@@ -650,7 +760,7 @@ def derive_current(
         )
     output = run_process(
         lifecycle,
-        ["active-paths", *common_lifecycle(config), "--zot-config", str(config["zot_config"])],
+        ["active-paths", *common_lifecycle(config), *service_config_arguments(config)],
     )
     active = parse_json_output(output, {
         "request_id", "cert_path", "key_path", "artifact_sha256",

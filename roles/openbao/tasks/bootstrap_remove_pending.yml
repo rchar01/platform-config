@@ -1,0 +1,5 @@
+---
+- name: Remove pending OpenBao bootstrap marker
+  ansible.builtin.file:
+    path: "{{ openbao_bootstrap_marker_path }}"
+    state: absent

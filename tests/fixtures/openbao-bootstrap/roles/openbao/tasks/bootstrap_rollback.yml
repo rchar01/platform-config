@@ -1,4 +1,12 @@
 ---
+- name: Reject mocked OpenBao bootstrap rollback
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_bootstrap_test_rollback_failure_host | default('')
+        != inventory_hostname
+    fail_msg: Mocked OpenBao bootstrap rollback failed.
+
 - name: Record mocked OpenBao bootstrap rollback
   ansible.builtin.copy:
     dest: "{{ openbao_test_root }}/{{ inventory_hostname }}-rollback"

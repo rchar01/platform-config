@@ -1,0 +1,22 @@
+---
+- name: Inspect OpenBao listener and lifecycle state before mutation
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  register: openbao_listener_staging_stats
+  loop:
+    - "{{ openbao_listener_path }}"
+    - "{{ pki_host_local_certificate_state_root }}"
+    - "{{ openbao_bootstrap_marker_path }}"
+    - "{{ openbao_dormant_tls_cert_path }}"
+    - "{{ openbao_dormant_tls_key_path }}"
+    - "/run/systemd/generator/multi-user.target.wants/{{ openbao_service_name }}"
+    - "/etc/systemd/system/multi-user.target.wants/{{ openbao_service_name }}"
+
+- name: Authenticate pre-staging OpenBao lifecycle state
+  ansible.builtin.include_tasks: staging_lifecycle_preflight.yml
+  when: not openbao_listener_staging_stats.results[0].stat.exists
+
+- name: Authenticate existing OpenBao TLS custody before mutation
+  ansible.builtin.include_tasks: custody.yml
+  when: openbao_listener_staging_stats.results[0].stat.exists

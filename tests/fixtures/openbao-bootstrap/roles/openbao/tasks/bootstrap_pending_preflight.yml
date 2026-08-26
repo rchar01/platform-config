@@ -32,3 +32,4 @@
       image_digest: "{{ openbao_image_digest }}"
     openbao_bootstrap_pending_marker_signature: >-
       {{ openbao_bootstrap_pending_marker.cluster_signature | default('') }}
+    openbao_bootstrap_pending_custody: host-local

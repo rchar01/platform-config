@@ -50,9 +50,12 @@ Do not import maintenance playbooks from `playbooks/site.yml`.
 Available maintenance playbooks:
 
 - `openbao-bootstrap-start.yml`: requires exact pristine staged state, a
-  full-cluster limit, and exact TTY approval before starting three uninitialized
-  sealed processes without boot enablement. It writes only non-secret pending
-  markers; Shamir shares and the initial root token never enter Ansible.
+  private readiness gate, full-cluster limit, canonical member DNS resolution,
+  and unchanged two-pass evidence before starting three uninitialized sealed
+  processes without boot enablement. It writes only non-secret pending markers;
+  Shamir shares and the initial root token never enter Ansible. Start or marker
+  publication failure stops and remasks every reachable member and removes any
+  partial pending markers.
 - `openbao-bootstrap-complete.yml`: after the two-custodian five-share,
   threshold-three ceremony, verifies unchanged pending evidence, two file audit
   devices, and strict stable three-voter state before publishing active markers
