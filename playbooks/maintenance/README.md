@@ -57,9 +57,10 @@ Available maintenance playbooks:
   publication failure stops and remasks every reachable member and removes any
   partial pending markers.
 - `openbao-bootstrap-complete.yml`: after the two-custodian five-share,
-  threshold-three ceremony, verifies unchanged pending evidence, two file audit
-  devices, and strict stable three-voter state before publishing active markers
-  and generated boot enablement. It never initializes or unseals OpenBao.
+  threshold-three ceremony, verifies unchanged pending evidence, two
+  declarative file audit devices, and strict stable three-voter state before
+  publishing active markers and generated boot enablement. It never initializes
+  or unseals OpenBao.
 - `openbao-haproxy-activate.yml`: requires exact active OpenBao markers and
   strict status, binds exact staged package/configuration/CA/firewall evidence
   to TTY approval, requires inactive Keepalived and active firewalld, and checks

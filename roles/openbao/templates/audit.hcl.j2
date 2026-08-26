@@ -1,0 +1,15 @@
+audit "file" "file-audit-1" {
+  local = false
+
+  options {
+    file_path = "{{ openbao_container_audit_1_dir }}/audit.log"
+  }
+}
+
+audit "file" "file-audit-2" {
+  local = false
+
+  options {
+    file_path = "{{ openbao_container_audit_2_dir }}/audit.log"
+  }
+}

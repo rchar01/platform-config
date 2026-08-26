@@ -519,6 +519,7 @@ def test_openbao_bootstrap_completion_and_haproxy_activation(
         )
         assert marker["state"] == "active"
         assert marker["cluster_id"] == "test-cluster"
+        assert marker["audit_config_checksum"] == "a" * 64
 
     fake_bin = isolated_test_dir / "bin"
     fake_bin.mkdir()
@@ -555,6 +556,47 @@ def test_openbao_completion_recovers_missing_pending_marker(
         )
     )
     assert marker["state"] == "active"
+
+
+def test_openbao_completion_upgrades_legacy_pending_markers(
+    repo_root: Path, isolated_test_dir: Path
+) -> None:
+    start_code, start_output = _run_start_playbook(repo_root, isolated_test_dir)
+    assert start_code == 0, start_output
+    for host in ("bao-bootstrap-1", "bao-bootstrap-2", "bao-bootstrap-3"):
+        marker_path = isolated_test_dir / f"{host}-bootstrap.json"
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker.pop("audit_config_checksum")
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    complete_code, complete_output = _run_tty_playbook(
+        repo_root, COMPLETE_PLAYBOOK, isolated_test_dir, _complete_pattern()
+    )
+    assert complete_code == 0, complete_output
+    for host in ("bao-bootstrap-1", "bao-bootstrap-2", "bao-bootstrap-3"):
+        marker = json.loads(
+            (isolated_test_dir / f"{host}-bootstrap.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert marker["audit_config_checksum"] == "a" * 64
+
+
+def test_openbao_completion_rejects_audit_checksum_drift(
+    repo_root: Path, isolated_test_dir: Path
+) -> None:
+    start_code, start_output = _run_start_playbook(repo_root, isolated_test_dir)
+    assert start_code == 0, start_output
+    marker_path = isolated_test_dir / "bao-bootstrap-2-bootstrap.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["audit_config_checksum"] = "b" * 64
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    complete_code, complete_output = _run_tty_playbook(
+        repo_root, COMPLETE_PLAYBOOK, isolated_test_dir, _complete_pattern()
+    )
+    assert complete_code != 0
+    assert "Mocked OpenBao declarative audit checksum changed" in complete_output
 
 
 def test_openbao_completion_rejects_all_missing_pending_markers(

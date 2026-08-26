@@ -14,6 +14,7 @@
           'inventory_host': inventory_hostname,
           'node_id': openbao_bootstrap_observation.node_id,
           'cluster_signature': hostvars['localhost'].openbao_bootstrap_validated_signature,
+          'audit_config_checksum': openbao_bootstrap_audit_config_stat.stat.checksum,
           'config_checksum': openbao_bootstrap_observation.config_checksum,
           'quadlet_checksum': openbao_bootstrap_observation.quadlet_checksum,
           'ca_checksum': openbao_bootstrap_observation.ca_checksum,

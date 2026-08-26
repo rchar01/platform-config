@@ -370,7 +370,7 @@
           Direct OpenBao processes are running without boot enablement. Two
           approved custodians must now initialize exactly one node with five
           shares and threshold three, store all custody material outside Ansible,
-          unseal all three nodes, enable file-audit-1 and file-audit-2, create the
+          unseal all three nodes, verify file-audit-1 and file-audit-2, create the
           least-privilege status token, and revoke the initial root token. Then
           run openbao-bootstrap-complete.yml.
       run_once: true # noqa run-once[task]

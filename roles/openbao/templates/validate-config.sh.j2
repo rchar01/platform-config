@@ -13,10 +13,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+write_audit_config() {
+  cat > "${candidate_dir}/audit.hcl" <<'OPENBAO_AUDIT_CONFIG'
+{% include 'audit.hcl.j2' %}{{ '\n' }}
+OPENBAO_AUDIT_CONFIG
+  chmod 0644 "${candidate_dir}/audit.hcl"
+}
+
 case "${kind}" in
   base)
     install -m 0644 -- "${candidate}" "${candidate_dir}/openbao.hcl"
     install -m 0644 -- "${listener_config}" "${candidate_dir}/listener.hcl"
+    write_audit_config
     ;;
   base-dormant)
     install -m 0644 -- "${candidate}" "${candidate_dir}/openbao.hcl"
@@ -24,13 +32,20 @@ case "${kind}" in
 {% include 'listener.hcl.j2' %}{{ '\n' }}
 OPENBAO_DORMANT_LISTENER
     chmod 0644 "${candidate_dir}/listener.hcl"
+    write_audit_config
     ;;
   listener)
     install -m 0644 -- "${base_config}" "${candidate_dir}/openbao.hcl"
     install -m 0644 -- "${candidate}" "${candidate_dir}/listener.hcl"
+    write_audit_config
+    ;;
+  audit)
+    install -m 0644 -- "${base_config}" "${candidate_dir}/openbao.hcl"
+    install -m 0644 -- "${listener_config}" "${candidate_dir}/listener.hcl"
+    install -m 0644 -- "${candidate}" "${candidate_dir}/audit.hcl"
     ;;
   *)
-    printf 'candidate kind must be base, base-dormant, or listener\n' >&2
+    printf 'candidate kind must be base, base-dormant, listener, or audit\n' >&2
     exit 2
     ;;
 esac

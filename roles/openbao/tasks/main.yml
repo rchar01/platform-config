@@ -75,6 +75,22 @@
     - name: Authenticate OpenBao lifecycle state before role mutation
       ansible.builtin.include_tasks: lifecycle_preflight.yml
 
+    - name: Inspect managed declarative OpenBao audit configuration
+      ansible.builtin.stat:
+        path: "{{ openbao_audit_config_path }}"
+      register: openbao_audit_config_stat
+
+    - name: Refuse implicit post-bootstrap audit migration
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_audit_config_stat.stat.exists
+            or not openbao_listener_staging_stats.results[2].stat.exists
+        fail_msg: >-
+          Declarative audit configuration is absent after bootstrap. Use a
+          reviewed migration that first proves no API-created audit paths
+          conflict; normal convergence will not introduce it implicitly.
+
     - name: Inspect pristine OpenBao data before dormant staging
       ansible.builtin.command:
         argv:
@@ -259,6 +275,28 @@
       register: openbao_dormant_listener_result
       when: not openbao_listener_staging_stats.results[0].stat.exists
 
+    - name: Write validated declarative OpenBao audit configuration
+      ansible.builtin.template:
+        src: audit.hcl.j2
+        dest: "{{ openbao_audit_config_path }}"
+        owner: root
+        group: "{{ openbao_container_gid }}"
+        mode: "0640"
+        validate: >-
+          {{
+            openbao_audit_config_validate_command
+            if (
+              openbao_image_ready | bool
+              and (
+                openbao_listener_staging_stats.results[0].stat.exists
+                or not ansible_check_mode
+              )
+            )
+            else omit
+          }}
+      register: openbao_audit_config_result
+      notify: Restart OpenBao HA service
+
     - name: Resolve newly staged dormant OpenBao TLS custody
       ansible.builtin.include_tasks: custody.yml
       when:
@@ -284,6 +322,7 @@
             and (
               openbao_tls_ca_result is changed
               or openbao_config_result is changed
+              or openbao_audit_config_result is changed
               or openbao_quadlet_result is changed
             )
           }}

@@ -209,6 +209,7 @@
               'node_id': openbao_bootstrap_pending_observation.node_id,
               'cluster_signature': hostvars['localhost'].openbao_bootstrap_complete_approved_signature,
               'cluster_id': hostvars['localhost'].openbao_bootstrap_accepted_cluster_id,
+              'audit_config_checksum': openbao_bootstrap_pending_audit_config_stat.stat.checksum,
               'config_checksum': openbao_bootstrap_pending_observation.config_checksum,
               'quadlet_checksum': openbao_bootstrap_active_quadlet_stat.stat.checksum,
               'ca_checksum': openbao_bootstrap_pending_observation.ca_checksum,

@@ -59,12 +59,13 @@ The role never creates, formats, or mounts service storage. It sets ownership
 only on the existing mount roots and does not recursively rewrite persisted
 data.
 
-The stable `/etc/openbao/openbao.hcl` base configuration and adapter-owned
-`/etc/openbao/listener.hcl` are mounted together at `/openbao/config`. Before a
-host-local PKI request exists, the role may stage only the exact dormant
-listener on pristine storage while the service is stopped and disabled. Its
-`/openbao/config/tls/tls.crt` and `tls.key` selections must remain absent; the
-role never creates placeholders or transfers leaf material from the controller.
+The stable `/etc/openbao/openbao.hcl` base configuration, declarative
+`/etc/openbao/audit.hcl`, and adapter-owned `/etc/openbao/listener.hcl` are
+mounted together at `/openbao/config`. Before a host-local PKI request exists,
+the role may stage only the exact dormant listener on pristine storage while
+the service is stopped and disabled. Its `/openbao/config/tls/tls.crt` and
+`tls.key` selections must remain absent; the role never creates placeholders or
+transfers leaf material from the controller.
 
 Once lifecycle state exists, the role invokes the fixed
 `openbao-pristine-v1` `openbao-custody` adapter and accepts only its strict
@@ -103,9 +104,9 @@ for the manual custody checkpoint.
 
 Two approved custodians then initialize exactly one node with five Shamir shares
 and threshold three, store shares and the initial root token outside Ansible,
-unseal all voters, enable both file audit devices, create the least-privilege
-status identity, and revoke the initial root token. Neither bootstrap playbook
-accepts shares or the root token.
+unseal all voters, verify both declarative file audit devices, create the
+least-privilege status identity, and revoke the initial root token. Neither
+bootstrap playbook accepts shares or the root token.
 
 `playbooks/maintenance/openbao-bootstrap-complete.yml` verifies the unchanged
 pending markers, two audit devices, one active and two standbys, exact stable

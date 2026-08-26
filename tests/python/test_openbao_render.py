@@ -26,6 +26,7 @@ def rendered_openbao(
         for name, path in {
             "config": "openbao.hcl",
             "listener": "listener.hcl",
+            "audit": "audit.hcl",
             "quadlet": "openbao.container",
             "validator": "validate-config",
         }.items()
@@ -83,6 +84,26 @@ def test_openbao_dormant_listener_is_exact(rendered_openbao: dict[str, str]) -> 
     )
 
 
+def test_openbao_declarative_audit_is_exact(rendered_openbao: dict[str, str]) -> None:
+    assert rendered_openbao["audit"] == (
+        'audit "file" "file-audit-1" {\n'
+        "  local = false\n"
+        "\n"
+        "  options {\n"
+        '    file_path = "/openbao/audit-1/audit.log"\n'
+        "  }\n"
+        "}\n"
+        "\n"
+        'audit "file" "file-audit-2" {\n'
+        "  local = false\n"
+        "\n"
+        "  options {\n"
+        '    file_path = "/openbao/audit-2/audit.log"\n'
+        "  }\n"
+        "}\n"
+    )
+
+
 def test_openbao_quadlet_render_contract(rendered_openbao: dict[str, str]) -> None:
     quadlet = rendered_openbao["quadlet"]
     for pattern in (
@@ -106,6 +127,7 @@ def test_openbao_validator_render_contract(rendered_openbao: dict[str, str]) -> 
         r'^  base\)$',
         r'^  base-dormant\)$',
         r'^  listener\)$',
+        r'^  audit\)$',
         r"^  --network none \\$",
         r"^  --pull never \\$",
         r"^  --read-only \\$",
@@ -134,9 +156,13 @@ def test_openbao_role_validates_base_with_existing_listener(repo_root: Path) -> 
     assert role.index("Authenticate OpenBao lifecycle state before role mutation") < (
         first_mutation
     )
+    assert role.index("Refuse implicit post-bootstrap audit migration") < (
+        role.index("Write validated declarative OpenBao audit configuration")
+    )
     assert "openbao_base_config_validate_command" in role
     assert "openbao_dormant_base_config_validate_command" in role
     assert "openbao_config_validate_command" in role
+    assert "openbao_audit_config_validate_command" in role
 
 
 def test_openbao_custody_checks_canonical_ca_chain(repo_root: Path) -> None:

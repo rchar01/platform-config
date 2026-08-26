@@ -23,7 +23,8 @@ fail() {
 
 "${ROOT_DIR}/scripts/in-container" ansible-playbook "$FIXTURE" \
   --extra-vars "openbao_test_output_dir=${CONTAINER_OUTPUT_DIR}" \
-  --extra-vars "openbao_test_validator_base_path=${OUTPUT_DIR}/openbao.hcl" >/dev/null
+  --extra-vars "openbao_test_validator_base_path=${OUTPUT_DIR}/openbao.hcl" \
+  --extra-vars "openbao_test_validator_listener_path=${OUTPUT_DIR}/listener.hcl" >/dev/null
 
 podman pull --quiet "$IMAGE" >/dev/null
 
@@ -44,6 +45,14 @@ identity_output="$(podman run --rm --entrypoint /usr/bin/id "$IMAGE" openbao)"
   || fail "OpenBao image identity mismatch: ${identity_output}"
 
 "${OUTPUT_DIR}/validate-config" listener "${OUTPUT_DIR}/listener.hcl"
+"${OUTPUT_DIR}/validate-config" audit "${OUTPUT_DIR}/audit.hcl"
+
+cp "${OUTPUT_DIR}/audit.hcl" "${OUTPUT_DIR}/invalid-audit.hcl"
+printf '\naudit "file" {\n' >> "${OUTPUT_DIR}/invalid-audit.hcl"
+if "${OUTPUT_DIR}/validate-config" audit "${OUTPUT_DIR}/invalid-audit.hcl" \
+  >/dev/null 2>&1; then
+  fail 'OpenBao native validator accepted an invalid audit configuration candidate'
+fi
 
 cp "${OUTPUT_DIR}/listener.hcl" "${OUTPUT_DIR}/invalid-listener.hcl"
 printf '\nlistener "tcp" {\n' >> "${OUTPUT_DIR}/invalid-listener.hcl"
@@ -86,6 +95,7 @@ cp "${VERSION_ROOT}/fullchain.crt" "${RUNTIME_ROOT}/ca.crt"
 cp "${VERSION_ROOT}/fullchain.crt" "${CONFIG_ROOT}/tls/ca.crt"
 cp "${OUTPUT_DIR}/openbao.hcl" "${CONFIG_ROOT}/openbao.hcl"
 cp "${OUTPUT_DIR}/listener.hcl" "${CONFIG_ROOT}/listener.hcl"
+cp "${OUTPUT_DIR}/audit.hcl" "${CONFIG_ROOT}/audit.hcl"
 perl -0pi -e 's/192[.]0[.]2[.]10/0.0.0.0/g' \
   "${CONFIG_ROOT}/listener.hcl"
 perl -0pi -e \
@@ -95,12 +105,14 @@ perl -0pi -e \
 chmod 0750 "$CONFIG_ROOT" "${CONFIG_ROOT}/tls" \
   "${CONFIG_ROOT}/tls-versions" "$VERSION_ROOT" "$DATA_ROOT"
 chmod 0640 "${CONFIG_ROOT}/openbao.hcl" "${CONFIG_ROOT}/listener.hcl" \
+  "${CONFIG_ROOT}/audit.hcl" \
   "${VERSION_ROOT}/tls.key"
 chmod 0644 "${VERSION_ROOT}/fullchain.crt"
 podman unshare chown 0:1000 \
   "$CONFIG_ROOT" "${CONFIG_ROOT}/tls" \
   "${CONFIG_ROOT}/tls-versions" "$VERSION_ROOT" \
   "${CONFIG_ROOT}/openbao.hcl" "${CONFIG_ROOT}/listener.hcl" \
+  "${CONFIG_ROOT}/audit.hcl" \
   "${VERSION_ROOT}/tls.key"
 podman unshare chown 0:0 \
   "${CONFIG_ROOT}/tls/ca.crt" "${VERSION_ROOT}/fullchain.crt"

@@ -89,6 +89,12 @@
         dest: "{{ openbao_test_output_dir }}/listener.hcl"
         mode: "0600"
 
+    - name: Render declarative OpenBao audit fixture
+      ansible.builtin.template:
+        src: "{{ openbao_role_dir }}/templates/audit.hcl.j2"
+        dest: "{{ openbao_test_output_dir }}/audit.hcl"
+        mode: "0600"
+
     - name: Select rendered OpenBao base config for validator fixture
       ansible.builtin.set_fact:
         openbao_config_path: >-
@@ -96,7 +102,11 @@
             openbao_test_validator_base_path
             | default(openbao_test_output_dir ~ '/openbao.hcl')
           }}
-        openbao_listener_path: "{{ openbao_test_output_dir }}/listener.hcl"
+        openbao_listener_path: >-
+          {{
+            openbao_test_validator_listener_path
+            | default(openbao_test_output_dir ~ '/listener.hcl')
+          }}
 
     - name: Render OpenBao validator fixture
       ansible.builtin.template:

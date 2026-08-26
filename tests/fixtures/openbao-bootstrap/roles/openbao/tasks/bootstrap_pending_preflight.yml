@@ -19,6 +19,15 @@
         else {}
       }}
 
+- name: Require mocked declarative audit checksum compatibility
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_bootstrap_pending_marker.audit_config_checksum
+        | default('a' * 64)
+        == 'a' * 64
+    fail_msg: Mocked OpenBao declarative audit checksum changed.
+
 - name: Build mocked resumable OpenBao bootstrap observation
   ansible.builtin.set_fact:
     openbao_bootstrap_pending_observation:
@@ -33,3 +42,6 @@
     openbao_bootstrap_pending_marker_signature: >-
       {{ openbao_bootstrap_pending_marker.cluster_signature | default('') }}
     openbao_bootstrap_pending_custody: host-local
+    openbao_bootstrap_pending_audit_config_stat:
+      stat:
+        checksum: "{{ 'a' * 64 }}"

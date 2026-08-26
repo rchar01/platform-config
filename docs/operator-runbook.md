@@ -1026,8 +1026,8 @@ root token. Two approved custodians must then:
 1. Initialize exactly one approved node with five shares and threshold three.
 2. Store all five shares and the initial root token in approved outside-Git custody.
 3. Unseal all three nodes with three distinct approved shares.
-4. Enable `file-audit-1` at `/openbao/audit-1/audit.log`.
-5. Enable `file-audit-2` at `/openbao/audit-2/audit.log`.
+4. Verify the declared `file-audit-1` device writes `/openbao/audit-1/audit.log`.
+5. Verify the declared `file-audit-2` device writes `/openbao/audit-2/audit.log`.
 6. Create the status policy below and store its token in the owner-private file
    referenced by `openbao_status_token_src`.
 7. Revoke the initial root token after the status identity is verified.
@@ -1087,6 +1087,21 @@ Each node must report `Initialized` as `true`, `Sealed` as `false`, storage type
 `raft`, and HA enabled. Back up OpenBao data separately with reviewed Raft
 snapshot procedures; unseal shares are necessary recovery material but are not
 a data backup.
+
+The role declares both required file audit devices in `audit.hcl`; do not enable
+them through the API. After initialization and unseal, verify the replicated
+configuration from an approved root session:
+
+```bash
+bao audit list -detailed
+```
+
+Both paths must be present as replicated file devices with the exact file paths
+listed above. An already-running process needs a `SIGHUP` after the managed
+audit configuration is installed; a new process loads it at startup.
+If either path was previously created through the API, stop: OpenBao cannot
+adopt it as declarative configuration. Use a reviewed migration before installing
+or reloading `audit.hcl`.
 
 After an initialized three-node cluster and a dedicated least-privilege status
 identity exist, store its token in an owner-private file outside Git and set

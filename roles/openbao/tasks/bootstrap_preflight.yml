@@ -47,6 +47,22 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: Inspect exact declarative OpenBao audit configuration
+  ansible.builtin.stat:
+    path: "{{ openbao_audit_config_path }}"
+    checksum_algorithm: sha256
+  register: openbao_bootstrap_audit_config_stat
+
+- name: Require exact declarative OpenBao audit configuration
+  ansible.builtin.assert:
+    that:
+      - openbao_bootstrap_audit_config_stat.stat.exists
+      - openbao_bootstrap_audit_config_stat.stat.isreg
+      - >-
+        openbao_bootstrap_audit_config_stat.stat.checksum
+        == lookup('ansible.builtin.template', 'audit.hcl.j2') | hash('sha256')
+    fail_msg: OpenBao bootstrap requires its exact declarative audit configuration.
+
 - name: Inspect OpenBao CA source checksum
   ansible.builtin.stat:
     path: "{{ openbao_tls_ca_src }}"

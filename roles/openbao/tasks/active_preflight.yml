@@ -21,6 +21,22 @@
       - openbao_active_lifecycle_stats.results[0].stat.mode == '0600'
     fail_msg: OpenBao active lifecycle requires a private completion marker.
 
+- name: Inspect active declarative OpenBao audit configuration
+  ansible.builtin.stat:
+    path: "{{ openbao_audit_config_path }}"
+    checksum_algorithm: sha256
+  register: openbao_active_audit_config_stat
+
+- name: Require exact active declarative OpenBao audit configuration
+  ansible.builtin.assert:
+    that:
+      - openbao_active_audit_config_stat.stat.exists
+      - openbao_active_audit_config_stat.stat.isreg
+      - >-
+        openbao_active_audit_config_stat.stat.checksum
+        == lookup('ansible.builtin.template', 'audit.hcl.j2') | hash('sha256')
+    fail_msg: Active OpenBao lifecycle requires its exact audit configuration.
+
 - name: Read active OpenBao marker
   ansible.builtin.slurp:
     path: "{{ openbao_bootstrap_marker_path }}"
@@ -88,6 +104,9 @@
       - openbao_active_marker.cluster_signature is string
       - openbao_active_marker.cluster_signature is match('^[a-f0-9]{64}$')
       - openbao_active_marker.image_digest == openbao_image_digest
+      - >-
+        openbao_active_marker.audit_config_checksum
+        == openbao_active_audit_config_stat.stat.checksum
       - openbao_active_marker.quadlet_checksum == openbao_active_lifecycle_stats.results[1].stat.checksum
       - >-
         openbao_active_marker.config_checksum
