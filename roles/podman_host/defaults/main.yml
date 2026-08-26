@@ -12,3 +12,7 @@ podman_host_quadlet_dir_mode: "0755"
 podman_host_socket_manage: true
 podman_host_socket_enabled: false
 podman_host_socket_name: podman.socket
+podman_host_socket_url: unix:///run/podman/podman.sock
+podman_host_storage_contract_enabled: false
+podman_host_storage_mountpoint: /var/lib/containers
+podman_host_graphroot: /var/lib/containers/storage

@@ -1,0 +1,69 @@
+---
+- name: Inspect dedicated Podman storage mount
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --evaluate
+      - --json
+      - --output
+      - TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT
+      - --mountpoint
+      - "{{ podman_host_storage_mountpoint }}"
+  register: podman_host_storage_mount
+  changed_when: false
+  check_mode: false
+
+- name: Require dedicated Podman XFS mount
+  ansible.builtin.assert:
+    that:
+      - (podman_host_storage_mount.stdout | from_json).filesystems | length == 1
+      - (podman_host_storage_mount.stdout | from_json).filesystems[0].target == podman_host_storage_mountpoint
+      - (podman_host_storage_mount.stdout | from_json).filesystems[0].source.startswith('/dev/')
+      - (podman_host_storage_mount.stdout | from_json).filesystems[0].fstype == 'xfs'
+      - (podman_host_storage_mount.stdout | from_json).filesystems[0].fsroot == '/'
+      - "'rw' in (podman_host_storage_mount.stdout | from_json).filesystems[0].options.split(',')"
+      - "'ro' not in (podman_host_storage_mount.stdout | from_json).filesystems[0].options.split(',')"
+      - "'noexec' not in (podman_host_storage_mount.stdout | from_json).filesystems[0].options.split(',')"
+    fail_msg: >-
+      Podman storage must be an exact block-backed, read-write, exec-capable XFS
+      mount at {{ podman_host_storage_mountpoint }}.
+
+- name: Inspect dedicated Podman XFS geometry
+  ansible.builtin.command:
+    argv:
+      - xfs_info
+      - "{{ podman_host_storage_mountpoint }}"
+  register: podman_host_storage_xfs_info
+  changed_when: false
+  check_mode: false
+
+- name: Require Podman XFS directory entry support
+  ansible.builtin.assert:
+    that:
+      - podman_host_storage_xfs_info.stdout is search('ftype=1')
+    fail_msg: Podman storage XFS must use ftype=1 for OverlayFS.
+
+- name: Inspect effective rootful Podman storage
+  ansible.builtin.command:
+    argv:
+      - podman
+      - info
+      - --format
+      - json
+  register: podman_host_storage_info
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Require effective rootful Podman storage contract
+  ansible.builtin.assert:
+    that:
+      - not ((podman_host_storage_info.stdout | from_json).host.security.rootless | bool)
+      - (podman_host_storage_info.stdout | from_json).store.graphRoot == podman_host_graphroot
+      - (podman_host_storage_info.stdout | from_json).store.graphDriverName == 'overlay'
+      - (podman_host_storage_info.stdout | from_json).store.graphStatus['Backing Filesystem'] == 'xfs'
+      - (podman_host_storage_info.stdout | from_json).store.graphStatus['Supports d_type'] | lower == 'true'
+    fail_msg: >-
+      Effective rootful Podman storage must use the declared graphroot and
+      OverlayFS on XFS with directory entry type support.
+  when: not ansible_check_mode

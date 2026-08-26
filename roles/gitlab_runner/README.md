@@ -38,9 +38,15 @@ Docker mode also enforces:
 The manager Quadlet adds:
 
 ```ini
+Requires=podman.socket
+After=podman.socket
+RequiresMountsFor=/etc/gitlab-runner /var/lib/gitlab-runner /var/lib/containers
 Volume=/run/podman/podman.sock:/run/podman/podman.sock
 SecurityLabelDisable=true
 ```
+
+The Podman storage mount is added to `RequiresMountsFor` only when the optional
+`podman_host` storage contract is enabled.
 
 The label exception applies only to the manager and is required for its Podman
 API access under SELinux. The rootful API is host-root-equivalent if the manager

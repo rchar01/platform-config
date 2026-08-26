@@ -75,6 +75,7 @@ def test_gitlab_runner_shell_quadlet_has_no_socket(
     assert "/run/podman/podman.sock" not in quadlet
     assert "/var/run/docker.sock" not in quadlet
     assert "SecurityLabelDisable=" not in quadlet
+    assert "RequiresMountsFor=/etc/gitlab-runner /var/lib/gitlab-runner\n" in quadlet
     assert quadlet.count("Volume=") == 2
 
 
@@ -87,6 +88,8 @@ def test_gitlab_runner_docker_quadlet_mounts_manager_socket_only(
     )
     assert "Volume=/run/podman/podman.sock:/run/podman/podman.sock:Z" not in quadlet
     assert "SecurityLabelDisable=true\n" in quadlet
+    assert "Requires=podman.socket\n" in quadlet
+    assert "After=podman.socket\n" in quadlet
     assert quadlet.count("Volume=") == 3
 
 

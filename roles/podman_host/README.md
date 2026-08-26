@@ -27,6 +27,13 @@ containers through systemd units unless inventory explicitly enables the API
 socket. The kernel prerequisite does not alter Podman packages, Quadlets, socket
 settings, or the Podman storage driver.
 
+`podman_host_storage_contract_enabled` optionally requires an exact dedicated
+XFS mount at `podman_host_storage_mountpoint` before Podman or its API socket is
+used. The contract verifies an exec-capable `ftype=1` filesystem and requires
+effective rootful Podman storage to use `overlay` at `podman_host_graphroot`.
+The role validates storage created by another role; it does not partition,
+format, mount, migrate, or remove container state.
+
 This role does not deploy application containers. Service roles such as
 `zot_registry`, `openbao`, and `gitlab_runner` own their own configuration,
 environment files, Quadlet unit templates, firewall rules, and service lifecycle.

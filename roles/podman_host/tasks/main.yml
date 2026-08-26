@@ -9,9 +9,35 @@
         )
       - podman_host_versionlock_package == 'python3-dnf-plugin-versionlock'
       - podman_host_versionlock_path == '/etc/dnf/plugins/versionlock.list'
+      - podman_host_storage_contract_enabled is boolean
     fail_msg: >-
       podman_host requires one exact x86_64 Podman NEVRA and the qualified DNF
       versionlock provider and path.
+
+- name: Validate Podman storage contract inputs
+  ansible.builtin.assert:
+    that:
+      - podman_host_storage_mountpoint is string
+      - podman_host_storage_mountpoint.startswith('/')
+      - podman_host_storage_mountpoint != '/'
+      - not podman_host_storage_mountpoint.endswith('/')
+      - not podman_host_storage_mountpoint.endswith('/..')
+      - not podman_host_storage_mountpoint.endswith('/.')
+      - "'//' not in podman_host_storage_mountpoint"
+      - "'/../' not in podman_host_storage_mountpoint"
+      - "'/./' not in podman_host_storage_mountpoint"
+      - podman_host_graphroot is string
+      - podman_host_graphroot.startswith(podman_host_storage_mountpoint ~ '/')
+      - not podman_host_graphroot.endswith('/')
+      - not podman_host_graphroot.endswith('/..')
+      - not podman_host_graphroot.endswith('/.')
+      - "'//' not in podman_host_graphroot"
+      - "'/../' not in podman_host_graphroot"
+      - "'/./' not in podman_host_graphroot"
+    fail_msg: >-
+      The Podman storage contract requires canonical absolute mountpoint and
+      graphroot paths, with graphroot below the mountpoint.
+  when: podman_host_storage_contract_enabled | bool
 
 - name: Install Podman versionlock provider
   ansible.builtin.dnf:
@@ -226,6 +252,12 @@
     group: "{{ podman_host_quadlet_dir_group }}"
     mode: "{{ podman_host_quadlet_dir_mode }}"
 
+- name: Validate dedicated Podman storage
+  ansible.builtin.include_tasks: storage.yml
+  when:
+    - podman_host_storage_contract_enabled | bool
+    - podman_host_package_ready | bool
+
 - name: Manage Podman socket
   ansible.builtin.service:
     name: "{{ podman_host_socket_name }}"
@@ -235,3 +267,21 @@
     - podman_host_socket_manage | bool
     - podman_host_package_ready | bool
     - podman_host_versionlock_converged | bool
+
+- name: Verify enabled Podman API socket
+  ansible.builtin.command:
+    argv:
+      - podman
+      - --url
+      - "{{ podman_host_socket_url }}"
+      - version
+      - --format
+      - json
+  changed_when: false
+  check_mode: false
+  when:
+    - podman_host_socket_manage | bool
+    - podman_host_socket_enabled | bool
+    - podman_host_package_ready | bool
+    - podman_host_versionlock_converged | bool
+    - not ansible_check_mode

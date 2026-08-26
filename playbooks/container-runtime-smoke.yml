@@ -225,3 +225,69 @@
             )
         fail_msg: "Podman socket state does not match inventory."
       when: podman_host_socket_manage | default(true) | bool
+
+    - name: Inspect dedicated Podman storage mount
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --evaluate
+          - --json
+          - --output
+          - TARGET,FSTYPE,OPTIONS,FSROOT
+          - --mountpoint
+          - "{{ podman_host_storage_mountpoint | default('/var/lib/containers') }}"
+      register: podman_host_smoke_storage_mount
+      changed_when: false
+      when: podman_host_storage_contract_enabled | default(false) | bool
+
+    - name: Inspect dedicated Podman XFS geometry
+      ansible.builtin.command:
+        argv:
+          - xfs_info
+          - "{{ podman_host_storage_mountpoint | default('/var/lib/containers') }}"
+      register: podman_host_smoke_storage_xfs
+      changed_when: false
+      when: podman_host_storage_contract_enabled | default(false) | bool
+
+    - name: Inspect effective rootful Podman storage
+      ansible.builtin.command:
+        argv:
+          - podman
+          - info
+          - --format
+          - json
+      register: podman_host_smoke_storage_info
+      changed_when: false
+      when: podman_host_storage_contract_enabled | default(false) | bool
+
+    - name: Assert dedicated Podman storage state
+      ansible.builtin.assert:
+        that:
+          - (podman_host_smoke_storage_mount.stdout | from_json).filesystems | length == 1
+          - >-
+            (podman_host_smoke_storage_mount.stdout | from_json).filesystems[0].target
+            == (podman_host_storage_mountpoint | default('/var/lib/containers'))
+          - (podman_host_smoke_storage_mount.stdout | from_json).filesystems[0].fstype == 'xfs'
+          - (podman_host_smoke_storage_mount.stdout | from_json).filesystems[0].fsroot == '/'
+          - "'noexec' not in (podman_host_smoke_storage_mount.stdout | from_json).filesystems[0].options.split(',')"
+          - podman_host_smoke_storage_xfs.stdout is search('ftype=1')
+          - >-
+            (podman_host_smoke_storage_info.stdout | from_json).store.graphRoot
+            == (podman_host_graphroot | default('/var/lib/containers/storage'))
+          - (podman_host_smoke_storage_info.stdout | from_json).store.graphDriverName == 'overlay'
+        fail_msg: Dedicated rootful Podman storage does not match inventory.
+      when: podman_host_storage_contract_enabled | default(false) | bool
+
+    - name: Verify enabled Podman API
+      ansible.builtin.command:
+        argv:
+          - podman
+          - --url
+          - "{{ podman_host_socket_url | default('unix:///run/podman/podman.sock') }}"
+          - version
+          - --format
+          - json
+      changed_when: false
+      when:
+        - podman_host_socket_manage | default(true) | bool
+        - podman_host_socket_enabled | default(false) | bool
