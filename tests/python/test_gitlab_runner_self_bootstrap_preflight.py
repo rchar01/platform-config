@@ -586,6 +586,117 @@ def test_preflight_operations_and_worktree_policy_are_explicit(
 
 
 @pytest.mark.parametrize(
+    (
+        "image_exists_status",
+        "make_status",
+        "expected_make",
+        "expected_failures",
+        "expected_message",
+    ),
+    (
+        (0, 0, False, 0, "using existing local image: platform-config-dev:latest"),
+        (1, 0, True, 0, "local image was absent; fresh build completed"),
+        (125, 0, False, 1, "could not query local image (status 125)"),
+        (1, 2, True, 1, "local image was absent and make container-build failed"),
+    ),
+)
+def test_preflight_prefers_local_controller_image_and_builds_only_when_absent(
+    image_exists_status: int,
+    make_status: int,
+    expected_make: bool,
+    expected_failures: int,
+    expected_message: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    function = re.search(
+        r"^build_phase\(\) \{.*?^\}",
+        preflight_source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert function is not None
+    repo = tmp_path / "platform-config"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    wrapper = scripts / "in-container"
+    wrapper.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    make_log = tmp_path / "make.log"
+    make = stubs / "make"
+    make.write_text(
+        "#!/usr/bin/env sh\n"
+        "printf '%s\\n' \"$*\" >>\"$FAKE_MAKE_LOG\"\n"
+        'exit "$FAKE_MAKE_STATUS"\n',
+        encoding="utf-8",
+    )
+    make.chmod(0o755)
+    podman = stubs / "podman"
+    podman.write_text(
+        "#!/usr/bin/env sh\n"
+        "printf '%s\\n' \"$*\" >>\"$FAKE_PODMAN_LOG\"\n"
+        'if [ "$1" = image ] && [ "$2" = exists ]; then\n'
+        '  exit "$FAKE_IMAGE_EXISTS_STATUS"\n'
+        "fi\n"
+        'if [ "$1" = image ] && [ "$2" = inspect ]; then\n'
+        "  printf '%s\\n' sha256:test-controller-image\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    podman.chmod(0o755)
+    podman_log = tmp_path / "podman.log"
+    home = tmp_path / "home"
+    home.mkdir()
+    snippet = (
+        "set -uo pipefail\n"
+        'pass() { printf "PASS %s %s\\n" "$1" "$2"; }\n'
+        'fail() { printf "FAIL %s %s\\n" "$1" "$2"; failures=$((failures + 1)); }\n'
+        'skip() { printf "SKIP %s %s\\n" "$1" "$2"; }\n'
+        'warn() { printf "WARN %s %s\\n" "$1" "$2"; }\n'
+        f"{function.group(0)}\n"
+        "failures=0\n"
+        "repo_root=$1\n"
+        "dev_image=platform-config-dev:latest\n"
+        "container_env_file=/platform-private/config/test.ansible.env\n"
+        "build_phase\n"
+        'printf "FAILURES %s\\n" "$failures"\n'
+    )
+
+    result = command_runner.run(
+        ["bash", "-c", snippet, "preflight-test", repo],
+        environment={
+            "FAKE_IMAGE_EXISTS_STATUS": str(image_exists_status),
+            "FAKE_MAKE_STATUS": str(make_status),
+            "FAKE_MAKE_LOG": str(make_log),
+            "FAKE_PODMAN_LOG": str(podman_log),
+            "HOME": str(home),
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+        },
+    ).assert_success()
+
+    assert f"FAILURES {expected_failures}" in result.stdout
+    assert expected_message in result.stdout
+    assert make_log.exists() is expected_make
+    assert podman_log.read_text(encoding="utf-8").splitlines()[0] == (
+        "image exists platform-config-dev:latest"
+    )
+    if expected_failures == 0:
+        assert "PASS controller.image.toolchain" in result.stdout
+        assert "PASS controller.image.identity sha256:test-controller-image" in result.stdout
+        assert "PASS controller.image.mounts" in result.stdout
+    else:
+        assert "PASS controller.image.toolchain" not in result.stdout
+    if expected_make and make_status == 0:
+        assert "container-build DEV_IMAGE=platform-config-dev:latest" in make_log.read_text(
+            encoding="utf-8"
+        )
+
+
+@pytest.mark.parametrize(
     ("contents", "inherited", "expected"),
     (
         (
@@ -866,7 +977,7 @@ def test_selected_controller_failure_blocks_build_and_target_contact(
     ).assert_failure()
 
     assert "inspection failed; build and target contact are blocked" in result.stdout
-    assert "== Build and validate controller image ==" not in result.stdout
+    assert "== Prepare and validate controller image ==" not in result.stdout
     assert "== Validate inventory and self-connection ==" not in result.stdout
     assert not marker.exists()
 

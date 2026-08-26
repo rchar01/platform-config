@@ -139,7 +139,7 @@ runner-self-bootstrap-export:
 runner-self-bootstrap-inspect:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight inspect --env "$(ENV)" --limit "$(LIMIT)" --min-controller-free-gib "$(MIN_CONTROLLER_FREE_GIB)" --min-root-free-gib "$(MIN_ROOT_FREE_GIB)" $(CONTROLLER_ROOT_ARG)
 
-## Rebuild and validate the first-runner controller image (operator-attended only)
+## Prepare and validate the first-runner controller image (operator-attended only)
 runner-self-bootstrap-build:
 	@PLATFORM_CONFIG_DEV_IMAGE="$(DEV_IMAGE)" ./scripts/gitlab-runner-self-bootstrap-preflight build --env "$(ENV)" --limit "$(LIMIT)" --min-controller-free-gib "$(MIN_CONTROLLER_FREE_GIB)" --min-root-free-gib "$(MIN_ROOT_FREE_GIB)" $(CONTROLLER_ROOT_ARG)
 

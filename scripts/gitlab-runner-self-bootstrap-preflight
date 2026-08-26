@@ -562,17 +562,25 @@ print(source)
 }
 
 build_phase() {
-  local image_id mount_output
-  printf '\n%s\n' '== Build and validate controller image =='
+  local image_exists_status image_id mount_output
+  printf '\n%s\n' '== Prepare and validate controller image =='
   if ((failures > 0)); then
-    skip "controller.image.build" "inspect phase failed"
+    skip "controller.image.prepare" "inspect phase failed"
     return
   fi
-  if make -C "$repo_root" container-build DEV_IMAGE="$dev_image"; then
-    pass "controller.image.build" "fresh build completed"
+  if podman image exists "$dev_image" >/dev/null 2>&1; then
+    pass "controller.image.prepare" "using existing local image: $dev_image"
   else
-    fail "controller.image.build" "make container-build failed"
-    return
+    image_exists_status=$?
+    if ((image_exists_status != 1)); then
+      fail "controller.image.prepare" "could not query local image (status $image_exists_status): $dev_image"
+      return
+    elif make -C "$repo_root" container-build DEV_IMAGE="$dev_image"; then
+      pass "controller.image.prepare" "local image was absent; fresh build completed"
+    else
+      fail "controller.image.prepare" "local image was absent and make container-build failed"
+      return
+    fi
   fi
   if PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" ./scripts/check-dev-toolchain >/dev/null; then
     pass "controller.image.toolchain" "development toolchain is healthy"
@@ -582,7 +590,7 @@ build_phase() {
   if image_id=$(podman image inspect --format '{{.Id}}' "$dev_image" 2>/dev/null); then
     pass "controller.image.identity" "$image_id"
   else
-    fail "controller.image.identity" "built image cannot be inspected"
+    fail "controller.image.identity" "controller image cannot be inspected"
   fi
   if mount_output=$(PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" sh -c '
 set -eu

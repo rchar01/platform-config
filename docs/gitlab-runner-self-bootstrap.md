@@ -498,8 +498,9 @@ It provides four explicit operations:
 
 - `inspect` checks the host, repositories, tools, clean runner state, and
   operator-provided free-space gates;
-- `build` runs inspection, forces a fresh development-image build, and verifies
-  the container toolchain and mount boundary;
+- `build` runs inspection, uses the selected development image when it already
+  exists in the bootstrap user's local Podman store, otherwise builds it, and
+  verifies the container toolchain and mount boundary;
 - `connect` runs inspection, requires an existing development image, validates
   the exact private inventory host, storage and secret metadata, strict
   self-SSH, passwordless become, GitLab TLS, exact Podman NEVRA, and focused
