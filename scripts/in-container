@@ -4,6 +4,8 @@ set -euo pipefail
 image="${PLATFORM_CONFIG_DEV_IMAGE:-platform-config-dev:latest}"
 containerfile="${PLATFORM_CONFIG_DEV_CONTAINERFILE:-Containerfile.dev}"
 profile="${PLATFORM_CONFIG_CONTAINER_PROFILE:-development}"
+selinux_label_disable="${PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE:-false}"
+host_network="${PLATFORM_CONFIG_CONTAINER_HOST_NETWORK:-false}"
 ansible_ssh_common_args="${ANSIBLE_SSH_COMMON_ARGS:-}"
 ansible_ssh_common_args="${ansible_ssh_common_args:+$ansible_ssh_common_args }-o UserKnownHostsFile=/tmp/platform-home/.ssh/known_hosts"
 
@@ -71,6 +73,15 @@ trap cleanup EXIT
 trap 'forward_signal INT' INT
 trap 'forward_signal TERM' TERM
 
+if [[ $selinux_label_disable != true && $selinux_label_disable != false ]]; then
+  printf 'PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE must be true or false\n' >&2
+  exit 2
+fi
+if [[ $host_network != true && $host_network != false ]]; then
+  printf 'PLATFORM_CONFIG_CONTAINER_HOST_NETWORK must be true or false\n' >&2
+  exit 2
+fi
+
 mkdir -p "$tmp_home/.ansible/tmp" "$tmp_home/.config"
 chmod 0700 \
   "$tmp_home/.ansible" \
@@ -90,6 +101,11 @@ case "$profile" in
     exit 2
     ;;
 esac
+
+if [[ $profile != development && ($selinux_label_disable == true || $host_network == true) ]]; then
+  printf 'Container security exceptions are supported only by the development profile\n' >&2
+  exit 2
+fi
 
 if [[ $# -eq 0 ]]; then
   set -- bash
@@ -111,6 +127,13 @@ podman_args=(
   --env "ANSIBLE_SSH_COMMON_ARGS=$ansible_ssh_common_args"
   --volume "$tmp_home:/tmp/platform-home:rw"
 )
+
+if [[ $selinux_label_disable == true ]]; then
+  podman_args+=(--security-opt label=disable)
+fi
+if [[ $host_network == true ]]; then
+  podman_args+=(--network=host)
+fi
 
 if [[ $profile == test ]]; then
   pytest_addopts="${PYTEST_ADDOPTS:-} -p no:cacheprovider"

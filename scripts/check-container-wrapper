@@ -61,6 +61,60 @@ for signal_status in 'INT 130' 'TERM 143'; do
   assert_empty
 done
 
+options_bin="$scratch_root/options-bin"
+options_log="$scratch_root/options.log"
+mkdir -p "$options_bin" "$scratch_root/options-home"
+cat >"$options_bin/podman" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${1:-} == image && ${2:-} == exists ]]; then
+  exit 0
+fi
+printf '%s\n' "$@" >"$FAKE_PODMAN_LOG"
+EOF
+chmod 0700 "$options_bin/podman"
+
+run_options_wrapper() {
+  PATH="$options_bin:$PATH" \
+    FAKE_PODMAN_LOG="$options_log" \
+    HOME="$scratch_root/options-home" \
+    TMPDIR="$runtime_root" \
+    PLATFORM_CONFIG_PRIVATE_ROOT="$scratch_root/missing-private" \
+    PLATFORM_CONFIG_SECRET_ROOT="$scratch_root/missing-secret" \
+    PLATFORM_CONFIG_DEV_IMAGE=wrapper-options-test \
+    "$@"
+}
+
+run_options_wrapper "$wrapper" true
+if grep -Fxq -- '--security-opt' "$options_log" || grep -Fxq -- '--network=host' "$options_log"; then
+  printf 'Container wrapper enabled security exceptions by default\n' >&2
+  exit 1
+fi
+
+PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=true \
+  PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=true \
+  run_options_wrapper "$wrapper" true
+grep -Fxq -- '--security-opt' "$options_log" \
+  || { printf 'Container wrapper omitted --security-opt\n' >&2; exit 1; }
+grep -Fxq -- 'label=disable' "$options_log" \
+  || { printf 'Container wrapper omitted label=disable\n' >&2; exit 1; }
+grep -Fxq -- '--network=host' "$options_log" \
+  || { printf 'Container wrapper omitted --network=host\n' >&2; exit 1; }
+
+if PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=invalid \
+  run_options_wrapper "$wrapper" true >/dev/null 2>&1; then
+  printf 'Container wrapper accepted an invalid host-network boolean\n' >&2
+  exit 1
+fi
+if PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=true \
+  PLATFORM_CONFIG_CONTAINER_PROFILE=test \
+  PLATFORM_CONFIG_TEST_SCRATCH_ROOT="$runtime_root" \
+  run_options_wrapper "$wrapper" true >/dev/null 2>&1; then
+  printf 'Container wrapper accepted a test-profile security exception\n' >&2
+  exit 1
+fi
+
 cat >"$fake_bin/podman" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

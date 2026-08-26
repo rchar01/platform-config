@@ -240,6 +240,24 @@ The container wrapper mounts a valid `SSH_AUTH_SOCK` and the bootstrap user's
 comparing its fingerprint with an independent console or equivalent trusted
 source. Do not disable strict host-key checking.
 
+Some self-bootstrap hosts cannot reach their own managed address through the
+rootless Podman bridge, or use SELinux labels that intentionally prevent the
+tooling container from reading reviewed bind-mounted source. For that bounded
+development-container case, explicitly enable the required exceptions before
+invoking the wrapper:
+
+```bash
+export PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=true
+export PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=true
+```
+
+Both variables accept only `true` or `false`, default to `false`, and are
+rejected by the sanitized test profile. `label=disable` removes SELinux process
+separation only from the disposable tooling container; it does not disable host
+SELinux. Host networking shares the host network namespace and must be enabled
+only when the reviewed self-connection path requires it. Keep strict SSH host
+key checking and the normal outside-Git secret boundary enabled.
+
 The resulting connection path is:
 
 ```text
