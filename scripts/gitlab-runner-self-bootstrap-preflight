@@ -120,6 +120,29 @@ run_in_environment() {
     platform-self-bootstrap "$container_env_file" "$@"
 }
 
+load_container_wrapper_options() {
+  local line value
+
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    case "$line" in
+      export\ PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=*|PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=*)
+        value=${line#export }
+        value=${value#*=}
+        [[ $value == true || $value == false ]] || die "PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE in the environment file must be a literal true or false"
+        export PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE="$value"
+        ;;
+      export\ PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=*|PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=*)
+        value=${line#export }
+        value=${value#*=}
+        [[ $value == true || $value == false ]] || die "PLATFORM_CONFIG_CONTAINER_HOST_NETWORK in the environment file must be a literal true or false"
+        export PLATFORM_CONFIG_CONTAINER_HOST_NETWORK="$value"
+        ;;
+    esac
+  done <"$env_file"
+}
+
 json_value() {
   python3 -c '
 import json, sys
@@ -232,6 +255,7 @@ inventory="$private_root/config/inventories/$environment/hosts.yml"
 container_env_file="/platform-private/config/$environment.ansible.env"
 container_inventory="/platform-private/config/inventories/$environment/hosts.yml"
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/runner-self-bootstrap.XXXXXXXX") || die "could not create temporary directory"
+private_source_valid=false
 trap 'rm -rf "$tmp_dir"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -239,6 +263,7 @@ trap 'exit 143' TERM
 inspect_phase() {
   local command_name path metadata podman_info podman_values graph_root os_id arch pid1 root_nevra unit_files rootful_containers
   local controller_commands_ready controller_mount controller_device controller_selinux controller_state controller_error restorecon_output
+  local validation_failures
 
   printf '%s\n' '== Inspect host and repositories =='
   printf '%s\n' 'Output contains private host and storage metadata; do not publish it.'
@@ -279,7 +304,11 @@ inspect_phase() {
   if [[ -d $private_root && ! -L $private_root ]]; then
     private_root=$(realpath --canonicalize-existing "$private_root")
     pass "repository.private.path" "$private_root"
+    validation_failures=$failures
     check_worktree private "$private_root"
+    if ((failures == validation_failures)); then
+      private_source_valid=true
+    fi
   else
     fail "repository.private.path" "missing or symlinked sibling repository: $private_root"
   fi
@@ -291,6 +320,9 @@ inspect_phase() {
       fail "private.file" "missing, non-regular, or symlinked: $path"
     fi
   done
+  if [[ $private_source_valid == true && -f $env_file && ! -L $env_file ]]; then
+    load_container_wrapper_options
+  fi
 
   if [[ -d $secret_root && ! -L $secret_root ]]; then
     metadata=$(stat -Lc '%u:%a:%F' -- "$secret_root" 2>/dev/null || true)

@@ -244,7 +244,8 @@ Some self-bootstrap hosts cannot reach their own managed address through the
 rootless Podman bridge, or use SELinux labels that intentionally prevent the
 tooling container from reading reviewed bind-mounted source. For that bounded
 development-container case, explicitly enable the required exceptions before
-invoking the wrapper:
+invoking the wrapper, or declare these exact literal assignments in the selected
+private environment file:
 
 ```bash
 export PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=true
@@ -256,7 +257,10 @@ rejected by the sanitized test profile. `label=disable` removes SELinux process
 separation only from the disposable tooling container; it does not disable host
 SELinux. Host networking shares the host network namespace and must be enabled
 only when the reviewed self-connection path requires it. Keep strict SSH host
-key checking and the normal outside-Git secret boundary enabled.
+key checking and the normal outside-Git secret boundary enabled. The attended
+self-bootstrap preflight reads only these two literal boolean assignments from a
+validated environment file before it starts the tooling container; it does not
+source that shell file on the host.
 
 The resulting connection path is:
 

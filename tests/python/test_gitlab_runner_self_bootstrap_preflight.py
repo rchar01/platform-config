@@ -579,6 +579,108 @@ def test_preflight_operations_and_worktree_policy_are_explicit(
         in preflight_source
     )
     assert 'pass "repository.$label.clean" "history-free export manifest is valid"' in preflight_source
+    assert (
+        "if [[ $private_source_valid == true && -f $env_file && ! -L $env_file ]]; then\n"
+        "    load_container_wrapper_options"
+    ) in preflight_source
+
+
+@pytest.mark.parametrize(
+    ("contents", "inherited", "expected"),
+    (
+        (
+            "export PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=true\n"
+            "export PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=true\n",
+            {},
+            "true:true\n",
+        ),
+        (
+            "PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE=false\n"
+            "PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=false\n",
+            {
+                "PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE": "true",
+                "PLATFORM_CONFIG_CONTAINER_HOST_NETWORK": "true",
+            },
+            "false:false\n",
+        ),
+        (
+            "export ANSIBLE_HOST_KEY_CHECKING=True\n",
+            {
+                "PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE": "true",
+                "PLATFORM_CONFIG_CONTAINER_HOST_NETWORK": "false",
+            },
+            "true:false\n",
+        ),
+    ),
+)
+def test_preflight_loads_literal_private_options_before_wrapper(
+    contents: str,
+    inherited: dict[str, str],
+    expected: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    function = re.search(
+        r"^load_container_wrapper_options\(\) \{.*?^\}",
+        preflight_source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert function is not None
+    env_file = tmp_path / "test.ansible.env"
+    env_file.write_text(contents, encoding="utf-8")
+    wrapper = tmp_path / "in-container"
+    wrapper.write_text(
+        "#!/usr/bin/env sh\n"
+        "printf '%s:%s\\n' "
+        '"${PLATFORM_CONFIG_CONTAINER_SELINUX_LABEL_DISABLE:-}" '
+        '"${PLATFORM_CONFIG_CONTAINER_HOST_NETWORK:-}"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    snippet = (
+        "set -uo pipefail\n"
+        'die() { printf "%s\\n" "$1" >&2; exit 2; }\n'
+        f"{function.group(0)}\n"
+        'env_file=$1\nload_container_wrapper_options\nexec "$2"\n'
+    )
+
+    result = command_runner.run(
+        ["bash", "-c", snippet, "preflight-test", env_file, wrapper],
+        environment=inherited,
+    ).assert_success()
+
+    assert result.stdout == expected
+
+
+def test_preflight_rejects_nonliteral_private_wrapper_option(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    function = re.search(
+        r"^load_container_wrapper_options\(\) \{.*?^\}",
+        preflight_source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert function is not None
+    env_file = tmp_path / "test.ansible.env"
+    env_file.write_text(
+        "export PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=yes\n", encoding="utf-8"
+    )
+    snippet = (
+        "set -uo pipefail\n"
+        'die() { printf "%s\\n" "$1" >&2; exit 2; }\n'
+        f"{function.group(0)}\n"
+        "env_file=$1\nload_container_wrapper_options\n"
+    )
+
+    result = command_runner.run(
+        ["bash", "-c", snippet, "preflight-test", env_file]
+    ).assert_failure()
+
+    assert result.returncode == 2
+    assert "must be a literal true or false" in result.stderr
 
 
 def test_history_free_export_is_deterministic_and_manifest_validated(
@@ -661,7 +763,6 @@ def test_preflight_recognizes_extracted_manifest_backed_sources(
         stub = stubs / command
         stub.write_text("#!/usr/bin/env sh\nexit 1\n", encoding="utf-8")
         stub.chmod(0o755)
-
     result = command_runner.run(
         [
             public / SCRIPT,
@@ -687,6 +788,36 @@ def test_preflight_recognizes_extracted_manifest_backed_sources(
     assert result.stdout.count("history-free export manifest is valid") == 2
     assert "controller.command." not in result.stdout
     assert "controller.storage.contract" not in result.stderr
+
+
+def test_preflight_does_not_parse_a_dirty_private_environment(
+    tmp_path: Path, repo_root: Path, command_runner: CommandRunner
+) -> None:
+    public, private, secret = _export_fixture_sources(
+        tmp_path, repo_root, command_runner
+    )
+    (private / "config/test.ansible.env").write_text(
+        "export PLATFORM_CONFIG_CONTAINER_HOST_NETWORK=yes\n", encoding="utf-8"
+    )
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    for command in ("dnf", "podman", "rpm", "sudo", "systemctl"):
+        stub = stubs / command
+        stub.write_text("#!/usr/bin/env sh\nexit 1\n", encoding="utf-8")
+        stub.chmod(0o755)
+
+    result = command_runner.run(
+        [public / SCRIPT, *_arguments()],
+        environment={
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_PRIVATE_ROOT": str(private),
+            "PLATFORM_CONFIG_SECRET_ROOT": str(secret),
+        },
+    ).assert_failure()
+
+    assert result.returncode == 1
+    assert "worktree is dirty; review it" in result.stderr
+    assert "must be a literal true or false" not in result.stderr
 
 
 def test_selected_controller_failure_blocks_build_and_target_contact(
