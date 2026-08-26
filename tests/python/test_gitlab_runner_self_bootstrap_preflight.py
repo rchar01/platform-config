@@ -1833,6 +1833,87 @@ def _inventory_contract_document(token: str, ca_path: str) -> dict[str, Any]:
     }
 
 
+def _ansible_command_stdout_function(preflight_source: str) -> str:
+    match = re.search(
+        r"ansible_command_stdout\(\) \{\n(.*?)\n\}",
+        preflight_source,
+        re.DOTALL,
+    )
+    assert match is not None
+    return f"ansible_command_stdout() {{\n{match.group(1)}\n}}"
+
+
+def _storage_rows_parser(preflight_source: str) -> str:
+    match = re.search(
+        r"if ! storage_rows=\$\(python3 - \"\$selected_file\" <<'PY'\n(.*?)\nPY",
+        preflight_source,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+@pytest.mark.parametrize(("remote_output", "expected"), (("0", "0"), ("rocky", "rocky")))
+def test_ansible_command_stdout_parser_is_portable(
+    remote_output: str,
+    expected: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    output = tmp_path / "ansible-output.txt"
+    output.write_text(
+        f"runner-01 | CHANGED | rc=0 | (stdout) {remote_output}\n",
+        encoding="utf-8",
+    )
+    script = _ansible_command_stdout_function(preflight_source)
+
+    result = command_runner.run(
+        [
+            "bash",
+            "-c",
+            f'{script}\nparsed=$(ansible_command_stdout < "$1")\nprintf "%s\\n" "$parsed"\n[[ $parsed == "$2" ]]',
+            "parser",
+            output,
+            expected,
+        ]
+    ).assert_success()
+
+    assert result.stdout.strip() == expected
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "runner-01 | CHANGED | rc=0 | 0\n",
+        "runner-01 | CHANGED | rc=0 | (stdout)0\n",
+        "runner-01 | CHANGED | rc=0 | (stdout) 0\n"
+        "runner-01 | CHANGED | rc=0 | (stdout) 0\n",
+    ),
+)
+def test_ansible_command_stdout_comparison_rejects_malformed_output(
+    content: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    output = tmp_path / "ansible-output.txt"
+    output.write_text(content, encoding="utf-8")
+    script = _ansible_command_stdout_function(preflight_source)
+
+    command_runner.run(
+        [
+            "bash",
+            "-c",
+            f'{script}\n[[ $(ansible_command_stdout < "$1") == "$2" ]]',
+            "parser",
+            output,
+            "0",
+        ]
+    ).assert_failure()
+
+
 def test_inventory_contract_normalizes_supported_secret_lookups(
     tmp_path: Path,
     preflight_source: str,
@@ -1866,6 +1947,125 @@ def test_inventory_contract_normalizes_supported_secret_lookups(
         "/tmp/platform-home/.config/platform-infrastructure/"
         "pki/export/ansible/ca/root-ca.crt"
     )
+
+
+def test_inventory_contract_resolves_simple_storage_device_references(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    inventory_data = _inventory_contract_document(
+        "/tmp/platform-home/.config/platform-infrastructure/config/token",
+        "/tmp/platform-home/.config/platform-infrastructure/pki/ca.crt",
+    )
+    hostvars = inventory_data["_meta"]["hostvars"]["runner-01"]
+    hostvars.update(
+        {
+            "platform_storage_data_device": "/dev/disk/by-path/test-disk",
+            "platform_storage_data_pv_device": "/dev/disk/by-path/test-disk-part1",
+            "storage_volume_layouts": [
+                {
+                    "device": "{{ platform_storage_data_device }}",
+                    "name": "data",
+                    "pv_device": "{{ platform_storage_data_pv_device }}",
+                }
+            ],
+            "storage_volumes": [
+                {
+                    "device": "{{ platform_storage_data_device }}",
+                    "name": "direct",
+                    "pv_device": "{{ platform_storage_data_pv_device }}",
+                }
+            ],
+        }
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps(inventory_data), encoding="utf-8")
+
+    result = command_runner.run(
+        ["python3", "-c", _inventory_contract_parser(preflight_source), "runner-01", inventory]
+    ).assert_success()
+    layout = json.loads(result.stdout)["storage_layouts"][0]
+    volume = json.loads(result.stdout)["storage_volumes"][0]
+
+    assert layout["device"] == "/dev/disk/by-path/test-disk"
+    assert layout["pv_device"] == "/dev/disk/by-path/test-disk-part1"
+    assert volume["device"] == "/dev/disk/by-path/test-disk"
+    assert volume["pv_device"] == "/dev/disk/by-path/test-disk-part1"
+
+
+@pytest.mark.parametrize("resolved", (None, 123, "{{ nested_device }}"))
+def test_inventory_contract_rejects_unresolved_storage_device_reference(
+    resolved: object,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    inventory_data = _inventory_contract_document(
+        "/tmp/platform-home/.config/platform-infrastructure/config/token",
+        "/tmp/platform-home/.config/platform-infrastructure/pki/ca.crt",
+    )
+    if resolved is not None:
+        inventory_data["_meta"]["hostvars"]["runner-01"]["missing_device"] = resolved
+    inventory_data["_meta"]["hostvars"]["runner-01"]["storage_volume_layouts"] = [
+        {"device": "{{ missing_device }}", "name": "data"}
+    ]
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps(inventory_data), encoding="utf-8")
+
+    command_runner.run(
+        ["python3", "-c", _inventory_contract_parser(preflight_source), "runner-01", inventory]
+    ).assert_failure()
+
+
+def test_storage_parser_rejects_resolved_unstable_device_reference(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    inventory_data = _inventory_contract_document(
+        "/tmp/platform-home/.config/platform-infrastructure/config/token",
+        "/tmp/platform-home/.config/platform-infrastructure/pki/ca.crt",
+    )
+    hostvars = inventory_data["_meta"]["hostvars"]["runner-01"]
+    hostvars.update(
+        {
+            "platform_storage_data_device": "/dev/sdb",
+            "platform_storage_data_pv_device": "/dev/sdb1",
+            "storage_volume_layouts": [
+                {
+                    "capacity_gib": 2,
+                    "device": "{{ platform_storage_data_device }}",
+                    "initialize": False,
+                    "name": "data",
+                    "pv_device": "{{ platform_storage_data_pv_device }}",
+                    "required_free_gib": 1,
+                    "reuse_existing_vg": True,
+                    "vg_name": "data",
+                }
+            ],
+            "storage_volumes": [
+                {
+                    "layout": "data",
+                    "lv_name": "runner",
+                    "mountpoint": "/var/lib/runner",
+                    "name": "runner",
+                    "size_gib": 1,
+                }
+            ],
+        }
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps(inventory_data), encoding="utf-8")
+    selected_result = command_runner.run(
+        ["python3", "-c", _inventory_contract_parser(preflight_source), "runner-01", inventory]
+    ).assert_success()
+    selected = tmp_path / "selected.json"
+    selected.write_text(selected_result.stdout, encoding="utf-8")
+
+    command_runner.run(
+        ["python3", "-c", _storage_rows_parser(preflight_source), selected]
+    ).assert_failure()
 
 
 def test_inventory_contract_accepts_resolved_mounted_secret_paths(

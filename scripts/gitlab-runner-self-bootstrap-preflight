@@ -174,6 +174,10 @@ else:
 ' "$1"
 }
 
+ansible_command_stdout() {
+  awk -F '[(]stdout[)] ' 'NF == 2 { print $2 }'
+}
+
 restorecon_output_safe() {
   python3 - "$1" "$2" <<'PY'
 import re
@@ -718,6 +722,30 @@ def mounted_secret_path(value, template, replacement, label):
         raise SystemExit(f"{label} must resolve under the mounted outside-Git secret root")
     return value
 
+
+def resolved_storage_entries(entries):
+    if not isinstance(entries, list):
+        return entries
+    result = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            result.append(entry)
+            continue
+        entry = dict(entry)
+        for field in ("device", "pv_device"):
+            value = entry.get(field)
+            if not isinstance(value, str):
+                continue
+            reference = re.fullmatch(r"\{\{ ([A-Za-z_][A-Za-z0-9_]*) \}\}", value)
+            if reference is None:
+                continue
+            value = values.get(reference.group(1))
+            if not isinstance(value, str) or "{" in value or "}" in value:
+                raise SystemExit(f"storage {field} reference did not resolve to a string")
+            entry[field] = value
+        result.append(entry)
+    return result
+
 target = sys.argv[1]
 with open(sys.argv[2], encoding="utf-8") as stream:
     data = json.load(stream)
@@ -836,6 +864,8 @@ if not isinstance(volumes, list) or not volumes or any(not isinstance(item, str)
 keys = values.get("users_ansible_authorized_keys", [])
 if not isinstance(keys, list):
     raise SystemExit("users_ansible_authorized_keys must be a list")
+storage_volumes = resolved_storage_entries(values.get("storage_volumes", []))
+storage_layouts = resolved_storage_entries(values.get("storage_volume_layouts", []))
 selected = {
     "address": address,
     "become": True,
@@ -850,8 +880,8 @@ selected = {
     "package_nevra": package,
     "port": port,
     "storage_member": target in data.get("storage_volume_hosts", {}).get("hosts", []),
-    "storage_volumes": values.get("storage_volumes", []),
-    "storage_layouts": values.get("storage_volume_layouts", []),
+    "storage_volumes": storage_volumes,
+    "storage_layouts": storage_layouts,
     "ssh_args": values.get("ansible_ssh_args", "") or "",
     "ssh_common_args": values.get("ansible_ssh_common_args", "") or "",
     "ssh_extra_args": values.get("ansible_ssh_extra_args", "") or "",
@@ -1082,14 +1112,14 @@ stat -Lc "%u:%a:%F" -- "$path"
 
   if output=$(timeout "$connect_timeout" "$repo_root/scripts/in-container" sh -c \
     '. "$1"; exec ansible -i "$2" all -b -m ansible.builtin.command -a "id -u" --limit "$3" -o' \
-      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(awk -F '\(stdout\) ' 'NF == 2 {print $2}' <<<"$output") == 0 ]]; then
+      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(ansible_command_stdout <<<"$output") == 0 ]]; then
     pass "ssh.passwordless-become" "become command returned UID 0"
   else
     fail "ssh.passwordless-become" "passwordless become failed"
   fi
   if output=$(timeout "$connect_timeout" "$repo_root/scripts/in-container" sh -c \
     '. "$1"; exec ansible -i "$2" all -m ansible.builtin.command -a "id -un" --limit "$3" -o' \
-      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(awk -F '\(stdout\) ' 'NF == 2 {print $2}' <<<"$output") == "$user" ]]; then
+      platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(ansible_command_stdout <<<"$output") == "$user" ]]; then
     pass "ssh.inventory-user" "$user"
   else
     fail "ssh.inventory-user" "remote user did not match inventory"

@@ -432,6 +432,8 @@ The strict preflight accepts either resolved paths below the container-mounted
 outside-Git root or the exact `PLATFORM_INFRASTRUCTURE_CONFIG_DIR` lookup forms
 used by the public inventory examples. It normalizes those two lookup forms for
 the controller container without evaluating arbitrary inventory templates.
+Exact one-level variable references used by storage `device` and `pv_device`
+fields are similarly resolved before their stable-device paths are validated.
 
 When a private CA source is configured, record the exact file-byte digest from
 `sha256sum` as `gitlab_runner_tls_ca_cert_sha256`. The role verifies that digest
