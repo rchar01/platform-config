@@ -1118,7 +1118,7 @@ stat -Lc "%u:%a:%F" -- "$path"
     fail "ssh.passwordless-become" "passwordless become failed"
   fi
   if output=$(timeout "$connect_timeout" "$repo_root/scripts/in-container" sh -c \
-    '. "$1"; exec ansible -i "$2" all -m ansible.builtin.command -a "id -un" --limit "$3" -o' \
+    '. "$1"; exec ansible -i "$2" all -e ansible_become=false -m ansible.builtin.command -a "id -un" --limit "$3" -o' \
       platform-self-bootstrap "$container_env_file" "$container_inventory" "$limit" 2>&1) && [[ $(ansible_command_stdout <<<"$output") == "$user" ]]; then
     pass "ssh.inventory-user" "$user"
   else

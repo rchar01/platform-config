@@ -1521,6 +1521,20 @@ def test_preflight_rejects_unsafe_host_keys_and_requires_a_literal_limit(
     assert preflight_source.count('--limit "$3"') == 3
 
 
+def test_preflight_checks_become_and_inventory_user_in_separate_contexts(
+    preflight_source: str,
+) -> None:
+    assert (
+        'all -b -m ansible.builtin.command -a "id -u" --limit "$3" -o'
+        in preflight_source
+    )
+    assert (
+        'all -e ansible_become=false -m ansible.builtin.command -a "id -un" '
+        '--limit "$3" -o' in preflight_source
+    )
+    assert preflight_source.count("ansible_become=false") == 1
+
+
 def test_preflight_canonicalizes_secret_paths_before_use(
     preflight_source: str,
 ) -> None:
