@@ -692,6 +692,31 @@ connect_phase() {
   chmod 0600 "$tmp_dir/inventory.json"
   if ! selected_json=$(python3 - "$limit" "$tmp_dir/inventory.json" <<'PY'
 import json, re, shlex, sys
+from pathlib import PurePosixPath
+
+secret_root = PurePosixPath("/tmp/platform-home/.config/platform-infrastructure")
+
+
+def mounted_secret_path(value, template, replacement, label):
+    if not isinstance(value, str):
+        raise SystemExit(f"{label} must be a string")
+    if value.startswith(f"{template}/"):
+        suffix = value[len(template):]
+        value = f"{replacement}{suffix}"
+    else:
+        suffix = value
+    if "{" in suffix or "}" in suffix:
+        raise SystemExit(f"{label} uses an unsupported template")
+    path = PurePosixPath(value)
+    if (
+        not path.is_absolute()
+        or str(path) != value
+        or ".." in path.parts
+        or path == secret_root
+        or not path.is_relative_to(secret_root)
+    ):
+        raise SystemExit(f"{label} must resolve under the mounted outside-Git secret root")
+    return value
 
 target = sys.argv[1]
 with open(sys.argv[2], encoding="utf-8") as stream:
@@ -789,9 +814,19 @@ if not isinstance(ca_path, str) or not isinstance(ca_sha256, str):
     raise SystemExit("runner CA path and digest must be strings")
 if bool(ca_path) != bool(ca_sha256) or (ca_sha256 and not re.match(r"^[0-9a-f]{64}$", ca_sha256)):
     raise SystemExit("runner CA path requires a reviewed sha256 digest")
-token = values.get("gitlab_runner_token_src", "")
-if not isinstance(token, str) or not token.startswith("/tmp/platform-home/.config/platform-infrastructure/"):
-    raise SystemExit("runner token must resolve under the mounted outside-Git secret root")
+if ca_path:
+    ca_path = mounted_secret_path(
+        ca_path,
+        "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}",
+        secret_root,
+        "runner CA path",
+    )
+token = mounted_secret_path(
+    values.get("gitlab_runner_token_src", ""),
+    "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}",
+    secret_root / "config",
+    "runner token",
+)
 package = values.get("podman_host_package_nevra", "")
 if not isinstance(package, str) or not re.match(r"^podman-[0-9]+:[0-9][A-Za-z0-9_.+~-]*-[A-Za-z0-9_.+~-]+[.]x86_64$", package):
     raise SystemExit("podman_host_package_nevra must be an exact x86_64 NEVRA")

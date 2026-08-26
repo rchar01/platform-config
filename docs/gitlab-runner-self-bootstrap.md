@@ -428,6 +428,11 @@ The corresponding private variables must provide:
 - runner name and intended tags; and
 - the outside-Git token source path.
 
+The strict preflight accepts either resolved paths below the container-mounted
+outside-Git root or the exact `PLATFORM_INFRASTRUCTURE_CONFIG_DIR` lookup forms
+used by the public inventory examples. It normalizes those two lookup forms for
+the controller container without evaluating arbitrary inventory templates.
+
 When a private CA source is configured, record the exact file-byte digest from
 `sha256sum` as `gitlab_runner_tls_ca_cert_sha256`. The role verifies that digest
 both before and after installing the certificate; a certificate fingerprint is

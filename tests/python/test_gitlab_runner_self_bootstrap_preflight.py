@@ -12,6 +12,7 @@ import stat
 import tarfile
 from types import SimpleNamespace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1790,4 +1791,172 @@ def test_restorecon_output_rejects_other_messages(
 
     command_runner.run(
         ["python3", "-c", _restorecon_output_parser(preflight_source), graphroot, output]
+    ).assert_failure()
+
+
+def _inventory_contract_parser(preflight_source: str) -> str:
+    match = re.search(
+        r'if ! selected_json=\$\(python3 - "\$limit" "\$tmp_dir/inventory.json" <<\'PY\'\n(.*?)\nPY\n  \); then',
+        preflight_source,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _inventory_contract_document(token: str, ca_path: str) -> dict[str, Any]:
+    target = "runner-01"
+    image = f"registry.example.test/image@sha256:{'a' * 64}"
+    return {
+        "_meta": {
+            "hostvars": {
+                target: {
+                    "ansible_become": True,
+                    "ansible_user": "rocky",
+                    "gitlab_runner_docker_helper_image": image,
+                    "gitlab_runner_docker_image": image,
+                    "gitlab_runner_executor": "docker",
+                    "gitlab_runner_gitlab_url": "https://gitlab.example.test",
+                    "gitlab_runner_image": image,
+                    "gitlab_runner_tls_ca_cert_sha256": "b" * 64,
+                    "gitlab_runner_tls_ca_cert_src": ca_path,
+                    "gitlab_runner_token_src": token,
+                    "podman_host_package_nevra": "podman-6:5.4.0-13.el10_0.x86_64",
+                    "podman_host_socket_enabled": True,
+                    "gitlab_runner_podman_socket_enabled": True,
+                }
+            }
+        },
+        "container_hosts": {"hosts": [target]},
+        "gitlab_runners": {"hosts": [target]},
+        "rocky": {"hosts": [target]},
+    }
+
+
+def test_inventory_contract_normalizes_supported_secret_lookups(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    config_lookup = "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}"
+    parent_lookup = (
+        "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}"
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            _inventory_contract_document(
+                f"{config_lookup}/gitlab-runners/test/runner.token",
+                f"{parent_lookup}/pki/export/ansible/ca/root-ca.crt",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = command_runner.run(
+        ["python3", "-c", _inventory_contract_parser(preflight_source), "runner-01", inventory]
+    ).assert_success()
+    selected = json.loads(result.stdout)
+
+    assert selected["token_path"] == (
+        "/tmp/platform-home/.config/platform-infrastructure/config/"
+        "gitlab-runners/test/runner.token"
+    )
+    assert selected["ca_path"] == (
+        "/tmp/platform-home/.config/platform-infrastructure/"
+        "pki/export/ansible/ca/root-ca.crt"
+    )
+
+
+def test_inventory_contract_accepts_resolved_mounted_secret_paths(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    token = "/tmp/platform-home/.config/platform-infrastructure/config/token"
+    ca_path = "/tmp/platform-home/.config/platform-infrastructure/pki/ca.crt"
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(_inventory_contract_document(token, ca_path)), encoding="utf-8"
+    )
+
+    result = command_runner.run(
+        ["python3", "-c", _inventory_contract_parser(preflight_source), "runner-01", inventory]
+    ).assert_success()
+    selected = json.loads(result.stdout)
+
+    assert selected["token_path"] == token
+    assert selected["ca_path"] == ca_path
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("gitlab_runner_token_src", "/home/rocky/.config/platform-infrastructure/config/token"),
+        ("gitlab_runner_token_src", "/tmp/platform-home/.config/platform-infrastructure"),
+        (
+            "gitlab_runner_token_src",
+            "{{ lookup('ansible.builtin.env', 'HOME') }}/runner.token",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/../token",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/"
+            "{{ lookup('ansible.builtin.env', 'HOME') }}",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "/tmp/platform-home/.config/platform-infrastructure/config/{% if true %}token",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "/tmp/platform-home/.config/platform-infrastructure/config/{# token #}",
+        ),
+        ("gitlab_runner_token_src", "config/runner.token"),
+        (
+            "gitlab_runner_token_src",
+            "/tmp/platform-home/.config/platform-infrastructure/config/./token",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "/tmp/platform-home/.config/platform-infrastructure/config//token",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "/tmp/platform-home/.config/platform-infrastructure/config/token/",
+        ),
+        (
+            "gitlab_runner_token_src",
+            "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/token",
+        ),
+        (
+            "gitlab_runner_tls_ca_cert_src",
+            "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/ca.crt",
+        ),
+        (
+            "gitlab_runner_tls_ca_cert_src",
+            "/tmp/platform-home/.config/platform-infrastructure/../ca.crt",
+        ),
+    ),
+)
+def test_inventory_contract_rejects_unsupported_secret_paths(
+    field: str,
+    value: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    inventory_data = _inventory_contract_document(
+        "/tmp/platform-home/.config/platform-infrastructure/config/token",
+        "/tmp/platform-home/.config/platform-infrastructure/pki/ca.crt",
+    )
+    inventory_data["_meta"]["hostvars"]["runner-01"][field] = value
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps(inventory_data), encoding="utf-8")
+
+    command_runner.run(
+        ["python3", "-c", _inventory_contract_parser(preflight_source), "runner-01", inventory]
     ).assert_failure()
