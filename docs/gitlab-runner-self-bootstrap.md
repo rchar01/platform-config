@@ -402,11 +402,16 @@ The corresponding private variables must provide:
 - the actual SSH user and authentication path or agent policy;
 - timezone and any required host aliases;
 - the exact approved Podman NEVRA;
-- the reachable GitLab URL and optional CA source;
-- digest-pinned runner manager and Docker fallback images;
+- the reachable GitLab URL and optional digest-pinned CA source;
+- digest-pinned runner manager, Docker fallback, and helper images;
 - Docker executor and manager-only Podman socket settings;
 - runner name and intended tags; and
 - the outside-Git token source path.
+
+When a private CA source is configured, record the exact file-byte digest from
+`sha256sum` as `gitlab_runner_tls_ca_cert_sha256`. The role verifies that digest
+both before and after installing the certificate; a certificate fingerprint is
+not the same value.
 
 Runner tags are configured on the pre-created GitLab runner object. Inventory
 documents the intended tags but does not update them server-side.

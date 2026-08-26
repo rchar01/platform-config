@@ -173,6 +173,18 @@ def test_preflight_is_executable_and_has_valid_bash_syntax(
     command_runner.run(["bash", "-n", script]).assert_success()
 
 
+def test_preflight_requires_pinned_images_and_partial_chain_ca(
+    preflight_source: str,
+) -> None:
+    assert (
+        "manager, Docker fallback, and helper images must be digest-pinned"
+        in preflight_source
+    )
+    assert '"ca_sha256": ca_sha256' in preflight_source
+    assert "sha256sum \"$resolved\"" in preflight_source
+    assert "ssl.VERIFY_X509_PARTIAL_CHAIN" in preflight_source
+
+
 def test_export_helpers_are_executable_and_have_valid_help(
     repo_root: Path, command_runner: CommandRunner
 ) -> None:

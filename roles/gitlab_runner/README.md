@@ -22,12 +22,14 @@ gitlab_runner_executor: docker
 gitlab_runner_podman_socket_enabled: true
 gitlab_runner_docker_image: >-
   docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+gitlab_runner_docker_helper_image: >-
+  registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c
 ```
 
 Docker mode also enforces:
 
 - a local Unix endpoint matching the manager-side socket path;
-- a digest-pinned default image;
+- digest-pinned default and helper images;
 - `pull_policy = "always"`;
 - `FF_NETWORK_PER_BUILD = true`;
 - `privileged = false`; and
@@ -93,11 +95,13 @@ static runner volume.
 | --- | --- | --- |
 | `gitlab_runner_executor` | `shell` | Selects the one registered executor |
 | `gitlab_runner_token_src` | empty | Outside-Git token file on the control node |
+| `gitlab_runner_tls_ca_cert_sha256` | empty | Exact SHA-256 of the configured outside-Git CA file |
 | `gitlab_runner_podman_socket_enabled` | `false` | Mounts the role-managed rootful Podman socket into the manager |
 | `gitlab_runner_podman_socket_host_path` | `/run/podman/podman.sock` | Host socket path |
 | `gitlab_runner_podman_socket_container_path` | `/run/podman/podman.sock` | Manager-side socket path |
 | `gitlab_runner_docker_host` | manager socket Unix URL | Docker-compatible Podman endpoint |
 | `gitlab_runner_docker_image` | empty | Required immutable default image in Docker mode |
+| `gitlab_runner_docker_helper_image` | empty | Required immutable GitLab helper image in Docker mode |
 | `gitlab_runner_docker_pull_policy` | `always` | Required shared-runner pull policy |
 | `gitlab_runner_docker_network_per_build` | `true` | Required Podman service networking mode |
 | `gitlab_runner_docker_volumes` | `[/cache]` | Container-only persistent volumes; host binds are rejected |

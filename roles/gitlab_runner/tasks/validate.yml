@@ -5,9 +5,18 @@
       - gitlab_runner_gitlab_url | length > 0
       - gitlab_runner_token_src | length > 0
       - gitlab_runner_name | length > 0
+      - gitlab_runner_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
       - gitlab_runner_podman_socket_enabled is boolean
       - gitlab_runner_registration_extra_args is sequence
       - gitlab_runner_registration_extra_args is not string
+      - gitlab_runner_tls_ca_cert_src is string
+      - gitlab_runner_tls_ca_cert_sha256 is string
+      - >-
+        (gitlab_runner_tls_ca_cert_src | length == 0
+         and gitlab_runner_tls_ca_cert_sha256 | length == 0)
+        or
+        (gitlab_runner_tls_ca_cert_src | length > 0
+         and gitlab_runner_tls_ca_cert_sha256 is match('^[0-9a-f]{64}$'))
     fail_msg: >-
       GitLab Runner registration inputs and socket settings must use the
       documented types and required values.
@@ -46,6 +55,7 @@
       - gitlab_runner_podman_socket_enabled | bool
       - gitlab_runner_docker_host == 'unix://' ~ gitlab_runner_podman_socket_container_path
       - gitlab_runner_docker_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
+      - gitlab_runner_docker_helper_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
       - gitlab_runner_docker_pull_policy == 'always'
       - gitlab_runner_docker_network_per_build is boolean
       - gitlab_runner_docker_network_per_build
@@ -54,8 +64,8 @@
       - gitlab_runner_docker_volumes | length > 0
     fail_msg: >-
       Docker executor mode requires the manager-only Podman socket, its exact
-      unix endpoint, an immutable sha256 image, always-pull policy, per-build
-      networking, and container-only volumes.
+       unix endpoint, immutable sha256 job and helper images, always-pull policy,
+       per-build networking, and container-only volumes.
   when: gitlab_runner_executor == 'docker'
 
 - name: Validate GitLab Runner Docker container-only volumes

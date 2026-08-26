@@ -8,7 +8,7 @@ inventory workflow. Prefer the role for hosts that remain managed by
 
 The default design runs GitLab Runner as a system Podman Quadlet with:
 
-- `docker.io/gitlab/gitlab-runner:alpine-v18.11.3`;
+- `docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e`;
 - the shell executor;
 - persistent configuration under `/etc/gitlab-runner`;
 - persistent runner data under `/var/lib/gitlab-runner`;
@@ -63,7 +63,7 @@ Collect these inputs before changing the target host:
 | Runner name | `example-k8s-runner-01` |
 | Runner tags | `example`, `linux-amd64`, `k8s` |
 | Runner token | A pre-created `glrt-...` authentication token |
-| Runner image | `docker.io/gitlab/gitlab-runner:alpine-v18.11.3` |
+| Runner image | A reviewed `gitlab-runner@sha256:...` reference |
 | Public CA certificate | Only when the runner image does not trust GitLab's issuer |
 
 Use a DNS name present in the GitLab certificate's subject alternative names.
@@ -157,7 +157,7 @@ file.
 Pull the same image version declared by the role:
 
 ```bash
-sudo podman pull docker.io/gitlab/gitlab-runner:alpine-v18.11.3
+sudo podman pull docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
 ```
 
 Use this version for the initial migration. Upgrade separately after the
@@ -174,7 +174,7 @@ sudo podman run --rm -it \
   --entrypoint gitlab-runner \
   --volume /etc/gitlab-runner:/etc/gitlab-runner:Z \
   --volume /var/lib/gitlab-runner:/home/gitlab-runner:Z \
-  docker.io/gitlab/gitlab-runner:alpine-v18.11.3 \
+  docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e \
   register \
   --url https://gitlab.example.test \
   --name example-k8s-runner-01 \
@@ -209,7 +209,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Container]
-Image=docker.io/gitlab/gitlab-runner:alpine-v18.11.3
+Image=docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
 ContainerName=gitlab-runner
 Volume=/etc/gitlab-runner:/etc/gitlab-runner:Z
 Volume=/var/lib/gitlab-runner:/home/gitlab-runner:Z
@@ -248,13 +248,14 @@ sudo podman run --rm -it \
   --entrypoint gitlab-runner \
   --volume /etc/gitlab-runner:/etc/gitlab-runner:Z \
   --volume /var/lib/gitlab-runner:/home/gitlab-runner:Z \
-  docker.io/gitlab/gitlab-runner:alpine-v18.11.3 \
+  docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e \
   register \
   --url https://gitlab.example.test \
   --name example-k8s-runner-01 \
   --executor docker \
   --docker-host unix:///run/podman/podman.sock \
   --docker-image docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 \
+  --docker-helper-image registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c \
   --docker-pull-policy always \
   --docker-volumes /cache \
   --feature-flags FF_NETWORK_PER_BUILD:true
@@ -264,7 +265,7 @@ Add the socket to the manager Quadlet, not to Docker job volumes:
 
 ```ini
 [Container]
-Image=docker.io/gitlab/gitlab-runner:alpine-v18.11.3
+Image=docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
 ContainerName=gitlab-runner
 Volume=/etc/gitlab-runner:/etc/gitlab-runner:Z
 Volume=/var/lib/gitlab-runner:/home/gitlab-runner:Z
@@ -378,11 +379,13 @@ The manual values correspond to these role variables:
 | Token source file | `gitlab_runner_token_src` |
 | Executor | `gitlab_runner_executor` |
 | Optional CA source | `gitlab_runner_tls_ca_cert_src` |
+| Optional CA source SHA-256 | `gitlab_runner_tls_ca_cert_sha256` |
 | Configuration directory | `gitlab_runner_config_dir` |
 | Data directory | `gitlab_runner_data_dir` |
 | Manager Podman socket | `gitlab_runner_podman_socket_enabled` |
 | Docker API endpoint | `gitlab_runner_docker_host` |
 | Docker fallback image | `gitlab_runner_docker_image` |
+| Docker helper image | `gitlab_runner_docker_helper_image` |
 | Docker pull policy | `gitlab_runner_docker_pull_policy` |
 | Additional registration flags | `gitlab_runner_registration_extra_args` |
 

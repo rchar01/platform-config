@@ -678,11 +678,12 @@ for name in ("ansible_ssh_args", "ansible_ssh_common_args", "ansible_ssh_extra_a
 executor = values.get("gitlab_runner_executor", "")
 manager_image = values.get("gitlab_runner_image", "")
 docker_image = values.get("gitlab_runner_docker_image", "")
+helper_image = values.get("gitlab_runner_docker_helper_image", "")
 digest = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 if executor != "docker":
     raise SystemExit("gitlab_runner_executor must be docker")
-if not digest.match(str(manager_image)) or not digest.match(str(docker_image)):
-    raise SystemExit("runner manager and Docker fallback images must be digest-pinned")
+if not all(digest.match(str(image)) for image in (manager_image, docker_image, helper_image)):
+    raise SystemExit("runner manager, Docker fallback, and helper images must be digest-pinned")
 if values.get("podman_host_socket_enabled") is not True or values.get("gitlab_runner_podman_socket_enabled") is not True:
     raise SystemExit("runner Docker mode requires the role-managed Podman socket")
 if values.get("gitlab_runner_docker_pull_policy", "always") != "always":
@@ -704,6 +705,12 @@ for name, expected in expected_runner_identifiers.items():
 url = values.get("gitlab_runner_gitlab_url", "")
 if not isinstance(url, str) or not url.startswith("https://"):
     raise SystemExit("gitlab_runner_gitlab_url must use HTTPS")
+ca_path = values.get("gitlab_runner_tls_ca_cert_src", "") or ""
+ca_sha256 = values.get("gitlab_runner_tls_ca_cert_sha256", "") or ""
+if not isinstance(ca_path, str) or not isinstance(ca_sha256, str):
+    raise SystemExit("runner CA path and digest must be strings")
+if bool(ca_path) != bool(ca_sha256) or (ca_sha256 and not re.match(r"^[0-9a-f]{64}$", ca_sha256)):
+    raise SystemExit("runner CA path requires a reviewed sha256 digest")
 token = values.get("gitlab_runner_token_src", "")
 if not isinstance(token, str) or not token.startswith("/tmp/platform-home/.config/platform-infrastructure/"):
     raise SystemExit("runner token must resolve under the mounted outside-Git secret root")
@@ -719,7 +726,8 @@ if not isinstance(keys, list):
 selected = {
     "address": address,
     "become": True,
-    "ca_path": values.get("gitlab_runner_tls_ca_cert_src", "") or "",
+    "ca_path": ca_path,
+    "ca_sha256": ca_sha256,
     "cloud_template": values.get("platform_host_aliases_cloud_init_template", "/etc/cloud/templates/hosts.redhat.tmpl"),
     "connection": connection,
     "environment": values.get("platform_environment", ""),
@@ -1008,16 +1016,19 @@ stat -Lc "%u:%a:%s:%F" -- "$resolved"
   fi
 
   ca_path=$(json_value ca_path <"$selected_file")
+  ca_sha256=$(json_value ca_sha256 <"$selected_file")
   ca_safe=false
   if [[ -n $ca_path ]]; then
     if PLATFORM_CONFIG_DEV_IMAGE="$dev_image" "$repo_root/scripts/in-container" sh -c '
 path=$1
+expected=$2
 root=$(realpath -e /tmp/platform-home/.config/platform-infrastructure)
 resolved=$(realpath -e "$path")
 case "$resolved" in "$root"/*) ;; *) exit 1 ;; esac
 test -f "$resolved" && test ! -L "$path"
 openssl x509 -in "$resolved" -noout -checkend 0
-' platform-self-bootstrap "$ca_path" >/dev/null 2>&1; then
+test "$(sha256sum "$resolved" | cut -d " " -f 1)" = "$expected"
+' platform-self-bootstrap "$ca_path" "$ca_sha256" >/dev/null 2>&1; then
       pass "secret.gitlab-ca" "valid current X.509 certificate"
       ca_safe=true
     else
@@ -1038,6 +1049,7 @@ parsed = urllib.parse.urlsplit(url)
 path = parsed.path.rstrip("/") + "/users/sign_in"
 target = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 context = ssl.create_default_context(cafile=ca or None)
+context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
 request = urllib.request.Request(target, method="GET", headers={"User-Agent": "platform-config-self-bootstrap-preflight"})
 try:
     response = urllib.request.urlopen(request, context=context, timeout=10)

@@ -34,6 +34,7 @@
 - name: Assert GitLab Runner TLS CA source exists when configured
   ansible.builtin.stat:
     path: "{{ gitlab_runner_tls_ca_cert_src }}"
+    checksum_algorithm: sha256
   delegate_to: localhost
   become: false
   vars:
@@ -49,11 +50,12 @@
     fail_msg: "GitLab Runner TLS CA certificate file does not exist on the control node: {{ gitlab_runner_tls_ca_cert_src }}"
   when: gitlab_runner_tls_ca_cert_src | length > 0
 
-- name: Verify GitLab Runner TLS CA is readable before socket changes
-  ansible.builtin.set_fact:
-    gitlab_runner_tls_ca_preflight_digest: >-
-      {{ lookup('ansible.builtin.file', gitlab_runner_tls_ca_cert_src) | hash('sha256') }}
-  no_log: true
+- name: Require exact GitLab Runner TLS CA source
+  ansible.builtin.assert:
+    that:
+      - gitlab_runner_tls_ca_cert_src_stat.stat.checksum == gitlab_runner_tls_ca_cert_sha256
+    fail_msg: >-
+      GitLab Runner TLS CA source does not match its reviewed SHA-256 digest.
   when: gitlab_runner_tls_ca_cert_src | length > 0
 
 - name: Check GitLab Runner configuration file
@@ -172,6 +174,7 @@
         'executor': item.get('executor'),
         'docker': {'host': (item.get('docker') or {}).get('host'),
         'image': (item.get('docker') or {}).get('image'),
+        'helper_image': (item.get('docker') or {}).get('helper_image'),
         'privileged': (item.get('docker') or {}).get('privileged'),
         'services_privileged': (item.get('docker') or {}).get('services_privileged'),
         'allowed_privileged_services': (item.get('docker') or {}).get('allowed_privileged_services'),
@@ -204,6 +207,7 @@
           or (
             (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.host == gitlab_runner_docker_host
             and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.image == gitlab_runner_docker_image
+            and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.helper_image == gitlab_runner_docker_helper_image
             and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.privileged == false
             and (
               (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.services_privileged == false

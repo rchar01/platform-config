@@ -4,6 +4,8 @@
   gather_facts: false
   vars:
     gitlab_runner_role_dir: "{{ playbook_dir }}/../../../roles/gitlab_runner"
+    gitlab_runner_test_image: >-
+      docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
     gitlab_runner_test_executor: shell
     gitlab_runner_test_socket_enabled: false
     gitlab_runner_test_podman_socket_enabled: false
@@ -11,11 +13,15 @@
     gitlab_runner_test_socket_container_path: /run/podman/podman.sock
     gitlab_runner_test_docker_host: unix:///run/podman/podman.sock
     gitlab_runner_test_docker_image: ""
+    gitlab_runner_test_docker_helper_image: >-
+      registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c
     gitlab_runner_test_docker_pull_policy: always
     gitlab_runner_test_network_per_build: true
     gitlab_runner_test_docker_volumes:
       - /cache
     gitlab_runner_test_registration_extra_args: []
+    gitlab_runner_test_tls_ca_cert_src: ""
+    gitlab_runner_test_tls_ca_cert_sha256: ""
   tasks:
     - name: Load GitLab Runner role defaults
       ansible.builtin.include_vars:
@@ -24,6 +30,7 @@
     - name: Configure GitLab Runner render fixture inputs
       ansible.builtin.set_fact:
         gitlab_runner_gitlab_url: https://gitlab.example.invalid
+        gitlab_runner_image: "{{ gitlab_runner_test_image }}"
         gitlab_runner_token_src: /outside-git/gitlab-runner.token
         gitlab_runner_name: example-runner
         gitlab_runner_executor: "{{ gitlab_runner_test_executor }}"
@@ -33,10 +40,13 @@
         gitlab_runner_podman_socket_container_path: "{{ gitlab_runner_test_socket_container_path }}"
         gitlab_runner_docker_host: "{{ gitlab_runner_test_docker_host }}"
         gitlab_runner_docker_image: "{{ gitlab_runner_test_docker_image }}"
+        gitlab_runner_docker_helper_image: "{{ gitlab_runner_test_docker_helper_image }}"
         gitlab_runner_docker_pull_policy: "{{ gitlab_runner_test_docker_pull_policy }}"
         gitlab_runner_docker_network_per_build: "{{ gitlab_runner_test_network_per_build }}"
         gitlab_runner_docker_volumes: "{{ gitlab_runner_test_docker_volumes }}"
         gitlab_runner_registration_extra_args: "{{ gitlab_runner_test_registration_extra_args }}"
+        gitlab_runner_tls_ca_cert_src: "{{ gitlab_runner_test_tls_ca_cert_src }}"
+        gitlab_runner_tls_ca_cert_sha256: "{{ gitlab_runner_test_tls_ca_cert_sha256 }}"
 
     - name: Validate GitLab Runner render fixture inputs
       ansible.builtin.include_tasks: "{{ gitlab_runner_role_dir }}/tasks/validate.yml"

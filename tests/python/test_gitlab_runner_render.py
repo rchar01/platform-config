@@ -14,6 +14,11 @@ ALPINE_IMAGE = (
     "docker.io/library/alpine:3.22.1@"
     "sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1"
 )
+HELPER_IMAGE = (
+    "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:"
+    "x86_64-v18.11.3@"
+    "sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c"
+)
 
 
 @pytest.fixture
@@ -56,6 +61,7 @@ def test_gitlab_runner_defaults_remain_socket_free(repo_root: Path) -> None:
         "gitlab_runner_executor: shell",
         "gitlab_runner_podman_socket_enabled: false",
         'gitlab_runner_docker_image: ""',
+        'gitlab_runner_docker_helper_image: ""',
         "gitlab_runner_docker_pull_policy: always",
         "gitlab_runner_docker_network_per_build: true",
     ):
@@ -91,6 +97,7 @@ def test_gitlab_runner_registration_uses_typed_docker_arguments(repo_root: Path)
     for argument in (
         "'--docker-host', gitlab_runner_docker_host",
         "'--docker-image', gitlab_runner_docker_image",
+        "'--docker-helper-image', gitlab_runner_docker_helper_image",
         "'--docker-privileged=false'",
         "'--docker-services_privileged=false'",
         "'--docker-pull-policy', gitlab_runner_docker_pull_policy",
@@ -98,6 +105,29 @@ def test_gitlab_runner_registration_uses_typed_docker_arguments(repo_root: Path)
         "['--docker-volumes'] | product(gitlab_runner_docker_volumes)",
     ):
         assert argument in tasks
+
+
+def test_gitlab_runner_pins_outside_git_ca_bytes(repo_root: Path) -> None:
+    validate = (repo_root / "roles/gitlab_runner/tasks/validate.yml").read_text(
+        encoding="utf-8"
+    )
+    preflight = (repo_root / "roles/gitlab_runner/tasks/preflight.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "gitlab_runner_tls_ca_cert_sha256 is match('^[0-9a-f]{64}$')" in validate
+    assert "checksum_algorithm: sha256" in preflight
+    assert (
+        "gitlab_runner_tls_ca_cert_src_stat.stat.checksum == gitlab_runner_tls_ca_cert_sha256"
+        in preflight
+    )
+    main = (repo_root / "roles/gitlab_runner/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "Check installed GitLab Runner TLS CA certificate" in main
+    assert (
+        "gitlab_runner_tls_ca_cert_installed_stat.stat.checksum == gitlab_runner_tls_ca_cert_sha256"
+        in main
+    )
 
 
 def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
@@ -109,6 +139,7 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
         "Validate existing GitLab Runner contract before migration",
         "gitlab_runner_existing_identities_command.stdout | from_json | length == 1",
         ".docker.privileged == false",
+        ".docker.helper_image == gitlab_runner_docker_helper_image",
         ".docker.services_privileged == false",
         ".docker.volumes == gitlab_runner_docker_volumes",
         ".network_per_build == true",
@@ -127,6 +158,21 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
                 "gitlab_runner_test_podman_socket_enabled": True,
             },
             "requires the Docker executor",
+        ),
+        (
+            "mutable-manager-image",
+            {"gitlab_runner_test_image": "docker.io/gitlab/gitlab-runner:latest"},
+            "documented types and required values",
+        ),
+        (
+            "ca-without-digest",
+            {"gitlab_runner_test_tls_ca_cert_src": "/outside-git/ca.crt"},
+            "documented types and required values",
+        ),
+        (
+            "digest-without-ca",
+            {"gitlab_runner_test_tls_ca_cert_sha256": "a" * 64},
+            "documented types and required values",
         ),
         (
             "docker-without-socket",
@@ -149,6 +195,17 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
                 "gitlab_runner_test_socket_enabled": True,
                 "gitlab_runner_test_podman_socket_enabled": True,
                 "gitlab_runner_test_docker_image": "docker.io/library/alpine:latest",
+            },
+            "requires the manager-only Podman socket",
+        ),
+        (
+            "mutable-helper-image",
+            {
+                "gitlab_runner_test_executor": "docker",
+                "gitlab_runner_test_socket_enabled": True,
+                "gitlab_runner_test_podman_socket_enabled": True,
+                "gitlab_runner_test_docker_image": ALPINE_IMAGE,
+                "gitlab_runner_test_docker_helper_image": "registry.gitlab.com/example/helper:latest",
             },
             "requires the manager-only Podman socket",
         ),

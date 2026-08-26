@@ -1,5 +1,6 @@
 ---
-gitlab_runner_image: docker.io/gitlab/gitlab-runner:alpine-v18.11.3
+gitlab_runner_image: >-
+  docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
 gitlab_runner_container_name: gitlab-runner
 gitlab_runner_quadlet_name: gitlab-runner.container
 gitlab_runner_service_name: gitlab-runner.service
@@ -24,12 +25,14 @@ gitlab_runner_podman_socket_container_path: /run/podman/podman.sock
 
 gitlab_runner_docker_host: "unix://{{ gitlab_runner_podman_socket_container_path }}"
 gitlab_runner_docker_image: ""
+gitlab_runner_docker_helper_image: ""
 gitlab_runner_docker_pull_policy: always
 gitlab_runner_docker_network_per_build: true
 gitlab_runner_docker_volumes:
   - /cache
 
 gitlab_runner_tls_ca_cert_src: ""
+gitlab_runner_tls_ca_cert_sha256: ""
 gitlab_runner_tls_ca_cert_path: "{{ gitlab_runner_certs_dir }}/gitlab-ca.crt"
 gitlab_runner_container_tls_ca_cert_path: /etc/gitlab-runner/certs/gitlab-ca.crt
 

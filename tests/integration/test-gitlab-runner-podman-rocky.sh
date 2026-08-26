@@ -66,7 +66,7 @@ podman exec "$CONTAINER" install -d -m 0750 /etc/gitlab-runner
 podman exec "$CONTAINER" bash -c \
   "printf '%s\n' 'glrt-disposable-invalid' > /tmp/gitlab-runner-test.token && chmod 0600 /tmp/gitlab-runner-test.token"
 podman exec "$CONTAINER" bash -c \
-  "printf '%s\n' 'concurrent = 1' '[[runners]]' '  name = \"disposable-docker-runner\"' '  url = \"https://127.0.0.1:1\"' '  token = \"glrt-disposable-invalid\"' '  executor = \"docker\"' '  [runners.feature_flags]' '    FF_NETWORK_PER_BUILD = true' '  [runners.docker]' '    host = \"unix:///run/podman/podman.sock\"' '    image = \"docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1\"' '    privileged = false' '    services_privileged = false' '    pull_policy = \"always\"' '    volumes = [\"/cache\"]' > /etc/gitlab-runner/config.toml && chmod 0600 /etc/gitlab-runner/config.toml"
+  "printf '%s\n' 'concurrent = 1' '[[runners]]' '  name = \"disposable-docker-runner\"' '  url = \"https://127.0.0.1:1\"' '  token = \"glrt-disposable-invalid\"' '  executor = \"docker\"' '  [runners.feature_flags]' '    FF_NETWORK_PER_BUILD = true' '  [runners.docker]' '    host = \"unix:///run/podman/podman.sock\"' '    image = \"docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1\"' '    helper_image = \"registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c\"' '    privileged = false' '    services_privileged = false' '    pull_policy = \"always\"' '    volumes = [\"/cache\"]' > /etc/gitlab-runner/config.toml && chmod 0600 /etc/gitlab-runner/config.toml"
 
 run_playbook --check >/dev/null
 if podman exec "$CONTAINER" rpm -q podman >/dev/null 2>&1; then
@@ -179,7 +179,7 @@ fi
 [[ "$(podman exec "$CONTAINER" sha256sum /etc/gitlab-runner/config.toml)" == "$malformed_checksum" ]] \
   || fail 'Failed force migration did not restore malformed original TOML'
 podman exec "$CONTAINER" bash -c \
-  "printf '%s\n' 'concurrent = 1' '[[runners]]' '  name = \"disposable-docker-runner\"' '  url = \"https://127.0.0.1:1\"' '  token = \"glrt-disposable-invalid\"' '  executor = \"docker\"' '  [runners.feature_flags]' '    FF_NETWORK_PER_BUILD = true' '  [runners.docker]' '    host = \"unix:///run/podman/podman.sock\"' '    image = \"docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1\"' '    privileged = false' '    services_privileged = false' '    pull_policy = \"always\"' '    volumes = [\"/cache\"]' > /etc/gitlab-runner/config.toml && chmod 0600 /etc/gitlab-runner/config.toml"
+  "printf '%s\n' 'concurrent = 1' '[[runners]]' '  name = \"disposable-docker-runner\"' '  url = \"https://127.0.0.1:1\"' '  token = \"glrt-disposable-invalid\"' '  executor = \"docker\"' '  [runners.feature_flags]' '    FF_NETWORK_PER_BUILD = true' '  [runners.docker]' '    host = \"unix:///run/podman/podman.sock\"' '    image = \"docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1\"' '    helper_image = \"registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c\"' '    privileged = false' '    services_privileged = false' '    pull_policy = \"always\"' '    volumes = [\"/cache\"]' > /etc/gitlab-runner/config.toml && chmod 0600 /etc/gitlab-runner/config.toml"
 
 podman exec "$CONTAINER" python3 -c \
   'from pathlib import Path; path = Path("/etc/gitlab-runner/config.toml"); path.write_text(path.read_text().replace("privileged = false", "privileged = true"))'
@@ -190,6 +190,16 @@ grep -q 'does not contain the one declared executor contract' <<< "$unsafe_outpu
   || fail 'Unsafe persisted Docker contract did not fail closed'
 podman exec "$CONTAINER" python3 -c \
   'from pathlib import Path; path = Path("/etc/gitlab-runner/config.toml"); path.write_text(path.read_text().replace("privileged = true", "privileged = false"))'
+
+podman exec "$CONTAINER" python3 -c \
+  'from pathlib import Path; path = Path("/etc/gitlab-runner/config.toml"); path.write_text(path.read_text().replace("sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))'
+if helper_output="$(run_playbook 2>&1)"; then
+  fail 'GitLab Runner accepted helper-image drift'
+fi
+grep -q 'does not contain the one declared executor contract' <<< "$helper_output" \
+  || fail 'Helper-image drift did not fail closed'
+podman exec "$CONTAINER" python3 -c \
+  'from pathlib import Path; path = Path("/etc/gitlab-runner/config.toml"); path.write_text(path.read_text().replace("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c"))'
 
 if opt_out_output="$(run_playbook --check \
   --extra-vars '{"gitlab_runner_test_docker_enabled":false}' 2>&1)"; then
