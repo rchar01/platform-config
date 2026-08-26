@@ -1703,8 +1703,91 @@ def test_dedicated_controller_validation_is_opt_in_and_read_only(
     assert "TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT,MAJ:MIN" in preflight_source
     assert "stat.S_ISBLK(metadata.st_mode)" in preflight_source
     assert 'sudo -n semanage fcontext -l -n -C' in preflight_source
-    assert 'sudo -n restorecon -R -x -n -v "$graph_root"' in preflight_source
+    assert 'LC_ALL=C sudo -n restorecon -R -x -n -v "$graph_root"' in preflight_source
     assert "semanage fcontext -a" not in preflight_source
     assert "restorecon -R -v" not in preflight_source
     assert "CONTROLLER_ROOT ?=" in makefile
     assert makefile.count("$(CONTROLLER_ROOT_ARG)") == 4
+
+
+def _restorecon_output_parser(preflight_source: str) -> str:
+    match = re.search(
+        r'restorecon_output_safe\(\) \{\n  python3 - "\$1" "\$2" <<\'PY\'\n(.*?)\nPY\n\}',
+        preflight_source,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def test_restorecon_output_accepts_podman_mcs_labels(
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    graphroot = tmp_path / "storage"
+    output = tmp_path / "restorecon.txt"
+    parser = _restorecon_output_parser(preflight_source)
+    command_runner.run(
+        ["python3", "-c", parser, graphroot, output]
+    ).assert_failure()
+    output.write_text("", encoding="utf-8")
+    command_runner.run(
+        ["python3", "-c", parser, graphroot, output]
+    ).assert_success()
+    output.write_text(
+        "\n".join(
+            (
+                f"{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+                "system_u:object_r:container_file_t:s0:c650,c831",
+                f"{graphroot}/overlay-containers/container/userdata/run/secrets not reset as "
+                "customized by admin to system_u:object_r:container_file_t:s0:c650,c831",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    command_runner.run(
+        ["python3", "-c", parser, graphroot, output]
+    ).assert_success()
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "{graphroot}/overlay/layer/diff/etc Would relabel from old to new",
+        "/tmp/outside not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c650,c831",
+        "{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+        "system_u:object_r:container_var_lib_t:s0:c650,c831",
+        "{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0",
+        "{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c01,c2",
+        "{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c1,c1",
+        "{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c2,c1",
+        "{graphroot}/overlay/layer/diff/etc not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c1,c1024",
+        "{graphroot} not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c1,c2",
+        "{graphroot}/../outside not reset as customized by admin to "
+        "system_u:object_r:container_file_t:s0:c1,c2",
+        "restorecon: warning: unreadable path",
+    ),
+)
+def test_restorecon_output_rejects_other_messages(
+    message: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    graphroot = tmp_path / "storage"
+    output = tmp_path / "restorecon.txt"
+    output.write_text(message.format(graphroot=graphroot) + "\n", encoding="utf-8")
+
+    command_runner.run(
+        ["python3", "-c", _restorecon_output_parser(preflight_source), graphroot, output]
+    ).assert_failure()

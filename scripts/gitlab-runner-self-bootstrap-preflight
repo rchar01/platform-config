@@ -174,6 +174,38 @@ else:
 ' "$1"
 }
 
+restorecon_output_safe() {
+  python3 - "$1" "$2" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+graphroot = Path(sys.argv[1])
+output = Path(sys.argv[2]).read_text(encoding="utf-8")
+message = re.compile(
+    r"(.+) not reset as customized by admin to "
+    r"system_u:object_r:container_file_t:s0:c(0|[1-9][0-9]*),c(0|[1-9][0-9]*)"
+)
+for line in output.splitlines():
+    match = message.fullmatch(line)
+    if match is None:
+        raise SystemExit(1)
+    first_category, second_category = int(match.group(2)), int(match.group(3))
+    if not 0 <= first_category < second_category <= 1023:
+        raise SystemExit(1)
+    raw_path = match.group(1)
+    path = Path(raw_path)
+    if (
+        not path.is_absolute()
+        or str(path) != raw_path
+        or ".." in path.parts
+        or path == graphroot
+        or not path.is_relative_to(graphroot)
+    ):
+        raise SystemExit(1)
+PY
+}
+
 operation=""
 environment=""
 limit=""
@@ -276,7 +308,7 @@ trap 'exit 143' TERM
 
 inspect_phase() {
   local command_name path metadata podman_info podman_values graph_root os_id arch pid1 root_nevra rootful_containers
-  local controller_commands_ready controller_mount controller_device controller_selinux controller_state controller_error restorecon_output
+  local controller_commands_ready controller_mount controller_device controller_selinux controller_state controller_error
   local validation_failures
 
   printf '%s\n' '== Inspect host and repositories =='
@@ -447,8 +479,8 @@ print(source)
           else
             fail "controller.storage.label" "graphroot label does not match policy"
           fi
-          if restorecon_output=$(sudo -n restorecon -R -x -n -v "$graph_root" 2>"$tmp_dir/controller-restorecon.err"); then
-            if [[ -z $restorecon_output && ! -s $tmp_dir/controller-restorecon.err ]]; then
+          if LC_ALL=C sudo -n restorecon -R -x -n -v "$graph_root" >"$tmp_dir/controller-restorecon.txt" 2>&1; then
+            if restorecon_output_safe "$graph_root" "$tmp_dir/controller-restorecon.txt"; then
               pass "controller.storage.labels" "graphroot tree has no pending relabel"
             else
               fail "controller.storage.labels" "graphroot tree has pending or unreadable labels"

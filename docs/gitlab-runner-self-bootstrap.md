@@ -176,6 +176,13 @@ equivalence policy, and effective labels. It does not create, relabel, mount,
 or rewrite any of them. Omitting `CONTROLLER_ROOT` preserves the existing
 environment-neutral checks.
 
+Podman assigns paired MCS categories to writable container content below its
+graphroot. The non-forcing relabel dry run may report those `container_file_t`
+labels as `not reset as customized by admin`; preflight accepts only that exact
+descendant message and still rejects ordinary pending relabels, warnings, and
+other contexts. Do not use `restorecon -F` on the graphroot because forcing the
+complete policy context can remove Podman's isolation categories.
+
 ### Operating System
 
 The current runner path expects:
