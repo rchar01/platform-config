@@ -108,6 +108,13 @@ unseal all voters, verify both declarative file audit devices, create the
 least-privilege status identity, and revoke the initial root token. Neither
 bootstrap playbook accepts shares or the root token.
 
+For a pending cluster created before `audit.hcl` was staged, use the guarded
+`playbooks/maintenance/openbao-audit-migrate.yml` path. Normal convergence
+refuses this transition because declarative audit paths cannot adopt devices
+previously enabled through the API. The attended migration requires an approved
+root session to prove that no API-created devices exist; the root token remains
+outside Ansible.
+
 `playbooks/maintenance/openbao-bootstrap-complete.yml` verifies the unchanged
 pending markers, two audit devices, one active and two standbys, exact stable
 three-voter Raft state, and then renders generated boot enablement. Unknown or

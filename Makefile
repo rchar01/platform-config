@@ -32,7 +32,7 @@ CONTROLLER_ROOT_ARG := $(if $(strip $(CONTROLLER_ROOT)),--controller-root $(call
 .PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
 
 .PHONY: activate-monitoring-etcd status-monitoring-etcd
-.PHONY: start-openbao-bootstrap complete-openbao-bootstrap activate-openbao-haproxy
+.PHONY: start-openbao-bootstrap migrate-openbao-audit complete-openbao-bootstrap activate-openbao-haproxy
 .PHONY: runner-self-bootstrap-export runner-self-bootstrap-inspect runner-self-bootstrap-build runner-self-bootstrap-connect runner-self-bootstrap-all
 
 ## Show available commands
@@ -320,6 +320,10 @@ start-openbao-bootstrap:
 ## Complete OpenBao bootstrap (requires full-cluster LIMIT)
 complete-openbao-bootstrap:
 	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-bootstrap-complete.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Migrate declarative OpenBao audit devices (requires full-cluster LIMIT)
+migrate-openbao-audit:
+	@$(MAKE) apply PLAYBOOK=playbooks/maintenance/openbao-audit-migrate.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ## Activate HAProxy for the accepted OpenBao cluster
 activate-openbao-haproxy:

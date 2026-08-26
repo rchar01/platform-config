@@ -1,0 +1,114 @@
+---
+- name: Install current OpenBao candidate validator
+  ansible.builtin.template:
+    src: validate-config.sh.j2
+    dest: "{{ openbao_validator_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    validate: /bin/bash -n %s
+
+- name: Install validated declarative OpenBao audit configuration
+  ansible.builtin.template:
+    src: audit.hcl.j2
+    dest: "{{ openbao_audit_config_path }}"
+    owner: root
+    group: "{{ openbao_container_gid }}"
+    mode: "0640"
+    validate: "{{ openbao_audit_config_validate_command }}"
+
+- name: Reload declarative OpenBao configuration without restart
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/podman
+      - kill
+      - --signal
+      - HUP
+      - "{{ openbao_container_name }}"
+  changed_when: true
+
+- name: Wait for both declarative OpenBao audit files
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    state: present
+    timeout: 10
+  loop:
+    - "{{ openbao_audit_1_dir }}/audit.log"
+    - "{{ openbao_audit_2_dir }}/audit.log"
+
+- name: Query direct OpenBao health after audit reload
+  ansible.builtin.uri:
+    url: "https://{{ openbao_node_dns }}:{{ openbao_backend_port }}/v1/sys/health"
+    method: GET
+    ca_path: "{{ openbao_tls_ca_path }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code: [200, 429]
+    timeout: 5
+  register: openbao_audit_migration_reloaded_health
+  until:
+    - openbao_audit_migration_reloaded_health.json | default(none) is mapping
+    - openbao_audit_migration_reloaded_health.json.get('initialized') | default(false) == true
+    - openbao_audit_migration_reloaded_health.json.get('sealed') | default(true) == false
+    - >-
+      openbao_audit_migration_reloaded_health.json.get('cluster_id', '')
+      == hostvars['localhost'].openbao_audit_migration_approved_cluster_id
+  retries: 5
+  delay: 1
+
+- name: Inspect reloaded OpenBao audit files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: openbao_audit_migration_reloaded_log_stats
+  loop:
+    - "{{ openbao_audit_1_dir }}/audit.log"
+    - "{{ openbao_audit_2_dir }}/audit.log"
+
+- name: Require safe active OpenBao audit files
+  ansible.builtin.assert:
+    that:
+      - item.1.stat.isreg
+      - item.1.stat.uid | string == openbao_container_uid
+      - item.1.stat.gid | string == openbao_container_gid
+      - item.1.stat.mode == '0600'
+      - >-
+        item.1.stat.size > (item.0.stat.size | default(0))
+    fail_msg: >-
+      OpenBao audit reload requires each safe audit file to record new activity.
+  loop: >-
+    {{
+      openbao_audit_migration_log_stats.results
+      | zip(openbao_audit_migration_reloaded_log_stats.results)
+      | list
+    }}
+  loop_control:
+    label: "{{ item.1.item }}"
+
+- name: Inspect installed declarative OpenBao audit configuration
+  ansible.builtin.stat:
+    path: "{{ openbao_audit_config_path }}"
+    checksum_algorithm: sha256
+  register: openbao_audit_migration_installed_stat
+
+- name: Require exact installed declarative OpenBao audit configuration
+  ansible.builtin.assert:
+    that:
+      - openbao_audit_migration_installed_stat.stat.checksum == openbao_audit_migration_expected_checksum
+      - openbao_audit_migration_reloaded_health.json.version == openbao_version
+    fail_msg: OpenBao audit reload did not preserve exact configuration and health.
+
+- name: Bind declarative audit configuration to pending OpenBao marker
+  ansible.builtin.copy:
+    dest: "{{ openbao_bootstrap_marker_path }}"
+    owner: "{{ openbao_bootstrap_marker_owner }}"
+    group: "{{ openbao_bootstrap_marker_group }}"
+    mode: "0600"
+    content: >-
+      {{
+        openbao_audit_migration_marker
+        | combine({'audit_config_checksum': openbao_audit_migration_expected_checksum})
+        | to_nice_json
+      }}

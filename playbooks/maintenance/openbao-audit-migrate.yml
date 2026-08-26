@@ -1,0 +1,144 @@
+---
+- name: Approve declarative OpenBao audit migration
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact explicit OpenBao audit migration selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames', ansible_limit) | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao audit migration requires an explicit limit selecting exactly
+          all three OpenBao hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
+    - name: Inspect local OpenBao audit migration state
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: audit_migration_preflight.yml
+
+    - name: Collect OpenBao audit migration observations
+      ansible.builtin.set_fact:
+        openbao_audit_migration_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_audit_migration_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one exact pending OpenBao cluster
+      ansible.builtin.assert:
+        that:
+          - openbao_audit_migration_observations | length == 3
+          - >-
+            openbao_audit_migration_observations
+            | map(attribute='node_id') | unique | length == 3
+          - >-
+            openbao_audit_migration_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            openbao_audit_migration_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            openbao_audit_migration_observations
+            | map(attribute='audit_config_checksum') | unique | length == 1
+        fail_msg: OpenBao audit migration observations are inconsistent.
+      run_once: true # noqa run-once[task]
+
+    - name: Derive exact OpenBao audit migration approval
+      ansible.builtin.set_fact:
+        openbao_audit_migration_expected_approval: >-
+          migrate-openbao-audit|{{ groups.get('openbao', []) | sort | join(',') }}|{{
+            openbao_audit_migration_observations[0].cluster_id
+          }}|{{ openbao_audit_migration_observations[0].audit_config_checksum
+          }}|no-api-audit-devices
+      run_once: true # noqa run-once[task]
+
+    - name: Preserve approved OpenBao audit migration evidence
+      ansible.builtin.set_fact:
+        openbao_audit_migration_approved_observations: >-
+          {{ openbao_audit_migration_observations }}
+        openbao_audit_migration_approved_cluster_id: >-
+          {{ openbao_audit_migration_observations[0].cluster_id }}
+      run_once: true # noqa run-once[task]
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Prompt for exact OpenBao audit migration approval
+      ansible.builtin.pause:
+        prompt: >-
+          After an approved root session confirms `bao audit list -detailed`
+          contains no API-created devices, type exactly
+          {{ openbao_audit_migration_expected_approval }}
+      register: openbao_audit_migration_approval
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Require exact OpenBao audit migration approval
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_audit_migration_approval.user_input
+            == openbao_audit_migration_expected_approval
+        fail_msg: Exact OpenBao audit migration approval did not match.
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+- name: Revalidate and apply declarative OpenBao audit migration
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tasks:
+    - name: Reinspect local OpenBao audit migration state
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: audit_migration_preflight.yml
+
+    - name: Require unchanged approved OpenBao audit migration evidence
+      ansible.builtin.assert:
+        that:
+          - >-
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_audit_migration_observation')
+            | sort(attribute='inventory_host')
+            | list
+            == hostvars['localhost'].openbao_audit_migration_approved_observations
+        fail_msg: OpenBao audit migration evidence changed after approval.
+      run_once: true # noqa run-once[task]
+
+    - name: Install and reload declarative OpenBao audit configuration
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: audit_migration_apply.yml
+
+    - name: Collect reloaded OpenBao cluster identities
+      ansible.builtin.set_fact:
+        openbao_audit_migration_reloaded_cluster_ids: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_audit_migration_reloaded_health')
+            | map(attribute='json.cluster_id')
+            | unique
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require unchanged OpenBao cluster after audit migration
+      ansible.builtin.assert:
+        that:
+          - openbao_audit_migration_reloaded_cluster_ids | length == 1
+          - >-
+            openbao_audit_migration_reloaded_cluster_ids[0]
+            == hostvars['localhost'].openbao_audit_migration_approved_cluster_id
+        fail_msg: OpenBao cluster identity changed during audit migration.
+      run_once: true # noqa run-once[task]

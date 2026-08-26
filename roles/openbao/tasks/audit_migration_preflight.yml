@@ -1,0 +1,193 @@
+---
+- name: Require safe OpenBao audit migration inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_audit_migration_ready | bool
+      - not ansible_check_mode
+      - not openbao_service_enabled | bool
+      - openbao_service_state == 'stopped'
+    fail_msg: >-
+      OpenBao audit migration requires explicit readiness, normal apply mode,
+      and the inventory's stopped, disabled staging contract.
+
+- name: Validate OpenBao audit migration inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Inspect pending OpenBao bootstrap marker
+  ansible.builtin.stat:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_audit_migration_marker_stat
+
+- name: Require private pending OpenBao bootstrap marker
+  ansible.builtin.assert:
+    that:
+      - openbao_audit_migration_marker_stat.stat.exists
+      - openbao_audit_migration_marker_stat.stat.isreg
+      - openbao_audit_migration_marker_stat.stat.pw_name == 'root'
+      - openbao_audit_migration_marker_stat.stat.mode == '0600'
+    fail_msg: OpenBao audit migration requires a private root-owned pending marker.
+
+- name: Read pending OpenBao bootstrap marker
+  ansible.builtin.slurp:
+    path: "{{ openbao_bootstrap_marker_path }}"
+  register: openbao_audit_migration_marker_slurp
+
+- name: Parse pending OpenBao bootstrap marker
+  ansible.builtin.set_fact:
+    openbao_audit_migration_marker: >-
+      {{ openbao_audit_migration_marker_slurp.content | b64decode | from_json }}
+    openbao_audit_migration_expected_checksum: >-
+      {{ lookup('ansible.builtin.template', 'audit.hcl.j2') | hash('sha256') }}
+
+- name: Read authenticated OpenBao listener selection
+  ansible.builtin.slurp:
+    path: "{{ openbao_listener_path }}"
+  register: openbao_audit_migration_listener_slurp
+
+- name: Derive authenticated OpenBao listener request
+  ansible.builtin.set_fact:
+    openbao_audit_migration_request_ids: >-
+      {{
+        openbao_audit_migration_listener_slurp.content
+        | b64decode
+        | regex_findall('/openbao/config/tls-versions/([0-9a-f]{32})/(?:fullchain[.]crt|tls[.]key)')
+      }}
+
+- name: Require one exact host-local OpenBao listener request
+  ansible.builtin.assert:
+    that:
+      - openbao_audit_migration_request_ids | length == 2
+      - openbao_audit_migration_request_ids | unique | length == 1
+    fail_msg: OpenBao audit migration rejects dormant or ambiguous TLS custody.
+
+- name: Select authenticated OpenBao custody host paths
+  ansible.builtin.set_fact:
+    openbao_audit_migration_cert_path: >-
+      /etc/openbao/tls-versions/{{ openbao_audit_migration_request_ids | first }}/fullchain.crt
+    openbao_audit_migration_key_path: >-
+      /etc/openbao/tls-versions/{{ openbao_audit_migration_request_ids | first }}/tls.key
+
+- name: Inspect guarded OpenBao audit migration artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_audit_migration_artifact_stats
+  loop:
+    - "{{ openbao_config_path }}"
+    - "{{ openbao_listener_path }}"
+    - "{{ openbao_quadlet_path }}"
+    - "{{ openbao_tls_ca_path }}"
+    - "{{ openbao_audit_config_path }}"
+    - "{{ openbao_audit_migration_cert_path }}"
+    - "{{ openbao_audit_migration_key_path }}"
+
+- name: Inspect running OpenBao service
+  ansible.builtin.service_facts:
+
+- name: Inspect running OpenBao container
+  ansible.builtin.command:
+    argv: [/usr/bin/podman, container, exists, "{{ openbao_container_name }}"]
+  register: openbao_audit_migration_container_exists
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Query direct OpenBao health before audit migration
+  ansible.builtin.uri:
+    url: "https://{{ openbao_node_dns }}:{{ openbao_backend_port }}/v1/sys/health"
+    method: GET
+    ca_path: "{{ openbao_tls_ca_path }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code: [200, 429]
+    timeout: 5
+  register: openbao_audit_migration_health
+  until:
+    - openbao_audit_migration_health.json | default(none) is mapping
+    - openbao_audit_migration_health.json.get('initialized') | default(false) == true
+    - openbao_audit_migration_health.json.get('sealed') | default(true) == false
+  retries: 3
+  delay: 1
+
+- name: Require exact resumable OpenBao audit migration state
+  ansible.builtin.assert:
+    that:
+      - openbao_audit_migration_marker.schema == 1
+      - openbao_audit_migration_marker.state == 'awaiting-manual-custody'
+      - openbao_audit_migration_marker.inventory_hosts | sort == groups.get('openbao', []) | sort
+      - openbao_audit_migration_marker.inventory_host == inventory_hostname
+      - openbao_audit_migration_marker.node_id == openbao_node_name
+      - openbao_audit_migration_marker.cluster_signature is match('^[a-f0-9]{64}$')
+      - openbao_audit_migration_marker.image_digest == openbao_image_digest
+      - >-
+        openbao_audit_migration_artifact_stats.results[0:4]
+        | selectattr('stat.exists', 'equalto', true)
+        | list
+        | length == 4
+      - openbao_audit_migration_artifact_stats.results[5].stat.isreg
+      - openbao_audit_migration_artifact_stats.results[6].stat.isreg
+      - >-
+        openbao_audit_migration_marker.config_checksum
+        == ({
+              'base_config_sha256': openbao_audit_migration_artifact_stats.results[0].stat.checksum,
+              'listener_sha256': openbao_audit_migration_artifact_stats.results[1].stat.checksum
+            } | to_json | hash('sha256'))
+      - >-
+        openbao_audit_migration_marker.quadlet_checksum
+        == openbao_audit_migration_artifact_stats.results[2].stat.checksum
+      - >-
+        openbao_audit_migration_marker.ca_checksum
+        == openbao_audit_migration_artifact_stats.results[3].stat.checksum
+      - >-
+        openbao_audit_migration_marker.certificate_checksum
+        == openbao_audit_migration_artifact_stats.results[5].stat.checksum
+      - >-
+        openbao_audit_migration_marker.key_checksum
+        == openbao_audit_migration_artifact_stats.results[6].stat.checksum
+      - >-
+        not openbao_audit_migration_artifact_stats.results[4].stat.exists
+        or (
+          openbao_audit_migration_artifact_stats.results[4].stat.isreg | default(false)
+          and openbao_audit_migration_artifact_stats.results[4].stat.pw_name | default('') == 'root'
+          and openbao_audit_migration_artifact_stats.results[4].stat.gid | string == openbao_container_gid
+          and openbao_audit_migration_artifact_stats.results[4].stat.mode | default('') == '0640'
+          and openbao_audit_migration_artifact_stats.results[4].stat.checksum | default('')
+              == openbao_audit_migration_expected_checksum
+        )
+      - >-
+        openbao_audit_migration_marker.audit_config_checksum
+        | default(openbao_audit_migration_expected_checksum)
+        == openbao_audit_migration_expected_checksum
+      - ansible_facts.services.get(openbao_service_name, {}).get('state', '') == 'running'
+      - openbao_audit_migration_container_exists.rc == 0
+      - openbao_audit_migration_health.json.version == openbao_version
+      - openbao_audit_migration_health.json.cluster_id | default('') | length > 0
+    fail_msg: >-
+      OpenBao audit migration requires unchanged pending evidence, absent or
+      exact declarative audit configuration, and a running unsealed node.
+
+- name: Build guarded OpenBao audit migration observation
+  ansible.builtin.set_fact:
+    openbao_audit_migration_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ openbao_node_name }}"
+      cluster_signature: "{{ openbao_audit_migration_marker.cluster_signature }}"
+      cluster_id: "{{ openbao_audit_migration_health.json.cluster_id }}"
+      audit_config_checksum: "{{ openbao_audit_migration_expected_checksum }}"
+      audit_config_present: >-
+        {{ openbao_audit_migration_artifact_stats.results[4].stat.exists }}
+      certificate_checksum: >-
+        {{ openbao_audit_migration_artifact_stats.results[5].stat.checksum }}
+      key_checksum: >-
+        {{ openbao_audit_migration_artifact_stats.results[6].stat.checksum }}
+
+- name: Inspect OpenBao audit files before reload
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  register: openbao_audit_migration_log_stats
+  loop:
+    - "{{ openbao_audit_1_dir }}/audit.log"
+    - "{{ openbao_audit_2_dir }}/audit.log"

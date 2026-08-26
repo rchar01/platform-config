@@ -56,6 +56,13 @@ Available maintenance playbooks:
   Shamir shares and the initial root token never enter Ansible. Start or marker
   publication failure stops and remasks every reachable member and removes any
   partial pending markers.
+- `openbao-audit-migrate.yml`: one-time, resumable migration for a pending
+  cluster created before declarative auditing. It requires a full-cluster limit,
+  a private readiness gate, unchanged pending evidence, and exact TTY
+  confirmation that an approved root session found no API-created audit
+  devices. It validates and installs `audit.hcl`, sends `SIGHUP` without a
+  restart, verifies both audit files and direct-node health, and binds the audit
+  checksum into each pending marker. It never accepts an OpenBao token.
 - `openbao-bootstrap-complete.yml`: after the two-custodian five-share,
   threshold-three ceremony, verifies unchanged pending evidence, two
   declarative file audit devices, and strict stable three-voter state before

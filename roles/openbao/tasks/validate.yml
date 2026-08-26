@@ -43,6 +43,7 @@
       - (openbao_service_enabled | bool) == (openbao_service_state == 'started')
       - openbao_bootstrap_ready is boolean
       - openbao_bootstrap_complete_ready is boolean
+      - openbao_audit_migration_ready is boolean
       - openbao_tls_ca_src is match('^/.+$')
       - openbao_config_path is match('^/[A-Za-z0-9_./-]+$')
       - openbao_config_path == '/etc/openbao/openbao.hcl'

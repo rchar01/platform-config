@@ -1103,6 +1103,24 @@ If either path was previously created through the API, stop: OpenBao cannot
 adopt it as declarative configuration. Use a reviewed migration before installing
 or reloading `audit.hcl`.
 
+For a pending cluster created before the declarative audit configuration was
+installed, first use an approved root session to run `bao audit list -detailed`.
+Proceed only when it confirms that no API-created audit devices exist. Set
+`openbao_audit_migration_ready: true` in private inventory and run:
+
+```bash
+make migrate-openbao-audit ENV=dev LIMIT=openbao
+```
+
+The exact TTY confirmation explicitly attests to the conflict-free root-session
+check. The playbook then validates and installs `audit.hcl` on all three nodes,
+sends `SIGHUP` to each existing container without restarting it, verifies both
+audit files and initialized unsealed health, and adds the audit checksum to each
+pending marker. Rerun `bao audit list -detailed` from the approved root session
+and require exactly `file-audit-1/` and `file-audit-2/` with the declared file
+paths. Then set `openbao_audit_migration_ready: false`. The root token and Shamir
+shares never enter Ansible.
+
 After an initialized three-node cluster and a dedicated least-privilege status
 identity exist, store its token in an owner-private file outside Git and set
 `openbao_status_token_src` to that absolute controller path in private inventory.

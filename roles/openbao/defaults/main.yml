@@ -17,6 +17,7 @@ openbao_service_enabled: false
 openbao_service_state: stopped
 openbao_bootstrap_ready: false
 openbao_bootstrap_complete_ready: false
+openbao_audit_migration_ready: false
 
 openbao_config_dir: /etc/openbao
 openbao_tls_dir: "{{ openbao_config_dir }}/tls"

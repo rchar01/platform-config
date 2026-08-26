@@ -8,6 +8,7 @@ openbao_service_enabled: false
 openbao_service_state: stopped
 openbao_bootstrap_ready: false
 openbao_bootstrap_complete_ready: false
+openbao_audit_migration_ready: false
 openbao_image_registry: ghcr.io/openbao/openbao
 openbao_image_digest: sha256:15e90b578c970ae57b596ed51295380cd54f93860fe36758f05b455d71aae0e0
 openbao_service_dns: bao.example.invalid
