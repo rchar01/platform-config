@@ -104,9 +104,11 @@ Prepare the filesystem, source layout, subordinate IDs, and rootless Podman
 configuration before running preflight. The account needs contiguous
 subordinate UID and GID ranges of at least 65,536 IDs plus working `newuidmap`
 and `newgidmap` helpers. Use the package-provided runtime default at
-`/run/user/<uid>/containers`; do not set `runroot` in the user's
-`storage.conf`. Run preflight from the account's normal passwd home and default
-XDG data/configuration locations. Transient `HOME`, `XDG_RUNTIME_DIR`,
+`/run/user/<uid>/containers` when it resolves correctly. If the qualified
+package selects its `/tmp` fallback despite a valid login runtime directory,
+configure `runroot` to that exact `/run/user/<uid>/containers` path. Run
+preflight from the account's normal passwd home and default XDG
+data/configuration locations. Transient `HOME`, `XDG_RUNTIME_DIR`,
 `XDG_CONFIG_HOME`, or `XDG_DATA_HOME` overrides fail the strict gate.
 
 For example, a fictional selected root could contain:
@@ -135,10 +137,12 @@ cd "$controller_root/source/platform-config"
 
 Update the account's complete `$HOME/.config/containers/storage.conf`, not a
 minimal replacement snippet. Retain the reviewed storage driver and every
-required `[storage.options]` setting, set `storage.graphroot` to
-`/srv/example-bootstrap/containers/storage`, and omit `storage.runroot`.
-Changing rootless storage after it contains images or containers is a separate
-migration operation; do not copy or repoint populated state casually.
+required `[storage.options]` setting, and set `storage.graphroot` to
+`/srv/example-bootstrap/containers/storage`. Omit `storage.runroot` when the
+effective package default is correct; otherwise set it only to the current
+account's exact `/run/user/<uid>/containers` path. Changing rootless storage
+after it contains images or containers is a separate migration operation; do
+not copy or repoint populated state casually.
 
 When Ansible must create the dedicated controller filesystem, bootstrap first
 from the account's normal home without `CONTROLLER_ROOT`. Converge storage,
@@ -162,10 +166,10 @@ sudo restorecon -R -v /srv/example-bootstrap/containers/storage
 ```
 
 The strict preflight validates the effective Podman graphroot, per-user
-configuration, default runroot, helpers and ID mappings, mount identity and
-options, SELinux enforcing state, equivalence policy, and effective labels. It
-does not create, relabel, mount, or rewrite any of them. Omitting
-`CONTROLLER_ROOT` preserves the existing environment-neutral checks.
+configuration, exact runtime-directory runroot, helpers and ID mappings, mount
+identity and options, SELinux enforcing state, equivalence policy, and
+effective labels. It does not create, relabel, mount, or rewrite any of them.
+Omitting `CONTROLLER_ROOT` preserves the existing environment-neutral checks.
 
 ### Operating System
 

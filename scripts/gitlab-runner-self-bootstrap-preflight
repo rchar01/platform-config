@@ -143,6 +143,20 @@ load_container_wrapper_options() {
   done <"$env_file"
 }
 
+check_runner_service_absent() {
+  local load_state
+
+  if load_state=$(systemctl show gitlab-runner.service --property=LoadState --value 2>/dev/null); then
+    case "$load_state" in
+      not-found) pass "runner.clean.service" "absent" ;;
+      "") fail "runner.clean.service" "systemd returned an empty load state" ;;
+      *) fail "runner.clean.service" "gitlab-runner.service already exists (load state: $load_state)" ;;
+    esac
+  else
+    fail "runner.clean.service" "could not inspect systemd unit load state"
+  fi
+}
+
 json_value() {
   python3 -c '
 import json, sys
@@ -261,7 +275,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 inspect_phase() {
-  local command_name path metadata podman_info podman_values graph_root os_id arch pid1 root_nevra unit_files rootful_containers
+  local command_name path metadata podman_info podman_values graph_root os_id arch pid1 root_nevra rootful_containers
   local controller_commands_ready controller_mount controller_device controller_selinux controller_state controller_error restorecon_output
   local validation_failures
 
@@ -525,15 +539,7 @@ print(source)
   else
     fail "runner.clean.quadlet" "runner Quadlet already exists"
   fi
-  if unit_files=$(systemctl list-unit-files gitlab-runner.service --no-legend 2>/dev/null); then
-    if grep -q '^gitlab-runner\.service' <<<"$unit_files"; then
-      fail "runner.clean.service" "gitlab-runner.service already exists"
-    else
-      pass "runner.clean.service" "absent"
-    fi
-  else
-    fail "runner.clean.service" "could not inspect systemd unit files"
-  fi
+  check_runner_service_absent
   if sudo test ! -e /var/lib/containers/storage; then
     pass "runner.clean.container" "no rootful Podman storage exists"
   elif rootful_containers=$(sudo podman ps -a --format '{{.Names}}' 2>/dev/null); then

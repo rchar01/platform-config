@@ -393,6 +393,27 @@ def test_controller_check_accepts_the_complete_dedicated_storage_contract(
     }
 
 
+def test_controller_check_accepts_the_exact_explicit_runtime_runroot(
+    tmp_path: Path,
+    repo_root: Path,
+    controller_check_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, environment, paths = _controller_check_fixture(tmp_path, repo_root)
+    config = paths["storage_config"].read_text(encoding="utf-8")
+    config = config.replace(
+        "[storage]\n",
+        f'[storage]\nrunroot = "{paths["runtime_root"]}/containers"\n',
+    )
+    paths["storage_config"].write_text(config, encoding="utf-8")
+
+    result = _validate_controller_check_fixture(
+        controller_check_module, arguments, environment, paths, monkeypatch
+    )
+
+    assert result["runroot"] == f"{paths['runtime_root']}/containers"
+
+
 @pytest.mark.parametrize(
     ("tamper", "message"),
     (
@@ -401,7 +422,8 @@ def test_controller_check_accepts_the_complete_dedicated_storage_contract(
         ("small-subuid", "subordinate-ID range"),
         ("small-effective-map", "effective Podman UID mapping does not match"),
         ("stale-effective-map", "effective Podman UID mapping does not match"),
-        ("configured-runroot", "must not override runroot"),
+        ("configured-runroot", "configured runroot does not match"),
+        ("fallback-runroot", "effective Podman runroot is not"),
         ("wrong-driver", "configured storage driver does not match"),
         ("effective-vfs", "must use the overlay storage driver"),
         ("nested-mount", "must not contain nested mounts"),
@@ -439,8 +461,10 @@ def test_controller_check_rejects_incomplete_or_mismatched_storage_state(
         podman["host"]["idMappings"]["uidmap"][1]["host_id"] = 200000
     elif tamper == "configured-runroot":
         config = config.replace(
-            '[storage]\n', f'[storage]\nrunroot = "{environment["XDG_RUNTIME_DIR"]}"\n'
+            "[storage]\n", f'[storage]\nrunroot = "{tmp_path}/wrong-runroot"\n'
         )
+    elif tamper == "fallback-runroot":
+        podman["store"]["runRoot"] = f"/tmp/storage-run-{os.getuid()}/containers"
     elif tamper == "wrong-driver":
         config = config.replace('driver = "overlay"', 'driver = "vfs"')
     elif tamper == "effective-vfs":
@@ -478,6 +502,61 @@ def test_controller_check_rejects_incomplete_or_mismatched_storage_state(
         )
 
     assert message in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("load_state", "systemctl_status", "expected_failures", "expected_message"),
+    (
+        ("not-found", 0, 0, "PASS runner.clean.service absent"),
+        ("loaded", 0, 1, "gitlab-runner.service already exists"),
+        ("", 0, 1, "systemd returned an empty load state"),
+        ("not-found", 1, 1, "could not inspect systemd unit load state"),
+    ),
+)
+def test_preflight_uses_systemd_load_state_for_clean_runner_service(
+    load_state: str,
+    systemctl_status: int,
+    expected_failures: int,
+    expected_message: str,
+    tmp_path: Path,
+    preflight_source: str,
+    command_runner: CommandRunner,
+) -> None:
+    function = re.search(
+        r"^check_runner_service_absent\(\) \{.*?^\}",
+        preflight_source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert function is not None
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env sh\n"
+        "printf '%s\\n' \"$FAKE_LOAD_STATE\"\n"
+        'exit "$FAKE_SYSTEMCTL_STATUS"\n',
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    snippet = (
+        "set -uo pipefail\n"
+        'pass() { printf "PASS %s %s\\n" "$1" "$2"; }\n'
+        'fail() { printf "FAIL %s %s\\n" "$1" "$2"; failures=$((failures + 1)); }\n'
+        f"{function.group(0)}\n"
+        "failures=0\n"
+        "check_runner_service_absent\n"
+        'printf "FAILURES %s\\n" "$failures"\n'
+    )
+
+    result = command_runner.run(
+        ["bash", "-c", snippet],
+        environment={
+            "FAKE_LOAD_STATE": load_state,
+            "FAKE_SYSTEMCTL_STATUS": str(systemctl_status),
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        },
+    ).assert_success()
+
+    assert expected_message in result.stdout
+    assert f"FAILURES {expected_failures}" in result.stdout
 
 
 def test_preflight_help_is_available_without_an_operation(

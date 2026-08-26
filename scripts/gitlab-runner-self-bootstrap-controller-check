@@ -136,7 +136,10 @@ def subordinate_ranges(path: Path, username: str, user_id: int) -> list[tuple[in
 
 
 def storage_configuration(
-    path: Path, expected_graphroot: Path, effective_driver: str
+    path: Path,
+    expected_graphroot: Path,
+    expected_runroot: Path,
+    effective_driver: str,
 ) -> None:
     try:
         metadata = path.lstat()
@@ -166,8 +169,11 @@ def storage_configuration(
         raise ValidationError("rootless storage configuration requires [storage]")
     if storage.get("graphroot") != str(expected_graphroot):
         raise ValidationError("configured graphroot does not match the selected controller root")
-    if "runroot" in storage:
-        raise ValidationError("rootless storage configuration must not override runroot")
+    configured_runroot = storage.get("runroot")
+    if configured_runroot is not None and configured_runroot != str(expected_runroot):
+        raise ValidationError(
+            "configured runroot does not match the account runtime directory"
+        )
     configured_driver = storage.get("driver")
     if configured_driver != effective_driver:
         raise ValidationError("configured storage driver does not match effective Podman state")
@@ -305,7 +311,7 @@ def validate(
     )
     if store.get("configFile") != str(expected_config):
         raise ValidationError("Podman is not using the expected per-user storage.conf")
-    storage_configuration(expected_config, expected_graphroot, driver)
+    storage_configuration(expected_config, expected_graphroot, expected_runroot, driver)
 
     mappings = host.get("idMappings")
     if not isinstance(mappings, dict):
