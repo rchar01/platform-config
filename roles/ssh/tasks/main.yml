@@ -10,7 +10,7 @@
     state: directory
     owner: root
     group: root
-    mode: "0755"
+    mode: "0700"
   when: ssh_config_dropins | length > 0 or ssh_config_dropins_prune_managed
 
 - name: Ensure SSH managed state directory exists
