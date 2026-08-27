@@ -45,6 +45,8 @@ def rendered_gitlab_runner(
                 "gitlab_runner_test_socket_enabled": True,
                 "gitlab_runner_test_podman_socket_enabled": True,
                 "gitlab_runner_test_docker_image": ALPINE_IMAGE,
+                "podman_host_storage_contract_enabled": True,
+                "podman_host_storage_mountpoint": "/var/lib/containers",
             },
         ),
     ).assert_success()
@@ -88,8 +90,12 @@ def test_gitlab_runner_docker_quadlet_mounts_manager_socket_only(
     )
     assert "Volume=/run/podman/podman.sock:/run/podman/podman.sock:Z" not in quadlet
     assert "SecurityLabelDisable=true\n" in quadlet
-    assert "Requires=podman.socket\n" in quadlet
-    assert "After=podman.socket\n" in quadlet
+    assert (
+        "RequiresMountsFor=/etc/gitlab-runner /var/lib/gitlab-runner "
+        "/var/lib/containers\n"
+        "Requires=podman.socket\n"
+        "After=podman.socket\n"
+    ) in quadlet
     assert quadlet.count("Volume=") == 3
 
 

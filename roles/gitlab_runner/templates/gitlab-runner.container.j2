@@ -2,7 +2,7 @@
 Description=GitLab Runner
 Wants={{ gitlab_runner_quadlet_wants }}
 After={{ gitlab_runner_quadlet_after }}
-RequiresMountsFor={{ gitlab_runner_config_dir }} {{ gitlab_runner_data_dir }}{% if podman_host_storage_contract_enabled | default(false) | bool %} {{ podman_host_storage_mountpoint }}{% endif %}
+RequiresMountsFor={{ gitlab_runner_config_dir }} {{ gitlab_runner_data_dir }}{{ (' ' ~ podman_host_storage_mountpoint) if podman_host_storage_contract_enabled | default(false) | bool else '' }}
 {% if gitlab_runner_podman_socket_enabled | bool %}
 Requires={{ podman_host_socket_name | default('podman.socket') }}
 After={{ podman_host_socket_name | default('podman.socket') }}
