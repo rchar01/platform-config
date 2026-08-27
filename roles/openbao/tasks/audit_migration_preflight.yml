@@ -3,12 +3,12 @@
   ansible.builtin.assert:
     that:
       - openbao_audit_migration_ready | bool
-      - not ansible_check_mode
       - not openbao_service_enabled | bool
       - openbao_service_state == 'stopped'
     fail_msg: >-
-      OpenBao audit migration requires explicit readiness, normal apply mode,
-      and the inventory's stopped, disabled staging contract.
+      OpenBao audit migration requires explicit readiness attesting that the
+      authenticated audit list is empty, plus the inventory's stopped,
+      disabled staging contract.
 
 - name: Validate OpenBao audit migration inputs
   ansible.builtin.include_tasks: validate.yml
@@ -110,6 +110,7 @@
     - openbao_audit_migration_health.json.get('sealed') | default(true) == false
   retries: 3
   delay: 1
+  check_mode: false
 
 - name: Require exact resumable OpenBao audit migration state
   ansible.builtin.assert:
@@ -182,12 +183,3 @@
         {{ openbao_audit_migration_artifact_stats.results[5].stat.checksum }}
       key_checksum: >-
         {{ openbao_audit_migration_artifact_stats.results[6].stat.checksum }}
-
-- name: Inspect OpenBao audit files before reload
-  ansible.builtin.stat:
-    path: "{{ item }}"
-    get_checksum: false
-  register: openbao_audit_migration_log_stats
-  loop:
-    - "{{ openbao_audit_1_dir }}/audit.log"
-    - "{{ openbao_audit_2_dir }}/audit.log"

@@ -17,6 +17,29 @@
     mode: "0640"
     validate: "{{ openbao_audit_config_validate_command }}"
 
+- name: Record OpenBao audit reload journal cursor
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - -q
+      - -u
+      - "{{ openbao_service_name }}"
+      - -n
+      - "0"
+      - --show-cursor
+      - --no-pager
+  register: openbao_audit_migration_reload_cursor
+  changed_when: false
+  check_mode: false
+
+- name: Require exact OpenBao audit reload journal cursor
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_audit_migration_reload_cursor.stdout
+        is match('^-- cursor: .+$')
+    fail_msg: OpenBao audit reload requires an exact pre-reload journal cursor.
+
 - name: Reload declarative OpenBao configuration without restart
   ansible.builtin.command:
     argv:
@@ -67,25 +90,47 @@
     - "{{ openbao_audit_1_dir }}/audit.log"
     - "{{ openbao_audit_2_dir }}/audit.log"
 
+- name: Inspect OpenBao audit reload journal
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/journalctl
+      - -u
+      - "{{ openbao_service_name }}"
+      - --after-cursor
+      - >-
+        {{
+          openbao_audit_migration_reload_cursor.stdout
+          | regex_replace('^-- cursor: ', '')
+        }}
+      - --no-pager
+      - -o
+      - cat
+  register: openbao_audit_migration_reload_journal
+  changed_when: false
+  check_mode: false
+
 - name: Require safe active OpenBao audit files
   ansible.builtin.assert:
     that:
-      - item.1.stat.isreg
-      - item.1.stat.uid | string == openbao_container_uid
-      - item.1.stat.gid | string == openbao_container_gid
-      - item.1.stat.mode == '0600'
-      - >-
-        item.1.stat.size > (item.0.stat.size | default(0))
-    fail_msg: >-
-      OpenBao audit reload requires each safe audit file to record new activity.
-  loop: >-
-    {{
-      openbao_audit_migration_log_stats.results
-      | zip(openbao_audit_migration_reloaded_log_stats.results)
-      | list
-    }}
+      - item.stat.isreg
+      - item.stat.uid | string == openbao_container_uid
+      - item.stat.gid | string == openbao_container_gid
+      - item.stat.mode == '0600'
+    fail_msg: OpenBao audit reload requires each safe audit file.
+  loop: "{{ openbao_audit_migration_reloaded_log_stats.results }}"
   loop_control:
-    label: "{{ item.1.item }}"
+    label: "{{ item.item }}"
+
+- name: Require exact OpenBao audit reload journal evidence
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_audit_migration_reload_journal.stdout
+        is search('"@message":"(?:enabled audit backend|reloading file audit backend)"[^\n]*"path":"file-audit-1/"')
+      - >-
+        openbao_audit_migration_reload_journal.stdout
+        is search('"@message":"(?:enabled audit backend|reloading file audit backend)"[^\n]*"path":"file-audit-2/"')
+    fail_msg: OpenBao did not report both exact audit backends reloaded.
 
 - name: Inspect installed declarative OpenBao audit configuration
   ansible.builtin.stat:

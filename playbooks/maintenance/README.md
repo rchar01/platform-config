@@ -58,11 +58,12 @@ Available maintenance playbooks:
   partial pending markers.
 - `openbao-audit-migrate.yml`: one-time, resumable migration for a pending
   cluster created before declarative auditing. It requires a full-cluster limit,
-  a private readiness gate, unchanged pending evidence, and exact TTY
-  confirmation that an approved root session found no API-created audit
-  devices. It validates and installs `audit.hcl`, sends `SIGHUP` without a
-  restart, verifies both audit files and direct-node health, and binds the audit
-  checksum into each pending marker. It never accepts an OpenBao token.
+  a private readiness gate attesting that an approved root session found no
+  API-created audit devices, and unchanged pending evidence. Check mode performs
+  the read-only preflight; normal mode validates and installs `audit.hcl`, sends
+  `SIGHUP` without a restart, verifies both audit files and direct-node health,
+  and binds the audit checksum into each pending marker. It never accepts an
+  OpenBao token or prompts after the operator invokes normal mode.
 - `openbao-bootstrap-complete.yml`: after the two-custodian five-share,
   threshold-three ceremony, verifies unchanged pending evidence, two
   declarative file audit devices, and strict stable three-voter state before

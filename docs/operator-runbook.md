@@ -1106,20 +1106,28 @@ or reloading `audit.hcl`.
 For a pending cluster created before the declarative audit configuration was
 installed, first use an approved root session to run `bao audit list -detailed`.
 Proceed only when it confirms that no API-created audit devices exist. Set
-`openbao_audit_migration_ready: true` in private inventory and run:
+`openbao_audit_migration_ready: true` in private inventory. This gate both
+authorizes the migration and attests to the conflict-free root-session check.
+Run the read-only preflight first:
+
+```bash
+make migrate-openbao-audit ENV=dev LIMIT=openbao EXTRA_ARGS=--check
+```
+
+If it succeeds, apply the already-authorized migration without another prompt:
 
 ```bash
 make migrate-openbao-audit ENV=dev LIMIT=openbao
 ```
 
-The exact TTY confirmation explicitly attests to the conflict-free root-session
-check. The playbook then validates and installs `audit.hcl` on all three nodes,
-sends `SIGHUP` to each existing container without restarting it, verifies both
-audit files and initialized unsealed health, and adds the audit checksum to each
-pending marker. Rerun `bao audit list -detailed` from the approved root session
-and require exactly `file-audit-1/` and `file-audit-2/` with the declared file
-paths. Then set `openbao_audit_migration_ready: false`. The root token and Shamir
-shares never enter Ansible.
+The playbook validates and installs `audit.hcl` on all three nodes, sends
+`SIGHUP` to each existing container without restarting it, verifies both audit
+files, exact per-node reload journal evidence, and initialized unsealed health,
+and adds the audit checksum to each pending marker. Rerun
+`bao audit list -detailed` from the approved root session and require exactly
+`file-audit-1/` and `file-audit-2/` with the declared file paths. Then set
+`openbao_audit_migration_ready: false`. The root token and Shamir shares never
+enter Ansible.
 
 After an initialized three-node cluster and a dedicated least-privilege status
 identity exist, store its token in an owner-private file outside Git and set

@@ -10,7 +10,7 @@ PREFLIGHT = "roles/openbao/tasks/audit_migration_preflight.yml"
 APPLY = "roles/openbao/tasks/audit_migration_apply.yml"
 
 
-def test_openbao_audit_migration_has_attended_fail_closed_boundary(
+def test_openbao_audit_migration_has_promptless_check_apply_boundary(
     repo_root: Path,
 ) -> None:
     source = (repo_root / PLAYBOOK).read_text(encoding="utf-8")
@@ -18,15 +18,24 @@ def test_openbao_audit_migration_has_attended_fail_closed_boundary(
     for fragment in (
         "ansible_limit is defined",
         "audit_migration_preflight.yml",
-        "no-api-audit-devices",
-        "ansible.builtin.pause:",
         "audit_migration_apply.yml",
         "openbao_audit_migration_approved_observations",
+        "when: not ansible_check_mode",
     ):
         assert fragment in source
 
-    for forbidden in ("root_token", "operator init", "operator unseal", "restart"):
+    for forbidden in (
+        "ansible.builtin.pause:",
+        "root_token",
+        "operator init",
+        "operator unseal",
+        "restart",
+    ):
         assert forbidden not in source
+
+    preflight = (repo_root / PREFLIGHT).read_text(encoding="utf-8")
+    assert "not ansible_check_mode" not in preflight
+    assert "authenticated audit list is empty" in preflight
 
 
 def test_openbao_audit_migration_preflight_requires_pending_unsealed_state(
@@ -70,11 +79,13 @@ def test_openbao_audit_migration_reloads_without_restart_and_updates_marker(
     assert "ansible.builtin.systemd_service:" not in source
     assert "openbao_audit_1_dir" in source
     assert "openbao_audit_2_dir" in source
-    assert "item.1.stat.isreg" in source
-    assert "item.1.stat.mode == '0600'" in source
-    assert "item.1.stat.size > (item.0.stat.size | default(0))" in source
-    assert "or item.1.stat.mtime" not in source
-    assert "not item.0.stat.exists" not in source
+    assert "item.stat.isreg" in source
+    assert "item.stat.mode == '0600'" in source
+    assert "/usr/bin/journalctl" in source
+    assert "enabled audit backend|reloading file audit backend" in source
+    assert "--after-cursor" in source
+    assert "openbao_audit_migration_reload_cursor.stdout" in source
+    assert "/usr/bin/date" not in source
     assert "combine({'audit_config_checksum'" in source
     assert "root_token" not in source
 
@@ -94,3 +105,17 @@ def test_openbao_audit_migration_readiness_is_strict_boolean(repo_root: Path) ->
     )
 
     assert "openbao_audit_migration_ready is boolean" in validation
+
+
+def test_openbao_audit_migration_bounds_reload_with_strict_cursor(
+    repo_root: Path,
+) -> None:
+    tasks = yaml.safe_load((repo_root / APPLY).read_text(encoding="utf-8"))
+    names = [task["name"] for task in tasks]
+
+    assert names.index("Record OpenBao audit reload journal cursor") < names.index(
+        "Reload declarative OpenBao configuration without restart"
+    )
+    assert names.index(
+        "Reload declarative OpenBao configuration without restart"
+    ) < names.index("Inspect OpenBao audit reload journal")
