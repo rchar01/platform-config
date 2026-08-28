@@ -52,6 +52,7 @@ keepalived_vip_cluster_members:
         source_address: 192.0.2.74
         priority: 130
 openbao_tls_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
+openbao_status_token_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/openbao/dev/status.token"
 openbao_backend_allowed_sources: []
 openbao_cluster_members:
   - name: openbao-example-01

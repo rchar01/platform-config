@@ -67,8 +67,10 @@ Available maintenance playbooks:
 - `openbao-bootstrap-complete.yml`: after the two-custodian five-share,
   threshold-three ceremony, verifies unchanged pending evidence, two
   declarative file audit devices, and strict stable three-voter state before
-  publishing active markers and generated boot enablement. It never initializes
-  or unseals OpenBao.
+  publishing active markers and generated boot enablement. Its readiness gate
+  authorizes normal mode; check mode performs authenticated read-only
+  qualification and skips all publication. It never prompts, initializes, or
+  unseals OpenBao.
 - `openbao-haproxy-activate.yml`: requires exact active OpenBao markers and
   strict status, binds exact staged package/configuration/CA/firewall evidence
   to TTY approval, requires inactive Keepalived and active firewalld, and checks

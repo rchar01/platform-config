@@ -3,12 +3,12 @@
   ansible.builtin.assert:
     that:
       - openbao_bootstrap_complete_ready | bool
-      - not ansible_check_mode
       - not openbao_service_enabled | bool
       - openbao_service_state == 'stopped'
     fail_msg: >-
-      OpenBao bootstrap completion requires explicit readiness, normal apply
-      mode, and the inventory's stopped, disabled staging contract.
+      OpenBao bootstrap completion requires explicit readiness attesting to the
+      completed shamir-5-of-3 custody ceremony and status identity, plus the
+      inventory's stopped, disabled staging contract.
 
 - name: Validate OpenBao bootstrap completion inputs
   ansible.builtin.include_tasks: validate.yml

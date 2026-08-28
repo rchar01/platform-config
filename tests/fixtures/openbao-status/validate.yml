@@ -66,7 +66,11 @@
                 )
               }}
     openbao_status_raft_index: >-
-      {{ 'invalid' if openbao_status_test_mode == 'malformed-index' else 24 }}
+      {{
+        'invalid'
+        if openbao_status_test_mode == 'malformed-index'
+        else (0 if openbao_status_test_mode == 'zero-index' else 24)
+      }}
     openbao_status_raft_servers:
       - node_id: bao-1
         address: >-
@@ -96,13 +100,18 @@
             else openbao_status_test_mode != 'nonvoter'
           }}
     openbao_status_raft_observations:
-      - index: 24
+      - index: "{{ 0 if openbao_status_test_mode == 'zero-index' else 24 }}"
         leader_node_id: bao-1
         node_ids:
           - bao-1
           - bao-2
           - bao-3
-      - index: "{{ 25 if openbao_status_test_mode == 'unstable' else 24 }}"
+      - index: >-
+          {{
+            25
+            if openbao_status_test_mode == 'unstable'
+            else (0 if openbao_status_test_mode == 'zero-index' else 24)
+          }}
         leader_node_id: bao-1
         node_ids:
           - bao-1

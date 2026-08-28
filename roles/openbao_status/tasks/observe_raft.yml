@@ -5,6 +5,7 @@
   delegate_to: localhost
   become: false
   when: openbao_status_observation_number | int > 0
+  check_mode: false
 
 - name: Query authenticated OpenBao Raft configuration
   ansible.builtin.uri:
@@ -32,6 +33,7 @@
   delegate_to: localhost
   become: false
   register: openbao_status_raft_query
+  check_mode: false
   no_log: true
   until:
     - >-
@@ -71,7 +73,7 @@
         | selectattr('leader', 'equalto', true) | list | length == 1
       and openbao_status_raft_query.json.data.config.get('index')
         | type_debug == 'int'
-      and openbao_status_raft_query.json.data.config.index >= 1
+      and openbao_status_raft_query.json.data.config.index >= 0
   retries: "{{ openbao_status_retries }}"
   delay: "{{ openbao_status_retry_delay }}"
 

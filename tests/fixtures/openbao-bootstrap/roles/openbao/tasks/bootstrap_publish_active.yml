@@ -1,0 +1,32 @@
+---
+- name: Inspect mocked active OpenBao Quadlet checksum
+  ansible.builtin.stat:
+    path: "{{ openbao_quadlet_path }}"
+    checksum_algorithm: sha256
+  register: openbao_bootstrap_active_quadlet_stat
+
+- name: Write mocked active OpenBao bootstrap marker
+  ansible.builtin.copy:
+    dest: "{{ openbao_bootstrap_marker_path }}"
+    owner: "{{ openbao_bootstrap_marker_owner }}"
+    group: "{{ openbao_bootstrap_marker_group }}"
+    mode: "0600"
+    content: >-
+      {{
+        {
+          'schema': 1,
+          'state': 'active',
+          'inventory_hosts': groups.get('openbao', []) | sort,
+          'inventory_host': inventory_hostname,
+          'node_id': openbao_bootstrap_pending_observation.node_id,
+          'cluster_signature': hostvars['localhost'].openbao_bootstrap_complete_approved_signature,
+          'cluster_id': hostvars['localhost'].openbao_bootstrap_accepted_cluster_id,
+          'audit_config_checksum': openbao_bootstrap_pending_audit_config_stat.stat.checksum,
+          'config_checksum': openbao_bootstrap_pending_observation.config_checksum,
+          'quadlet_checksum': openbao_bootstrap_active_quadlet_stat.stat.checksum,
+          'ca_checksum': openbao_bootstrap_pending_observation.ca_checksum,
+          'certificate_checksum': openbao_bootstrap_pending_observation.certificate_checksum,
+          'key_checksum': openbao_bootstrap_pending_observation.key_checksum,
+          'image_digest': openbao_bootstrap_pending_observation.image_digest
+        } | to_nice_json
+      }}

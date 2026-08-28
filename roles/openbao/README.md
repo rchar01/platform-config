@@ -105,8 +105,9 @@ for the manual custody checkpoint.
 Two approved custodians then initialize exactly one node with five Shamir shares
 and threshold three, store shares and the initial root token outside Ansible,
 unseal all voters, verify both declarative file audit devices, create the
-least-privilege status identity, and revoke the initial root token. Neither
-bootstrap playbook accepts shares or the root token.
+least-privilege status identity, and retain the initial root token in approved
+custody until named administrator authentication is configured and verified.
+Neither bootstrap playbook accepts shares or the root token.
 
 For a pending cluster created before `audit.hcl` was staged, use the guarded
 `playbooks/maintenance/openbao-audit-migrate.yml` path. Normal convergence

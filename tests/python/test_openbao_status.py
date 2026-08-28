@@ -66,6 +66,16 @@ def test_healthy_openbao_status_fixture_succeeds(
     ).assert_success()
 
 
+def test_fresh_zero_index_openbao_status_fixture_succeeds(
+    repo_root: Path, command_runner: CommandRunner
+) -> None:
+    run_playbook(
+        command_runner,
+        repo_root / "tests/fixtures/openbao-status/validate.yml",
+        extra_vars=({"openbao_status_test_mode": "zero-index"},),
+    ).assert_success()
+
+
 @pytest.mark.parametrize(
     ("mode", "message"),
     [

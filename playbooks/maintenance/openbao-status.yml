@@ -1,4 +1,24 @@
 ---
+- name: Require canonical OpenBao status inventory and limit
+  hosts: "{{ ansible_limit | default('localhost') }}"
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require exact explicit OpenBao status selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames',
+                  ansible_limit | default('')) | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          Strict OpenBao HA status requires an explicit limit selecting exactly
+          all three OpenBao hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
 - name: Check strict direct-node OpenBao HA status
   hosts: openbao
   become: true
@@ -12,7 +32,7 @@
           - ansible_limit is defined
           - ansible_limit | default('') | length > 0
           - >-
-            query('ansible.builtin.inventory_hostnames', ansible_limit) | list | sort
+            ansible_play_hosts_all | list | sort
             == groups.get('openbao', []) | list | sort
         fail_msg: >-
           Strict OpenBao HA status requires an explicit limit selecting exactly
@@ -54,6 +74,8 @@
     - name: Run one controller-side OpenBao cluster status gate
       ansible.builtin.include_role:
         name: openbao_status
+      vars:
+        ansible_become: false
       run_once: true # noqa run-once[task]
 
     - name: Require marked and runtime OpenBao cluster identity match

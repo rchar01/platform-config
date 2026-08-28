@@ -31,6 +31,8 @@ Private `platform-private/config` contains real non-secret operational inputs:
 - SSH user and connection details
 - CA certificates
 - access policies
+- optional `container.hostaliases` entries in `hostname:IPv4` form for private
+  names required by development-container controller checks
 - vault-encrypted secrets
 
 Local outside-Git config contains secret material such as real admin kubeconfigs, token files, vault password files, and private keys:
@@ -46,6 +48,7 @@ Do not commit real inventories, kubeconfigs, tokens, passwords, private keys, pr
 ```text
 platform-private/
   config/
+    container.hostaliases
     homelab.ansible.env
     dev.ansible.env
     inventories/
@@ -218,11 +221,13 @@ Never commit:
 - production service passwords
 
 For strict OpenBao status checks, keep the dedicated read-only token in an
-owner-private `0400` or `0600` file under the outside-Git secret store. Private
+owner-private `0600` file under the outside-Git secret store. Private
 inventory may reference its absolute path through `openbao_status_token_src`,
-but must not contain the token value. The status identity needs only `read` on
-`sys/storage/raft/configuration`; the token is read on the controller and is not
-copied to an OpenBao node.
+but must not contain the token value. Use
+`~/.config/platform-infrastructure/config/openbao/<environment>/status.token`.
+The status identity needs only `read` on `sys/storage/raft/configuration` and
+`read` plus `sudo` on `sys/audit`; the token is read on the controller and is
+not copied to an OpenBao node.
 
 ## Validation
 

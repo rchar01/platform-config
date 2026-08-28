@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - openbao_status_raft_index | type_debug == 'int'
-      - openbao_status_raft_index >= 1
+      - openbao_status_raft_index >= 0
       - openbao_status_raft_servers | type_debug == 'list'
       - openbao_status_raft_servers | length == 3
       - >-

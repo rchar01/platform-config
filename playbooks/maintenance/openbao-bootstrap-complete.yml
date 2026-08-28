@@ -72,15 +72,7 @@
         fail_msg: Existing OpenBao markers do not match current completion evidence.
       run_once: true # noqa run-once[task]
 
-    - name: Derive exact OpenBao completion approval
-      ansible.builtin.set_fact:
-        openbao_bootstrap_complete_expected_approval: >-
-          complete-openbao-bootstrap|{{ groups.get('openbao', []) | sort | join(',') }}|{{
-            openbao_bootstrap_complete_signature
-          }}|shamir-5-of-3
-      run_once: true # noqa run-once[task]
-
-    - name: Preserve approved OpenBao completion observations
+    - name: Preserve validated OpenBao completion observations
       ansible.builtin.set_fact:
         openbao_bootstrap_complete_approved_observations: >-
           {{ openbao_bootstrap_pending_observations }}
@@ -89,23 +81,6 @@
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true
-
-    - name: Prompt for exact OpenBao completion approval
-      ansible.builtin.pause:
-        prompt: "Type exactly {{ openbao_bootstrap_complete_expected_approval }}"
-      register: openbao_bootstrap_complete_approval
-      run_once: true # noqa run-once[task]
-      no_log: true
-
-    - name: Require exact OpenBao completion approval
-      ansible.builtin.assert:
-        that:
-          - >-
-            openbao_bootstrap_complete_approval.user_input
-            == openbao_bootstrap_complete_expected_approval
-        fail_msg: Exact OpenBao bootstrap completion approval did not match.
-      run_once: true # noqa run-once[task]
-      no_log: true
 
 - name: Revalidate and qualify manual OpenBao custody completion
   hosts: openbao
@@ -146,6 +121,8 @@
     - name: Require initialized, unsealed, audited OpenBao cluster
       ansible.builtin.include_role:
         name: openbao_status
+      vars:
+        ansible_become: false
       run_once: true # noqa run-once[task]
 
     - name: Preserve accepted OpenBao cluster identity
@@ -166,6 +143,7 @@
       ansible.builtin.include_role:
         name: openbao
         tasks_from: activation_enable.yml
+      when: not ansible_check_mode
 
 - name: Requalify and publish active OpenBao completion
   hosts: openbao
@@ -176,7 +154,10 @@
     - name: Requalify persistently active OpenBao cluster
       ansible.builtin.include_role:
         name: openbao_status
+      vars:
+        ansible_become: false
       run_once: true # noqa run-once[task]
+      when: not ansible_check_mode
 
     - name: Require final OpenBao runtime cluster identity is unchanged
       ansible.builtin.assert:
@@ -186,35 +167,10 @@
             == hostvars['localhost'].openbao_bootstrap_accepted_cluster_id
         fail_msg: OpenBao runtime cluster identity changed during persistent activation.
       run_once: true # noqa run-once[task]
+      when: not ansible_check_mode
 
-    - name: Inspect active OpenBao Quadlet checksum
-      ansible.builtin.stat:
-        path: "{{ openbao_quadlet_path }}"
-        checksum_algorithm: sha256
-      register: openbao_bootstrap_active_quadlet_stat
-
-    - name: Write active OpenBao bootstrap marker
-      ansible.builtin.copy:
-        dest: "{{ openbao_bootstrap_marker_path }}"
-        owner: "{{ openbao_bootstrap_marker_owner }}"
-        group: "{{ openbao_bootstrap_marker_group }}"
-        mode: "0600"
-        content: >-
-          {{
-            {
-              'schema': 1,
-              'state': 'active',
-              'inventory_hosts': groups.get('openbao', []) | sort,
-              'inventory_host': inventory_hostname,
-              'node_id': openbao_bootstrap_pending_observation.node_id,
-              'cluster_signature': hostvars['localhost'].openbao_bootstrap_complete_approved_signature,
-              'cluster_id': hostvars['localhost'].openbao_bootstrap_accepted_cluster_id,
-              'audit_config_checksum': openbao_bootstrap_pending_audit_config_stat.stat.checksum,
-              'config_checksum': openbao_bootstrap_pending_observation.config_checksum,
-              'quadlet_checksum': openbao_bootstrap_active_quadlet_stat.stat.checksum,
-              'ca_checksum': openbao_bootstrap_pending_observation.ca_checksum,
-              'certificate_checksum': openbao_bootstrap_pending_observation.certificate_checksum,
-              'key_checksum': openbao_bootstrap_pending_observation.key_checksum,
-              'image_digest': openbao_bootstrap_pending_observation.image_digest
-            } | to_nice_json
-          }}
+    - name: Publish active OpenBao bootstrap marker
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: bootstrap_publish_active.yml
+      when: not ansible_check_mode

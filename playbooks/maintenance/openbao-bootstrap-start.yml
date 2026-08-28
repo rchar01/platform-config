@@ -371,6 +371,7 @@
           approved custodians must now initialize exactly one node with five
           shares and threshold three, store all custody material outside Ansible,
           unseal all three nodes, verify file-audit-1 and file-audit-2, create the
-          least-privilege status token, and revoke the initial root token. Then
-          run openbao-bootstrap-complete.yml.
+          least-privilege status token, and retain the initial root token in
+          approved custody until named administrator authentication is verified.
+          Then run openbao-bootstrap-complete.yml.
       run_once: true # noqa run-once[task]

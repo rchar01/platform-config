@@ -158,6 +158,7 @@
       and openbao_status_health_results.json.get('cluster_id', '') | length > 0
   retries: "{{ openbao_status_retries }}"
   delay: "{{ openbao_status_retry_delay }}"
+  check_mode: false
   loop: "{{ openbao_cluster_members }}"
   loop_control:
     label: "{{ item.node_id }}"
@@ -198,6 +199,7 @@
   become: false
   register: openbao_status_audit_response
   changed_when: false
+  check_mode: false
   no_log: true
 
 - name: Require two exact OpenBao file audit devices

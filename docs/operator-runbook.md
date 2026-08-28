@@ -1028,9 +1028,11 @@ root token. Two approved custodians must then:
 3. Unseal all three nodes with three distinct approved shares.
 4. Verify the declared `file-audit-1` device writes `/openbao/audit-1/audit.log`.
 5. Verify the declared `file-audit-2` device writes `/openbao/audit-2/audit.log`.
-6. Create the status policy below and store its token in the owner-private file
-   referenced by `openbao_status_token_src`.
-7. Revoke the initial root token after the status identity is verified.
+6. Create the status policy and manually rotated token below, then store the
+   token in the owner-private file referenced by `openbao_status_token_src`.
+7. Keep the initial root token in approved custody until named administrator
+   authentication is configured and verified; the status token is not an
+   administrator identity.
 
 Do not put shares or the root token in command-line arguments, shell history,
 Ansible variables, task output, or repository files. Use an approved interactive
@@ -1144,18 +1146,92 @@ path "sys/audit" {
 }
 ```
 
-Set `openbao_bootstrap_complete_ready: true` only after the ceremony, then run:
+From the approved non-recorded root session, write the policy from standard
+input and request a non-renewable orphan service token with a 90-day hard
+lifetime:
+
+```bash
+bao policy write platform-config-status - <<'EOF'
+path "sys/storage/raft/configuration" {
+  capabilities = ["read"]
+}
+
+path "sys/audit" {
+  capabilities = ["read", "sudo"]
+}
+EOF
+
+bao token create \
+  -display-name=platform-config-status-dev \
+  -policy=platform-config-status \
+  -no-default-policy \
+  -type=service \
+  -orphan \
+  -renewable=false \
+  -ttl=2160h \
+  -explicit-max-ttl=2160h \
+  -format=json
+```
+
+The JSON response contains the token and its accessor; never paste it into chat,
+shell history, CI output, or a repository file. OpenBao can cap the requested
+TTL at the effective token-auth or system maximum. Require the response's
+`auth.lease_duration` to equal `7776000` seconds before recording a 90-day
+rotation date. If it is lower, use the observed lifetime or review the auth
+mount configuration separately; do not tune a global TTL merely to satisfy this
+runbook.
+
+On the Ansible controller, enter the returned `auth.client_token` at a hidden
+prompt and write it directly into the outside-Git store:
+
+```bash
+install -d -m 0700 \
+  "$HOME/.config/platform-infrastructure/config/openbao/dev"
+umask 077
+read -rsp 'OpenBao status token: ' openbao_status_token
+printf '\n'
+printf '%s' "$openbao_status_token" > \
+  "$HOME/.config/platform-infrastructure/config/openbao/dev/status.token"
+unset openbao_status_token
+chmod 0600 \
+  "$HOME/.config/platform-infrastructure/config/openbao/dev/status.token"
+```
+
+Keep the accessor and expiration time in approved operational custody without
+the bearer token. Private inventory references, but never contains, the token:
+
+```yaml
+openbao_status_token_src: >-
+  {{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/openbao/dev/status.token
+```
+
+Set a rotation reminder before the observed expiration. For rotation, issue a
+new orphan token, replace the protected file, run `make status-openbao`, and
+only then revoke the old token by accessor from an administrator session. If the
+old token has already expired, OpenBao remains available; create a replacement
+with the retained root or named administrator identity. The expired status
+token cannot create its own replacement.
+
+Set `openbao_bootstrap_complete_ready: true` only after the ceremony and status
+token setup. Run the read-only qualification first:
+
+```bash
+make complete-openbao-bootstrap ENV=dev LIMIT=openbao EXTRA_ARGS=--check
+```
+
+If it succeeds, apply the already-authorized completion without another prompt:
 
 ```bash
 make complete-openbao-bootstrap ENV=dev LIMIT=openbao
 ```
 
-Completion requires another exact TTY approval, immediately revalidates all
-pending evidence, requires two exact audit devices and stable three-voter status,
-and only then enables OpenBao at boot. An interrupted publication can recover
-missing markers only while at least one surviving signed marker anchors the
-original guarded start. After success, set the normal private service contract
-to `openbao_service_enabled: true` and
+The readiness gate authorizes normal mode and attests to the completed 5-of-3
+custody ceremony and status-token setup. Completion immediately revalidates all
+pending evidence, requires two exact audit devices and stable three-voter
+status, and only then enables OpenBao at boot. An interrupted publication can
+recover missing markers only while at least one surviving signed marker anchors
+the original guarded start. After success, set the normal private service
+contract to `openbao_service_enabled: true` and
 `openbao_service_state: started`, and close both bootstrap readiness gates.
 
 To enable the client edge while Keepalived remains stopped, start firewalld, set

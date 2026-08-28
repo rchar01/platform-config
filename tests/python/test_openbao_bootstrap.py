@@ -146,6 +146,41 @@ def _run_start_playbook(
     return result.returncode, result.stdout
 
 
+def _run_complete_playbook(
+    repo_root: Path,
+    root: Path,
+    *,
+    check_mode: bool = False,
+    variables: dict[str, object] | None = None,
+    timeout: float = 45,
+) -> tuple[int, str]:
+    extra_vars: dict[str, object] = {"openbao_test_root": str(root)}
+    extra_vars.update(variables or {})
+    command = [
+        "ansible-playbook",
+        "-i",
+        str(repo_root / FIXTURE),
+        str(repo_root / COMPLETE_PLAYBOOK),
+        "--limit",
+        "openbao",
+        "--extra-vars",
+        json.dumps(extra_vars, separators=(",", ":")),
+    ]
+    if check_mode:
+        command.append("--check")
+    result = subprocess.run(
+        command,
+        cwd=repo_root,
+        env=_environment(repo_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    return result.returncode, result.stdout
+
+
 def _complete_pattern() -> str:
     return (
         r"complete-openbao-bootstrap\|"
@@ -167,7 +202,12 @@ def test_openbao_bootstrap_source_keeps_custody_outside_ansible(
 ) -> None:
     sources = "\n".join(
         (repo_root / path).read_text(encoding="utf-8")
-        for path in (START_PLAYBOOK, COMPLETE_PLAYBOOK, HAPROXY_PLAYBOOK)
+        for path in (
+            START_PLAYBOOK,
+            COMPLETE_PLAYBOOK,
+            HAPROXY_PLAYBOOK,
+            "roles/openbao/tasks/bootstrap_pending_preflight.yml",
+        )
     )
     for fragment in (
         "ansible_limit is defined",
@@ -189,6 +229,96 @@ def test_openbao_bootstrap_source_keeps_custody_outside_ansible(
     ).read_text(encoding="utf-8")
     assert "ansible.builtin.pause:" not in start_source
     assert "openbao_bootstrap_ready" in preflight_source
+
+
+def test_openbao_bootstrap_completion_has_promptless_check_apply_boundary(
+    repo_root: Path,
+) -> None:
+    source = (repo_root / COMPLETE_PLAYBOOK).read_text(encoding="utf-8")
+    preflight = (
+        repo_root / "roles/openbao/tasks/bootstrap_pending_preflight.yml"
+    ).read_text(encoding="utf-8")
+    status = (repo_root / "roles/openbao_status/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+    raft = (repo_root / "roles/openbao_status/tasks/observe_raft.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ansible.builtin.pause:" not in source
+    assert "not ansible_check_mode" not in preflight
+    assert "shamir-5-of-3 custody ceremony and status identity" in preflight
+    assert source.count("when: not ansible_check_mode") == 4
+    assert status.count("check_mode: false") >= 2
+    assert "check_mode: false" in raft
+
+
+def test_openbao_bootstrap_completion_check_qualifies_without_mutation(
+    repo_root: Path, isolated_test_dir: Path
+) -> None:
+    start_code, start_output = _run_start_playbook(repo_root, isolated_test_dir)
+    assert start_code == 0, start_output
+    marker_paths = sorted(isolated_test_dir.glob("*-bootstrap.json"))
+    marker_contents = {path.name: path.read_bytes() for path in marker_paths}
+
+    complete_code, complete_output = _run_complete_playbook(
+        repo_root,
+        isolated_test_dir,
+        check_mode=True,
+    )
+
+    assert complete_code == 0, complete_output
+    assert "Record mocked strict OpenBao status" in complete_output
+    assert "Enable persistent OpenBao activation" in complete_output
+    assert "skipping" in complete_output
+    assert not list(isolated_test_dir.glob("*.container"))
+    assert {
+        path.name: path.read_bytes() for path in sorted(marker_paths)
+    } == marker_contents
+
+
+def test_openbao_status_token_has_bounded_outside_git_lifecycle(
+    repo_root: Path,
+) -> None:
+    runbook = (repo_root / "docs/operator-runbook.md").read_text(encoding="utf-8")
+    private_workflow = (repo_root / "docs/private-workflow.md").read_text(
+        encoding="utf-8"
+    )
+    openbao_readme = (repo_root / "roles/openbao/README.md").read_text(
+        encoding="utf-8"
+    )
+    status_readme = (repo_root / "roles/openbao_status/README.md").read_text(
+        encoding="utf-8"
+    )
+    start_playbook = (repo_root / START_PLAYBOOK).read_text(encoding="utf-8")
+    inventory = (
+        repo_root / "inventories/dev/group_vars/openbao.yml.example"
+    ).read_text(encoding="utf-8")
+
+    for fragment in (
+        "-no-default-policy",
+        "-type=service",
+        "-orphan",
+        "-renewable=false",
+        "-ttl=2160h",
+        "-explicit-max-ttl=2160h",
+        "auth.lease_duration",
+        "7776000",
+        ".config/platform-infrastructure/config/openbao/dev/status.token",
+    ):
+        assert fragment in runbook
+
+    assert 'path "sys/audit"' in runbook
+    assert 'capabilities = ["read", "sudo"]' in runbook
+    assert "OpenBao tokens" in private_workflow
+    assert "read` plus `sudo` on `sys/audit" in private_workflow
+    assert "owner-private `0600` file" in private_workflow
+    assert "until named administrator authentication is configured" in openbao_readme
+    assert "operational lifecycle installs it with `0600`" in status_readme
+    assert "until named administrator authentication is verified" in start_playbook
+    assert "revoke the initial root token" not in start_playbook
+    assert "PLATFORM_INFRASTRUCTURE_CONFIG_DIR" in inventory
+    assert "/openbao/dev/status.token" in inventory
 
 
 def test_openbao_bootstrap_verifies_leaf_with_explicit_ca_chain(
