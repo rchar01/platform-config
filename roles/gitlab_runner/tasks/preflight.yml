@@ -179,6 +179,7 @@
         'services_privileged': (item.get('docker') or {}).get('services_privileged'),
         'allowed_privileged_services': (item.get('docker') or {}).get('allowed_privileged_services'),
         'pull_policy': (item.get('docker') or {}).get('pull_policy'),
+        'extra_hosts': (item.get('docker') or {}).get('extra_hosts') or [],
         'volumes': (item.get('docker') or {}).get('volumes')},
         'network_per_build': (item.get('feature_flags') or {}).get('FF_NETWORK_PER_BUILD')}
         for item in data.get('runners', [])]))
@@ -221,6 +222,7 @@
               (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.pull_policy == gitlab_runner_docker_pull_policy
               or (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.pull_policy == [gitlab_runner_docker_pull_policy]
             )
+            and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.extra_hosts == gitlab_runner_docker_extra_hosts
             and (gitlab_runner_existing_identities_command.stdout | from_json | first).docker.volumes == gitlab_runner_docker_volumes
             and (gitlab_runner_existing_identities_command.stdout | from_json | first).network_per_build == true
           )

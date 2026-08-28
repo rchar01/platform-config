@@ -45,6 +45,9 @@ def rendered_gitlab_runner(
                 "gitlab_runner_test_socket_enabled": True,
                 "gitlab_runner_test_podman_socket_enabled": True,
                 "gitlab_runner_test_docker_image": ALPINE_IMAGE,
+                "gitlab_runner_test_docker_extra_hosts": [
+                    "gitlab.example.invalid:192.0.2.10"
+                ],
                 "podman_host_storage_contract_enabled": True,
                 "podman_host_storage_mountpoint": "/var/lib/containers",
             },
@@ -66,6 +69,7 @@ def test_gitlab_runner_defaults_remain_socket_free(repo_root: Path) -> None:
         'gitlab_runner_docker_helper_image: ""',
         "gitlab_runner_docker_pull_policy: always",
         "gitlab_runner_docker_network_per_build: true",
+        "gitlab_runner_docker_extra_hosts: []",
     ):
         assert re.search(rf"^{re.escape(line)}$", defaults, re.MULTILINE)
 
@@ -111,9 +115,11 @@ def test_gitlab_runner_registration_uses_typed_docker_arguments(repo_root: Path)
         "'--docker-services_privileged=false'",
         "'--docker-pull-policy', gitlab_runner_docker_pull_policy",
         "'--feature-flags', 'FF_NETWORK_PER_BUILD:'",
+        "['--docker-extra-hosts'] | product(gitlab_runner_docker_extra_hosts)",
         "['--docker-volumes'] | product(gitlab_runner_docker_volumes)",
     ):
         assert argument in tasks
+    assert ".docker.extra_hosts == gitlab_runner_docker_extra_hosts" in tasks
 
 
 def test_gitlab_runner_pins_outside_git_ca_bytes(repo_root: Path) -> None:
@@ -150,6 +156,7 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
         ".docker.privileged == false",
         ".docker.helper_image == gitlab_runner_docker_helper_image",
         ".docker.services_privileged == false",
+        ".docker.extra_hosts == gitlab_runner_docker_extra_hosts",
         ".docker.volumes == gitlab_runner_docker_volumes",
         ".network_per_build == true",
         "gitlab_runner_force_register=true",
@@ -228,6 +235,33 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
                 "gitlab_runner_test_docker_host": "unix:///var/run/docker.sock",
             },
             "requires the manager-only Podman socket",
+        ),
+        (
+            "invalid-extra-host",
+            {
+                "gitlab_runner_test_executor": "docker",
+                "gitlab_runner_test_socket_enabled": True,
+                "gitlab_runner_test_podman_socket_enabled": True,
+                "gitlab_runner_test_docker_image": ALPINE_IMAGE,
+                "gitlab_runner_test_docker_extra_hosts": [
+                    "gitlab.example.invalid:300.1.1.1"
+                ],
+            },
+            "hostname:IPv4 mappings",
+        ),
+        (
+            "duplicate-extra-host",
+            {
+                "gitlab_runner_test_executor": "docker",
+                "gitlab_runner_test_socket_enabled": True,
+                "gitlab_runner_test_podman_socket_enabled": True,
+                "gitlab_runner_test_docker_image": ALPINE_IMAGE,
+                "gitlab_runner_test_docker_extra_hosts": [
+                    "gitlab.example.invalid:192.0.2.10",
+                    "gitlab.example.invalid:192.0.2.10",
+                ],
+            },
+            "unique static host mappings",
         ),
         (
             "host-bind-volume",

@@ -17,6 +17,7 @@
       registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c
     gitlab_runner_test_docker_pull_policy: always
     gitlab_runner_test_network_per_build: true
+    gitlab_runner_test_docker_extra_hosts: []
     gitlab_runner_test_docker_volumes:
       - /cache
     gitlab_runner_test_registration_extra_args: []
@@ -43,6 +44,7 @@
         gitlab_runner_docker_helper_image: "{{ gitlab_runner_test_docker_helper_image }}"
         gitlab_runner_docker_pull_policy: "{{ gitlab_runner_test_docker_pull_policy }}"
         gitlab_runner_docker_network_per_build: "{{ gitlab_runner_test_network_per_build }}"
+        gitlab_runner_docker_extra_hosts: "{{ gitlab_runner_test_docker_extra_hosts }}"
         gitlab_runner_docker_volumes: "{{ gitlab_runner_test_docker_volumes }}"
         gitlab_runner_registration_extra_args: "{{ gitlab_runner_test_registration_extra_args }}"
         gitlab_runner_tls_ca_cert_src: "{{ gitlab_runner_test_tls_ca_cert_src }}"

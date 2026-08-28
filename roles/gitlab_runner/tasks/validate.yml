@@ -59,13 +59,41 @@
       - gitlab_runner_docker_pull_policy == 'always'
       - gitlab_runner_docker_network_per_build is boolean
       - gitlab_runner_docker_network_per_build
+      - gitlab_runner_docker_extra_hosts is sequence
+      - gitlab_runner_docker_extra_hosts is not string
+      - >-
+        gitlab_runner_docker_extra_hosts | select('string') | list | length
+        == gitlab_runner_docker_extra_hosts | length
+      - >-
+        gitlab_runner_docker_extra_hosts | unique | length
+        == gitlab_runner_docker_extra_hosts | length
       - gitlab_runner_docker_volumes is sequence
       - gitlab_runner_docker_volumes is not string
       - gitlab_runner_docker_volumes | length > 0
     fail_msg: >-
       Docker executor mode requires the manager-only Podman socket, its exact
        unix endpoint, immutable sha256 job and helper images, always-pull policy,
-       per-build networking, and container-only volumes.
+       per-build networking, unique static host mappings, and container-only
+       volumes.
+  when: gitlab_runner_executor == 'docker'
+
+- name: Validate GitLab Runner Docker extra hosts
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item.rsplit(':', 1) | length == 2
+      - >-
+        item.rsplit(':', 1) | first
+        is match('^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
+      - >-
+        item.rsplit(':', 1) | last
+        is match('^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - >-
+        item.rsplit(':', 1) | last | split('.') | map('int')
+        | select('gt', 255) | list | length == 0
+    fail_msg: >-
+      Docker executor extra hosts must use hostname:IPv4 mappings.
+  loop: "{{ gitlab_runner_docker_extra_hosts }}"
   when: gitlab_runner_executor == 'docker'
 
 - name: Validate GitLab Runner Docker container-only volumes

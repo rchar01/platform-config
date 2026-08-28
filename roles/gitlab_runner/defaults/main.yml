@@ -28,6 +28,7 @@ gitlab_runner_docker_image: ""
 gitlab_runner_docker_helper_image: ""
 gitlab_runner_docker_pull_policy: always
 gitlab_runner_docker_network_per_build: true
+gitlab_runner_docker_extra_hosts: []
 gitlab_runner_docker_volumes:
   - /cache
 

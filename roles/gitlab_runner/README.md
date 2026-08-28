@@ -24,6 +24,8 @@ gitlab_runner_docker_image: >-
   docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
 gitlab_runner_docker_helper_image: >-
   registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c
+gitlab_runner_docker_extra_hosts:
+  - gitlab.example.invalid:192.0.2.10
 ```
 
 Docker mode also enforces:
@@ -34,6 +36,11 @@ Docker mode also enforces:
 - `FF_NETWORK_PER_BUILD = true`;
 - `privileged = false`; and
 - container-only cache volumes with no host bind or socket mount.
+
+`gitlab_runner_docker_extra_hosts` adds duplicate-free `hostname:IPv4`
+mappings to every helper, build, and service container. Use it when static host
+records are required because containers created through the Docker-compatible
+API do not inherit the manager host's `/etc/hosts`.
 
 The manager Quadlet adds:
 
@@ -80,9 +87,9 @@ remain in place; they are host runtime prerequisites rather than Runner state.
 The role reads only the non-secret managed contract from an existing
 `config.toml`. It fails before changing the manager Quadlet when the file does
 not contain exactly the one declared executor identity or when Docker host,
-image, privilege, pull policy, volumes, or networking differ. Executor changes
-therefore require explicit force registration. Tokens are neither returned nor
-logged by this preflight.
+image, privilege, pull policy, extra hosts, volumes, or networking differ.
+Executor changes and extra-host updates therefore require explicit force
+registration. Tokens are neither returned nor logged by this preflight.
 
 Runner tags are server-side GitLab settings for pre-created runner
 authentication tokens. `gitlab_runner_tags` documents intended tags but does not
@@ -110,6 +117,7 @@ static runner volume.
 | `gitlab_runner_docker_helper_image` | empty | Required immutable GitLab helper image in Docker mode |
 | `gitlab_runner_docker_pull_policy` | `always` | Required shared-runner pull policy |
 | `gitlab_runner_docker_network_per_build` | `true` | Required Podman service networking mode |
+| `gitlab_runner_docker_extra_hosts` | `[]` | Static `hostname:IPv4` mappings for helper, build, and service containers |
 | `gitlab_runner_docker_volumes` | `[/cache]` | Container-only persistent volumes; host binds are rejected |
 | `gitlab_runner_force_register` | `false` | Destructive one-time local re-registration switch |
 
