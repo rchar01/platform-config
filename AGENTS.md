@@ -40,7 +40,7 @@
 ## Agent Workflow Expectations
 
 - Read relevant code before editing.
-- Prefer minimal changes that match existing patterns.
+- Prefer simple, focused changes and avoid overengineering.
 - Keep `README.md`, `AGENTS.md`, and skill docs current when repository behavior changes.
 - If your runtime provides specialized tools or subagents for codebase exploration, use them when repository structure, ownership boundaries, or relevant files are unclear.
 - If your runtime provides specialized tools or subagents for verification, use them for non-trivial test runs, runtime-backed checks, or command-heavy validation.
