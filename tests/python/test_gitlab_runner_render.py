@@ -150,6 +150,9 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
         encoding="utf-8"
     )
     for contract in (
+        "Require one exact host for forced GitLab Runner registration",
+        "ansible_limit is defined",
+        "ansible_limit == inventory_hostname",
         "Read existing GitLab Runner contract for migration safety",
         "Validate existing GitLab Runner contract before migration",
         "gitlab_runner_existing_identities_command.stdout | from_json | length == 1",

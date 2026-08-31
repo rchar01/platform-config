@@ -20,6 +20,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Require a literal one-host Ansible limit before forced GitLab Runner
+  registration can read its token or change managed state.
 - Added a required SHA-256 binding and descriptor-pinned controller source for
   the root-installed target-local `platform-pki` transport client.
 - Added descriptor-pinned, SHA-256-bound installation of the reviewed Zot

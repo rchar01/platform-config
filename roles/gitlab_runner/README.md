@@ -77,7 +77,9 @@ fails, the role restores the previous file and its prior active service state
 before failing. An incomplete automatic restore retains the root-only
 `.config.toml.ansible-*` recovery artifact. Use force only as a controlled
 one-time migration with a separate operator rollback backup, then immediately
-return it to false.
+return it to false. Forced registration also requires a literal Ansible limit
+equal to the one selected inventory hostname; broad or patterned limits fail
+before the role reads the registration token or changes the host.
 
 Rollback covers Runner-owned configuration, CA, Quadlet, service state, and the
 Podman socket state captured before convergence. Successfully converged shared

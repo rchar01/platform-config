@@ -2,6 +2,16 @@
 - name: Validate GitLab Runner inputs
   ansible.builtin.import_tasks: validate.yml
 
+- name: Require one exact host for forced GitLab Runner registration
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit == inventory_hostname
+    fail_msg: >-
+      Forced GitLab Runner registration requires a literal Ansible limit equal
+      to the current inventory hostname.
+  when: gitlab_runner_force_register | bool
+
 - name: Check GitLab Runner token source on control node
   ansible.builtin.stat:
     path: "{{ gitlab_runner_token_src }}"
