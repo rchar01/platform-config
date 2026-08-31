@@ -428,7 +428,7 @@ def payload_record(base: Any, package: Any, destination: pathlib.Path) -> dict[s
         raise AlignmentError(f"RPM signature validation failed for {package}: {signature_error}")
     source = pathlib.Path(package.localPkg())
     filename = source.name
-    if not re.fullmatch(r"[A-Za-z0-9_.+~-]+\.rpm", filename):
+    if not re.fullmatch(r"[A-Za-z0-9_.+~^-]+\.rpm", filename):
         raise AlignmentError(f"unsafe RPM filename: {filename}")
     target = destination / filename
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -592,7 +592,7 @@ def verify_payloads(staging: pathlib.Path, payloads: list[dict[str, Any]]) -> li
         }:
             raise AlignmentError("RPM payload manifest fields are invalid")
         filename = record["filename"]
-        if not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9_.+~-]+\.rpm", filename):
+        if not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9_.+~^-]+\.rpm", filename):
             raise AlignmentError("RPM payload filename is invalid")
         path = staging / "rpms" / filename
         if path.is_symlink() or not path.is_file():

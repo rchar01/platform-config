@@ -150,6 +150,25 @@ def test_rocky_alignment_binds_transaction_and_installed_state(repo_root: Path) 
     assert "distro-sync" not in upgrade
 
 
+def test_rocky_alignment_accepts_rpm_caret_filename(
+    repo_root: Path, isolated_test_dir: Path
+) -> None:
+    helper = _helper(repo_root)
+    filename = "passt-0^20251210.gd04c480-6.el10_2.x86_64.rpm"
+    source = isolated_test_dir / filename
+    source.write_bytes(b"signed-rpm-payload")
+    staging = isolated_test_dir / "staging"
+    destination = staging / "rpms"
+    destination.mkdir(parents=True)
+    package = SimpleNamespace(localPkg=lambda: str(source))
+    base = SimpleNamespace(package_signature_check=lambda selected: (0, ""))
+
+    record = helper.payload_record(base, package, destination)
+
+    assert record["filename"] == filename
+    assert helper.verify_payloads(staging, [record]) == [destination / filename]
+
+
 def test_rocky_alignment_marker_follows_verification(repo_root: Path) -> None:
     verify = (
         repo_root / "migrations/tasks/rocky-minor-alignment-verify.yml"
