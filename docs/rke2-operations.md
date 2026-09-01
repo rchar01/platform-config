@@ -21,6 +21,11 @@ or arbitrary Ansible arguments. CI generates the controller-variable file for
 strict per-host SSH identities and clears password-based SSH and become values
 without disabling inventory-authorized passwordless privilege escalation.
 
+For attended qualification before CI adoption, follow the complete manual
+fresh-install sequence in the [operator runbook](operator-runbook.md). It uses
+the same preflight, base, kube-vip, and smoke playbooks with explicit inventory
+group limits and requires second-apply idempotency.
+
 On fresh nodes, check mode validates the RKE2, registry, and Traefik templates
 without creating target directories and reports the exact package and managed
 configuration scope as changed. Child-file diffs become available after their
@@ -38,6 +43,8 @@ start. Server nodes must also recover the supervisor port and local API
 `/readyz` response. RKE2-specific firewall policy is reconciled before the API
 and Node readiness gates. This deployment path is for an existing healthy
 cluster; use `rke2-bootstrap` for explicitly recreated clean nodes.
+Delegated Kubernetes readiness checks connect to the bootstrap server with that
+host's inventory-selected SSH key rather than the current serial node's key.
 
 The launcher translates `HUP`, `INT`, and `TERM` into `TERM` for its active
 Ansible child, waits for that child, and returns the conventional launcher

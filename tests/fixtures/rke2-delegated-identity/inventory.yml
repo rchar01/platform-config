@@ -1,0 +1,15 @@
+---
+all:
+  vars:
+    platform_ci_ssh_private_key_files:
+      bootstrap: /synthetic-keys/bootstrap
+      serial-node: /synthetic-keys/serial-node
+    ansible_ssh_private_key_file: >-
+      {{ platform_ci_ssh_private_key_files[inventory_hostname] }}
+  children:
+    rke2_servers:
+      hosts:
+        bootstrap:
+          ansible_connection: local
+        serial-node:
+          ansible_connection: local

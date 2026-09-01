@@ -941,19 +941,54 @@ source policy, and a test collector pass the replacement plan's Phase 7 gate.
 RKE2 uses a shared cluster token stored outside Git:
 
 ```text
-~/.config/platform-infrastructure/config/rke2/dev/cluster-token
+~/.config/platform-infrastructure/config/rke2/<environment>/cluster-token
 ```
 
-Configure the six-node Kubernetes path with focused playbooks. Do not use
+Configure a recreated Kubernetes cluster with focused playbooks. The commands
+below use `dev` as a safe example environment; private inventory selects the
+real hosts, addresses, repository URLs, VIP, interface, trust files, and exact
+package releases. Do not copy those values into this public runbook. Do not use
 `site.yml` or `scripts/run-dev.sh` while the monitoring phase remains blocked.
 
+Validate inventory, SSH access, syntax, and pristine state before check mode.
+The bootstrap preflight is read-only even though it uses the generic `apply`
+target. It must report `changed=0` and rejects existing RKE2 packages,
+configuration, binaries, service units, or state.
+
 ```bash
-make check ENV=dev PLAYBOOK=playbooks/rke2.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
-make smoke-rke2 ENV=dev
-# Run a second apply to confirm idempotency.
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
+make inventory ENV=dev
+make ping ENV=dev LIMIT=rke2_cluster
+make syntax ENV=dev PLAYBOOK=playbooks/rke2-bootstrap-preflight.yml
+make syntax ENV=dev PLAYBOOK=playbooks/rke2.yml
+make syntax ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml
+make apply ENV=dev PLAYBOOK=playbooks/rke2-bootstrap-preflight.yml LIMIT=rke2_cluster
+make check ENV=dev PLAYBOOK=playbooks/rke2.yml LIMIT=rke2_cluster
 ```
+
+Review check-mode output before installation. It must select the expected native
+Enterprise Linux major, architecture, exact node and SELinux package identities,
+disabled Rancher repositories, repository and package GPG checks, and approved
+kernel transition. Stop on an unexpected repository, release, package, trust
+identity, enabled OS repository, or host. Never bypass those checks.
+
+Install the base cluster, run its smoke suite, and apply again. The first apply
+may reboot nodes serially to activate verified kernel modules. The playbook
+configures servers before agents, stops on failed local service or API readiness,
+and verifies each Node through the bootstrap server before advancing.
+
+```bash
+make apply ENV=dev PLAYBOOK=playbooks/rke2.yml LIMIT=rke2_cluster
+make smoke-rke2 ENV=dev LIMIT=rke2_cluster
+make apply ENV=dev PLAYBOOK=playbooks/rke2.yml LIMIT=rke2_cluster
+```
+
+The second base apply must report `changed=0` on every node. The smoke suite must
+confirm every service is active and the exact expected node count is Ready. For
+the default Traefik path, it also verifies controller health and fixed worker
+NodePorts. Kong uses its separate apply and smoke sequence later in this runbook.
+Delegated readiness checks intentionally use the bootstrap host's
+inventory-selected SSH identity; each private inventory or CI controller must
+provide a resolvable per-host key for that server.
 
 RKE2 uses the dev Zot registry through `registries.yaml`. On Enterprise Linux 10, the role installs `kernel-modules-extra` for `br_netfilter`; `overlay` is provided by `kernel-modules-core`. After its guarded kernel transition, RKE2 consumes the shared container-runtime OverlayFS policy and continues to own `br_netfilter` plus the Kubernetes networking sysctls. Set `rke2_reboot_for_kernel_modules: true` only where the role may perform a controlled serial reboot when the installed module package targets a newer kernel. On clean nodes, the role verifies the exact boot target and module availability after reboot before installing or starting RKE2. An installed node must be active, API-healthy where applicable, and Kubernetes `Ready` before reboot; it must return `Ready` before the serial play advances.
 
@@ -966,11 +1001,24 @@ RKE2 must be pinned with `rke2_version`, native RPM release inputs, repository U
 kube-vip API HA is installed after the base RKE2 cluster through an RKE2 `HelmChart` manifest written by `playbooks/rke2-kube-vip.yml`. Keep it API-only for this phase; workload service load balancing and ingress remain separate later work.
 
 ```bash
-make check ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml
-make smoke-rke2-kube-vip ENV=dev
+make check ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml LIMIT=rke2_servers
+make apply ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml LIMIT=rke2_servers
+make smoke-rke2-kube-vip ENV=dev LIMIT='rke2_servers,bastion'
+make apply ENV=dev PLAYBOOK=playbooks/rke2-kube-vip.yml LIMIT=rke2_servers
+make smoke-rke2-kube-vip ENV=dev LIMIT='rke2_servers,bastion'
 ```
+
+The second kube-vip apply must report `changed=0`. Smoke must confirm the pinned
+image and leader-election policy, one ready DaemonSet pod per server, and API
+reachability through the VIP from both the bootstrap server and bastion group.
+
+Do not rerun the pristine preflight after packages have been installed. If a
+base apply fails, first establish whether the failure is target state or only a
+controller transport/readiness observation. A complete passing base smoke test
+permits normal convergence after a controller-only fix. Recreate the affected
+nodes before repeating bootstrap when package, service, datastore, or target
+configuration state is uncertain. A kube-vip-only failure does not require
+rebuilding an otherwise qualified base cluster.
 
 The private environment must set the API VIP, the server interface that reaches that VIP, and pinned kube-vip chart and application image versions. The role explicitly configures the upstream `15/10/2`-second lease duration, renewal deadline, and retry period to tolerate transient API or etcd latency. It verifies the VIP is already in `rke2_tls_sans`, validates the leader-election timing relationships, and confirms that each RKE2 server routes the VIP through the configured interface.
 

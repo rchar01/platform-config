@@ -29,6 +29,10 @@
       - rke2_rpm_gpg_key_url is match('^https://.+$')
       - rke2_rpm_gpg_key_sha256 is match('^[0-9a-f]{64}$')
       - rke2_rpm_gpg_key_fingerprint is match('^[0-9A-F]{40}$')
+      - >-
+        hostvars[rke2_bootstrap_host].ansible_ssh_private_key_file
+        | default('')
+        | length > 0
     fail_msg: >-
       RKE2 requires server/agent groups, rke2_token_src, rke2_cni, a supported
       platform_ingress_controller, an exact rke2_version and native RPM release,
@@ -37,6 +41,8 @@
       EL major and architecture must match the managed host. Configure ingress
       through platform_ingress_controller rather than rke2_extra_config and
       remove the retired kong_ingress_enabled variable before applying this role.
+      The rke2_bootstrap_host must resolve to an inventory host with a non-empty
+      ansible_ssh_private_key_file for delegated readiness checks.
 
 - name: Record exact RKE2 RPM package identity
   ansible.builtin.set_fact:
@@ -315,6 +321,9 @@
       - "{{ rke2_node_name }}"
       - -o=jsonpath={.status.conditions[?(@.type=="Ready")].status}
   delegate_to: "{{ rke2_bootstrap_host }}"
+  vars:
+    ansible_ssh_private_key_file: >-
+      {{ hostvars[rke2_bootstrap_host].ansible_ssh_private_key_file }}
   register: rke2_pre_reboot_node_ready
   retries: 12
   delay: 5
@@ -468,6 +477,9 @@
       - "{{ rke2_node_name }}"
       - -o=jsonpath={.status.conditions[?(@.type=="Ready")].status}
   delegate_to: "{{ rke2_bootstrap_host }}"
+  vars:
+    ansible_ssh_private_key_file: >-
+      {{ hostvars[rke2_bootstrap_host].ansible_ssh_private_key_file }}
   register: rke2_post_reboot_node_ready
   check_mode: false
   retries: 60
@@ -988,6 +1000,9 @@
       - "{{ rke2_node_name }}"
       - -o=jsonpath={.status.conditions[?(@.type=="Ready")].status}
   delegate_to: "{{ rke2_bootstrap_host }}"
+  vars:
+    ansible_ssh_private_key_file: >-
+      {{ hostvars[rke2_bootstrap_host].ansible_ssh_private_key_file }}
   register: rke2_converged_node_ready
   check_mode: false
   changed_when: false

@@ -88,6 +88,13 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
     assert (
         "rke2_rpm_gpg_key_fingerprint is match('^[0-9A-F]{40}$')" in assertions
     )
+    assert any(
+        "hostvars[rke2_bootstrap_host].ansible_ssh_private_key_file" in assertion
+        for assertion in assertions
+    )
+    assert "ansible_ssh_private_key_file" in preflight["ansible.builtin.assert"][
+        "fail_msg"
+    ]
 
     assert key_download["ansible.builtin.get_url"]["checksum"] == (
         "sha256:{{ rke2_rpm_gpg_key_sha256 }}"
@@ -168,6 +175,16 @@ def test_rke2_flushes_restart_before_readiness(repo_root: Path) -> None:
 
     api_firewall = _named(tasks, "Manage RKE2 API firewalld rich rules")
     assert "firewalld_dependencies_ready | default(true)" in api_firewall["when"]
+    for name in (
+        "Verify an existing RKE2 node is Ready before prerequisite reboot",
+        "Wait for an existing RKE2 node to return Ready after reboot",
+        "Wait for the converged RKE2 node to become Ready",
+    ):
+        task = _named(tasks, name)
+        assert task["delegate_to"] == "{{ rke2_bootstrap_host }}"
+        assert task["vars"]["ansible_ssh_private_key_file"].strip() == (
+            "{{ hostvars[rke2_bootstrap_host].ansible_ssh_private_key_file }}"
+        )
 
 
 def test_fresh_rke2_check_mode_skips_children_of_simulated_directories(
@@ -197,6 +214,24 @@ def test_fresh_rke2_check_mode_skips_children_of_simulated_directories(
     report = _named(tasks, "Report fresh-node RKE2 bootstrap changes in check mode")
     assert report["changed_when"] is True
     assert "rke2_rpm_node_package_nevra" in report["ansible.builtin.debug"]["msg"]
+
+
+def test_rke2_delegation_uses_bootstrap_host_identity(repo_root: Path) -> None:
+    fixture = repo_root / "tests/fixtures/rke2-delegated-identity"
+    result = subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            str(fixture / "inventory.yml"),
+            str(fixture / "playbook.yml"),
+        ],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

@@ -63,8 +63,9 @@ and other secrets belong outside Git.
 
 ## Operations
 
-- [RKE2 Operations](rke2-operations.md): Fixed CI launcher, serial readiness
-  gates, operational image, installer trust boundary, and smoke limitations.
+- [RKE2 Operations](rke2-operations.md): Fixed CI launcher, attended bootstrap
+  link, serial readiness gates, operational image, native RPM repository trust,
+  and smoke limitations.
 - [Rebuild](rebuild.md): Host rebuild categories, repository responsibilities,
   service recovery, and Kubernetes node considerations.
 - [Migrations](../migrations/README.md): One-time transitions for existing hosts
