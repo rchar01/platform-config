@@ -89,6 +89,73 @@ def test_public_key_parser_returns_only_fingerprint(repo_root: Path) -> None:
     assert parsed.content == content
     assert parsed.fingerprint.startswith("SHA256:")
     assert content.decode("ascii").split()[1] not in parsed.fingerprint
+    assert parsed.value == " ".join(content.decode("ascii").split()[:2])
+
+
+@pytest.mark.parametrize(
+    ("address", "port", "prefix"),
+    [
+        ("192.0.2.30", 22, "192.0.2.30 "),
+        ("192.0.2.30", 2222, "[192.0.2.30]:2222 "),
+        ("2001:db8::30", 22, "2001:db8::30 "),
+        ("2001:db8::30", 2222, "[2001:db8::30]:2222 "),
+    ],
+)
+def test_known_hosts_entry_uses_server_address_and_port(
+    repo_root: Path, address: str, port: int, prefix: str
+) -> None:
+    helper = _helper(repo_root)
+    settings = helper.Settings(
+        operation="check",
+        expected_hostname="node.example",
+        public_key_file=Path("/root/node.pub"),
+        controller_address="192.0.2.20",
+        controller_hostname="controller.example",
+        server_address=address,
+        server_port=port,
+        confirm=None,
+    )
+    key = helper.parse_ed25519_public_key(_public_key("ignored comment"))
+
+    entry = helper.known_hosts_entry(settings, key)
+
+    assert entry == f"{prefix}{key.value}"
+    assert "ignored comment" not in entry
+
+
+def test_check_ready_requests_one_key_summary(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _helper(repo_root)
+    settings = helper.Settings(
+        operation="check",
+        expected_hostname="node.example",
+        public_key_file=Path("/root/node.pub"),
+        controller_address="192.0.2.20",
+        controller_hostname="controller.example",
+        server_address="192.0.2.30",
+        server_port=22,
+        confirm=None,
+    )
+    key = helper.parse_ed25519_public_key(_public_key())
+    summaries: list[bool] = []
+
+    def fake_check_base(
+        _settings: object,
+        _key: object,
+        *,
+        check_effective_ssh: bool = True,
+        print_key_summary: bool = True,
+    ) -> None:
+        assert check_effective_ssh
+        summaries.append(print_key_summary)
+
+    monkeypatch.setattr(helper, "check_base", fake_check_base)
+    monkeypatch.setattr(helper, "check_account", lambda _key: None)
+
+    helper.check_ready(settings, key)
+
+    assert summaries == [True]
 
 
 def test_public_key_file_rejects_symlink_and_unsafe_mode(
@@ -502,7 +569,17 @@ def test_apply_resumes_exact_key_only_partial_state(
     events: list[str] = []
 
     monkeypatch.setattr(helper, "acquire_lock", lambda: lock_descriptor)
-    monkeypatch.setattr(helper, "check_base", lambda *_args, **_kwargs: None)
+    def fake_check_base(
+        _settings: object,
+        _key: object,
+        *,
+        check_effective_ssh: bool = True,
+        print_key_summary: bool = True,
+    ) -> None:
+        assert not check_effective_ssh
+        events.append("printed-key" if print_key_summary else "silent-preflight")
+
+    monkeypatch.setattr(helper, "check_base", fake_check_base)
     monkeypatch.setattr(
         helper,
         "ensure_account_state_before_apply",
@@ -525,16 +602,24 @@ def test_apply_resumes_exact_key_only_partial_state(
         "run_command",
         lambda name, *_args: events.append(name) or "",
     )
-    monkeypatch.setattr(
-        helper,
-        "check_ready",
-        lambda *_args: events.append("ready"),
-    )
+    def final_check(_settings: object, _key: object) -> None:
+        events.append("printed-key")
+        events.append("ready")
+
+    monkeypatch.setattr(helper, "check_ready", final_check)
 
     helper.apply(settings, public_key)
 
     assert authorized_keys.read_bytes() == public_key.content
-    assert events == ["effective-ssh", "published-sudoers", "restorecon", "ready"]
+    assert events == [
+        "silent-preflight",
+        "effective-ssh",
+        "published-sudoers",
+        "restorecon",
+        "printed-key",
+        "ready",
+    ]
+    assert events.count("printed-key") == 1
     assert not staging.exists()
 
 

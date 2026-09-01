@@ -71,6 +71,7 @@ class Settings:
 class PublicKey:
     content: bytes
     fingerprint: str
+    value: str
 
 
 def parse_arguments(argv: list[str]) -> Settings:
@@ -243,7 +244,11 @@ def parse_ed25519_public_key(data: bytes) -> PublicKey:
     require(key_type == b"ssh-ed25519", "public key wire type is not Ed25519")
     require(len(key_bytes) == 32 and offset == len(blob), "public key has invalid Ed25519 length")
     fingerprint = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
-    return PublicKey(content=data, fingerprint=f"SHA256:{fingerprint}")
+    return PublicKey(
+        content=data,
+        fingerprint=f"SHA256:{fingerprint}",
+        value=f"{fields[0]} {fields[1]}",
+    )
 
 
 def load_public_key(path: Path, *, expected_uid: int = 0) -> PublicKey:
@@ -257,6 +262,7 @@ def check_base(
     public_key: PublicKey,
     *,
     check_effective_ssh: bool = True,
+    print_key_summary: bool = True,
 ) -> None:
     require(os.geteuid() == 0, "run this helper as root")
     for name in REQUIRED_COMMANDS:
@@ -291,8 +297,18 @@ def check_base(
         check_effective_ssh_policy(settings)
 
     host_key = load_public_key(SSH_HOST_PUBLIC_KEY)
-    ok(f"SSH host Ed25519 key fingerprint is {host_key.fingerprint}")
-    ok(f"supplied automation key fingerprint is {public_key.fingerprint}")
+    if print_key_summary:
+        ok("SSH host Ed25519 known_hosts entry follows")
+        print(known_hosts_entry(settings, host_key))
+        ok(f"SSH host Ed25519 key fingerprint is {host_key.fingerprint}")
+        ok(f"supplied automation key fingerprint is {public_key.fingerprint}")
+
+
+def known_hosts_entry(settings: Settings, host_key: PublicKey) -> str:
+    target = settings.server_address
+    if settings.server_port != 22:
+        target = f"[{target}]:{settings.server_port}"
+    return f"{target} {host_key.value}"
 
 
 def account() -> pwd.struct_passwd:
@@ -584,7 +600,12 @@ def ensure_home_staging_directory() -> None:
 def apply(settings: Settings, public_key: PublicKey) -> None:
     lock_descriptor = acquire_lock()
     try:
-        check_base(settings, public_key, check_effective_ssh=False)
+        check_base(
+            settings,
+            public_key,
+            check_effective_ssh=False,
+            print_key_summary=False,
+        )
         user, primary = ensure_account_state_before_apply()
         preflight_managed_files(public_key)
 

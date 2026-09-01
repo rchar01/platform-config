@@ -201,6 +201,12 @@ hostname, the actual controller source address and resolved hostname, the VM
 destination address and SSH port, and an absolute root-controlled public-key
 path. `apply` additionally requires `--confirm <hostname>:rocky`.
 
+`check` and the successful final verification in `apply` print one normalized,
+copy-ready SSH host-key line bound to `--server-address` and `--server-port`, as
+well as its SHA-256 fingerprint. The same VM host public key remains available
+for manual authenticated-console inspection at
+`/etc/ssh/ssh_host_ed25519_key.pub`.
+
 The helper is access-only: it does not generate keys, install packages, create
 `access_ssh`, start or configure `sshd`, edit repositories, contact GitLab, or
 run Ansible. It may normalize modes and SELinux labels only after account and
