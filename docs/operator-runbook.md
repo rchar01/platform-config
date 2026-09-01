@@ -98,7 +98,7 @@ make help
 
 Application and platform software installed directly by `platform-config` must be version-pinned and configurable. Normal convergence should reproduce the declared version and stay idempotent; updates should happen only after changing the version variable intentionally, applying the relevant playbook, running the smoke playbook, and running a second apply with `changed=0` expected.
 
-Examples of pinned software include container image tags, downloaded external tools with checksums, Node Exporter release versions, the vendored bastion runtime version, and the RKE2 version. RKE2 specifically fails preflight unless `rke2_version` is set, unless `rke2_allow_unpinned: true` is used for an intentional one-off discovery install.
+Examples of pinned software include container image tags, downloaded external tools with checksums, Node Exporter release versions, the vendored bastion runtime version, and the RKE2 version. RKE2 specifically fails preflight unless its version, native RPM release, SELinux package, repository URLs, and signing-key identity are explicitly selected.
 
 OS package installation is different: roles expose package lists as variables, and private inventory may use exact package specs where appropriate, but reproducible RPM versions are only reliable when the enabled repositories are pinned, snapshotted, or protected with versionlock. Do not treat a bare package name from a moving OS repo as a reproducible version pin.
 
@@ -955,7 +955,7 @@ Kernel transitions use `/var/lib/rke2-kernel-reboot-target` to record the exact 
 
 Set `platform_ingress_controller: traefik` for the default bundled RKE2 controller or `platform_ingress_controller: kong` for the optional Kong alternative. RKE2 releases before 1.36 require the explicit `ingress-controller: traefik` setting; the role renders it rather than relying on release-dependent defaults. Bundled Traefik uses a managed `HelmChartConfig` to expose fixed worker NodePorts `30080` and `30443` without also binding host ports `80` and `443`.
 
-RKE2 must be pinned with `rke2_version` in the private environment. The default role preflight rejects unpinned installs; use `rke2_allow_unpinned: true` only for a deliberate temporary discovery run, then pin the discovered version immediately before normal convergence.
+RKE2 must be pinned with `rke2_version`, native RPM release inputs, repository URLs, and signing-key identity in the private environment. The role rejects unpinned installs and leaves its Rancher repositories disabled outside exact RKE2 package transactions.
 
 kube-vip API HA is installed after the base RKE2 cluster through an RKE2 `HelmChart` manifest written by `playbooks/rke2-kube-vip.yml`. Keep it API-only for this phase; workload service load balancing and ingress remain separate later work.
 

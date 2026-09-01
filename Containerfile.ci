@@ -1,0 +1,25 @@
+FROM docker.io/library/python:3.14.7-slim-trixie@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910
+
+ENV ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_ROOT_USER_ACTION=ignore
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        coreutils \
+        git \
+        openssh-client \
+        openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-ci.txt requirements.yml /tmp/platform-config/
+RUN pip install -r /tmp/platform-config/requirements-ci.txt \
+    && ansible-galaxy collection install \
+        -r /tmp/platform-config/requirements.yml \
+        -p /usr/share/ansible/collections
+
+CMD ["/bin/bash"]

@@ -129,6 +129,7 @@ platform-docs documents the design and operations across all repositories.
 - [Private workflow](docs/private-workflow.md)
 - [Kubernetes bastion and issuer staging validation](docs/k8s-bastion.md)
 - [Storage volume acceptance fixture](docs/storage-volume-test.md)
+- [RKE2 operations](docs/rke2-operations.md)
 - [Development](docs/development.md)
 
 ## License

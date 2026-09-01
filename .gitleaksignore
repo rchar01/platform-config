@@ -1,0 +1,2 @@
+inventories/dev/group_vars/rke2_cluster.yml.example:generic-api-key:10
+inventories/dev/group_vars/rke2_cluster.yml.example:generic-api-key:11

@@ -14,13 +14,36 @@
       - rke2_kernel_module_readiness_marker_path | length > 0
       - rke2_kernel_module_reboot_marker_path != rke2_kernel_module_readiness_marker_path
       - groups.get(rke2_server_group, []) | length > 0
-      - rke2_version | length > 0 or rke2_allow_unpinned | bool
+      - rke2_version is match('^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+$')
+      - rke2_rpm_common_repository_url is match('^https://.+$')
+      - rke2_rpm_version_repository_url is match('^https://.+$')
+      - rke2_rpm_common_repository_id | length > 0
+      - rke2_rpm_version_repository_id | length > 0
+      - rke2_rpm_common_repository_id != rke2_rpm_version_repository_id
+      - rke2_rpm_repository_file | length > 0
+      - rke2_rpm_el_major is match('^[0-9]+$')
+      - ansible_distribution_major_version == rke2_rpm_el_major
+      - ansible_architecture == rke2_rpm_arch
+      - rke2_rpm_package_release is match('^[0-9]+\.el[0-9]+$')
+      - rke2_rpm_selinux_package_nevra is match('^rke2-selinux-[0-9][A-Za-z0-9_.~+-]*-[0-9]+\.el[0-9]+\.noarch$')
+      - rke2_rpm_gpg_key_url is match('^https://.+$')
+      - rke2_rpm_gpg_key_sha256 is match('^[0-9a-f]{64}$')
+      - rke2_rpm_gpg_key_fingerprint is match('^[0-9A-F]{40}$')
     fail_msg: >-
       RKE2 requires server/agent groups, rke2_token_src, rke2_cni, a supported
-      platform_ingress_controller, and an explicit rke2_version pin. Configure
-      ingress through platform_ingress_controller rather than rke2_extra_config.
-      Remove the retired kong_ingress_enabled variable before applying this role.
-      Set rke2_allow_unpinned=true only for intentional one-off discovery installs.
+      platform_ingress_controller, an exact rke2_version and native RPM release,
+      reviewed HTTPS common and version repository URLs, and a reviewed RPM key
+      URL with its lowercase SHA-256 and uppercase fingerprint. The configured
+      EL major and architecture must match the managed host. Configure ingress
+      through platform_ingress_controller rather than rke2_extra_config and
+      remove the retired kong_ingress_enabled variable before applying this role.
+
+- name: Record exact RKE2 RPM package identity
+  ansible.builtin.set_fact:
+    rke2_rpm_version: >-
+      {{ rke2_version | regex_replace('^v', '') | regex_replace('[+-]', '~') }}
+    rke2_rpm_node_package_nevra: >-
+      rke2-{{ rke2_node_role }}-{{ rke2_version | regex_replace('^v', '') | regex_replace('[+-]', '~') }}-{{ rke2_rpm_package_release }}.{{ rke2_rpm_arch }}
 
 - name: Assert bundled Traefik NodePorts are configured
   ansible.builtin.assert:
@@ -614,6 +637,170 @@
     - platform_ingress_controller == 'traefik'
     - inventory_hostname == rke2_bootstrap_host
 
+- name: Download the RKE2 RPM signing key
+  ansible.builtin.get_url:
+    url: "{{ rke2_rpm_gpg_key_url }}"
+    dest: "{{ rke2_rpm_gpg_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ rke2_rpm_gpg_key_sha256 }}"
+  when: not ansible_check_mode
+
+- name: Import the verified RKE2 RPM signing key
+  ansible.builtin.rpm_key:
+    key: "{{ rke2_rpm_gpg_key_path }}"
+    fingerprint:
+      - "{{ rke2_rpm_gpg_key_fingerprint }}"
+    state: present
+  when: not ansible_check_mode
+
+- name: Configure the disabled RKE2 common RPM repository
+  ansible.builtin.yum_repository:
+    name: "{{ rke2_rpm_common_repository_id }}"
+    description: Rancher RKE2 Common
+    file: "{{ rke2_rpm_repository_file }}"
+    baseurl: "{{ rke2_rpm_common_repository_url }}"
+    enabled: false
+    gpgcheck: true
+    repo_gpgcheck: true
+    gpgkey: "file://{{ rke2_rpm_gpg_key_path }}"
+
+- name: Configure the disabled RKE2 version RPM repository
+  ansible.builtin.yum_repository:
+    name: "{{ rke2_rpm_version_repository_id }}"
+    description: Rancher RKE2 {{ rke2_rpm_version }}
+    file: "{{ rke2_rpm_repository_file }}"
+    baseurl: "{{ rke2_rpm_version_repository_url }}"
+    enabled: false
+    gpgcheck: true
+    repo_gpgcheck: true
+    gpgkey: "file://{{ rke2_rpm_gpg_key_path }}"
+
+- name: Install exact native RKE2 RPM packages
+  ansible.builtin.dnf:
+    name:
+      - "{{ rke2_rpm_selinux_package_nevra }}"
+      - "{{ rke2_rpm_node_package_nevra }}"
+    state: present
+    enablerepo:
+      - "{{ rke2_rpm_common_repository_id }}"
+      - "{{ rke2_rpm_version_repository_id }}"
+  when: not ansible_check_mode
+
+- name: Read the installed RKE2 node package identity
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - --query
+      - --queryformat=%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}
+      - "rke2-{{ rke2_node_role }}"
+  register: rke2_installed_package
+  check_mode: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require the exact RKE2 node package
+  ansible.builtin.assert:
+    that:
+      - rke2_installed_package.stdout == rke2_rpm_node_package_nevra
+    fail_msg: >-
+      Expected {{ rke2_rpm_node_package_nevra }}, found
+      {{ rke2_installed_package.stdout | default('no installed package', true) }}.
+  when: not ansible_check_mode
+
+- name: Read the installed RKE2 SELinux package identity
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - --query
+      - --queryformat=%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}
+      - rke2-selinux
+  register: rke2_installed_selinux_package
+  check_mode: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require the exact RKE2 SELinux package
+  ansible.builtin.assert:
+    that:
+      - rke2_installed_selinux_package.stdout == rke2_rpm_selinux_package_nevra
+    fail_msg: >-
+      Expected {{ rke2_rpm_selinux_package_nevra }}, found
+      {{ rke2_installed_selinux_package.stdout | default('no installed package', true) }}.
+  when: not ansible_check_mode
+
+- name: Read the installed RKE2 version
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_binary_path }}"
+      - --version
+  register: rke2_installed_version
+  check_mode: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Require the exact RKE2 version
+  ansible.builtin.assert:
+    that:
+      - rke2_installed_version.stdout is search('^rke2 version ' ~ (rke2_version | regex_escape) ~ ' ')
+    fail_msg: >-
+      Expected {{ rke2_version }}, found
+      {{ rke2_installed_version.stdout | default('no installed RKE2 binary', true) }}.
+  when: not ansible_check_mode
+
+- name: Check the existing RKE2 configuration directory
+  ansible.builtin.stat:
+    path: "{{ rke2_config_dir }}"
+  register: rke2_config_dir_stat
+
+- name: Check the existing RKE2 server manifest directory
+  ansible.builtin.stat:
+    path: "{{ rke2_server_manifest_dir }}"
+  register: rke2_server_manifest_dir_stat
+  when: rke2_node_role == 'server'
+
+- name: Validate fresh-node RKE2 templates in check mode
+  ansible.builtin.assert:
+    that:
+      - (lookup('ansible.builtin.template', 'config.yaml.j2') | from_yaml) is mapping
+      - >-
+        rke2_registry_mirrors | length == 0
+        and rke2_registry_configs | length == 0
+        or (lookup('ansible.builtin.template', 'registries.yaml.j2') | from_yaml) is mapping
+    fail_msg: Fresh-node RKE2 configuration templates did not render as YAML mappings.
+  no_log: true
+  when:
+    - ansible_check_mode
+    - not rke2_config_dir_stat.stat.exists
+
+- name: Validate fresh-node Traefik template in check mode
+  ansible.builtin.assert:
+    that:
+      - >-
+        (lookup('ansible.builtin.template', 'rke2-traefik-helmchartconfig.yaml.j2')
+        | from_yaml) is mapping
+    fail_msg: Fresh-node Traefik configuration did not render as a YAML mapping.
+  when:
+    - ansible_check_mode
+    - rke2_node_role == 'server'
+    - inventory_hostname == rke2_bootstrap_host
+    - platform_ingress_controller == 'traefik'
+    - not rke2_server_manifest_dir_stat.stat.exists
+
+- name: Report fresh-node RKE2 bootstrap changes in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Bootstrap will install {{ rke2_rpm_node_package_nevra }} and
+      {{ rke2_rpm_selinux_package_nevra }}, create {{ rke2_config_dir }}, and
+      manage the cluster token, RKE2 configuration, optional registry trust,
+      and selected ingress configuration. Child-file diffs are unavailable
+      until their parent directories exist on the managed node.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - not rke2_config_dir_stat.stat.exists
+
 - name: Ensure RKE2 configuration directory exists
   ansible.builtin.file:
     path: "{{ rke2_config_dir }}"
@@ -641,6 +828,7 @@
   when:
     - platform_ingress_controller == 'traefik'
     - inventory_hostname == rke2_bootstrap_host
+    - not ansible_check_mode or rke2_server_manifest_dir_stat.stat.exists
 
 - name: Remove bundled Traefik configuration when Kong is selected
   ansible.builtin.file:
@@ -659,6 +847,7 @@
     mode: "0600"
   no_log: true
   notify: Restart RKE2
+  when: not ansible_check_mode or rke2_config_dir_stat.stat.exists
 
 - name: Copy RKE2 registry CA certificate
   ansible.builtin.copy:
@@ -668,7 +857,9 @@
     group: root
     mode: "0644"
   notify: Restart RKE2
-  when: rke2_registry_ca_src | length > 0
+  when:
+    - rke2_registry_ca_src | length > 0
+    - not ansible_check_mode or rke2_config_dir_stat.stat.exists
 
 - name: Write RKE2 configuration
   ansible.builtin.template:
@@ -678,6 +869,7 @@
     group: root
     mode: "0600"
   notify: Restart RKE2
+  when: not ansible_check_mode or rke2_config_dir_stat.stat.exists
 
 - name: Write RKE2 registries configuration
   ansible.builtin.template:
@@ -687,7 +879,9 @@
     group: root
     mode: "0644"
   notify: Restart RKE2
-  when: rke2_registry_mirrors | length > 0 or rke2_registry_configs | length > 0
+  when:
+    - rke2_registry_mirrors | length > 0 or rke2_registry_configs | length > 0
+    - not ansible_check_mode or rke2_config_dir_stat.stat.exists
 
 - name: Remove RKE2 registries configuration when unused
   ansible.builtin.file:
@@ -695,56 +889,6 @@
     state: absent
   notify: Restart RKE2
   when: rke2_registry_mirrors | length == 0 and rke2_registry_configs | length == 0
-
-- name: Check installed RKE2 version
-  ansible.builtin.command:
-    argv:
-      - "{{ rke2_binary_path }}"
-      - --version
-  register: rke2_installed_version
-  changed_when: false
-  when: rke2_binary_stat.stat.exists
-
-- name: Download RKE2 install script
-  ansible.builtin.get_url:
-    url: "{{ rke2_install_script_url }}"
-    dest: "{{ rke2_install_script_path }}"
-    owner: root
-    group: root
-    mode: "0755"
-  when: not ansible_check_mode
-
-- name: Install RKE2
-  ansible.builtin.command:
-    argv:
-      - /bin/sh
-      - "{{ rke2_install_script_path }}"
-  environment:
-    INSTALL_RKE2_TYPE: "{{ rke2_node_role }}"
-    INSTALL_RKE2_CHANNEL: "{{ rke2_channel }}"
-    INSTALL_RKE2_VERSION: "{{ rke2_version }}"
-  changed_when: true
-  when:
-    - not ansible_check_mode
-    - >-
-      not rke2_binary_stat.stat.exists or
-      (rke2_version | length > 0 and not (rke2_installed_version.stdout is search('^rke2 version ' ~ (rke2_version | regex_escape) ~ ' ')))
-
-- name: Manage RKE2 service
-  ansible.builtin.systemd_service:
-    name: "{{ rke2_service_name }}"
-    enabled: "{{ rke2_service_enabled }}"
-    state: "{{ rke2_service_state }}"
-  when: not ansible_check_mode
-
-- name: Wait for RKE2 supervisor on server nodes
-  ansible.builtin.wait_for:
-    host: "{{ rke2_node_ip }}"
-    port: 9345
-    timeout: "{{ rke2_wait_for_supervisor_timeout }}"
-  when:
-    - not ansible_check_mode
-    - rke2_node_role == 'server'
 
 - name: Manage RKE2 cluster firewalld rich rules
   ansible.posix.firewalld:
@@ -772,3 +916,87 @@
     - rke2_node_role == 'server'
     - rke2_firewalld_api_sources | length > 0
     - firewalld_dependencies_ready | default(true)
+
+- name: Manage RKE2 service
+  ansible.builtin.systemd_service:
+    name: "{{ rke2_service_name }}"
+    enabled: "{{ rke2_service_enabled }}"
+    state: "{{ rke2_service_state }}"
+  when: not ansible_check_mode
+
+- name: Apply pending RKE2 restart before readiness checks
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the local RKE2 service after convergence
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ rke2_service_name }}"
+  register: rke2_converged_service_active
+  check_mode: false
+  changed_when: false
+  retries: 60
+  delay: 5
+  until: rke2_converged_service_active.stdout == 'active'
+  when:
+    - not ansible_check_mode
+    - rke2_service_enabled | bool
+    - rke2_service_state == 'started'
+
+- name: Wait for RKE2 supervisor on server nodes
+  ansible.builtin.wait_for:
+    host: "{{ rke2_node_ip }}"
+    port: 9345
+    timeout: "{{ rke2_wait_for_supervisor_timeout }}"
+  when:
+    - not ansible_check_mode
+    - rke2_node_role == 'server'
+    - rke2_service_enabled | bool
+    - rke2_service_state == 'started'
+
+- name: Wait for the local RKE2 server API after convergence
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - --raw=/readyz
+  register: rke2_converged_api_ready
+  check_mode: false
+  changed_when: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_converged_api_ready.rc == 0
+    - rke2_converged_api_ready.stdout == 'ok'
+  when:
+    - not ansible_check_mode
+    - rke2_node_role == 'server'
+    - rke2_service_enabled | bool
+    - rke2_service_state == 'started'
+
+- name: Wait for the converged RKE2 node to become Ready
+  ansible.builtin.command:
+    argv:
+      - "{{ rke2_kubectl }}"
+      - --kubeconfig
+      - "{{ rke2_kubeconfig }}"
+      - get
+      - node
+      - "{{ rke2_node_name }}"
+      - -o=jsonpath={.status.conditions[?(@.type=="Ready")].status}
+  delegate_to: "{{ rke2_bootstrap_host }}"
+  register: rke2_converged_node_ready
+  check_mode: false
+  changed_when: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_converged_node_ready.rc == 0
+    - rke2_converged_node_ready.stdout == 'True'
+  when:
+    - not ansible_check_mode
+    - rke2_service_enabled | bool
+    - rke2_service_state == 'started'

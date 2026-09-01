@@ -1,0 +1,56 @@
+---
+- name: Require clean RKE2 bootstrap nodes
+  hosts: rke2_cluster
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Check for existing RKE2 packages
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - --query
+          - "{{ item }}"
+      loop:
+        - rke2-server
+        - rke2-agent
+        - rke2-common
+        - rke2-selinux
+      register: rke2_bootstrap_package_checks
+      changed_when: false
+      failed_when: false
+
+    - name: Check for existing RKE2 state
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/rancher/rke2
+        - /var/lib/rancher/rke2
+        - /usr/bin/rke2
+        - /usr/local/bin/rke2
+        - /opt/rke2
+        - /etc/systemd/system/rke2-server.service
+        - /etc/systemd/system/rke2-agent.service
+      register: rke2_bootstrap_state_checks
+
+    - name: Require pristine RKE2 nodes
+      ansible.builtin.assert:
+        that:
+          - >-
+            rke2_bootstrap_package_checks.results
+            | map(attribute='rc')
+            | difference([0, 1])
+            | length == 0
+          - >-
+            rke2_bootstrap_package_checks.results
+            | selectattr('rc', 'equalto', 0)
+            | list
+            | length == 0
+          - >-
+            rke2_bootstrap_state_checks.results
+            | selectattr('stat.exists', 'equalto', true)
+            | list
+            | length == 0
+        fail_msg: >-
+          RKE2 bootstrap accepts only recreated clean nodes without RKE2
+          packages, configuration, state, or binaries. Use the guarded
+          convergence workflow for an existing cluster.

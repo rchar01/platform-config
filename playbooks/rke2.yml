@@ -3,6 +3,7 @@
   hosts: rke2_servers
   become: true
   serial: 1
+  any_errors_fatal: true
   roles:
     - firewalld
     - rke2
@@ -11,6 +12,7 @@
   hosts: rke2_agents
   become: true
   serial: 1
+  any_errors_fatal: true
   roles:
     - firewalld
     - rke2

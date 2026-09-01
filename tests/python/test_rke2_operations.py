@@ -1,0 +1,383 @@
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+
+from conftest import CommandRunner
+
+
+def _named(items: list[dict], name: str) -> dict:
+    return next(item for item in items if item.get("name") == name)
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_rke2_playbook_is_serial_and_fatal(repo_root: Path) -> None:
+    plays = yaml.safe_load((repo_root / "playbooks/rke2.yml").read_text())
+
+    assert [play["hosts"] for play in plays] == ["rke2_servers", "rke2_agents"]
+    assert all(play["serial"] == 1 for play in plays)
+    assert all(play["any_errors_fatal"] is True for play in plays)
+
+
+def test_rke2_bootstrap_requires_clean_nodes(repo_root: Path) -> None:
+    plays = yaml.safe_load(
+        (repo_root / "playbooks/rke2-bootstrap-preflight.yml").read_text()
+    )
+    play = plays[0]
+    tasks = play["tasks"]
+
+    assert play["hosts"] == "rke2_cluster"
+    assert play["any_errors_fatal"] is True
+    assert _named(tasks, "Check for existing RKE2 packages")["loop"] == [
+        "rke2-server",
+        "rke2-agent",
+        "rke2-common",
+        "rke2-selinux",
+    ]
+    state_paths = _named(tasks, "Check for existing RKE2 state")["loop"]
+    assert "/etc/rancher/rke2" in state_paths
+    assert "/var/lib/rancher/rke2" in state_paths
+    assert "/usr/bin/rke2" in state_paths
+    assert "/usr/local/bin/rke2" in state_paths
+    assert "/opt/rke2" in state_paths
+    pristine = _named(tasks, "Require pristine RKE2 nodes")
+    assertions = pristine["ansible.builtin.assert"]["that"]
+    assert any("difference([0, 1])" in assertion for assertion in assertions)
+
+
+def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
+    defaults = yaml.safe_load(
+        (repo_root / "roles/rke2/defaults/main.yml").read_text()
+    )
+    tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    preflight = _named(tasks, "Assert RKE2 inputs are configured")
+    key_download = _named(tasks, "Download the RKE2 RPM signing key")
+    key_import = _named(tasks, "Import the verified RKE2 RPM signing key")
+    repositories = [
+        _named(tasks, "Configure the disabled RKE2 common RPM repository"),
+        _named(tasks, "Configure the disabled RKE2 version RPM repository"),
+    ]
+    install = _named(tasks, "Install exact native RKE2 RPM packages")
+    names = [task.get("name") for task in tasks]
+
+    assert defaults["rke2_rpm_common_repository_url"] == ""
+    assert defaults["rke2_rpm_version_repository_url"] == ""
+    assert defaults["rke2_rpm_package_release"] == ""
+    assert defaults["rke2_rpm_selinux_package_nevra"] == ""
+    assert defaults["rke2_rpm_gpg_key_url"] == ""
+    assert defaults["rke2_rpm_gpg_key_sha256"] == ""
+    assert defaults["rke2_rpm_gpg_key_fingerprint"] == ""
+
+    assertions = preflight["ansible.builtin.assert"]["that"]
+    assert "rke2_rpm_common_repository_url is match('^https://.+$')" in assertions
+    assert "rke2_rpm_version_repository_url is match('^https://.+$')" in assertions
+    assert "ansible_distribution_major_version == rke2_rpm_el_major" in assertions
+    assert "ansible_architecture == rke2_rpm_arch" in assertions
+    assert "rke2_rpm_gpg_key_sha256 is match('^[0-9a-f]{64}$')" in assertions
+    assert (
+        "rke2_rpm_gpg_key_fingerprint is match('^[0-9A-F]{40}$')" in assertions
+    )
+
+    assert key_download["ansible.builtin.get_url"]["checksum"] == (
+        "sha256:{{ rke2_rpm_gpg_key_sha256 }}"
+    )
+    assert key_import["ansible.builtin.rpm_key"]["fingerprint"] == [
+        "{{ rke2_rpm_gpg_key_fingerprint }}"
+    ]
+    for repository in repositories:
+        settings = repository["ansible.builtin.yum_repository"]
+        assert settings["enabled"] is False
+        assert settings["gpgcheck"] is True
+        assert settings["repo_gpgcheck"] is True
+        assert settings["gpgkey"] == "file://{{ rke2_rpm_gpg_key_path }}"
+
+    assert install["ansible.builtin.dnf"]["name"] == [
+        "{{ rke2_rpm_selinux_package_nevra }}",
+        "{{ rke2_rpm_node_package_nevra }}",
+    ]
+    assert install["ansible.builtin.dnf"]["enablerepo"] == [
+        "{{ rke2_rpm_common_repository_id }}",
+        "{{ rke2_rpm_version_repository_id }}",
+    ]
+    assert "Download RKE2 install script" not in names
+    assert "Install RKE2" not in names
+
+
+def test_operational_image_pins_ansible_toolchain(repo_root: Path) -> None:
+    containerfile = (repo_root / "Containerfile.ci").read_text(encoding="utf-8")
+    requirements = (repo_root / "requirements-ci.txt").read_text(encoding="utf-8")
+    collections = yaml.safe_load((repo_root / "requirements.yml").read_text())
+
+    assert requirements == "ansible-core==2.20.0\n"
+    assert "ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections" in containerfile
+    assert "COPY requirements-ci.txt requirements.yml" in containerfile
+    assert "ansible-galaxy collection install" in containerfile
+    assert collections == {
+        "collections": [
+            {"name": "ansible.posix", "version": "2.2.2"},
+            {"name": "community.general", "version": "12.6.0"},
+        ]
+    }
+
+
+def test_rke2_flushes_restart_before_readiness(repo_root: Path) -> None:
+    tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    names = [task.get("name") for task in tasks]
+    ordered = [
+        "Manage RKE2 cluster firewalld rich rules",
+        "Manage RKE2 API firewalld rich rules",
+        "Manage RKE2 service",
+        "Apply pending RKE2 restart before readiness checks",
+        "Wait for the local RKE2 service after convergence",
+        "Wait for RKE2 supervisor on server nodes",
+        "Wait for the local RKE2 server API after convergence",
+        "Wait for the converged RKE2 node to become Ready",
+    ]
+
+    assert [names.index(name) for name in ordered] == sorted(
+        names.index(name) for name in ordered
+    )
+    assert _named(tasks, "Apply pending RKE2 restart before readiness checks")[
+        "ansible.builtin.meta"
+    ] == "flush_handlers"
+
+    service = _named(tasks, "Wait for the local RKE2 service after convergence")
+    assert "{{ rke2_service_name }}" in service["ansible.builtin.command"]["argv"]
+    assert service["changed_when"] is False
+
+    api = _named(tasks, "Wait for the local RKE2 server API after convergence")
+    assert "--raw=/readyz" in api["ansible.builtin.command"]["argv"]
+    assert "rke2_node_role == 'server'" in api["when"]
+
+    node = _named(tasks, "Wait for the converged RKE2 node to become Ready")
+    assert node["delegate_to"] == "{{ rke2_bootstrap_host }}"
+    assert "{{ rke2_node_name }}" in node["ansible.builtin.command"]["argv"]
+    assert node["changed_when"] is False
+    assert "firewalld_dependencies_ready | default(true)" not in node["when"]
+
+    api_firewall = _named(tasks, "Manage RKE2 API firewalld rich rules")
+    assert "firewalld_dependencies_ready | default(true)" in api_firewall["when"]
+
+
+def test_fresh_rke2_check_mode_skips_children_of_simulated_directories(
+    repo_root: Path,
+) -> None:
+    tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    config_condition = "not ansible_check_mode or rke2_config_dir_stat.stat.exists"
+    manifest_condition = (
+        "not ansible_check_mode or rke2_server_manifest_dir_stat.stat.exists"
+    )
+
+    for name in (
+        "Copy RKE2 cluster token",
+        "Write RKE2 configuration",
+        "Write RKE2 registries configuration",
+    ):
+        when = _named(tasks, name)["when"]
+        conditions = when if isinstance(when, list) else [when]
+        assert config_condition in conditions
+    traefik = _named(tasks, "Configure bundled Traefik NodePorts on the bootstrap server")
+    assert manifest_condition in traefik["when"]
+    template_validation = _named(
+        tasks, "Validate fresh-node RKE2 templates in check mode"
+    )
+    assert template_validation["no_log"] is True
+    assert "ansible_check_mode" in template_validation["when"]
+    report = _named(tasks, "Report fresh-node RKE2 bootstrap changes in check mode")
+    assert report["changed_when"] is True
+    assert "rke2_rpm_node_package_nevra" in report["ansible.builtin.debug"]["msg"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [],
+        ["unknown"],
+        ["rke2-plan"],
+        ["rke2-plan", "--inventory", "relative.yml", "--controller-vars", "/tmp/x"],
+        ["rke2-plan", "--inventory", "/tmp/inventory", "--limit", "host"],
+    ],
+)
+def test_operation_launcher_rejects_unsafe_arguments(
+    repo_root: Path, command_runner: CommandRunner, argv: list[str]
+) -> None:
+    command_runner.run(
+        [repo_root / "scripts/platform-config-operation", *argv]
+    ).assert_failure()
+
+
+@pytest.mark.parametrize(
+    ("operation", "commands"),
+    [
+        (
+            "rke2-plan",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "rke2_cluster", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--syntax-check", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "rke2-bootstrap",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "rke2_cluster", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-bootstrap-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "rke2-deploy",
+            [
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "openbao-status",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "openbao", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}"],
+            ],
+        ),
+    ],
+)
+def test_operation_launcher_uses_fixed_commands(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    operation: str,
+    commands: list[list[str]],
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    log = isolated_test_dir / "commands.jsonl"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    extra_vars.write_text("---\n{}\n", encoding="utf-8")
+
+    fake_bin = isolated_test_dir / "bin"
+    fake_bin.mkdir()
+    fake_content = (
+        """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+with pathlib.Path(os.environ["PLATFORM_CONFIG_OPERATION_LOG"]).open("a") as stream:
+    stream.write(json.dumps([pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]) + "\\n")
+"""
+    )
+    for name in ("ansible", "ansible-inventory", "ansible-playbook"):
+        _write_executable(fake_bin / name, fake_content)
+
+    environment = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "PLATFORM_CONFIG_OPERATION_LOG": str(log),
+    }
+    command_runner.run(
+        [
+            repo_root / "scripts/platform-config-operation",
+            operation,
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        environment=environment,
+    ).assert_success()
+
+    observed = [json.loads(line) for line in log.read_text().splitlines()]
+    expected = [
+        [
+            value.format(inventory=inventory, vars=extra_vars, repo=repo_root)
+            for value in command
+        ]
+        for command in commands
+    ]
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    ("signal_number", "expected_status"),
+    [
+        (signal.SIGHUP, 129),
+        (signal.SIGINT, 130),
+        (signal.SIGTERM, 143),
+    ],
+)
+def test_operation_launcher_stops_active_child_on_signal(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    signal_number: signal.Signals,
+    expected_status: int,
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    fake_bin = isolated_test_dir / "bin"
+    started = isolated_test_dir / "started"
+    terminated = isolated_test_dir / "terminated"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ansible-inventory",
+        """#!/bin/sh
+set -eu
+printf started >"$PLATFORM_CONFIG_STARTED"
+trap 'printf terminated >"$PLATFORM_CONFIG_TERMINATED"; exit 0' TERM
+while :; do sleep 1; done
+""",
+    )
+    for name in ("ansible", "ansible-playbook"):
+        _write_executable(fake_bin / name, "#!/bin/sh\nexit 99\n")
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "PLATFORM_CONFIG_STARTED": str(started),
+            "PLATFORM_CONFIG_TERMINATED": str(terminated),
+        }
+    )
+    process = subprocess.Popen(
+        [
+            repo_root / "scripts/platform-config-operation",
+            "rke2-plan",
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        cwd=repo_root,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started.exists()
+        os.kill(process.pid, signal_number)
+        assert process.wait(timeout=5) == expected_status
+        assert terminated.read_text(encoding="utf-8") == "terminated"
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)

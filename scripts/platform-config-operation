@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: platform-config-operation {rke2-plan|rke2-bootstrap|rke2-deploy|openbao-status} --inventory PATH --controller-vars PATH' >&2
+}
+
+fail() {
+  printf 'platform-config-operation: %s\n' "$1" >&2
+  exit 2
+}
+
+require_private_file() {
+  local name=$1
+  local path=$2
+
+  [[ $path == /* ]] || fail "$name must be an absolute path"
+  [[ -f $path && ! -L $path ]] || fail "$name must be a regular non-symlink file"
+}
+
+[[ $# -gt 0 ]] || {
+  usage
+  exit 2
+}
+
+operation=$1
+shift
+case "$operation" in
+  rke2-plan | rke2-bootstrap | rke2-deploy | openbao-status) ;;
+  *) fail "unsupported operation: $operation" ;;
+esac
+
+inventory=""
+controller_vars=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --inventory)
+      [[ $# -ge 2 && -z $inventory ]] || fail "--inventory must be provided exactly once"
+      inventory=$2
+      shift 2
+      ;;
+    --controller-vars)
+      [[ $# -ge 2 && -z $controller_vars ]] || fail "--controller-vars must be provided exactly once"
+      controller_vars=$2
+      shift 2
+      ;;
+    *) fail "unsupported argument: $1" ;;
+  esac
+done
+
+[[ -n $inventory ]] || fail "--inventory is required"
+[[ -n $controller_vars ]] || fail "--controller-vars is required"
+require_private_file inventory "$inventory"
+require_private_file controller-vars "$controller_vars"
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
+
+extra_vars=(--extra-vars "@$controller_vars")
+active_pid=
+
+forward_signal() {
+  local exit_status=$1
+
+  trap - HUP INT TERM
+  if [[ -n $active_pid ]]; then
+    kill -s TERM "$active_pid" 2>/dev/null || true
+    wait "$active_pid" 2>/dev/null || true
+  fi
+  exit "$exit_status"
+}
+
+run_command() {
+  local status
+
+  "$@" &
+  active_pid=$!
+  if wait "$active_pid"; then
+    status=0
+  else
+    status=$?
+  fi
+  active_pid=
+  return "$status"
+}
+
+trap 'forward_signal 129' HUP
+trap 'forward_signal 130' INT
+trap 'forward_signal 143' TERM
+
+inventory_check() {
+  run_command ansible-inventory -i "$inventory" --list "${extra_vars[@]}"
+}
+
+ping_group() {
+  local group=$1
+
+  run_command ansible -i "$inventory" "$group" \
+    -m ansible.builtin.ping \
+    "${extra_vars[@]}"
+}
+
+run_playbook() {
+  local playbook=$1
+  local limit=$2
+  shift 2
+
+  run_command ansible-playbook -i "$inventory" "$repo_root/$playbook" \
+    --limit "$limit" \
+    "$@" \
+    "${extra_vars[@]}"
+}
+
+case "$operation" in
+  rke2-plan)
+    inventory_check
+    ping_group rke2_cluster
+    run_playbook playbooks/rke2.yml rke2_cluster --syntax-check
+    run_playbook playbooks/rke2.yml rke2_cluster --check --diff
+    ;;
+  rke2-bootstrap)
+    inventory_check
+    ping_group rke2_cluster
+    run_playbook playbooks/rke2-bootstrap-preflight.yml rke2_cluster
+    run_playbook playbooks/rke2.yml rke2_cluster
+    run_playbook playbooks/rke2-kube-vip.yml rke2_servers
+    run_playbook playbooks/rke2-smoke.yml rke2_cluster
+    run_playbook playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    ;;
+  rke2-deploy)
+    run_playbook playbooks/rke2-smoke.yml rke2_cluster
+    run_playbook playbooks/rke2.yml rke2_cluster
+    run_playbook playbooks/rke2-smoke.yml rke2_cluster
+    ;;
+  openbao-status)
+    inventory_check
+    ping_group openbao
+    run_playbook playbooks/maintenance/openbao-status.yml openbao
+    ;;
+esac
