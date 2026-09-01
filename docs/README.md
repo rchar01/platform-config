@@ -13,8 +13,9 @@ and other secrets belong outside Git.
 
 - [Operator Runbook](operator-runbook.md): End-to-end prerequisites, environment
   bring-up order, service application, smoke tests, and day-2 operations.
-- [Platform Workflow](workflow.md): Repository responsibilities and the boundary
-  between desired state, migrations, maintenance, and rebuilds.
+- [Platform Workflow](workflow.md): Repository responsibilities, managed-host SSH
+  handoff, and the boundary between desired state, migrations, maintenance, and
+  rebuilds.
 - [Private Workflow](private-workflow.md): Connect public Ansible code to private
   inventories, environment files, access policies, and outside-Git secrets.
 

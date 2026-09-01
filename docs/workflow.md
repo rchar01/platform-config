@@ -13,6 +13,53 @@ OpenTofu state, Proxmox API tokens, VM CPU/RAM/disk lifecycle, and template imag
 
 The handoff from `platform-infra` to `platform-config` is inventory-shaped data: hostnames, IP addresses, groups, and variables that Ansible can consume from `../platform-private/config/`.
 
+## Managed-Host SSH Handoff
+
+Ansible can configure a new VM only after the VM already provides a working SSH
+and Python boundary. `playbooks/bootstrap.yml` is repeatable desired-state
+automation; it is not a replacement for initial account and access preparation.
+
+Use this cross-repository workflow for each managed VM:
+
+1. Generate or select one purpose-specific Ed25519 keypair for the VM with
+   [`platform-ssh-init`](https://codeberg.org/rch/platform-tools/src/branch/main/docs/ssh-identity-helper.md).
+   Use an unencrypted key only when unattended automation such as a protected
+   GitLab job requires it. Keep the private key outside Git.
+2. Have `platform-infra`, cloud-init, or an approved target-local provisioning
+   process install only that VM's public key for the intended automation
+   account. The target must also provide an active SSH server, Python 3, and
+   passwordless non-interactive sudo when playbooks require become access. For
+   the fixed Rocky 10.0 `rocky`/`access_ssh` boundary, transfer
+   `scripts/rocky-ansible-host-prepare` and the per-VM public key through the
+   authenticated console or provisioning channel, then run its explicit
+   `apply` and `check` operations as root.
+3. Authenticate the VM's SSH host public key through the console,
+   infrastructure authority, or another independent channel. `ssh-keyscan` can
+   collect a candidate but cannot authenticate it.
+4. Put the real hostname, management address, SSH user, groups, and local
+   private-key path in `platform-private`. Keep the private key and the
+   authenticated `known_hosts` file outside Git.
+5. Verify strict public-key SSH, Python discovery, and `sudo -n` from the
+   controller before running a focused Ansible ping or playbook check.
+6. For GitLab inventory jobs, give
+   [`platform-ssh-ci-bundle`](https://codeberg.org/rch/platform-tools/src/branch/main/docs/ssh-ci-bundle.md)
+   the explicit environment, per-host private-key paths, SSH targets, and
+   independently authenticated host public keys. It produces the payloads for
+   `PLATFORM_CI_SSH_KEY_BUNDLE` and `PLATFORM_CI_SSH_KNOWN_HOSTS`; it does not
+   create keys, scan hosts, authenticate trust, contact GitLab, or upload
+   variables.
+7. Upload both payloads as protected, environment-scoped GitLab File variables
+   with expansion disabled. The pinned `ansible-inventory-ping` component,
+   documented at `docs/ansible-inventory-ping.md` in the separate `platform-ci`
+   repository, resolves the approved inventory scope and stages the matching
+   key for each selected host.
+
+Never copy an SSH private key to a managed VM. Passing a public key to the VM
+and later supplying its matching private key to an authorized controller or
+protected CI job are separate operations with separate custody boundaries.
+Rotate one VM's key independently rather than replacing an environment-wide
+shared host credential.
+
 For operator commands, source the matching private env file before running Ansible:
 
 ```bash

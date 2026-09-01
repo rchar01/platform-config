@@ -185,6 +185,44 @@ ansible_ssh_private_key_file: ~/.ssh/platform-infra-homelab-gitlab-example-cloud
 
 Do not commit private SSH keys or generated public keys to any repository.
 
+For an existing VM whose intended automation account was not created through
+cloud-init, generate a separate per-VM automation key with `platform-ssh-init`.
+Install only its public key through an approved target-local provisioning or
+console workflow; never copy the private key to the VM. Before Ansible runs,
+require the intended account, strict public-key SSH, Python 3, and passwordless
+non-interactive sudo. Authenticate the VM's SSH host public key independently;
+`ssh-keyscan` output alone is not trusted enrollment.
+
+For the fixed Rocky Linux 10.0 `rocky`/`access_ssh` access boundary, use
+`scripts/rocky-ansible-host-prepare`. Transfer the helper and one per-VM `.pub`
+file through the authenticated target-local channel, stage both below `/root`,
+and run `apply` followed by `check`. Both operations require the literal VM
+hostname, the actual controller source address and resolved hostname, the VM
+destination address and SSH port, and an absolute root-controlled public-key
+path. `apply` additionally requires `--confirm <hostname>:rocky`.
+
+The helper is access-only: it does not generate keys, install packages, create
+`access_ssh`, start or configure `sshd`, edit repositories, contact GitLab, or
+run Ansible. It may normalize modes and SELinux labels only after account and
+managed-file content checks pass; conflicting identity, key, sudo, or SSH policy
+stops the workflow. See the private environment runbook for reviewed values and
+the full command sequence.
+
+When protected GitLab inventory jobs need the same per-VM credentials, package
+the existing private keys and authenticated host public keys with
+[`platform-ssh-ci-bundle`](https://codeberg.org/rch/platform-tools/src/branch/main/docs/ssh-ci-bundle.md).
+Upload its `key-bundle.json` and `known_hosts` outputs as the protected,
+environment-scoped `PLATFORM_CI_SSH_KEY_BUNDLE` and
+`PLATFORM_CI_SSH_KNOWN_HOSTS` File variables with expansion disabled. The
+`ansible-inventory-ping` component, documented at
+`docs/ansible-inventory-ping.md` in the separate `platform-ci` repository,
+resolves the selected inventory scope and stages each host's matching key. The
+bundle generator does not create keys, authenticate host keys, contact GitLab,
+or upload variables.
+
+See [Platform Workflow](workflow.md#managed-host-ssh-handoff) for the complete
+repository and custody sequence.
+
 ## Outside-Git Secret Store
 
 Durable configuration secrets belong outside Git under the local platform

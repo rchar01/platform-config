@@ -1,0 +1,670 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import fcntl
+import grp
+import hashlib
+import ipaddress
+import os
+import platform
+import pwd
+import re
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+
+AUTOMATION_USER = "rocky"
+PRIMARY_GROUP = "rocky"
+ACCESS_GROUP = "access_ssh"
+AUTOMATION_HOME = Path("/home/rocky")
+AUTHORIZED_KEYS = AUTOMATION_HOME / ".ssh/authorized_keys"
+AUTHORIZED_KEYS_2 = AUTOMATION_HOME / ".ssh/authorized_keys2"
+SUDOERS_FILE = Path("/etc/sudoers.d/90-platform-ansible-rocky")
+SUDOERS_CONTENT = b"rocky ALL=(ALL) NOPASSWD: ALL\n"
+SSH_HOST_PUBLIC_KEY = Path("/etc/ssh/ssh_host_ed25519_key.pub")
+LOCK_FILE = Path("/run/lock/platform-ansible-host-prepare.lock")
+HOME_STAGING_DIRECTORY = Path("/home/.platform-ansible-host-prepare")
+COMMAND_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+HOSTNAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+REQUIRED_COMMANDS = (
+    "getenforce",
+    "hostnamectl",
+    "matchpathcon",
+    "passwd",
+    "restorecon",
+    "runuser",
+    "sshd",
+    "sudo",
+    "systemctl",
+    "useradd",
+    "usermod",
+    "visudo",
+)
+
+
+class PreparationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Settings:
+    operation: str
+    expected_hostname: str
+    public_key_file: Path
+    controller_address: str
+    controller_hostname: str
+    server_address: str
+    server_port: int
+    confirm: str | None
+
+
+@dataclass(frozen=True)
+class PublicKey:
+    content: bytes
+    fingerprint: str
+
+
+def parse_arguments(argv: list[str]) -> Settings:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Check or prepare the fixed Rocky Ansible access boundary. "
+            "Run target-locally as root."
+        )
+    )
+    parser.add_argument("operation", choices=("check", "apply"))
+    parser.add_argument("--expected-hostname", required=True)
+    parser.add_argument("--public-key-file", required=True, type=Path)
+    parser.add_argument("--controller-address", required=True)
+    parser.add_argument("--controller-hostname", required=True)
+    parser.add_argument("--server-address", required=True)
+    parser.add_argument("--server-port", required=True, type=int)
+    parser.add_argument("--confirm")
+    namespace = parser.parse_args(argv)
+
+    if not HOSTNAME_PATTERN.fullmatch(namespace.expected_hostname):
+        parser.error("--expected-hostname must be one literal hostname")
+    if not HOSTNAME_PATTERN.fullmatch(namespace.controller_hostname):
+        parser.error("--controller-hostname must be one literal hostname")
+    try:
+        ipaddress.ip_address(namespace.controller_address)
+    except ValueError:
+        parser.error("--controller-address must be one literal IP address")
+    try:
+        ipaddress.ip_address(namespace.server_address)
+    except ValueError:
+        parser.error("--server-address must be one literal IP address")
+    if not 1 <= namespace.server_port <= 65535:
+        parser.error("--server-port must be between 1 and 65535")
+    if not namespace.public_key_file.is_absolute():
+        parser.error("--public-key-file must be an absolute path")
+
+    expected_confirmation = f"{namespace.expected_hostname}:{AUTOMATION_USER}"
+    if namespace.operation == "apply" and namespace.confirm != expected_confirmation:
+        parser.error(f"apply requires --confirm {expected_confirmation}")
+    if namespace.operation == "check" and namespace.confirm is not None:
+        parser.error("--confirm is valid only for apply")
+
+    return Settings(
+        operation=namespace.operation,
+        expected_hostname=namespace.expected_hostname,
+        public_key_file=namespace.public_key_file,
+        controller_address=namespace.controller_address,
+        controller_hostname=namespace.controller_hostname,
+        server_address=namespace.server_address,
+        server_port=namespace.server_port,
+        confirm=namespace.confirm,
+    )
+
+
+def ok(message: str) -> None:
+    print(f"[OK] {message}")
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise PreparationError(message)
+
+
+def command_path(name: str) -> str:
+    path = shutil.which(name, path=COMMAND_PATH)
+    if path is None:
+        raise PreparationError(f"required command is unavailable: {name}")
+    return path
+
+
+def run_command(name: str, *arguments: str) -> str:
+    result = subprocess.run(
+        [command_path(name), *arguments],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={"LC_ALL": "C", "PATH": COMMAND_PATH},
+        check=False,
+        close_fds=True,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no detail"
+        raise PreparationError(f"{name} {' '.join(arguments)} failed: {detail}")
+    return result.stdout.strip()
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def validate_root_controlled_ancestors(path: Path) -> None:
+    require(path.is_absolute(), f"path must be absolute: {path}")
+    current = Path("/")
+    for component in path.parts[1:-1]:
+        current /= component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            raise PreparationError(f"path ancestor is absent: {current}") from None
+        require(
+            stat.S_ISDIR(info.st_mode),
+            f"path ancestor is not a directory: {current}",
+        )
+        require(info.st_uid == 0, f"path ancestor is not root-owned: {current}")
+        require(
+            stat.S_IMODE(info.st_mode) & 0o022 == 0,
+            f"path ancestor is writable by group or others: {current}",
+        )
+
+
+def read_regular_file(
+    path: Path,
+    *,
+    expected_uid: int | None = None,
+    max_bytes: int = 16384,
+) -> tuple[bytes, os.stat_result]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise PreparationError(f"cannot open regular file {path}: {error}") from None
+    try:
+        info = os.fstat(descriptor)
+        require(stat.S_ISREG(info.st_mode), f"path is not a regular file: {path}")
+        require(info.st_nlink == 1, f"file must have exactly one link: {path}")
+        if expected_uid is not None:
+            require(info.st_uid == expected_uid, f"file has unexpected owner: {path}")
+        require(
+            stat.S_IMODE(info.st_mode) & 0o022 == 0,
+            f"file must not be writable by group or others: {path}",
+        )
+        data = os.read(descriptor, max_bytes + 1)
+        require(len(data) <= max_bytes, f"file is too large: {path}")
+        return data, info
+    finally:
+        os.close(descriptor)
+
+
+def parse_ed25519_public_key(data: bytes) -> PublicKey:
+    try:
+        text = data.decode("ascii")
+    except UnicodeError:
+        raise PreparationError("public key must be ASCII") from None
+    require("\r" not in text, "public key must use Unix line endings")
+    require(text.endswith("\n"), "public key must end with one newline")
+    lines = text.splitlines()
+    require(len(lines) == 1 and lines[0] == lines[0].strip(), "public key must contain exactly one nonblank line")
+    fields = lines[0].split()
+    require(len(fields) >= 2 and fields[0] == "ssh-ed25519", "public key must be Ed25519 without key options")
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+    except (ValueError, binascii.Error):
+        raise PreparationError("public key has invalid base64") from None
+
+    def read_field(offset: int) -> tuple[bytes, int]:
+        require(offset + 4 <= len(blob), "public key has invalid wire encoding")
+        length = struct.unpack(">I", blob[offset : offset + 4])[0]
+        start = offset + 4
+        end = start + length
+        require(end <= len(blob), "public key has invalid wire encoding")
+        return blob[start:end], end
+
+    key_type, offset = read_field(0)
+    key_bytes, offset = read_field(offset)
+    require(key_type == b"ssh-ed25519", "public key wire type is not Ed25519")
+    require(len(key_bytes) == 32 and offset == len(blob), "public key has invalid Ed25519 length")
+    fingerprint = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+    return PublicKey(content=data, fingerprint=f"SHA256:{fingerprint}")
+
+
+def load_public_key(path: Path, *, expected_uid: int = 0) -> PublicKey:
+    validate_root_controlled_ancestors(path)
+    data, _ = read_regular_file(path, expected_uid=expected_uid)
+    return parse_ed25519_public_key(data)
+
+
+def check_base(
+    settings: Settings,
+    public_key: PublicKey,
+    *,
+    check_effective_ssh: bool = True,
+) -> None:
+    require(os.geteuid() == 0, "run this helper as root")
+    for name in REQUIRED_COMMANDS:
+        command_path(name)
+    ok("required commands are available")
+
+    hostname = run_command("hostnamectl", "--static")
+    require(hostname == settings.expected_hostname, f"hostname is {hostname!r}, expected {settings.expected_hostname!r}")
+    ok(f"hostname is {settings.expected_hostname}")
+
+    release = platform.freedesktop_os_release()
+    require(release.get("ID") == "rocky", "host is not Rocky Linux")
+    require(release.get("VERSION_ID") == "10.0", "host is not Rocky Linux 10.0")
+    require(platform.machine() == "x86_64", "host architecture is not x86_64")
+    require(sys.version_info >= (3, 12), "Python 3.12 or newer is required")
+    require(run_command("getenforce") == "Enforcing", "SELinux must be enforcing")
+    ok("Rocky, architecture, Python, and SELinux match the accepted baseline")
+
+    try:
+        grp.getgrnam(ACCESS_GROUP)
+    except KeyError:
+        raise PreparationError(f"required access group is absent: {ACCESS_GROUP}") from None
+    ok(f"access group exists: {ACCESS_GROUP}")
+
+    run_command("sshd", "-t")
+    run_command("systemctl", "is-enabled", "sshd")
+    run_command("systemctl", "is-active", "sshd")
+    run_command("visudo", "-cf", "/etc/sudoers")
+    ok("SSH service and sudo configuration pass native validation")
+
+    if check_effective_ssh:
+        check_effective_ssh_policy(settings)
+
+    host_key = load_public_key(SSH_HOST_PUBLIC_KEY)
+    ok(f"SSH host Ed25519 key fingerprint is {host_key.fingerprint}")
+    ok(f"supplied automation key fingerprint is {public_key.fingerprint}")
+
+
+def account() -> pwd.struct_passwd:
+    try:
+        return pwd.getpwnam(AUTOMATION_USER)
+    except KeyError:
+        raise PreparationError(f"automation account is absent: {AUTOMATION_USER}") from None
+
+
+def account_groups(user: pwd.struct_passwd) -> set[int]:
+    return set(os.getgrouplist(user.pw_name, user.pw_gid))
+
+
+def check_account_identity(user: pwd.struct_passwd) -> grp.struct_group:
+    require(user.pw_uid >= 1000, "automation account UID must be at least 1000")
+    require(user.pw_dir == os.fspath(AUTOMATION_HOME), "automation account home is unexpected")
+    require(user.pw_shell == "/bin/bash", "automation account shell must be /bin/bash")
+    try:
+        primary = grp.getgrgid(user.pw_gid)
+    except KeyError:
+        raise PreparationError("automation account primary group is unresolved") from None
+    require(primary.gr_name == PRIMARY_GROUP, f"automation account primary group must be {PRIMARY_GROUP}")
+    require(
+        sum(candidate.pw_uid == user.pw_uid for candidate in pwd.getpwall()) == 1,
+        "automation account UID is shared by another account",
+    )
+    return primary
+
+
+def check_path(path: Path, *, uid: int, gid: int, mode: int, directory: bool) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise PreparationError(f"required path is absent: {path}") from None
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    require(expected_type(info.st_mode), f"path has unexpected type: {path}")
+    require(info.st_uid == uid and info.st_gid == gid, f"path has unexpected ownership: {path}")
+    require(stat.S_IMODE(info.st_mode) == mode, f"path has unexpected mode: {path}")
+    if not directory:
+        require(info.st_nlink == 1, f"file must have exactly one link: {path}")
+
+
+def password_is_locked() -> bool:
+    fields = run_command("passwd", "--status", AUTOMATION_USER).split()
+    return len(fields) >= 2 and fields[0] == AUTOMATION_USER and fields[1] in {"L", "LK"}
+
+
+def read_managed_file(path: Path) -> bytes:
+    data, _ = read_regular_file(path)
+    return data
+
+
+def check_account(public_key: PublicKey) -> None:
+    user = account()
+    primary = check_account_identity(user)
+    try:
+        access = grp.getgrnam(ACCESS_GROUP)
+    except KeyError:
+        raise PreparationError(f"required access group is absent: {ACCESS_GROUP}") from None
+    groups = account_groups(user)
+    require(access.gr_gid in groups, f"{AUTOMATION_USER} is not a member of {ACCESS_GROUP}")
+    require(
+        groups <= {primary.gr_gid, access.gr_gid},
+        "automation account has unexpected supplementary groups",
+    )
+    require(password_is_locked(), "automation account password is not locked")
+    check_path(AUTOMATION_HOME, uid=user.pw_uid, gid=primary.gr_gid, mode=0o700, directory=True)
+    check_path(AUTOMATION_HOME / ".ssh", uid=user.pw_uid, gid=primary.gr_gid, mode=0o700, directory=True)
+    check_path(AUTHORIZED_KEYS, uid=user.pw_uid, gid=primary.gr_gid, mode=0o600, directory=False)
+    require(read_managed_file(AUTHORIZED_KEYS) == public_key.content, "authorized key differs from the supplied per-VM key")
+    require(not path_exists(AUTHORIZED_KEYS_2), f"conflicting key file exists: {AUTHORIZED_KEYS_2}")
+    check_path(SUDOERS_FILE, uid=0, gid=0, mode=0o440, directory=False)
+    require(read_managed_file(SUDOERS_FILE) == SUDOERS_CONTENT, "managed sudoers policy differs from the required policy")
+    run_command("runuser", "-u", AUTOMATION_USER, "--", command_path("sudo"), "-n", "true")
+    for path in (
+        AUTOMATION_HOME,
+        AUTOMATION_HOME / ".ssh",
+        AUTHORIZED_KEYS,
+        SUDOERS_FILE,
+    ):
+        run_command("matchpathcon", "-V", os.fspath(path))
+    ok("automation account, key, permissions, and password lock are correct")
+    ok("passwordless non-interactive sudo succeeds")
+    ok("managed paths have their expected SELinux contexts")
+
+
+def check_ready(settings: Settings, public_key: PublicKey) -> None:
+    check_base(settings, public_key)
+    check_account(public_key)
+    print("Result: READY FOR ANSIBLE TRANSPORT")
+
+
+def parse_effective_sshd(output: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        name, separator, value = line.partition(" ")
+        if separator:
+            values[name.lower()] = value.strip()
+    return values
+
+
+def validate_effective_sshd(values: dict[str, str]) -> None:
+    require(values.get("pubkeyauthentication") == "yes", "effective SSH policy must enable public-key authentication")
+    require(values.get("passwordauthentication") == "no", "effective SSH policy must disable password authentication")
+    require(values.get("kbdinteractiveauthentication") == "no", "effective SSH policy must disable keyboard-interactive authentication")
+    require(values.get("authorizedkeyscommand") == "none", "effective SSH policy must not use AuthorizedKeysCommand")
+    require(values.get("trustedusercakeys", "none") == "none", "effective SSH policy must not use TrustedUserCAKeys")
+    require(values.get("hostbasedauthentication") == "no", "effective SSH policy must disable host-based authentication")
+    require(values.get("gssapiauthentication", "no") == "no", "effective SSH policy must disable GSSAPI authentication")
+    require(values.get("kerberosauthentication", "no") == "no", "effective SSH policy must disable Kerberos authentication")
+    authorized_files = values.get("authorizedkeysfile", "").split()
+    allowed_authorized_files = {
+        ".ssh/authorized_keys",
+        "%h/.ssh/authorized_keys",
+        ".ssh/authorized_keys2",
+        "%h/.ssh/authorized_keys2",
+    }
+    require(
+        ".ssh/authorized_keys" in authorized_files or "%h/.ssh/authorized_keys" in authorized_files,
+        "effective SSH policy must read .ssh/authorized_keys",
+    )
+    require(
+        set(authorized_files) <= allowed_authorized_files,
+        "effective SSH policy contains an unmanaged AuthorizedKeysFile path",
+    )
+
+
+def check_effective_ssh_policy(settings: Settings) -> None:
+    effective = run_command(
+        "sshd",
+        "-T",
+        "-C",
+        (
+            f"user={AUTOMATION_USER},host={settings.controller_hostname},"
+            f"addr={settings.controller_address},laddr={settings.server_address},"
+            f"lport={settings.server_port}"
+        ),
+    )
+    validate_effective_sshd(parse_effective_sshd(effective))
+    ok("effective SSH policy matches the controller connection context")
+
+
+def acquire_lock() -> int:
+    descriptor = os.open(
+        LOCK_FILE,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    info = os.fstat(descriptor)
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == 0, "preparation lock is unsafe")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        raise PreparationError("another preparation process holds the host lock") from None
+    return descriptor
+
+
+def ensure_account_state_before_apply() -> tuple[pwd.struct_passwd | None, grp.struct_group | None]:
+    try:
+        user = pwd.getpwnam(AUTOMATION_USER)
+    except KeyError:
+        require(not path_exists(AUTOMATION_HOME), f"orphaned home path exists: {AUTOMATION_HOME}")
+        require(not path_exists(SUDOERS_FILE), f"orphaned sudoers policy exists: {SUDOERS_FILE}")
+        try:
+            grp.getgrnam(PRIMARY_GROUP)
+        except KeyError:
+            return None, None
+        raise PreparationError(f"orphaned primary group exists: {PRIMARY_GROUP}") from None
+
+    primary = check_account_identity(user)
+    require(password_is_locked(), "refusing to adopt an automation account with an unlocked password")
+    access = grp.getgrnam(ACCESS_GROUP)
+    require(
+        account_groups(user) <= {primary.gr_gid, access.gr_gid},
+        "refusing an automation account with unexpected supplementary groups",
+    )
+    check_path(AUTOMATION_HOME, uid=user.pw_uid, gid=primary.gr_gid, mode=0o700, directory=True)
+    if path_exists(AUTOMATION_HOME / ".ssh"):
+        info = (AUTOMATION_HOME / ".ssh").lstat()
+        require(stat.S_ISDIR(info.st_mode), "existing .ssh path is not a directory")
+        require(info.st_uid == user.pw_uid and info.st_gid == primary.gr_gid, "existing .ssh directory has unexpected ownership")
+    return user, primary
+
+
+def preflight_managed_files(public_key: PublicKey) -> None:
+    require(not path_exists(AUTHORIZED_KEYS_2), f"conflicting key file exists: {AUTHORIZED_KEYS_2}")
+    if path_exists(AUTHORIZED_KEYS):
+        require(read_managed_file(AUTHORIZED_KEYS) == public_key.content, "refusing to replace a different authorized key")
+    if path_exists(SUDOERS_FILE):
+        require(read_managed_file(SUDOERS_FILE) == SUDOERS_CONTENT, "refusing to replace a different sudoers policy")
+
+
+def write_all(descriptor: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        remaining = remaining[os.write(descriptor, remaining) :]
+
+
+def publish_file(
+    path: Path,
+    content: bytes,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    staging_directory: Path | None = None,
+) -> None:
+    if path_exists(path):
+        check_path(path, uid=uid, gid=gid, mode=mode, directory=False)
+        require(
+            read_managed_file(path) == content,
+            f"refusing to replace different file content: {path}",
+        )
+        return
+
+    directory_descriptor = -1
+    descriptor = -1
+    temporary: Path | None = None
+    try:
+        directory_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        directory_info = os.fstat(directory_descriptor)
+        require(stat.S_ISDIR(directory_info.st_mode), f"destination parent is not a directory: {path.parent}")
+        require(directory_info.st_uid == uid and directory_info.st_gid == gid, f"destination parent has unexpected ownership: {path.parent}")
+        require(stat.S_IMODE(directory_info.st_mode) & 0o022 == 0, f"destination parent is writable by group or others: {path.parent}")
+        staging = path.parent if staging_directory is None else staging_directory
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=staging)
+        temporary = Path(temporary_name)
+        os.fchmod(descriptor, mode)
+        os.fchown(descriptor, uid, gid)
+        write_all(descriptor, content)
+        os.fsync(descriptor)
+        os.link(
+            f"/proc/self/fd/{descriptor}",
+            path.name,
+            dst_dir_fd=directory_descriptor,
+            follow_symlinks=True,
+        )
+        temporary.unlink()
+        os.fsync(directory_descriptor)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        if descriptor >= 0:
+            os.close(descriptor)
+        if directory_descriptor >= 0:
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+
+
+def publish_sudoers() -> None:
+    if path_exists(SUDOERS_FILE):
+        publish_file(SUDOERS_FILE, SUDOERS_CONTENT, uid=0, gid=0, mode=0o440)
+        return
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".platform-ansible-rocky.", dir=SUDOERS_FILE.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o440)
+        os.fchown(descriptor, 0, 0)
+        write_all(descriptor, SUDOERS_CONTENT)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        run_command("visudo", "-cf", os.fspath(temporary))
+        publish_file(SUDOERS_FILE, SUDOERS_CONTENT, uid=0, gid=0, mode=0o440)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def ensure_home_staging_directory() -> None:
+    if not path_exists(HOME_STAGING_DIRECTORY):
+        os.mkdir(HOME_STAGING_DIRECTORY, mode=0o700)
+    info = HOME_STAGING_DIRECTORY.lstat()
+    require(stat.S_ISDIR(info.st_mode), "home publication staging path is not a directory")
+    require(info.st_uid == 0 and info.st_gid == 0, "home publication staging path is not root-owned")
+    require(stat.S_IMODE(info.st_mode) == 0o700, "home publication staging path must have mode 0700")
+
+
+def apply(settings: Settings, public_key: PublicKey) -> None:
+    lock_descriptor = acquire_lock()
+    try:
+        check_base(settings, public_key, check_effective_ssh=False)
+        user, primary = ensure_account_state_before_apply()
+        preflight_managed_files(public_key)
+
+        if user is None:
+            run_command(
+                "useradd",
+                "--create-home",
+                "--user-group",
+                "--shell",
+                "/bin/bash",
+                AUTOMATION_USER,
+            )
+            run_command("passwd", "--lock", AUTOMATION_USER)
+            user = account()
+            primary = check_account_identity(user)
+            ok(f"created locked automation account: {AUTOMATION_USER}")
+
+        assert primary is not None
+        access = grp.getgrnam(ACCESS_GROUP)
+        if access.gr_gid not in account_groups(user):
+            require(
+                not path_exists(AUTHORIZED_KEYS) and not path_exists(SUDOERS_FILE),
+                "refusing to add access group after key or sudo policy exists",
+            )
+            run_command("usermod", "--append", "--groups", ACCESS_GROUP, AUTOMATION_USER)
+            ok(f"added {AUTOMATION_USER} to {ACCESS_GROUP}")
+        check_effective_ssh_policy(settings)
+
+        os.chown(AUTOMATION_HOME, user.pw_uid, primary.gr_gid, follow_symlinks=False)
+        os.chmod(AUTOMATION_HOME, 0o700, follow_symlinks=False)
+        ssh_directory = AUTOMATION_HOME / ".ssh"
+        if not path_exists(ssh_directory):
+            os.mkdir(ssh_directory, mode=0o700)
+        os.chown(ssh_directory, user.pw_uid, primary.gr_gid, follow_symlinks=False)
+        os.chmod(ssh_directory, 0o700, follow_symlinks=False)
+
+        ensure_home_staging_directory()
+        publish_file(
+            AUTHORIZED_KEYS,
+            public_key.content,
+            uid=user.pw_uid,
+            gid=primary.gr_gid,
+            mode=0o600,
+            staging_directory=HOME_STAGING_DIRECTORY,
+        )
+        publish_sudoers()
+        run_command("restorecon", "-RF", os.fspath(AUTOMATION_HOME), os.fspath(SUDOERS_FILE))
+        ok("installed the per-VM public key and sudo policy")
+        check_ready(settings, public_key)
+    finally:
+        try:
+            HOME_STAGING_DIRECTORY.rmdir()
+        except OSError:
+            pass
+        os.close(lock_descriptor)
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        settings = parse_arguments(list(sys.argv[1:] if argv is None else argv))
+        require(os.geteuid() == 0, "run this helper as root")
+        public_key = load_public_key(settings.public_key_file)
+        if settings.operation == "check":
+            check_ready(settings, public_key)
+        else:
+            apply(settings, public_key)
+        return 0
+    except PreparationError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        print("Result: NOT READY", file=sys.stderr)
+        return 1
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"[ERROR] host operation failed: {error}", file=sys.stderr)
+        print("Result: NOT READY", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("[ERROR] interrupted", file=sys.stderr)
+        print("Result: NOT READY", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
