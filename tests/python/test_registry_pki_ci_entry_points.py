@@ -118,7 +118,18 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         task["ansible.builtin.import_tasks"]
         for task in request
         if "ansible.builtin.import_tasks" in task
-    ] == ["validate_target_local.yml", "trust.yml", "gitlab_setup.yml"]
+    ] == [
+        "validate_target_local.yml",
+        "trust.yml",
+        "gitlab_setup.yml",
+        "filesystem_request.yml",
+    ]
+    gitlab_setup = task_named(
+        request, "Install target-local GitLab certificate components"
+    )
+    assert gitlab_setup["when"] == (
+        "pki_host_local_certificate_transport == 'gitlab'"
+    )
     publish = task_named(
         request, "Create and publish the target-local schema-2 request"
     )
@@ -144,7 +155,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
     report = task_named(request, "Report authenticated target-local request ID")
     assert report["ansible.builtin.debug"] == {
         "msg": {
-            "request_id": "{{ (pki_host_local_certificate_request_publish_result.stdout | from_json).request_id }}"
+            "request_id": "{{ pki_host_local_certificate_authenticated_request_id }}"
         }
     }
 
@@ -181,6 +192,12 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "{{ pki_host_local_certificate_gitlab_config_path }}",
     ]
     assert download["no_log"] is True
+
+    filesystem = task_named(
+        activation, "Import and install the target-local filesystem response"
+    )
+    assert filesystem["ansible.builtin.import_tasks"] == "filesystem_response.yml"
+    assert "pki_host_local_certificate_transport == 'filesystem'" in filesystem["when"]
 
     prepare_ca_dir = task_named(
         activation, "Prepare reviewed local service validation CA directory"
@@ -223,6 +240,59 @@ def test_activation_validates_reviewed_ca_source_and_digest(repo_root: Path) -> 
     assert validation["vars"]["pki_host_local_certificate_absolute_path_pattern"] == (
         "^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$"
     )
+
+
+def test_filesystem_transport_uses_fixed_target_paths(repo_root: Path) -> None:
+    root = repo_root / "roles/pki_host_local_certificate/tasks"
+    request = load_yaml(root / "filesystem_request.yml")
+    response = load_yaml(root / "filesystem_response.yml")
+    request_source = (root / "filesystem_request.yml").read_text(encoding="utf-8")
+    response_source = (root / "filesystem_response.yml").read_text(encoding="utf-8")
+
+    ancestor_check = task_named(
+        request, "Require protected target-local filesystem exchange ancestors"
+    )
+    ancestor_assertions = "\n".join(ancestor_check["ansible.builtin.assert"]["that"])
+    for required in (
+        "item.stat.exists",
+        "item.stat.isdir",
+        "not item.stat.islnk",
+        "item.stat.uid == 0",
+        "item.stat.gid == 0",
+        "item.stat.mode is match('^[0-7][0-7][0145][0145]$')",
+    ):
+        assert required in ancestor_assertions
+
+    export = task_named(request, "Export the authenticated filesystem request")
+    assert "target-request-export" in export["ansible.builtin.command"]["argv"]
+    assert export["no_log"] is True
+    imported = task_named(response, "Import the fixed filesystem response")
+    assert "target-response-import" in imported["ansible.builtin.command"]["argv"]
+    assert imported["no_log"] is True
+    installed = task_named(response, "Authenticate and install the filesystem response")
+    assert "target-response-install" in installed["ansible.builtin.command"]["argv"]
+    assert installed["no_log"] is True
+
+    for forbidden in (
+        "ansible.builtin.fetch",
+        "ansible.builtin.slurp",
+        "pki_host_local_certificate_request_id",
+        "pki_host_local_certificate_response_directory",
+    ):
+        assert forbidden not in request_source
+        assert forbidden not in response_source
+    for required in (
+        "'request'",
+        "'--service'",
+        "'--target'",
+        "'--requester-principal'",
+        "'--current-cert-sha256'",
+        "'--predecessor-request-id', 'none'",
+        "'--request-signing-key'",
+        "'--trust-binding'",
+        "'target-request-export'",
+    ):
+        assert required in request_source
 
 
 def test_activation_prefixes_san_arguments_without_backreferences(

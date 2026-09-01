@@ -1,0 +1,278 @@
+---
+- name: Inspect target-local filesystem exchange ancestors
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ pki_host_local_certificate_filesystem_ancestor_paths }}"
+  register: pki_host_local_certificate_filesystem_ancestor_stats
+  vars:
+    pki_host_local_certificate_filesystem_ancestor_paths: >-
+      {% set namespace = namespace(path='', paths=['/']) %}
+      {% for component in
+            pki_host_local_certificate_filesystem_exchange_root.split('/')[1:-1] %}
+      {% set namespace.path = namespace.path ~ '/' ~ component %}
+      {% set namespace.paths = namespace.paths + [namespace.path] %}
+      {% endfor %}
+      {{ namespace.paths }}
+
+- name: Require protected target-local filesystem exchange ancestors
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode is match('^[0-7][0-7][0145][0145]$')
+    fail_msg: >-
+      Filesystem exchange ancestors must be existing root-owned directories
+      without group or other write permission.
+  loop: "{{ pki_host_local_certificate_filesystem_ancestor_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Resolve target-local filesystem exchange root
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/realpath
+      - -m
+      - --
+      - "{{ pki_host_local_certificate_filesystem_exchange_root }}"
+  register: pki_host_local_certificate_filesystem_realpath
+  changed_when: false
+
+- name: Require canonical target-local filesystem exchange root
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_filesystem_realpath.stderr | length == 0
+      - >-
+        pki_host_local_certificate_filesystem_realpath.stdout
+        == pki_host_local_certificate_filesystem_exchange_root
+    fail_msg: Filesystem exchange root is noncanonical or has a symlinked ancestor.
+
+- name: Inspect target-local filesystem exchange parents
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ pki_host_local_certificate_filesystem_parent_paths }}"
+  register: pki_host_local_certificate_filesystem_parent_stats
+  vars:
+    pki_host_local_certificate_filesystem_parent_paths:
+      - "{{ pki_host_local_certificate_filesystem_exchange_root }}"
+      - >-
+        {{ pki_host_local_certificate_filesystem_exchange_root }}/{{ pki_host_local_certificate_service }}
+      - >-
+        {{ pki_host_local_certificate_filesystem_exchange_root }}/{{ pki_host_local_certificate_service }}/requests
+      - >-
+        {{ pki_host_local_certificate_filesystem_exchange_root }}/{{ pki_host_local_certificate_service }}/responses
+
+- name: Validate existing target-local filesystem exchange parents
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists
+        or
+        (item.stat.isdir
+         and not item.stat.islnk
+         and item.stat.uid == 0
+         and item.stat.gid == 0
+         and item.stat.mode == '0755')
+    fail_msg: Existing filesystem exchange parent metadata is unsafe.
+  loop: "{{ pki_host_local_certificate_filesystem_parent_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create absent target-local filesystem exchange parents
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ pki_host_local_certificate_filesystem_parent_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: Create or authenticate the filesystem schema-2 request
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          pki_host_local_certificate_request_helper_path,
+          'request',
+          '--service', pki_host_local_certificate_service,
+          '--target', pki_host_local_certificate_target,
+          '--requester-principal', pki_host_local_certificate_requester_principal,
+          '--operation', pki_host_local_certificate_operation,
+          '--profile', pki_host_local_certificate_profile,
+          '--inventory-sha256', pki_host_local_certificate_inventory_sha256,
+          '--current-cert-sha256', pki_host_local_certificate_current_cert_sha256,
+          '--predecessor-request-id', 'none',
+          '--common-name', pki_host_local_certificate_common_name,
+          '--response-principal', pki_host_local_certificate_response_principal,
+          '--request-ttl-seconds', pki_host_local_certificate_request_ttl_seconds | string,
+          '--request-signing-key', pki_host_local_certificate_request_signing_key_path,
+          '--request-namespace', pki_host_local_certificate_request_namespace,
+          '--state-root', pki_host_local_certificate_state_root,
+          '--pending-root', pki_host_local_certificate_pending_root,
+          '--trust-binding', 'policy',
+          pki_host_local_certificate_trust_paths['policy'],
+          pki_host_local_certificate_trust_sha256['policy'],
+          '--trust-binding', 'requesters.allowed_signers',
+          pki_host_local_certificate_trust_paths['requesters.allowed_signers'],
+          pki_host_local_certificate_trust_sha256['requesters.allowed_signers'],
+          '--trust-binding', 'approvers.allowed_signers',
+          pki_host_local_certificate_trust_paths['approvers.allowed_signers'],
+          pki_host_local_certificate_trust_sha256['approvers.allowed_signers'],
+          '--trust-binding', 'responses.allowed_signers',
+          pki_host_local_certificate_trust_paths['responses.allowed_signers'],
+          pki_host_local_certificate_trust_sha256['responses.allowed_signers']
+        ]
+        + (pki_host_local_certificate_dns_sans
+           | map('regex_replace', '^', '--dns-san=') | list)
+        + (pki_host_local_certificate_ip_sans
+           | map('regex_replace', '^', '--ip-san=') | list)
+      }}
+  register: pki_host_local_certificate_filesystem_request_result
+  changed_when: >-
+    (pki_host_local_certificate_filesystem_request_result.stdout | from_json).status
+    == 'created'
+  no_log: true
+
+- name: Validate filesystem request result
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_filesystem_request_result.stderr | length == 0
+      - >-
+        pki_host_local_certificate_filesystem_request.keys() | list | sort
+        == ['csr_sha256', 'csr_spki_sha256', 'pending_dir', 'request_id',
+            'request_sha256', 'status']
+      - pki_host_local_certificate_filesystem_request.status in ['created', 'existing']
+      - >-
+        pki_host_local_certificate_filesystem_request.request_id
+        is match('^[0-9a-f]{32}$')
+      - >-
+        pki_host_local_certificate_filesystem_request.pending_dir
+        == pki_host_local_certificate_pending_root ~ '/'
+           ~ pki_host_local_certificate_filesystem_request.request_id
+    fail_msg: Filesystem request helper returned unsafe metadata.
+  vars:
+    pki_host_local_certificate_filesystem_request: >-
+      {{ pki_host_local_certificate_filesystem_request_result.stdout | from_json }}
+  no_log: true
+
+- name: Inspect request-specific filesystem exchange directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ pki_host_local_certificate_filesystem_request_paths }}"
+  register: pki_host_local_certificate_filesystem_request_path_stats
+  vars:
+    pki_host_local_certificate_filesystem_request_id: >-
+      {{ (pki_host_local_certificate_filesystem_request_result.stdout | from_json).request_id }}
+    pki_host_local_certificate_filesystem_request_paths:
+      - >-
+        {{ pki_host_local_certificate_filesystem_exchange_root }}/{{ pki_host_local_certificate_service }}/requests/{{ pki_host_local_certificate_filesystem_request_id }}
+      - >-
+        {{ pki_host_local_certificate_filesystem_exchange_root }}/{{ pki_host_local_certificate_service }}/responses/{{ pki_host_local_certificate_filesystem_request_id }}
+
+- name: Validate existing request-specific filesystem exchange directories
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists
+        or
+        (item.stat.isdir
+         and not item.stat.islnk
+         and item.stat.uid == pki_host_local_certificate_filesystem_owner_uid
+         and item.stat.mode == '0700')
+    fail_msg: Existing request-specific filesystem directory metadata is unsafe.
+  loop: "{{ pki_host_local_certificate_filesystem_request_path_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create absent request-specific filesystem exchange directories
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: "{{ pki_host_local_certificate_filesystem_owner_uid | string }}"
+    group: root
+    mode: "0700"
+  loop: "{{ pki_host_local_certificate_filesystem_request_path_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: Export the authenticated filesystem request
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          pki_host_local_certificate_lifecycle_helper_path,
+          'target-request-export',
+          '--state-root', pki_host_local_certificate_state_root,
+          '--pending-root', pki_host_local_certificate_pending_root,
+          '--versions-root', pki_host_local_certificate_versions_root,
+          '--service', pki_host_local_certificate_service,
+          '--target', pki_host_local_certificate_target,
+          '--service-adapter', pki_host_local_certificate_service_adapter
+        ]
+        + (
+          [
+            '--service-unit', pki_host_local_certificate_service_unit,
+            '--service-config', pki_host_local_certificate_service_config_path,
+            '--node-dns', pki_host_local_certificate_openbao_node_dns,
+            '--node-address', pki_host_local_certificate_openbao_node_address,
+            '--backend-port', pki_host_local_certificate_openbao_backend_port | string,
+            '--cluster-port', pki_host_local_certificate_openbao_cluster_port | string,
+            '--container-versions-root',
+            pki_host_local_certificate_openbao_container_versions_root,
+            '--base-config-dir', pki_host_local_certificate_openbao_base_config_dir,
+            '--raft-data-dir', pki_host_local_certificate_openbao_raft_data_dir,
+            '--bootstrap-marker-path',
+            pki_host_local_certificate_openbao_bootstrap_marker_path
+          ]
+          if pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
+          else []
+        )
+        + [
+          '--trust-id', pki_host_local_certificate_trust_id,
+          '--output-dir',
+          pki_host_local_certificate_filesystem_exchange_root ~ '/'
+          ~ pki_host_local_certificate_service ~ '/requests/'
+          ~ (pki_host_local_certificate_filesystem_request_result.stdout
+             | from_json).request_id,
+          '--output-owner-uid',
+          pki_host_local_certificate_filesystem_owner_uid | string
+        ]
+      }}
+  register: pki_host_local_certificate_filesystem_export_result
+  changed_when: >-
+    (pki_host_local_certificate_filesystem_export_result.stdout | from_json).status
+    == 'collected'
+  no_log: true
+
+- name: Validate filesystem request export result
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_filesystem_export_result.stderr | length == 0
+      - >-
+        pki_host_local_certificate_filesystem_export.keys() | list | sort
+        == ['csr_sha256', 'request_id', 'request_sha256',
+            'request_signature_sha256', 'status']
+      - pki_host_local_certificate_filesystem_export.status in ['collected', 'existing']
+      - >-
+        pki_host_local_certificate_filesystem_export.request_id
+        == (pki_host_local_certificate_filesystem_request_result.stdout
+            | from_json).request_id
+    fail_msg: Filesystem request export returned unsafe metadata.
+  vars:
+    pki_host_local_certificate_filesystem_export: >-
+      {{ pki_host_local_certificate_filesystem_export_result.stdout | from_json }}
+  no_log: true
+
+- name: Record authenticated filesystem request ID
+  ansible.builtin.set_fact:
+    pki_host_local_certificate_authenticated_request_id: >-
+      {{ (pki_host_local_certificate_filesystem_export_result.stdout | from_json).request_id }}

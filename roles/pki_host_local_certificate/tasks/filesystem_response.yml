@@ -1,0 +1,124 @@
+---
+- name: Prepare protected filesystem response ingress
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-response-prepare']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + ['--trust-id', pki_host_local_certificate_trust_id]
+      }}
+  register: pki_host_local_certificate_filesystem_prepare_result
+  changed_when: >-
+    (pki_host_local_certificate_filesystem_prepare_result.stdout | from_json).status
+    == 'prepared'
+  no_log: true
+
+- name: Validate filesystem response ingress preparation
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_filesystem_prepare_result.stderr | length == 0
+      - >-
+        (pki_host_local_certificate_filesystem_prepare.status == 'installed'
+         and pki_host_local_certificate_filesystem_prepare.keys() | list | sort
+             == ['ingress_dir', 'request_id', 'status']
+         and pki_host_local_certificate_filesystem_prepare.ingress_dir == 'none')
+        or
+        (pki_host_local_certificate_filesystem_prepare.status in ['prepared', 'existing']
+         and pki_host_local_certificate_filesystem_prepare.keys() | list | sort
+             == ['ingress_device', 'ingress_dir', 'ingress_inode', 'request_id',
+                 'status']
+         and pki_host_local_certificate_filesystem_prepare.ingress_dir
+             == pki_host_local_certificate_versions_root ~ '/.ingress-'
+                ~ pki_host_local_certificate_filesystem_prepare.request_id)
+      - >-
+        pki_host_local_certificate_filesystem_prepare.request_id
+        == (pki_host_local_certificate_actionable_status_result.stdout
+            | from_json).request_id
+    fail_msg: Filesystem response preparation returned unsafe metadata.
+  vars:
+    pki_host_local_certificate_filesystem_prepare: >-
+      {{ pki_host_local_certificate_filesystem_prepare_result.stdout | from_json }}
+  no_log: true
+
+- name: Import the fixed filesystem response
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-response-import']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + [
+          '--trust-id', pki_host_local_certificate_trust_id,
+          '--exchange-root',
+          pki_host_local_certificate_filesystem_exchange_root,
+          '--input-owner-uid',
+          pki_host_local_certificate_filesystem_owner_uid | string
+        ]
+      }}
+  register: pki_host_local_certificate_filesystem_import_result
+  changed_when: >-
+    (pki_host_local_certificate_filesystem_import_result.stdout | from_json).status
+    == 'imported'
+  no_log: true
+  when: >-
+    (pki_host_local_certificate_filesystem_prepare_result.stdout | from_json).status
+    != 'installed'
+
+- name: Validate filesystem response import result
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_filesystem_import_result.stderr | length == 0
+      - >-
+        pki_host_local_certificate_filesystem_import.keys() | list | sort
+        == ['request_id', 'status']
+      - pki_host_local_certificate_filesystem_import.status in ['imported', 'existing']
+      - >-
+        pki_host_local_certificate_filesystem_import.request_id
+        == (pki_host_local_certificate_filesystem_prepare_result.stdout
+            | from_json).request_id
+    fail_msg: Filesystem response import returned unsafe metadata.
+  vars:
+    pki_host_local_certificate_filesystem_import: >-
+      {{ pki_host_local_certificate_filesystem_import_result.stdout | from_json }}
+  no_log: true
+  when: not pki_host_local_certificate_filesystem_import_result.skipped | default(false)
+
+- name: Authenticate and install the filesystem response
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [pki_host_local_certificate_lifecycle_helper_path, 'target-response-install']
+        + pki_host_local_certificate_lifecycle_common_argv
+        + pki_host_local_certificate_lifecycle_candidate_argv
+      }}
+  register: pki_host_local_certificate_filesystem_install_result
+  changed_when: >-
+    (pki_host_local_certificate_filesystem_install_result.stdout | from_json).status
+    == 'installed'
+  no_log: true
+  when: >-
+    (pki_host_local_certificate_filesystem_prepare_result.stdout | from_json).status
+    != 'installed'
+
+- name: Validate filesystem response installation result
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_filesystem_install_result.stderr | length == 0
+      - >-
+        pki_host_local_certificate_filesystem_install.keys() | list | sort
+        == ['artifact_sha256', 'certificate_sha256',
+            'certificate_spki_sha256', 'request_id', 'status', 'version_path']
+      - pki_host_local_certificate_filesystem_install.status in ['installed', 'existing']
+      - >-
+        pki_host_local_certificate_filesystem_install.request_id
+        == (pki_host_local_certificate_filesystem_prepare_result.stdout
+            | from_json).request_id
+      - >-
+        pki_host_local_certificate_filesystem_install.version_path
+        == pki_host_local_certificate_versions_root ~ '/'
+           ~ pki_host_local_certificate_filesystem_install.request_id
+    fail_msg: Filesystem response installation returned unsafe metadata.
+  vars:
+    pki_host_local_certificate_filesystem_install: >-
+      {{ pki_host_local_certificate_filesystem_install_result.stdout | from_json }}
+  no_log: true
+  when: not pki_host_local_certificate_filesystem_install_result.skipped | default(false)

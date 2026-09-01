@@ -112,6 +112,7 @@ def test_target_local_parser_routes_do_not_accept_manual_coordinates(
     commands = (
         ["target-request-export", *common, "--trust-id", "reviewed-v2", "--output-dir", "/output", "--output-owner-uid", "1000"],
         ["target-response-prepare", *common, "--trust-id", "reviewed-v2"],
+        ["target-response-import", *common, "--trust-id", "reviewed-v2", "--exchange-root", "/exchange", "--input-owner-uid", "1000"],
         ["target-response-install", *common, *candidate],
         ["target-activate-start", *common, *config, *candidate, "--endpoint", ENDPOINT, "--reviewed-ca", "/ca.pem", "--rollback-seconds", "1209600"],
         ["target-activate-complete", *common, *config, *candidate, "--endpoint", ENDPOINT, "--reviewed-ca", "/ca.pem"],
@@ -125,6 +126,7 @@ def test_target_local_parser_routes_do_not_accept_manual_coordinates(
     assert set(parser._subparsers._group_actions[0].choices) == {
         "target-request-export",
         "target-response-prepare",
+        "target-response-import",
         "target-response-install",
         "target-activate-start",
         "target-activate-complete",
@@ -136,9 +138,9 @@ def test_target_local_parser_routes_do_not_accept_manual_coordinates(
         "openbao-staging-preflight",
     }
     assert tuple(value.command for value in parsed) == (
-        "target-request-export", "target-response-prepare", "target-response-install",
-        "target-activate-start", "target-activate-complete", "target-recover",
-        "target-status", "openbao-staging-preflight",
+        "target-request-export", "target-response-prepare", "target-response-import",
+        "target-response-install", "target-activate-start", "target-activate-complete",
+        "target-recover", "target-status", "openbao-staging-preflight",
     )
     assert all(not hasattr(value, "target_local") for value in parsed)
     assert all(value.service_adapter == "zot-v1" for value in parsed)
@@ -484,6 +486,271 @@ def target_candidate_args(case: LifecycleCase) -> list[str | Path]:
         "--ip-san", "192.0.2.61",
         "--minimum-remaining-lifetime-seconds", "3600",
     ]
+
+
+def prepare_filesystem_response(
+    case: LifecycleCase,
+) -> tuple[Path, Path, Path]:
+    exchange = private_dir(case.root / "exchange")
+    service = private_dir(exchange / SERVICE)
+    responses = private_dir(service / "responses")
+    source = private_dir(responses / REQUEST_ID)
+    for name in case.module.RESPONSE_NAMES:
+        shutil.copyfile(case.root / "response-source" / name, source / name)
+        source.joinpath(name).chmod(0o600)
+    prepared = result_json(case.run([
+        *case.common("target-response-prepare"), "--trust-id", "reviewed-v1",
+    ]))
+    return exchange, source, Path(prepared["ingress_dir"])
+
+
+def filesystem_response_import_args(
+    case: LifecycleCase, exchange: Path | str, *, owner_uid: int = 0,
+) -> list[str | Path]:
+    return [
+        *case.common("target-response-import"), "--trust-id", "reviewed-v1",
+        "--exchange-root", exchange, "--input-owner-uid", str(owner_uid),
+    ]
+
+
+def test_target_response_import_check_import_and_idempotence(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    case = lifecycle_case
+    exchange, source, ingress = prepare_filesystem_response(case)
+    before = tree_snapshot(ingress)
+
+    checked_result = case.run([
+        *filesystem_response_import_args(case, exchange), "--check",
+    ])
+    checked = result_json(checked_result)
+
+    assert checked == {"request_id": REQUEST_ID, "status": "would-import"}
+    assert checked_result.stdout == (
+        f'{{"request_id":"{REQUEST_ID}","status":"would-import"}}\n'
+    )
+    assert tree_snapshot(ingress) == before
+    shutil.copyfile(source / "artifact", ingress / "artifact")
+    ingress.joinpath("artifact").chmod(0o600)
+    imported = result_json(case.run(filesystem_response_import_args(case, exchange)))
+    assert imported == {"request_id": REQUEST_ID, "status": "imported"}
+    assert {item.name for item in ingress.iterdir()} == set(case.module.RESPONSE_NAMES)
+    for name in case.module.RESPONSE_NAMES:
+        metadata = ingress.joinpath(name).stat()
+        assert ingress.joinpath(name).read_bytes() == source.joinpath(name).read_bytes()
+        assert metadata.st_nlink == 1
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        ownership = case.runner.run([
+            "stat", "-c", "%u:%a:%h", ingress / name,
+        ])
+        ownership.assert_success()
+        assert ownership.stdout == "0:600:1\n"
+    existing = result_json(case.run(filesystem_response_import_args(case, exchange)))
+    assert existing == {"request_id": REQUEST_ID, "status": "existing"}
+    assert result_json(case.run([
+        *filesystem_response_import_args(case, exchange), "--check",
+    ])) == {"request_id": REQUEST_ID, "status": "existing"}
+
+
+@pytest.mark.parametrize(
+    "invalid_source",
+    (
+        "partial", "extra", "nested", "directory-mode", "owner",
+        "negative-owner", "file-mode", "link",
+    ),
+)
+def test_target_response_import_rejects_unsafe_source_before_copy(
+    lifecycle_case: LifecycleCase,
+    invalid_source: str,
+) -> None:
+    case = lifecycle_case
+    exchange, source, ingress = prepare_filesystem_response(case)
+    owner_uid = 0
+    if invalid_source == "partial":
+        source.joinpath("artifact").unlink()
+    elif invalid_source == "extra":
+        private_file(source / "extra", b"extra\n")
+    elif invalid_source == "nested":
+        private_dir(source / "nested")
+    elif invalid_source == "directory-mode":
+        source.chmod(0o755)
+    elif invalid_source == "owner":
+        owner_uid = 1
+    elif invalid_source == "negative-owner":
+        owner_uid = -1
+    elif invalid_source == "file-mode":
+        source.joinpath("artifact").chmod(0o644)
+    else:
+        os.link(source / "artifact", source.parent / "artifact-hardlink")
+
+    rejected = case.run(
+        filesystem_response_import_args(case, exchange, owner_uid=owner_uid)
+    )
+
+    assert_failure(rejected)
+    assert tree_snapshot(ingress) == ()
+
+
+def test_target_response_import_rejects_conflicting_partial_ingress(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    case = lifecycle_case
+    exchange, _source, ingress = prepare_filesystem_response(case)
+    private_file(ingress / "artifact", b"conflict\n")
+
+    rejected = case.run(filesystem_response_import_args(case, exchange))
+
+    assert_failure(rejected)
+    assert {item.name for item in ingress.iterdir()} == {"artifact"}
+    assert ingress.joinpath("artifact").read_bytes() == b"conflict\n"
+
+
+def test_target_response_import_write_failure_cleans_and_retries(
+    lifecycle_case: LifecycleCase,
+) -> None:
+    case = lifecycle_case
+    exchange, _source, ingress = prepare_filesystem_response(case)
+
+    failed = case.run(
+        filesystem_response_import_args(case, exchange),
+        environment={
+            "PLATFORM_PKI_LIFECYCLE_FAIL_AT": "after-write-new-metadata",
+        },
+    )
+
+    assert_failure(failed)
+    assert tree_snapshot(ingress) == ()
+    retried = result_json(case.run(filesystem_response_import_args(case, exchange)))
+    assert retried == {"request_id": REQUEST_ID, "status": "imported"}
+    assert {item.name for item in ingress.iterdir()} == set(case.module.RESPONSE_NAMES)
+
+
+@pytest.mark.parametrize("changed", ("pending", "trust"))
+def test_target_response_import_reauthenticates_after_prepare(
+    lifecycle_case: LifecycleCase,
+    changed: str,
+) -> None:
+    case = lifecycle_case
+    exchange, _source, ingress = prepare_filesystem_response(case)
+    path = (
+        case.pending / "request"
+        if changed == "pending"
+        else case.state / "trust/reviewed-v1/requesters.allowed_signers"
+    )
+    path.write_bytes(path.read_bytes() + b"changed\n")
+
+    rejected = case.run(filesystem_response_import_args(case, exchange))
+
+    assert_failure(rejected)
+    assert tree_snapshot(ingress) == ()
+
+
+@pytest.mark.parametrize(
+    "invalid_root",
+    (
+        "relative", "noncanonical", "equal-state", "equal-pending",
+        "equal-versions", "equal-trust", "inside", "contains", "symlink",
+    ),
+)
+def test_target_response_import_rejects_unsafe_exchange_root(
+    lifecycle_case: LifecycleCase,
+    invalid_root: str,
+) -> None:
+    case = lifecycle_case
+    if invalid_root == "relative":
+        exchange: Path | str = "relative-exchange"
+    elif invalid_root == "noncanonical":
+        exchange = f"{case.root}/exchange/../exchange"
+    elif invalid_root == "equal-state":
+        exchange = case.state
+    elif invalid_root == "equal-pending":
+        exchange = case.pending_root
+    elif invalid_root == "equal-versions":
+        exchange = case.versions_root
+    elif invalid_root == "equal-trust":
+        exchange = case.state / "trust/reviewed-v1"
+    elif invalid_root == "inside":
+        exchange = case.state / "trust"
+    elif invalid_root == "contains":
+        exchange = case.root
+    else:
+        actual = private_dir(case.root / "actual-exchange")
+        exchange = case.root / "exchange-link"
+        exchange.symlink_to(actual, target_is_directory=True)
+
+    rejected = case.run(filesystem_response_import_args(case, exchange))
+
+    assert_failure(rejected)
+
+
+@pytest.mark.parametrize(
+    "changed", ("source-file", "source-path", "pending", "trust")
+)
+def test_target_response_import_detects_concurrent_replacement(
+    lifecycle_case: LifecycleCase,
+    changed: str,
+) -> None:
+    case = lifecycle_case
+    exchange, source, ingress = prepare_filesystem_response(case)
+    source_artifact = source.joinpath("artifact").read_bytes()
+    pending_request = case.pending.joinpath("request").read_bytes()
+    trust_path = case.state / "trust/reviewed-v1/requesters.allowed_signers"
+    trust_bytes = trust_path.read_bytes()
+    shutil.copyfile(source / "artifact", ingress / "artifact")
+    ingress.joinpath("artifact").chmod(0o600)
+    preexisting_ingress = tree_snapshot(ingress)
+    argv = filesystem_response_import_args(case, exchange)
+    environment = case.runner.environment(case.environment({
+        "PLATFORM_PKI_LIFECYCLE_PAUSE_AT": "before-response-import-recheck",
+    }))
+    process = subprocess.Popen(
+        case.runner.argv(argv), cwd=case.runner.command_runner.cwd,
+        env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + 10
+    expected = set(case.module.RESPONSE_NAMES)
+    while process.poll() is None and (
+        not ingress.exists() or {item.name for item in ingress.iterdir()} != expected
+    ):
+        if time.monotonic() >= deadline:
+            process.kill()
+            pytest.fail("response import did not reach the recheck pause")
+        time.sleep(0.02)
+    if process.poll() is not None:
+        stdout, stderr = process.communicate()
+        pytest.fail(f"response import exited before mutation: {stdout!r} {stderr!r}")
+
+    if changed == "source-file":
+        source.joinpath("artifact").write_bytes(
+            source.joinpath("artifact").read_bytes() + b"changed\n"
+        )
+    elif changed == "source-path":
+        moved = source.with_name(f"{source.name}-moved")
+        source.rename(moved)
+        shutil.copytree(moved, source)
+    elif changed == "pending":
+        case.pending.joinpath("request").write_bytes(
+            case.pending.joinpath("request").read_bytes() + b"changed\n"
+        )
+    else:
+        trust = case.state / "trust/reviewed-v1/requesters.allowed_signers"
+        trust.write_bytes(trust.read_bytes() + b"changed\n")
+
+    stdout, _stderr = process.communicate(timeout=10)
+    assert process.returncode != 0
+    assert stdout == ""
+    assert tree_snapshot(ingress) == preexisting_ingress
+
+    if changed == "source-file":
+        private_file(source / "artifact", source_artifact)
+    elif changed == "pending":
+        private_file(case.pending / "request", pending_request)
+    elif changed == "trust":
+        private_file(trust_path, trust_bytes)
+    retried = result_json(case.run(filesystem_response_import_args(case, exchange)))
+    assert retried == {"request_id": REQUEST_ID, "status": "imported"}
+    assert {item.name for item in ingress.iterdir()} == expected
 
 
 def prepare_and_install_target_response(case: LifecycleCase) -> dict[str, Any]:

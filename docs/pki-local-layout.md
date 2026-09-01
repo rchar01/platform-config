@@ -1,9 +1,8 @@
 # Target-Local PKI Layout
 
 The current host-local Zot and pristine OpenBao workflows do not use a controller
-exchange or same-workstation transport layout. Package transport and lifecycle
-state are target-local; offline signer custody remains outside these Ansible
-routes.
+exchange or controller workspace. Transport and lifecycle state are target-local;
+offline signer custody remains outside these Ansible routes.
 
 ## Target-Owned State
 
@@ -12,9 +11,10 @@ Each registry or OpenBao target owns:
 - the leaf private key and pending request state;
 - immutable certificate versions and authenticated active state;
 - the schema-3 trust snapshot;
-- the target-local GitLab facade configuration and protected spool;
-- the pre-provisioned GitLab token;
-- the reviewed GitLab project record and HTTPS CA bundle.
+- in GitLab mode, the target-local facade configuration, protected spool,
+  pre-provisioned token, reviewed project record, and HTTPS CA bundle;
+- in filesystem mode, a fixed exchange tree containing only public requests and
+  signed responses.
 
 The token must be `root:root`, mode `0600`, a regular non-symlink with link count
 1, and 1 through 4096 bytes. Ansible validates metadata only under `no_log` and
@@ -33,15 +33,27 @@ The request package contains `tls.csr`, `request`, and `request.sig`. The offlin
 approval package contains `approval` and `approval.sig`. The response package
 contains `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, and
 `response.sig`. Each `stage-manifest` uses schema 2 and is transport metadata.
-The target exchanges request and response bytes directly with one private GitLab
-Generic Package project; Ansible never carries them.
+GitLab mode exchanges request and response bytes directly with one private
+Generic Package project. Filesystem mode exports the three request files and
+imports the six response files through request-specific target-local directories.
+Ansible never carries those bytes, and the target private key never enters either
+transport.
 
-Both fixed adapters reuse the same request, approval, and response package
-contract and the `platform-pki gitlab-package` boundary. OpenBao has no separate
-operator command or package-coordinate input. Its Ansible routes operate on one
-canonical node at a time. Response activation temporarily unmasks the staged
-unit for fixed local validation, then stops it and restores the mask without
-enabling it.
+Both fixed adapters reuse the same request, approval, and response records.
+GitLab transport uses `platform-pki gitlab-package`; filesystem transport uses
+the existing offline custody commands and no package coordinates. OpenBao has no
+separate operator command or coordinate input. Its Ansible routes operate on one
+canonical node at a time. Response activation temporarily unmasks the staged unit
+for fixed local validation, then stops it and restores the mask without enabling
+it.
+
+Filesystem exchange roots have only pre-existing root-owned, non-writable
+ancestors. The role owns exchange parents as `root:root` mode `0755` and creates
+request-specific request and response directories as mode `0700` for the
+pre-provisioned transfer UID. Files are mode `0600`; request directories contain
+only `tls.csr`, `request`, and `request.sig`, while response directories contain
+only `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, and
+`response.sig`.
 
 ## Outside-Git Inputs
 
@@ -56,8 +68,9 @@ define a canonical signer workspace or exact signer command.
 
 ## Retired Layouts
 
-Controller exchange roots, same-workstation transfer directories, SSH exchange
-identities, direct/controller-local spools, controller intake/check/transfer
+Controller exchange roots, arbitrary same-workstation transfer directories,
+Ansible-provisioned SSH exchange identities, direct/controller-local spools,
+controller intake/check/transfer
 trees, runner observations, and evidence/outcome workspaces are not supported by
 the current workflow. Their presence does not establish current authority.
 

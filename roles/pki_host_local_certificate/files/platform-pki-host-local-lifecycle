@@ -391,7 +391,7 @@ def read_at(
     allow_empty: bool = False,
     keep_open: bool = False,
     owner_uid: int = 0,
-    owner_gid: int = 0,
+    owner_gid: int | None = 0,
 ):
     try:
         descriptor = os.open(
@@ -404,7 +404,8 @@ def read_at(
     try:
         before = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid or before.st_gid != owner_gid
+            not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid
+            or (owner_gid is not None and before.st_gid != owner_gid)
             or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != mode
             or (before.st_size == 0 and not allow_empty) or before.st_size > maximum
         ):
@@ -543,6 +544,7 @@ def write_new_at(
         )
         os.fchmod(descriptor, mode)
         os.fchown(descriptor, owner_uid, owner_gid)
+        fault("after-write-new-metadata")
         view = memoryview(data)
         while view:
             written = os.write(descriptor, view)
@@ -551,16 +553,33 @@ def write_new_at(
             view = view[written:]
         os.fsync(descriptor)
         identity = file_identity(os.fstat(descriptor))
-        os.close(descriptor)
-        descriptor = -1
         os.fsync(directory.fd)
         require_snapshot(directory, name, identity, label)
+        os.close(descriptor)
+        descriptor = -1
         return identity
-    except OSError as error:
-        fail(f"cannot create {label}: {error.strerror}")
-    finally:
+    except BaseException as error:
         if descriptor >= 0:
-            os.close(descriptor)
+            removed = False
+            try:
+                identity = file_identity(os.fstat(descriptor))
+                require_snapshot(directory, name, identity, label)
+                os.unlink(name, dir_fd=directory.fd)
+                removed = True
+            except (LifecycleError, OSError):
+                pass
+            if removed:
+                try:
+                    os.fsync(directory.fd)
+                except OSError:
+                    pass
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if isinstance(error, OSError):
+            fail(f"cannot create {label}: {error.strerror}")
+        raise
 
 
 def atomic_replace_at(
@@ -2971,6 +2990,193 @@ def target_response_prepare(args) -> None:
     response_prepare(args)
 
 
+def target_response_import(args) -> None:
+    state, lock = common_open(args)
+    exchange: PinnedDirectory | None = None
+    pending_root: PinnedDirectory | None = None
+    versions: PinnedDirectory | None = None
+    selected_trust: PinnedDirectory | None = None
+    source: PinnedDirectory | None = None
+    ingress: PinnedDirectory | None = None
+    try:
+        if state_entries(state) & {
+            "activation-journal", "request.journal", "trust-install.journal"
+        }:
+            fail("unresolved lifecycle state blocks response import")
+        request_id = target_pending_request_id(args)
+        trust, policy = load_trust(state, args.trust_id, args.target)
+        pending_path = os.path.join(args.pending_root, request_id)
+        pending = validate_pending(
+            pending_path, trust, expected_request_id=request_id,
+            allowed_ancestor_gid=pending_ancestor_gid(args),
+        )
+        request = pending["record"]
+        assert isinstance(request, dict)
+        require_adapter_operation(args, request)
+        if pending["expired"]:
+            fail("expired pending request cannot import a response")
+        if (
+            request["service"] != args.service or request["target"] != args.target
+            or request["response_principal"] != policy["response_principal"]
+        ):
+            fail("pending request differs from response import bindings")
+
+        exchange_path = canonical_path(args.exchange_root, "exchange root")
+        trust_path = os.path.join(args.state_root, "trust", args.trust_id)
+        for protected in (
+            args.state_root, args.pending_root, args.versions_root, trust_path
+        ):
+            if os.path.commonpath((exchange_path, protected)) in {
+                exchange_path, protected
+            }:
+                fail("exchange root must be disjoint from lifecycle roots")
+
+        exchange = PinnedDirectory.open(exchange_path, "exchange root", private=False)
+        pending_root = PinnedDirectory.open(
+            args.pending_root, "pending root",
+            allowed_owner_gids=(
+                trusted_ancestor_owners() | {OPENBAO_GID}
+                if service_adapter(args) == OPENBAO_ADAPTER else None
+            ),
+        )
+        versions = open_versions_root(args)
+        selected_trust = PinnedDirectory.open(trust_path, "selected trust root")
+        exchange_identity = dir_identity(os.fstat(exchange.fd))
+        if exchange_identity in {
+            dir_identity(os.fstat(directory.fd))
+            for directory in (state, pending_root, versions, selected_trust)
+        }:
+            fail("exchange root aliases a lifecycle root")
+
+        source_path = os.path.join(
+            exchange_path, args.service, "responses", request_id
+        )
+        source = PinnedDirectory.open(
+            source_path, "filesystem response source",
+            allowed_final_owner_uids={args.input_owner_uid},
+            final_owner_uid=args.input_owner_uid,
+            final_owner_uid_only=True,
+        )
+        if set(scan(source, "filesystem response source")) != set(RESPONSE_NAMES):
+            fail("filesystem response source does not contain the exact fixed file set")
+        source_files: dict[str, bytes] = {}
+        source_identities: dict[str, tuple[int, ...]] = {}
+        for name in RESPONSE_NAMES:
+            source_files[name], source_identities[name] = read_at(
+                source, name, f"filesystem response source file {name}",
+                owner_uid=args.input_owner_uid, owner_gid=None,
+            )
+        source.recheck("filesystem response source")
+
+        ingress = PinnedDirectory.open(
+            os.path.join(args.versions_root, f".ingress-{request_id}"),
+            "response ingress",
+            allowed_owner_gids=(
+                trusted_ancestor_owners() | {OPENBAO_GID}
+                if service_adapter(args) == OPENBAO_ADAPTER else None
+            ),
+        )
+        ingress_metadata = os.fstat(ingress.fd)
+        if (
+            ingress_metadata.st_uid != 0 or ingress_metadata.st_gid != 0
+            or stat.S_IMODE(ingress_metadata.st_mode) != 0o700
+        ):
+            fail("response ingress directory has unsafe metadata")
+        ingress_entries = scan(ingress, "response ingress")
+        if not set(ingress_entries).issubset(set(RESPONSE_NAMES)):
+            fail("response ingress contains unexpected entries")
+        ingress_identities: dict[str, tuple[int, ...]] = {}
+        for name in ingress_entries:
+            data, ingress_identities[name] = read_at(
+                ingress, name, f"response ingress file {name}"
+            )
+            if data != source_files[name]:
+                fail("existing response ingress conflicts with filesystem source")
+
+        missing = tuple(name for name in RESPONSE_NAMES if name not in ingress_entries)
+        created_identities: dict[str, tuple[int, ...]] = {}
+        try:
+            if not args.check:
+                for name in missing:
+                    require_snapshot(
+                        source, name, source_identities[name],
+                        f"filesystem response source file {name}",
+                    )
+                    identity = write_new_at(
+                        ingress, name, source_files[name],
+                        f"response ingress file {name}",
+                    )
+                    ingress_identities[name] = identity
+                    created_identities[name] = identity
+                os.fsync(ingress.fd)
+
+            fault("before-response-import-recheck")
+            repeated_trust, repeated_policy = load_trust(
+                state, args.trust_id, args.target
+            )
+            if repeated_trust != trust or repeated_policy != policy:
+                fail("selected trust changed during response import")
+            repeated_pending = validate_pending(
+                pending_path, repeated_trust, expected_request_id=request_id,
+                allowed_ancestor_gid=pending_ancestor_gid(args),
+            )
+            repeated_request = repeated_pending["record"]
+            assert isinstance(repeated_request, dict)
+            if (
+                repeated_pending["expired"] or repeated_request != request
+                or target_pending_request_ids(args) != (request_id,)
+            ):
+                fail("pending request changed during response import")
+            pending_root.recheck("pending root")
+            versions.recheck("versions root")
+            selected_trust.recheck("selected trust root")
+            ingress.recheck("response ingress")
+            final_entries = scan(ingress, "response ingress")
+            expected_entries = set(ingress_identities)
+            if set(final_entries) != expected_entries:
+                fail("response ingress changed during filesystem import")
+            for name, identity in ingress_identities.items():
+                data, final_identity = read_at(
+                    ingress, name, f"response ingress file {name}"
+                )
+                if data != source_files[name] or final_identity != identity:
+                    fail("response ingress changed during filesystem import")
+            for name, identity in source_identities.items():
+                require_snapshot(
+                    source, name, identity,
+                    f"filesystem response source file {name}",
+                )
+            source.recheck("filesystem response source")
+            exchange.recheck("exchange root")
+        except Exception:
+            for name, identity in created_identities.items():
+                try:
+                    require_snapshot(
+                        ingress, name, identity, f"response ingress file {name}"
+                    )
+                    os.unlink(name, dir_fd=ingress.fd)
+                except (LifecycleError, OSError):
+                    pass
+            try:
+                os.fsync(ingress.fd)
+            except OSError:
+                pass
+            raise
+        status_value = (
+            "would-import" if args.check and missing
+            else "imported" if missing else "existing"
+        )
+        json_output({"request_id": request_id, "status": status_value})
+    finally:
+        for directory in (
+            ingress, source, selected_trust, versions, pending_root, exchange
+        ):
+            if directory is not None:
+                directory.close()
+        os.close(lock)
+        state.close()
+
+
 def target_response_install(args) -> None:
     args.request_id = target_pending_request_id(args)
     args.artifact_sha256 = target_artifact_digest(args, args.request_id, ingress=True)
@@ -3599,6 +3805,17 @@ def build_parser() -> argparse.ArgumentParser:
     target_prepare.add_argument("--check", action="store_true")
     target_prepare.set_defaults(function=target_response_prepare)
 
+    target_import = commands.add_parser(
+        "target-response-import",
+        help="safely import the filesystem response for the only authenticated request",
+    )
+    add_common(target_import)
+    target_import.add_argument("--trust-id", required=True)
+    target_import.add_argument("--exchange-root", required=True)
+    target_import.add_argument("--input-owner-uid", required=True, type=int)
+    target_import.add_argument("--check", action="store_true")
+    target_import.set_defaults(function=target_response_import)
+
     target_install = commands.add_parser(
         "target-response-install",
         help="authenticate and install the target-local issued response",
@@ -3690,6 +3907,8 @@ def validate_arguments(args) -> None:
         require_request_id(args.request_id)
     if hasattr(args, "artifact_sha256") and args.artifact_sha256 is not None:
         require_digest(args.artifact_sha256, "artifact digest")
+    if hasattr(args, "input_owner_uid") and args.input_owner_uid < 0:
+        fail("input owner UID is invalid")
     if hasattr(args, "managed_config_sha256"):
         require_digest(args.managed_config_sha256, "managed configuration digest")
         args.managed_cert = canonical_path(

@@ -23,14 +23,13 @@ to an unrelated host. The request lifetime defaults to 3600 seconds. Zot accepts
 `issue` and `renew`; pristine OpenBao accepts `issue` only.
 
 The request route installs and validates the schema-3 trust snapshot, creates or
-revalidates the target-local private key and schema-2 request, and has the target
-publish the request package directly to its configured private GitLab Generic
-Package project. The activation route derives the request and package coordinates
-from authenticated target state; recovers an interrupted activation journal
-before transport when required; downloads and authenticates the schema-2
-response on the target; activates and validates the selected fixed service
-adapter locally; and rolls back on failure. Success requires final
-`status=complete` and `required_action=none`.
+revalidates the target-local private key and schema-2 request, then publishes the
+signed request through the inventory-selected GitLab or filesystem transport.
+The activation route derives request identity from authenticated target state,
+recovers an interrupted activation journal, imports and authenticates the
+schema-2 response, activates and validates the selected adapter locally, and
+rolls back on failure. Success requires final `status=complete` and
+`required_action=none`.
 
 After successful request publication, the request route reports only the
 authenticated 32-hex `request_id` outside its protected `no_log` task. Carry that
@@ -39,9 +38,10 @@ response-publication process. The activation Ansible route does not accept it as
 input.
 
 Offline approval and signing are separate, authorized processes outside these
-Ansible routes. They continue to use only the reviewed request, approval, and
-response boundary provided by `platform-pki gitlab-package`; there is no
-OpenBao-specific `platform-tools` command.
+Ansible routes. GitLab transport uses `platform-pki gitlab-package`; filesystem
+transport uses the same three-file request and six-file response accepted by
+`platform-pki offline-csr approve|sign`. There is no OpenBao-specific
+`platform-tools` command.
 
 The OpenBao request and activation routes are per-node PKI operations. Repeat
 them separately for each canonical OpenBao host. They do not replace the
@@ -89,13 +89,27 @@ response
 response.sig
 ```
 
-`stage-manifest` is transport metadata, not PKI authority or an additional
-payload. The target exchanges these package bytes directly with one configured
-private GitLab project. Ansible never carries package bytes.
+`stage-manifest` is GitLab transport metadata, not PKI authority or an additional
+payload. Ansible never carries package bytes.
 
-## Token Boundary
+With `pki_host_local_certificate_transport: filesystem`, the target creates:
 
-The GitLab token must be provisioned on the target before either route runs. It
+```text
+<exchange-root>/<service>/requests/<request-id>/
+<exchange-root>/<service>/responses/<request-id>/
+```
+
+The request directory contains only the three request files. The operator
+uploads all six response files to the pre-created response directory as the
+configured non-root UID with directory mode `0700` and file mode `0600`, then
+runs activation. Partial or unsafe responses fail before certificate
+installation. The exchange identity is trusted only for availability;
+signatures, frozen trust, and target lifecycle state remain authoritative.
+
+## GitLab Token Boundary
+
+In GitLab mode, the token must be provisioned on the target before either route
+runs. It
 must be a `root:root` regular, non-symlink file with link count 1, mode `0600`,
 and size from 1 through 4096 bytes. Ansible checks only this metadata under
 `no_log`; it does not read token bytes into variables, facts, output, argv, or
@@ -121,21 +135,22 @@ For `openbao-pristine-v1`, the target is fixed at
 
 ## Required Inputs
 
-Private inventory supplies the service and target identity, the fixed adapter,
-`issue` or `renew`,
-certificate profile and SANs, inventory digest, requester and response
-principals, schema-3 trust ID/path/source/digest mappings, lifecycle roots,
-reviewed GitLab project record and CA sources, installed target token path,
-transport-client source and SHA-256, reviewed service CA source, target path,
-digest and mode, minimum remaining lifetime, and rollback interval. Zot also
-requires its fixed `/v2/` endpoint. OpenBao derives its local health endpoint and
-therefore requires the endpoint variable to be empty.
+Private inventory supplies the service and target identity, fixed adapter,
+operation, certificate profile and SANs, inventory digest, principals, schema-3
+trust mappings, lifecycle roots, selected transport, reviewed service CA,
+minimum remaining lifetime, and rollback interval. GitLab additionally requires
+its project record, CA, target token path, transport client, and digest.
+Filesystem mode is issue-only and requires an absolute exchange root plus a
+non-root transfer UID. Every root ancestor must already exist as a `root:root`
+non-symlink directory without group or other write permission. Zot also requires
+its fixed `/v2/` endpoint. OpenBao requires the endpoint variable to be empty.
 
 The fixed target defaults include:
 
 ```yaml
 pki_host_local_certificate_request_signing_key_path: /etc/ssh/ssh_host_ed25519_key
 pki_host_local_certificate_request_namespace: platform-pki-csr-request-v2
+pki_host_local_certificate_transport: gitlab
 pki_host_local_certificate_gitlab_token_path: /etc/platform-config/pki-gitlab-token
 pki_host_local_certificate_service_adapter: zot-v1
 pki_host_local_certificate_service_unit: zot.service
@@ -156,6 +171,7 @@ operator-supplied request or package coordinates are rejected.
 
 Private keys remain target-local. Do not add `fetch`, `slurp`, debug output,
 facts, or controller-side copies that expose `tls.key` or GitLab token bytes.
+The filesystem exchange must remain disjoint from lifecycle and trust roots.
 
 ## State Compatibility
 
@@ -170,5 +186,5 @@ adapter contract. The target facade continues to accept the exact persisted
 schema-2 Zot configuration and preserves its prior lifecycle command arguments.
 
 GitLab CE `18.11.3-ce.0` live token and Generic Package behavior remains an
-explicit, unqualified rollout gate. Local helper tests do not qualify a live
-deployment.
+explicit gate for GitLab mode. Local helper tests do not qualify either
+transport for live deployment.

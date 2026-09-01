@@ -45,7 +45,7 @@ def test_schema2_target_local_contract_uses_exact_four_file_trust(
     validation = load_yaml(role / "tasks/validate_target_local.yml")
     trust_validation = load_yaml(role / "tasks/validate_trust.yml")
     contract = task_named(
-        validation, "Validate target-local GitLab certificate contract"
+        validation, "Validate target-local certificate contract"
     )
     checks = contract["ansible.builtin.assert"]["that"]
 
@@ -59,24 +59,26 @@ def test_schema2_target_local_contract_uses_exact_four_file_trust(
         "'platform-pki-csr-request-v2'"
     ) in checks
     assert defaults["pki_host_local_certificate_platform_pki_sha256"] == ""
-    assert (
+    assert any(
         "pki_host_local_certificate_platform_pki_sha256 is "
-        "match('^[0-9a-f]{64}$')"
-    ) in checks
+        "match('^[0-9a-f]{64}$')" in check
+        for check in checks
+    )
     assert defaults["pki_host_local_certificate_reviewed_ca_source"] == ""
     assert defaults["pki_host_local_certificate_reviewed_ca_sha256"] == ""
     destinations = contract["vars"][
         "pki_host_local_certificate_file_destinations"
     ]
-    assert {
-        "{{ pki_host_local_certificate_request_signing_key_path }}",
-        "{{ pki_host_local_certificate_trust_paths['approvers.allowed_signers'] }}",
-        "{{ pki_host_local_certificate_trust_paths['policy'] }}",
-        "{{ pki_host_local_certificate_trust_paths['requesters.allowed_signers'] }}",
-        "{{ pki_host_local_certificate_trust_paths['responses.allowed_signers'] }}",
-        "{{ pki_host_local_certificate_reviewed_ca_target_path }}",
-        "{{ pki_host_local_certificate_service_config_path }}",
-    } <= set(destinations)
+    for required in (
+        "pki_host_local_certificate_request_signing_key_path",
+        "pki_host_local_certificate_trust_paths['approvers.allowed_signers']",
+        "pki_host_local_certificate_trust_paths['policy']",
+        "pki_host_local_certificate_trust_paths['requesters.allowed_signers']",
+        "pki_host_local_certificate_trust_paths['responses.allowed_signers']",
+        "pki_host_local_certificate_reviewed_ca_target_path",
+        "pki_host_local_certificate_service_config_path",
+    ):
+        assert required in destinations
     assert (
         set(contract["vars"]["pki_host_local_certificate_required_trust_names"])
         == TRUST_NAMES
@@ -97,7 +99,7 @@ def test_fixed_service_adapter_defaults_and_validation_are_closed(
     defaults = load_yaml(role / "defaults/main.yml")
     validation = load_yaml(role / "tasks/validate_target_local.yml")
     contract = task_named(
-        validation, "Validate target-local GitLab certificate contract"
+        validation, "Validate target-local certificate contract"
     )
     checks = contract["ansible.builtin.assert"]["that"]
     adapter_contract = next(
@@ -177,6 +179,8 @@ def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> 
 
     role_tasks = repo_root / "roles/pki_host_local_certificate/tasks"
     assert {path.name for path in role_tasks.glob("*.yml")} == {
+        "filesystem_request.yml",
+        "filesystem_response.yml",
         "gitlab_setup.yml",
         "lifecycle_helper.yml",
         "main.yml",
@@ -285,7 +289,6 @@ def test_public_execution_surface_has_no_legacy_transport_or_runner(
     legacy_defaults = {
         "pki_host_local_certificate_controller_exchange_root",
         "pki_host_local_certificate_exchange_mode",
-        "pki_host_local_certificate_transport",
         "pki_host_local_certificate_request_id",
         "pki_host_local_certificate_artifact_manifest_sha256",
         "pki_host_local_certificate_exchange_helper_path",
@@ -295,6 +298,9 @@ def test_public_execution_surface_has_no_legacy_transport_or_runner(
         "pki_host_local_certificate_outcome_sha256",
     }
     assert legacy_defaults.isdisjoint(defaults)
+    assert defaults["pki_host_local_certificate_transport"] == "gitlab"
+    assert defaults["pki_host_local_certificate_filesystem_exchange_root"] == ""
+    assert defaults["pki_host_local_certificate_filesystem_owner_uid"] is None
 
 
 def test_target_local_facades_reject_migration(repo_root: Path) -> None:

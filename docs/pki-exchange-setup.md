@@ -1,13 +1,12 @@
 # PKI Exchange Setup
 
-Prepare one registry target and one private GitLab Generic Package project for
-the [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md).
-This setup authorizes no request, signing operation, activation, reset, or live
-rollout.
+Prepare target-local GitLab or filesystem transport for a host-local certificate
+lifecycle. This setup authorizes no request, signing operation, activation,
+reset, or live rollout.
 
 ## Architecture
 
-The target connects directly to GitLab over authenticated HTTPS:
+GitLab mode connects the target directly to GitLab over authenticated HTTPS:
 
 ```text
 registry target <---- authenticated HTTPS ----> private GitLab project
@@ -16,16 +15,67 @@ registry target <---- authenticated HTTPS ----> private GitLab project
        `---- Ansible installs public configuration and invokes fixed routes
 ```
 
-Request and response package bytes never pass through Ansible or a controller
-workspace. There is no direct/controller-local mode, SSH exchange endpoint,
-transfer station, controller intake/check/transfer route, runner, or separate
-evidence/outcome package flow.
+Filesystem mode uses a fixed target-local exchange tree:
 
-Offline approval and signing remain outside these Ansible routes. The external
-process consumes the published request package, publishes the signed approval
-package, and publishes the authenticated response package to the same private
-project through the `platform-pki gitlab-package` route. Use its separately
-reviewed procedure; this repository does not establish an exact signer command.
+```text
+operator -- approved SFTP path --> target filesystem exchange
+                                      ^
+                                      |
+               Ansible creates fixed directories and invokes lifecycle helpers
+```
+
+Request and response bytes never pass through Ansible or a controller workspace.
+The role does not provision SSH/SFTP access, a bastion, transfer account, or
+credentials. There is no controller intake/check/transfer route, runner, or
+separate evidence/outcome package flow.
+
+Offline approval and signing remain outside these Ansible routes. GitLab mode
+uses `platform-pki gitlab-package`; filesystem mode moves only the exact request
+and response payloads and uses existing `platform-pki offline-csr approve|sign`
+operations. Transport success never replaces signed-record authentication.
+
+## Filesystem Exchange
+
+Select the transport only through private inventory:
+
+```yaml
+pki_host_local_certificate_transport: filesystem
+pki_host_local_certificate_filesystem_exchange_root: /srv/platform-pki-exchange
+pki_host_local_certificate_filesystem_owner_uid: 1000
+```
+
+The root must be canonical, have no symlinked ancestor, and remain disjoint from
+state, pending, versions, and trust roots. Every ancestor of the exchange root
+must already exist as a root-owned directory without group or other write
+permission. The role creates root-owned mode-`0755` exchange parents and
+pre-creates request-specific mode-`0700` request and response directories owned
+by the configured non-root UID.
+
+After request publication, retrieve exactly:
+
+```text
+tls.csr
+request
+request.sig
+```
+
+After authorized approval and signing, upload exactly these mode-`0600` files to
+the pre-created response directory:
+
+```text
+artifact
+tls.crt
+ca-chain.crt
+fullchain.crt
+response
+response.sig
+```
+
+Complete the upload before invoking response activation. A partial, linked,
+misowned, or extra-file response fails closed. The transfer UID can cause denial
+of service by changing transport files, but signatures and target-local state
+prevent it from authorizing a certificate. Files are retained; cleanup requires
+a separate retention decision.
 
 ## GitLab Project
 
@@ -47,7 +97,7 @@ Generic Package publication/download, duplicate handling, partial publication,
 and deletion/cleanup controls remain an explicit, unqualified rollout gate.
 Do not use a live PKI route until that gate is approved.
 
-## Target Token
+## GitLab Target Token
 
 Provision the GitLab token directly on the target through the approved secret
 deployment process. The configured token path defaults to:
@@ -71,7 +121,8 @@ target helper opens the pre-provisioned file directly when contacting GitLab.
 
 ## Public Inputs
 
-Private inventory references reviewed outside-Git sources for:
+Both modes reference reviewed outside-Git trust and validation CA sources.
+GitLab mode additionally references:
 
 - the GitLab project record;
 - the GitLab HTTPS CA bundle;
@@ -147,14 +198,15 @@ response
 response.sig
 ```
 
-Each package has a schema-2 `stage-manifest` generated and validated as transport
-metadata. It is not a signed PKI payload and does not replace request, approval,
-or response authentication. The response `artifact` is schema 2 and contains no
-candidate or deployment state fields.
+GitLab packages have a schema-2 `stage-manifest` generated and validated as
+transport metadata. Filesystem mode has no stage manifest. Neither transport
+replaces request, approval, or response authentication. The response `artifact`
+is schema 2 and contains no candidate or deployment state fields.
 
 ## State Gate
 
-Only `issue` and `renew` are supported. Do not reuse lifecycle state from the
+GitLab supports `issue` and `renew`; filesystem transport initially supports
+`issue` only. Do not reuse lifecycle state from the
 retired SSH, controller-local, migration, runner/evidence/outcome, five-file
 trust, or helper-hash predecessor workflows. The new routes reject old or
 ambiguous state. Preserve such state for review and use only a separately

@@ -16,6 +16,7 @@
 
 - name: Install target-local GitLab certificate components
   ansible.builtin.import_tasks: gitlab_setup.yml
+  when: pki_host_local_certificate_transport == 'gitlab'
 
 - name: Create and publish the target-local schema-2 request
   ansible.builtin.command:
@@ -28,6 +29,7 @@
   changed_when: >-
     (pki_host_local_certificate_request_publish_result.stdout | from_json).status == 'published'
   no_log: true
+  when: pki_host_local_certificate_transport == 'gitlab'
 
 - name: Validate target-local request publication result
   ansible.builtin.assert:
@@ -43,9 +45,19 @@
   vars:
     pki_host_local_certificate_request_publish: >-
       {{ pki_host_local_certificate_request_publish_result.stdout | from_json }}
+  when: pki_host_local_certificate_transport == 'gitlab'
+
+- name: Record authenticated GitLab request ID
+  ansible.builtin.set_fact:
+    pki_host_local_certificate_authenticated_request_id: >-
+      {{ (pki_host_local_certificate_request_publish_result.stdout | from_json).request_id }}
+  when: pki_host_local_certificate_transport == 'gitlab'
+
+- name: Create and export the target-local filesystem request
+  ansible.builtin.import_tasks: filesystem_request.yml
+  when: pki_host_local_certificate_transport == 'filesystem'
 
 - name: Report authenticated target-local request ID
   ansible.builtin.debug:
     msg:
-      request_id: >-
-        {{ (pki_host_local_certificate_request_publish_result.stdout | from_json).request_id }}
+      request_id: "{{ pki_host_local_certificate_authenticated_request_id }}"

@@ -4,8 +4,8 @@ This file gives a short, release-oriented view of what changed between versions.
 
 ## Unreleased
 
-This update replaces the multi-route direct-exchange registry PKI workflow with
-two target-local GitLab package routes.
+This update provides two fixed host-local PKI routes with an inventory-selected
+GitLab or target-local filesystem transport.
 
 ### Upgrade Notes
 
@@ -32,6 +32,9 @@ two target-local GitLab package routes.
   it as a root-owned target executable.
 - Descriptor-pin and install the reviewed Zot validation CA before actionable
   local activation.
+- Allow hosts without GitLab connectivity to exchange only signed request and
+  response payloads through fixed target-local directories while retaining the
+  target leaf key and all lifecycle authority outside the exchange tree.
 
 ## v3.1.0 - 2026-08-21
 

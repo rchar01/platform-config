@@ -69,7 +69,7 @@ openbao_cluster_members:
     dns: bao-3.internal.invalid
 
 # Host-local OpenBao PKI remains denied until private inventory supplies every
-# reviewed outside-Git trust, GitLab package, transport-client, and CA input.
+# reviewed outside-Git trust, selected transport, and CA input.
 # Do not replace empty digests with illustrative values that could validate.
 pki_host_local_certificate_service: "openbao-{{ inventory_hostname }}"
 pki_host_local_certificate_target: "{{ inventory_hostname }}"
@@ -92,6 +92,9 @@ pki_host_local_certificate_trust_sources: {}
 pki_host_local_certificate_state_root: /var/lib/platform-config/pki/openbao
 pki_host_local_certificate_pending_root: /etc/openbao/tls-pending
 pki_host_local_certificate_versions_root: /etc/openbao/tls-versions
+pki_host_local_certificate_transport: gitlab
+pki_host_local_certificate_filesystem_exchange_root: ""
+pki_host_local_certificate_filesystem_owner_uid: null
 pki_host_local_certificate_gitlab_project_record_source: ""
 pki_host_local_certificate_gitlab_ca_source: ""
 pki_host_local_certificate_platform_pki_source: ""

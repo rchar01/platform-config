@@ -28,13 +28,13 @@ approval payload is `approval` and `approval.sig`; and the response payload is
 exactly `artifact`, `tls.crt`, `ca-chain.crt`, `fullchain.crt`, `response`, and
 `response.sig`. Each `stage-manifest` is schema-2 transport metadata only.
 
-The registry target publishes request bytes and downloads response bytes
-directly through one configured private GitLab Generic Package project. Ansible
-never carries package bytes. Offline approval and signing remain separately
-authorized operations using the `platform-pki gitlab-package` request, approval,
-and response stages; no other signer command is defined here. A successful
-request route exposes only its authenticated 32-hex `request_id` for that offline
-handoff. The activation Ansible route continues to derive its coordinates from
+Inventory selects direct target-to-GitLab package transport or issue-only
+target-local filesystem exchange. Ansible never carries request or response
+bytes. GitLab offline stages use `platform-pki gitlab-package`; filesystem mode
+exports the exact three-file request and imports the exact six-file response
+through fixed target-local directories owned by a pre-provisioned transfer UID.
+A successful request route exposes only its authenticated 32-hex `request_id`
+for that offline handoff. The activation route derives its coordinates from
 authenticated target state and does not accept the ID as input.
 
 The target GitLab token is pre-provisioned at the configured target path. It
@@ -48,8 +48,9 @@ recovers a journal before transport when needed, authenticates the response
 before mutation, activates and validates Zot locally, and rolls back on failure.
 It succeeds only with final `status=complete` and `required_action=none`.
 
-Direct/controller-local transport, SSH exchange access, controller intake or
-transfer, operator-supplied Ansible coordinates, runners, evidence/outcome
+Direct/controller-local transport, Ansible-provisioned SSH/SFTP access,
+controller intake or transfer, operator-supplied Ansible coordinates, runners,
+evidence/outcome
 packages, migration operations, and helper-hash predecessor migration are not
 supported. Old workflow state is rejected and requires a separately authorized
 reset or target recreation. See

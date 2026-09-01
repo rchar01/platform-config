@@ -1,5 +1,5 @@
 ---
-- name: Validate target-local GitLab certificate contract
+- name: Validate target-local certificate contract
   ansible.builtin.assert:
     that:
       - ansible_play_hosts_all == [inventory_hostname]
@@ -9,6 +9,7 @@
       - pki_host_local_certificate_requester_principal == inventory_hostname
       - pki_host_local_certificate_response_principal is match('^[a-z0-9][a-z0-9.-]{0,252}$')
       - pki_host_local_certificate_operation in ['issue', 'renew']
+      - pki_host_local_certificate_transport in ['gitlab', 'filesystem']
       - pki_host_local_certificate_service_adapter in ['zot-v1', 'openbao-pristine-v1']
       - pki_host_local_certificate_profile == 'server-p384-sha384-v1'
       - pki_host_local_certificate_request_namespace == 'platform-pki-csr-request-v2'
@@ -34,21 +35,31 @@
       - pki_host_local_certificate_request_ttl_seconds is integer
       - pki_host_local_certificate_request_ttl_seconds > 0
       - pki_host_local_certificate_request_ttl_seconds <= 604800
-      - pki_host_local_certificate_gitlab_project_record_source is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_gitlab_ca_source is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_platform_pki_source is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_platform_pki_sha256 is match('^[0-9a-f]{64}$')
-      - pki_host_local_certificate_gitlab_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_gitlab_config_path is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_gitlab_spool_root is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_gitlab_project_record_path is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_gitlab_token_path is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_gitlab_ca_path is match(pki_host_local_certificate_absolute_path_pattern)
-      - pki_host_local_certificate_platform_pki_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_request_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_trust_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_lifecycle_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
       - pki_host_local_certificate_reviewed_ca_target_path is match(pki_host_local_certificate_absolute_path_pattern)
+      - >-
+        pki_host_local_certificate_transport != 'gitlab'
+        or
+        (pki_host_local_certificate_gitlab_project_record_source is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_gitlab_ca_source is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_platform_pki_source is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_platform_pki_sha256 is match('^[0-9a-f]{64}$')
+         and pki_host_local_certificate_gitlab_helper_path is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_gitlab_config_path is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_gitlab_spool_root is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_gitlab_project_record_path is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_gitlab_token_path is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_gitlab_ca_path is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_platform_pki_path is match(pki_host_local_certificate_absolute_path_pattern))
+      - >-
+        pki_host_local_certificate_transport != 'filesystem'
+        or
+        (pki_host_local_certificate_operation == 'issue'
+         and pki_host_local_certificate_filesystem_exchange_root is match(pki_host_local_certificate_absolute_path_pattern)
+         and pki_host_local_certificate_filesystem_owner_uid is integer
+         and pki_host_local_certificate_filesystem_owner_uid > 0)
       - >-
         (pki_host_local_certificate_service_adapter == 'zot-v1'
          and pki_host_local_certificate_service_unit == 'zot.service'
@@ -80,15 +91,21 @@
       - pki_host_local_certificate_all_paths | select('search', '(^|/)\\.\\.?(/|$)') | list | length == 0
       - pki_host_local_certificate_adapter_host_paths | unique | length == pki_host_local_certificate_adapter_host_paths | length
       - pki_host_local_certificate_file_destinations | unique | length == pki_host_local_certificate_file_destinations | length
-      - pki_host_local_certificate_gitlab_timeout is integer
-      - pki_host_local_certificate_gitlab_timeout > 0
-      - pki_host_local_certificate_gitlab_timeout <= 120
-      - pki_host_local_certificate_gitlab_processing_attempts is integer
-      - pki_host_local_certificate_gitlab_processing_attempts > 0
-      - pki_host_local_certificate_gitlab_processing_attempts <= 20
-      - pki_host_local_certificate_gitlab_processing_interval is integer
-      - pki_host_local_certificate_gitlab_processing_interval >= 0
-      - pki_host_local_certificate_gitlab_processing_interval <= 60
+      - >-
+        pki_host_local_certificate_transport != 'filesystem'
+        or pki_host_local_certificate_filesystem_roots_disjoint
+      - >-
+        pki_host_local_certificate_transport != 'gitlab'
+        or
+        (pki_host_local_certificate_gitlab_timeout is integer
+         and pki_host_local_certificate_gitlab_timeout > 0
+         and pki_host_local_certificate_gitlab_timeout <= 120
+         and pki_host_local_certificate_gitlab_processing_attempts is integer
+         and pki_host_local_certificate_gitlab_processing_attempts > 0
+         and pki_host_local_certificate_gitlab_processing_attempts <= 20
+         and pki_host_local_certificate_gitlab_processing_interval is integer
+         and pki_host_local_certificate_gitlab_processing_interval >= 0
+         and pki_host_local_certificate_gitlab_processing_interval <= 60)
       - >-
         (pki_host_local_certificate_operation == 'issue'
          and pki_host_local_certificate_current_cert_sha256 == 'none'
@@ -96,7 +113,7 @@
         or (pki_host_local_certificate_operation == 'renew'
             and pki_host_local_certificate_current_cert_sha256 in ['', 'derived']
             and pki_host_local_certificate_current_cert_path in ['', 'derived'])
-    fail_msg: Target-local GitLab certificate inputs are incomplete or unsafe.
+    fail_msg: Target-local certificate inputs are incomplete or unsafe.
   vars:
     pki_host_local_certificate_absolute_path_pattern: >-
       ^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$
@@ -115,6 +132,22 @@
       - policy
       - requesters.allowed_signers
       - responses.allowed_signers
+    pki_host_local_certificate_filesystem_protected_roots:
+      - "{{ pki_host_local_certificate_state_root }}"
+      - "{{ pki_host_local_certificate_pending_root }}"
+      - "{{ pki_host_local_certificate_versions_root }}"
+      - >-
+        {{ pki_host_local_certificate_state_root }}/trust/{{ pki_host_local_certificate_trust_id }}
+    pki_host_local_certificate_filesystem_roots_disjoint: >-
+      {% set namespace = namespace(valid=true) %}
+      {% for root in pki_host_local_certificate_filesystem_protected_roots %}
+      {% if pki_host_local_certificate_filesystem_exchange_root == root
+            or pki_host_local_certificate_filesystem_exchange_root.startswith(root ~ '/')
+            or root.startswith(pki_host_local_certificate_filesystem_exchange_root ~ '/') %}
+      {% set namespace.valid = false %}
+      {% endif %}
+      {% endfor %}
+      {{ namespace.valid }}
     pki_host_local_certificate_all_paths: >-
       {{
         [
@@ -122,16 +155,6 @@
           pki_host_local_certificate_pending_root,
           pki_host_local_certificate_versions_root,
           pki_host_local_certificate_request_signing_key_path,
-          pki_host_local_certificate_gitlab_project_record_source,
-          pki_host_local_certificate_gitlab_ca_source,
-          pki_host_local_certificate_platform_pki_source,
-          pki_host_local_certificate_gitlab_helper_path,
-          pki_host_local_certificate_gitlab_config_path,
-          pki_host_local_certificate_gitlab_spool_root,
-          pki_host_local_certificate_gitlab_project_record_path,
-          pki_host_local_certificate_gitlab_token_path,
-          pki_host_local_certificate_gitlab_ca_path,
-          pki_host_local_certificate_platform_pki_path,
           pki_host_local_certificate_request_helper_path,
           pki_host_local_certificate_trust_helper_path,
           pki_host_local_certificate_lifecycle_helper_path,
@@ -143,7 +166,24 @@
           pki_host_local_certificate_openbao_base_config_dir,
           pki_host_local_certificate_openbao_raft_data_dir,
           pki_host_local_certificate_openbao_bootstrap_marker_path
-        ] + (pki_host_local_certificate_trust_sources.values() | list)
+        ]
+        + (pki_host_local_certificate_trust_sources.values() | list)
+        + (
+          [
+            pki_host_local_certificate_gitlab_project_record_source,
+            pki_host_local_certificate_gitlab_ca_source,
+            pki_host_local_certificate_platform_pki_source,
+            pki_host_local_certificate_gitlab_helper_path,
+            pki_host_local_certificate_gitlab_config_path,
+            pki_host_local_certificate_gitlab_spool_root,
+            pki_host_local_certificate_gitlab_project_record_path,
+            pki_host_local_certificate_gitlab_token_path,
+            pki_host_local_certificate_gitlab_ca_path,
+            pki_host_local_certificate_platform_pki_path
+          ]
+          if pki_host_local_certificate_transport == 'gitlab'
+          else [pki_host_local_certificate_filesystem_exchange_root]
+        )
       }}
     pki_host_local_certificate_adapter_host_paths: >-
       {{
@@ -158,23 +198,33 @@
           pki_host_local_certificate_service_config_path
         ]
       }}
-    pki_host_local_certificate_file_destinations:
-      - "{{ pki_host_local_certificate_request_signing_key_path }}"
-      - "{{ pki_host_local_certificate_trust_paths['approvers.allowed_signers'] }}"
-      - "{{ pki_host_local_certificate_trust_paths['policy'] }}"
-      - "{{ pki_host_local_certificate_trust_paths['requesters.allowed_signers'] }}"
-      - "{{ pki_host_local_certificate_trust_paths['responses.allowed_signers'] }}"
-      - "{{ pki_host_local_certificate_gitlab_helper_path }}"
-      - "{{ pki_host_local_certificate_gitlab_config_path }}"
-      - "{{ pki_host_local_certificate_gitlab_project_record_path }}"
-      - "{{ pki_host_local_certificate_gitlab_token_path }}"
-      - "{{ pki_host_local_certificate_gitlab_ca_path }}"
-      - "{{ pki_host_local_certificate_platform_pki_path }}"
-      - "{{ pki_host_local_certificate_request_helper_path }}"
-      - "{{ pki_host_local_certificate_trust_helper_path }}"
-      - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
-      - "{{ pki_host_local_certificate_reviewed_ca_target_path }}"
-      - "{{ pki_host_local_certificate_service_config_path }}"
+    pki_host_local_certificate_file_destinations: >-
+      {{
+        [
+          pki_host_local_certificate_request_signing_key_path,
+          pki_host_local_certificate_trust_paths['approvers.allowed_signers'],
+          pki_host_local_certificate_trust_paths['policy'],
+          pki_host_local_certificate_trust_paths['requesters.allowed_signers'],
+          pki_host_local_certificate_trust_paths['responses.allowed_signers'],
+          pki_host_local_certificate_request_helper_path,
+          pki_host_local_certificate_trust_helper_path,
+          pki_host_local_certificate_lifecycle_helper_path,
+          pki_host_local_certificate_reviewed_ca_target_path,
+          pki_host_local_certificate_service_config_path
+        ]
+        + (
+          [
+            pki_host_local_certificate_gitlab_helper_path,
+            pki_host_local_certificate_gitlab_config_path,
+            pki_host_local_certificate_gitlab_project_record_path,
+            pki_host_local_certificate_gitlab_token_path,
+            pki_host_local_certificate_gitlab_ca_path,
+            pki_host_local_certificate_platform_pki_path
+          ]
+          if pki_host_local_certificate_transport == 'gitlab'
+          else []
+        )
+      }}
 
 - name: Validate target-local trust bindings
   ansible.builtin.assert:

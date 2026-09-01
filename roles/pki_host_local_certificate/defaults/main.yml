@@ -30,6 +30,9 @@ pki_host_local_certificate_rollback_seconds: 0
 pki_host_local_certificate_request_helper_path: /usr/local/libexec/platform-pki-host-local-request
 pki_host_local_certificate_trust_helper_path: /usr/local/libexec/platform-pki-host-local-trust
 pki_host_local_certificate_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
+pki_host_local_certificate_transport: gitlab
+pki_host_local_certificate_filesystem_exchange_root: ""
+pki_host_local_certificate_filesystem_owner_uid: null
 pki_host_local_certificate_gitlab_helper_path: /usr/local/libexec/platform-pki-host-local-gitlab
 pki_host_local_certificate_gitlab_config_path: /etc/platform-config/pki-host-local-gitlab.json
 pki_host_local_certificate_gitlab_spool_root: /var/lib/platform-config/pki/host-local-gitlab

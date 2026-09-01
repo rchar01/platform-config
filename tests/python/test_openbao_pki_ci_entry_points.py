@@ -316,6 +316,9 @@ def test_public_openbao_pki_example_is_default_deny(repo_root: Path) -> None:
     assert variables["pki_host_local_certificate_service_adapter"] == (
         "openbao-pristine-v1"
     )
+    assert variables["pki_host_local_certificate_transport"] == "gitlab"
+    assert variables["pki_host_local_certificate_filesystem_exchange_root"] == ""
+    assert variables["pki_host_local_certificate_filesystem_owner_uid"] is None
     assert variables["pki_host_local_certificate_service_unit"] == "openbao.service"
     assert variables["pki_host_local_certificate_endpoint"] == ""
     assert variables["pki_host_local_certificate_reviewed_ca_target_path"] == (
