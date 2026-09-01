@@ -1,0 +1,293 @@
+# RKE2 Artifact and Egress Matrix
+
+This matrix documents the external artifacts used by the qualified native-RPM
+RKE2 installation path. It applies to RKE2 `v1.35.5+rke2r2` on EL10 AMD64 with
+Calico, Traefik, and kube-vip. Update and requalify it whenever any package,
+chart, image, repository, base image, or build dependency changes.
+
+Private inventory may replace every environment-specific repository and
+registry endpoint with an approved internal mirror. This public document names
+upstream sources only; it does not contain private hosts, addresses, VIPs,
+interfaces, credentials, or trust-file locations.
+
+## Fetch Locations
+
+| Origin | Direct requests | Dynamic or transitive requests |
+| --- | --- | --- |
+| RKE2 nodes | Rancher signing key and repository metadata; exact node and SELinux RPMs; requested firewalld, kernel-module, and kmod package payloads; OCI image manifests for workloads scheduled on that node. | Hashed DNF metadata, dependency-selected RPMs, and OS package closure; registry authentication plus image config, layer, and redirect destinations. |
+| RKE2 Helm Controller job | kube-vip Helm index. The job may run on any eligible cluster node. | Chart URL selected from the index and its release-asset redirect. |
+| CI image builder | Python base-image manifest; top-level APT, pip, and Galaxy package requests. | OCI layers and authentication; APT metadata/dependencies; Python dependencies; collection download storage. |
+| CI Runner and operational job | Digest-pinned operational image and immutable GitLab repositories, then SSH and internal smoke endpoints. | Registry authentication and image layers. The job does not proxy target-node RPM or OCI downloads. |
+
+The pristine-node preflight, Ansible template rendering, guarded reboot,
+second-apply idempotency checks, and smoke playbooks do not intentionally fetch
+external artifacts. Runtime reconciliation may still pull a missing image while
+smoke waits for a workload.
+
+## Native RPM Sources
+
+The role configures the two Rancher repositories disabled by default and enables
+them only for the exact RKE2 transaction. Both package and repository GPG checks
+are enabled. The signing key is independently pinned by SHA-256 and OpenPGP
+fingerprint.
+
+| Artifact | Exact upstream source |
+| --- | --- |
+| Rancher signing key | `https://rpm.rancher.io/public.key` |
+| Signing-key SHA-256 | `7d2415f7fc532c365c8874bfad966566daaa0d04a9a5ba14d1db6080a9c12629` |
+| Signing-key fingerprint | `C8CFF216455126E9B9C918BE925EA29AE257814A` |
+| Common repository metadata | `https://rpm.rancher.io/rke2/stable/common/centos/10/noarch/repodata/repomd.xml` |
+| Version repository metadata | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/repodata/repomd.xml` |
+| `rke2-selinux-0.23-1.el10.noarch` | `https://rpm.rancher.io/rke2/stable/common/centos/10/noarch/rke2-selinux-0.23-1.el10.noarch.rpm` |
+| Server package | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-server-1.35.5~rke2r2-0.el10.x86_64.rpm` |
+| Agent package | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-agent-1.35.5~rke2r2-0.el10.x86_64.rpm` |
+
+DNF reads `repomd.xml` and then follows its hashed metadata filenames. Those
+filenames and repository contents are mutable and cannot be represented by one
+permanent list of object URLs. Use an immutable repository snapshot when that
+boundary is unacceptable.
+
+The role directly requests the exact SELinux package and one exact server or
+agent package. Their RPM metadata selects the exact matching
+`rke2-common-1.35.5~rke2r2-0.el10.x86_64` from the version repository. Its
+qualified upstream object is:
+
+```text
+https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-common-1.35.5~rke2r2-0.el10.x86_64.rpm
+```
+
+The RKE2 path also directly requests these unversioned package names from the
+enabled OS repositories:
+
+- `firewalld`
+- `python3-firewall`
+- `kernel-modules-extra`
+- `kmod`
+
+The selected RKE2 and SELinux RPM metadata additionally names `iptables`,
+`kernel-modules-extra`, `container-selinux`, `libselinux-utils`,
+`policycoreutils`, and `selinux-policy-base`. Except for the exact matching
+`rke2-common` constraint, DNF selects the OS NEVRAs and complete transitive
+closure from repository metadata at transaction time.
+
+The public role does not create Rocky repository definitions. Private inventory
+or host image policy selects the OS origin, release, mirrorlist or base URLs, and
+signature policy. The attended qualification selected the public Rocky 10.2
+HTTPS mirrorlists below for BaseOS, AppStream, and Extras; other environments
+must substitute and review their own effective sources. The package mirror hosts
+are returned dynamically by the mirrorlist service.
+
+```text
+https://mirrors.rockylinux.org/mirrorlist?arch=x86_64&repo=BaseOS-10.2
+https://mirrors.rockylinux.org/mirrorlist?arch=x86_64&repo=AppStream-10.2
+https://mirrors.rockylinux.org/mirrorlist?arch=x86_64&repo=extras-10.2
+```
+
+Allowing only `mirrors.rockylinux.org` is insufficient: it serves mirror
+metadata, not necessarily the selected RPM payloads. A finite firewall allowlist
+requires fixed base URLs or an internal Rocky snapshot.
+
+## RKE2 Runtime Images
+
+The effective selectors are `rke2_cni: calico` and
+`platform_ingress_controller: traefik`.
+
+The public configuration does not map `docker.io` to the internal registry and
+does not disable containerd's default registry endpoint. RKE2 system images
+therefore use Docker Hub directly unless private inventory adds an explicit
+mirror. The logical default endpoint is `https://index.docker.io/v2`; token,
+manifest, blob, and CDN requests introduce dynamically selected endpoints.
+
+RKE2 publishes release-associated image-list assets. The lists below are the
+complete release bundles selected by this configuration and are discovery inputs
+for a full offline mirror. They contain tags, not immutable image digests, and
+are not proof that every optional image is scheduled or pulled by a particular
+cluster. Qualification must resolve and record each required manifest or index
+digest; that digest inventory, not a later re-resolution of these tags, is the
+offline mirror contract.
+
+### Core Bundle
+
+Official list: [`rke2-images-core.linux-amd64.txt`](https://github.com/rancher/rke2/releases/download/v1.35.5%2Brke2r2/rke2-images-core.linux-amd64.txt)
+
+SHA-256: `923c06d468a5ce1542698300e729c62d4071484ab1c7d254402f5cee18d90e6c`
+
+```text
+docker.io/rancher/rke2-runtime:v1.35.5-rke2r2
+docker.io/rancher/hardened-kubernetes:v1.35.5-rke2r2-build20260521
+docker.io/rancher/hardened-coredns:v1.14.3-build20260511
+docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260511
+docker.io/rancher/hardened-dns-node-cache:1.26.8-build20260511
+docker.io/rancher/hardened-etcd:v3.6.7-k3s1-build20260512
+docker.io/rancher/hardened-k8s-metrics-server:v0.8.1-build20260513
+docker.io/rancher/hardened-addon-resizer:1.8.23-build20260511
+docker.io/rancher/klipper-helm:v0.10.0-build20260513
+docker.io/rancher/klipper-lb:v0.4.17
+docker.io/rancher/mirrored-pause:3.6
+docker.io/rancher/kube-webhook-certgen:v1.14.5-hardened2
+docker.io/rancher/nginx-ingress-controller:v1.14.5-hardened2
+docker.io/rancher/rke2-cloud-provider:v1.35.4-0.20260415195656-e51c0636351d-build20260415
+docker.io/rancher/hardened-snapshot-controller:v8.5.0-build20260513
+```
+
+The bundle includes conditional components. For example, ingress-nginx images
+remain in the core bundle even though this deployment selects Traefik and the
+smoke contract requires ingress-nginx to be absent.
+
+### Calico Bundle
+
+Official list: [`rke2-images-calico.linux-amd64.txt`](https://github.com/rancher/rke2/releases/download/v1.35.5%2Brke2r2/rke2-images-calico.linux-amd64.txt)
+
+SHA-256: `fd359f603575306cdd06190d3eab2df2e3e293773d61804b76edae8294346e54`
+
+```text
+docker.io/rancher/mirrored-calico-operator:v1.42.0
+docker.io/rancher/mirrored-calico-ctl:v3.32.0
+docker.io/rancher/mirrored-calico-kube-controllers:v3.32.0
+docker.io/rancher/mirrored-calico-typha:v3.32.0
+docker.io/rancher/mirrored-calico-node:v3.32.0
+docker.io/rancher/mirrored-calico-pod2daemon-flexvol:v3.32.0
+docker.io/rancher/mirrored-calico-cni:v3.32.0
+docker.io/rancher/mirrored-calico-apiserver:v3.32.0
+docker.io/rancher/mirrored-calico-csi:v3.32.0
+docker.io/rancher/mirrored-calico-node-driver-registrar:v3.32.0
+docker.io/rancher/mirrored-calico-envoy-gateway:v3.32.0
+docker.io/rancher/mirrored-calico-envoy-proxy:v3.32.0
+docker.io/rancher/mirrored-calico-envoy-ratelimit:v3.32.0
+docker.io/rancher/mirrored-calico-goldmane:v3.32.0
+docker.io/rancher/mirrored-calico-whisker:v3.32.0
+docker.io/rancher/mirrored-calico-whisker-backend:v3.32.0
+```
+
+Calico API, Typha, CSI, Envoy, Goldmane, and Whisker images are bundle members
+but may remain unused depending on rendered chart defaults and cluster scale.
+
+### Traefik Bundle
+
+Official list: [`rke2-images-traefik.linux-amd64.txt`](https://github.com/rancher/rke2/releases/download/v1.35.5%2Brke2r2/rke2-images-traefik.linux-amd64.txt)
+
+SHA-256: `a46a34494489ba954f8396f6aa324d5fd6c1c35989dd6bf52ec1e52fab78fa4a`
+
+```text
+docker.io/rancher/hardened-traefik:v3.6.16-build20260512
+```
+
+RKE2 packages the selected Calico, CoreDNS, metrics-server, snapshot-controller,
+and Traefik charts with the release. The online installation does not separately
+download those chart archives. The runtime image carries the packaged
+manifests, and Helm Controller jobs pull the referenced images.
+
+## kube-vip Sources
+
+The role writes a local `HelmChart` manifest but the Helm Controller fetches the
+repository index and chart archive at runtime.
+
+| Artifact | Exact upstream source or identity |
+| --- | --- |
+| Helm index | `https://kube-vip.github.io/helm-charts/index.yaml` |
+| Chart archive | `https://github.com/kube-vip/helm-charts/releases/download/kube-vip-0.9.9/kube-vip-0.9.9.tgz` |
+| Published chart SHA-256 | `106dc112b119abdbac82ea4be13dc8d815028972d101a45bd7a448d68611f1f6` |
+| Image selected by role | `ghcr.io/kube-vip/kube-vip:v1.2.1` |
+| Published multi-architecture image digest | `sha256:49b77655f9f109bedc5eb25723bb0e4c57d8513ba33cc69c31be3f243eb2386d` |
+
+The role pins chart and image versions but does not currently enforce the
+published chart checksum or image digest. The chart archive URL redirects to a
+temporary GitHub release-asset URL. GHCR pulls also resolve authentication,
+manifest, blob, and package-delivery endpoints dynamically. Allowing only
+`kube-vip.github.io` and `ghcr.io` is therefore not a complete firewall policy.
+
+## Internal Registry Boundary
+
+The rendered `registries.yaml` entry maps only the internal registry's own
+hostname to its HTTPS endpoint and CA. It does not mirror `docker.io`, `ghcr.io`,
+or a wildcard, and the deployment does not set
+`disable-default-registry-endpoint: true`.
+
+Consequently:
+
+- RKE2 and Traefik images use Docker Hub.
+- kube-vip uses GHCR.
+- only references already named with the internal registry hostname use Zot.
+- containerd may fall back to a public registry endpoint after a configured
+  mirror fails unless that fallback is explicitly disabled.
+
+When preserving upstream image references, a disconnected design must mirror
+each source registry, configure explicit `docker.io` and `ghcr.io` entries,
+disable their default endpoint fallback, and verify that every rendered workload
+resolves internally. A design that rewrites supported references or uses
+`system-default-registry` may use different routing, but it still requires a
+complete digest inventory and proof that no rendered reference reaches upstream.
+
+## Operational Image Egress
+
+Building `Containerfile.ci` requires these sources:
+
+| Build input | Source and pinning |
+| --- | --- |
+| Base image | `docker.io/library/python:3.14.7-slim-trixie@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910` |
+| Debian packages | Base-image-configured APT repositories; package versions, metadata, and transitive closure are not locked. |
+| Python packages | Configured pip index and package storage; `ansible-core==2.20.0` is pinned, but hashes and transitive dependencies are not locked. |
+| Ansible collections | Configured Galaxy server and download storage; `ansible.posix` `2.2.2` and `community.general` `12.6.0` are version-pinned without artifact hashes. |
+| Publication | Approved destination OCI registry; jobs consume the result only by digest. |
+
+At job time, the Runner needs the digest-pinned operational image and the
+self-managed GitLab repositories selected by immutable commits. The operational
+container needs the same GitLab HTTPS endpoint, managed-host SSH endpoints, and
+internal API/smoke endpoints. These are private operational paths, not public
+artifact sources.
+
+## Firewall Policy
+
+Direct online installation uses dynamic services. The following names describe
+configured or observed entry points, not an exhaustive permanent allowlist:
+
+- `rpm.rancher.io`
+- `mirrors.rockylinux.org` plus mirror hosts returned by its response
+- `index.docker.io`, Docker Hub authentication, registry, blob, and CDN hosts
+- `kube-vip.github.io`
+- `github.com` plus temporary GitHub release-asset hosts
+- `ghcr.io` plus GitHub package-delivery hosts
+
+Authentication, blob, CDN, mirror, and redirect hosts vary by provider behavior,
+geography, and time. Derive the actual set from controlled egress logs for the
+qualified run; do not promote one observation into a permanent provider contract.
+Do not build an IP allowlist from current DNS answers, redirect destinations, or
+one mirror response. A finite, reviewable egress policy requires:
+
+1. Fixed or internally snapshotted qualified OS and Rancher repositories.
+2. Internally mirrored RKE2, Calico, Traefik, and kube-vip images addressed by
+   reviewed digests.
+3. An internally hosted checksum-verified kube-vip chart archive or repository.
+4. When preserving upstream references, explicit containerd mirror entries with
+   public fallback disabled.
+5. A separately mirrored and reproducible CI image build chain.
+
+## Qualification Procedure
+
+For each release change:
+
+1. Record exact direct package NEVRAs and resolve the complete RPM closure
+   against the intended immutable Rocky and Rancher snapshots.
+2. Download the official core, selected CNI, and selected ingress image lists
+   from the exact RKE2 release and verify their published SHA-256 values.
+3. Mirror every bundle member by digest, even when the current rendered chart
+   does not schedule an optional member.
+4. Fetch and checksum the exact kube-vip chart, render its workloads, and mirror
+   every referenced image by digest.
+5. Run the attended fresh-install sequence with egress logging enabled at the
+   controlled gateway or mirrors.
+6. Enumerate containerd images on every node and all rendered Kubernetes image
+   references; reconcile them against the reviewed bundle and mirror inventory.
+7. Repeat with public egress denied. Require bootstrap, smoke, and second-apply
+   idempotency to pass before adopting the release in CI.
+
+## Authoritative Sources
+
+- [RKE2 release `v1.35.5+rke2r2`](https://github.com/rancher/rke2/releases/tag/v1.35.5%2Brke2r2)
+- [RKE2 private registry behavior](https://docs.rke2.io/install/private_registry)
+- [RKE2 packaged components](https://docs.rke2.io/install/packaged_components)
+- [RKE2 air-gap installation](https://docs.rke2.io/install/airgap)
+- [kube-vip Helm repository index](https://kube-vip.github.io/helm-charts/index.yaml)
+- [kube-vip chart `0.9.9`](https://github.com/kube-vip/helm-charts/releases/tag/kube-vip-0.9.9)
+- [kube-vip `v1.2.1`](https://github.com/kube-vip/kube-vip/releases/tag/v1.2.1)
+- [GitHub connectivity and changing IP ranges](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-githubs-ip-addresses)

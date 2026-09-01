@@ -26,6 +26,11 @@ fresh-install sequence in the [operator runbook](operator-runbook.md). It uses
 the same preflight, base, kube-vip, and smoke playbooks with explicit inventory
 group limits and requires second-apply idempotency.
 
+Review the [RKE2 artifact and egress matrix](rke2-egress.md) before installation.
+It records the exact qualified package, chart, and release-bundle inputs, where
+each fetch originates, and which dynamic upstream services require internal
+mirroring for a finite firewall policy.
+
 On fresh nodes, check mode validates the RKE2, registry, and Traefik templates
 without creating target directories and reports the exact package and managed
 configuration scope as changed. Child-file diffs become available after their

@@ -66,6 +66,8 @@ and other secrets belong outside Git.
 - [RKE2 Operations](rke2-operations.md): Fixed CI launcher, attended bootstrap
   link, serial readiness gates, operational image, native RPM repository trust,
   and smoke limitations.
+- [RKE2 Artifact and Egress Matrix](rke2-egress.md): Exact qualified package,
+  image, and chart sources; dynamic fetch boundaries; and mirror requirements.
 - [Rebuild](rebuild.md): Host rebuild categories, repository responsibilities,
   service recovery, and Kubernetes node considerations.
 - [Migrations](../migrations/README.md): One-time transitions for existing hosts

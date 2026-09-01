@@ -234,6 +234,71 @@ def test_rke2_delegation_uses_bootstrap_host_identity(repo_root: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
+    matrix = (repo_root / "docs/rke2-egress.md").read_text()
+    inventory = yaml.safe_load(
+        (repo_root / "inventories/dev/group_vars/rke2_cluster.yml.example").read_text()
+    )
+    kube_vip_defaults = yaml.safe_load(
+        (repo_root / "roles/rke2_kube_vip/defaults/main.yml").read_text()
+    )
+    rke2_defaults = yaml.safe_load(
+        (repo_root / "roles/rke2/defaults/main.yml").read_text()
+    )
+    effective_inputs = rke2_defaults | kube_vip_defaults | inventory
+
+    for name in (
+        "rke2_version",
+        "rke2_rpm_common_repository_url",
+        "rke2_rpm_version_repository_url",
+        "rke2_rpm_el_major",
+        "rke2_rpm_arch",
+        "rke2_rpm_package_release",
+        "rke2_rpm_selinux_package_nevra",
+        "rke2_rpm_gpg_key_url",
+        "rke2_rpm_gpg_key_sha256",
+        "rke2_rpm_gpg_key_fingerprint",
+        "rke2_cni",
+        "platform_ingress_controller",
+        "rke2_kube_vip_chart_repo",
+        "rke2_kube_vip_chart_version",
+        "rke2_kube_vip_image_tag",
+    ):
+        assert str(effective_inputs[name]) in matrix
+
+    rpm_version = (
+        inventory["rke2_version"]
+        .removeprefix("v")
+        .replace("+", "~")
+        .replace("-", "~")
+    )
+    package_suffix = (
+        f"{rpm_version}-{inventory['rke2_rpm_package_release']}."
+        f"{inventory['rke2_rpm_arch']}.rpm"
+    )
+    version_repo = inventory["rke2_rpm_version_repository_url"]
+    for package in ("rke2-server", "rke2-agent", "rke2-common"):
+        assert f"{version_repo}/{package}-{package_suffix}" in matrix
+
+    common_repo = inventory["rke2_rpm_common_repository_url"]
+    assert f"{common_repo}/{inventory['rke2_rpm_selinux_package_nevra']}.rpm" in matrix
+
+    containerfile = (repo_root / "Containerfile.ci").read_text()
+    base_image = containerfile.splitlines()[0].removeprefix("FROM ")
+    assert base_image in matrix
+
+    ci_requirements = (repo_root / "requirements-ci.txt").read_text().splitlines()
+    assert all(requirement in matrix for requirement in ci_requirements)
+
+    collections = yaml.safe_load((repo_root / "requirements.yml").read_text())[
+        "collections"
+    ]
+    assert all(
+        collection["name"] in matrix and collection["version"] in matrix
+        for collection in collections
+    )
+
+
 @pytest.mark.parametrize(
     "argv",
     [
