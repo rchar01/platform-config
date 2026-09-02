@@ -1,0 +1,71 @@
+---
+- name: Require a Podman registry remap mapping
+  ansible.builtin.assert:
+    that:
+      - podman_host_registry_remaps | type_debug == 'dict'
+    fail_msg: podman_host_registry_remaps must map logical prefixes to physical locations.
+
+- name: Validate Podman registry remaps
+  ansible.builtin.assert:
+    that:
+      - item.key is string
+      - item.value is string
+      - item.key.split('/')[0] is match(podman_registry_remaps_authority_pattern)
+      - item.value.split('/')[0] is match(podman_registry_remaps_authority_pattern)
+      - >-
+        item.key.split('/')[1:]
+        | reject('match', podman_registry_remaps_path_component_pattern)
+        | list | length == 0
+      - >-
+        item.value.split('/')[1:]
+        | reject('match', podman_registry_remaps_path_component_pattern)
+        | list | length == 0
+      - >-
+        ':' not in item.key.split('/')[0]
+        or item.key.split('/')[0].split(':')[1] | int in range(1, 65536)
+      - >-
+        ':' not in item.value.split('/')[0]
+        or item.value.split('/')[0].split(':')[1] | int in range(1, 65536)
+    fail_msg: >-
+      Podman registry remaps require credential-free logical prefixes and
+      physical locations with valid ports and without URL schemes, tags, or
+      digests.
+  loop: "{{ podman_host_registry_remaps | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    podman_registry_remaps_authority_pattern: >-
+      ^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$
+    podman_registry_remaps_path_component_pattern: >-
+      ^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$
+
+- name: Ensure Podman registry drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/containers/registries.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  register: podman_registry_remaps_dropin_dir_result
+  when: podman_host_registry_remaps | length > 0
+
+- name: Write Podman registry remaps
+  ansible.builtin.template:
+    src: registry-remaps.conf.j2
+    dest: /etc/containers/registries.conf.d/90-platform-config-remaps.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - podman_host_registry_remaps | length > 0
+    - >-
+      not (
+        ansible_check_mode
+        and podman_registry_remaps_dropin_dir_result is changed
+      )
+
+- name: Remove disabled Podman registry remaps
+  ansible.builtin.file:
+    path: /etc/containers/registries.conf.d/90-platform-config-remaps.conf
+    state: absent
+  when: podman_host_registry_remaps | length == 0

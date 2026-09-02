@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from ansible_test_helpers import assert_failed_with, run_playbook
 from conftest import CommandRunner
@@ -42,6 +43,83 @@ def test_openbao_defaults_remain_staged(repo_root: Path) -> None:
     ):
         assert re.search(rf"^{re.escape(line)}$", defaults, re.MULTILINE)
     assert not re.search(r"^openbao_require_separate_mounts:", defaults, re.MULTILINE)
+
+
+def test_openbao_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
+    matrix = (repo_root / "docs/openbao-egress.md").read_text(encoding="utf-8")
+    openbao = yaml.safe_load(
+        (repo_root / "roles/openbao/defaults/main.yml").read_text(encoding="utf-8")
+    )
+    remaps = yaml.safe_load(
+        (repo_root / "roles/podman_registry_remaps/defaults/main.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    alloy = yaml.safe_load(
+        (repo_root / "roles/grafana_alloy/defaults/main.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    containerfile_base = (repo_root / "Containerfile.dev").read_text(
+        encoding="utf-8"
+    ).splitlines()[0].removeprefix("FROM ")
+
+    for value in (
+        openbao["openbao_version"],
+        openbao["openbao_image_registry"],
+        openbao["openbao_image_digest"],
+        openbao["openbao_image_architecture"],
+        alloy["grafana_alloy_version"],
+        alloy["grafana_alloy_download_checksum"],
+        alloy["grafana_alloy_package_nevra"],
+        containerfile_base,
+    ):
+        assert str(value) in matrix
+
+    for variable in (
+        "podman_host_registry_remaps",
+        "podman_host_package_nevra",
+        "openbao_haproxy_package_nevra",
+        "keepalived_vip_package_nevra",
+        "openbao_haproxy_selinux_package",
+    ):
+        assert f"`{variable}`" in matrix
+
+    for package in (
+        "python3-dnf-plugin-versionlock",
+        "kmod",
+        "firewalld",
+        "python3-firewall",
+        "policycoreutils-python-utils",
+    ):
+        assert f"`{package}`" in matrix
+
+    assert remaps["podman_host_registry_remaps"] == {}
+    assert "90-platform-config-remaps.conf" in matrix
+    assert "does not set `Pull=never`" in matrix
+    for command in (
+        "PLAYBOOK=playbooks/maintenance/openbao-registry-remaps.yml LIMIT=openbao",
+        "make status-openbao ENV=dev LIMIT=openbao",
+        "make smoke-openbao ENV=dev LIMIT=openbao",
+        "make roll-openbao ENV=dev LIMIT=openbao",
+    ):
+        assert command in matrix
+
+    maintenance = (
+        repo_root / "playbooks/maintenance/openbao-registry-remaps.yml"
+    ).read_text(encoding="utf-8")
+    site = (repo_root / "playbooks/site.yml").read_text(encoding="utf-8")
+    for fragment in (
+        "hosts: openbao",
+        "ansible_limit is defined",
+        "ansible_play_hosts_all",
+        "tasks_from: active_preflight.yml",
+        "openbao_active_observation",
+        "podman_host_registry_remaps",
+        "name: podman_registry_remaps",
+    ):
+        assert fragment in maintenance
+    assert "openbao-registry-remaps.yml" not in site
 
 
 def test_openbao_hcl_render_contract(rendered_openbao: dict[str, str]) -> None:

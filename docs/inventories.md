@@ -106,11 +106,14 @@ staging remains an explicit deactivation path and must not be used as routine
 convergence for an active cluster.
 
 The focused OpenBao staging playbook owns Podman installation directly, so
-OpenBao nodes do not require `container_hosts` membership. Storage remains a
-separate destructive boundary: add real nodes to `storage_volume_hosts` only
-after stable-device review and explicit initialization approval. Set
-`openbao_orchestration_ready` only after the resulting mounts and every remaining
-role input are complete.
+OpenBao nodes do not require `container_hosts` membership. Use the explicit
+`playbooks/maintenance/openbao-registry-remaps.yml` path to maintain Podman
+registry remaps on an active cluster without making `site.yml` mutate the
+runtime before the staging lifecycle gate. That maintenance path changes only
+the registry drop-in. Storage remains a separate destructive boundary: add real
+nodes to `storage_volume_hosts` only after stable-device review and explicit
+initialization approval. Set `openbao_orchestration_ready` only after the
+resulting mounts and every remaining role input are complete.
 
 Keep `openbao_bootstrap_ready`, `openbao_audit_migration_ready`,
 `openbao_bootstrap_complete_ready`, and `openbao_haproxy_activation_ready` false

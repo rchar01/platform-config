@@ -23,6 +23,10 @@ runtime user `openbao`, UID `100`, and GID `1000`. Those numeric IDs are an
 artifact-specific contract, not a promise made by the mutable Alpine image
 source.
 
+See the [OpenBao Artifact and Egress Matrix](../../docs/openbao-egress.md) for
+package sources, registry remapping, external fetch boundaries, and
+qualification steps.
+
 ## Required Inputs
 
 Set `openbao_enabled: true` only after the public CA source and all four service

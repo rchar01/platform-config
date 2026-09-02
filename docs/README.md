@@ -68,6 +68,9 @@ and other secrets belong outside Git.
   and smoke limitations.
 - [RKE2 Artifact and Egress Matrix](rke2-egress.md): Exact qualified package,
   image, and chart sources; dynamic fetch boundaries; and mirror requirements.
+- [OpenBao Artifact and Egress Matrix](openbao-egress.md): Exact OpenBao image,
+  package and PKI acquisition, Podman remapping, runtime boundaries, and
+  lifecycle-aware qualification.
 - [Rebuild](rebuild.md): Host rebuild categories, repository responsibilities,
   service recovery, and Kubernetes node considerations.
 - [Migrations](../migrations/README.md): One-time transitions for existing hosts

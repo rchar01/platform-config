@@ -1,0 +1,20 @@
+---
+- name: Require mocked active OpenBao lifecycle
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname != (openbao_registry_remaps_test_inactive_host | default(''))
+    fail_msg: Mocked active OpenBao lifecycle preflight failed.
+
+- name: Build mocked active OpenBao lifecycle observation
+  ansible.builtin.set_fact:
+    openbao_active_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ inventory_hostname }}"
+      cluster_id: >-
+        {{
+          'mismatched-cluster'
+          if inventory_hostname
+             == (openbao_registry_remaps_test_mismatched_host | default(''))
+          else 'mocked-cluster'
+        }}
+      cluster_signature: "{{ 'mocked-cluster' | hash('sha256') }}"

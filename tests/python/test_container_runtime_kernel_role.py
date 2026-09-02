@@ -37,7 +37,13 @@ def test_public_default_and_podman_dependency(repo_root: Path) -> None:
         "container_runtime_kernel_packages": ["kmod"],
         "container_runtime_overlayfs_policy_exception_enabled": True,
     }
-    assert metadata == {"dependencies": [{"role": "container_runtime_kernel"}]}
+    assert metadata == {
+        "dependencies": [
+            {"role": "podman_registry_remaps"},
+            {"role": "rocky_repository_policy"},
+            {"role": "container_runtime_kernel"},
+        ]
+    }
 
 
 def test_kernel_packages_are_installed_before_module_probes(repo_root: Path) -> None:

@@ -1,0 +1,72 @@
+---
+- name: Require canonical OpenBao registry-remap maintenance selection
+  hosts: "{{ ansible_limit | default('localhost') }}"
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require exact explicit OpenBao registry-remap selection
+      ansible.builtin.assert:
+        that:
+          - groups.get('openbao', []) | length == 3
+          - ansible_limit is defined
+          - ansible_limit | default('') | length > 0
+          - >-
+            query('ansible.builtin.inventory_hostnames',
+                  ansible_limit | default('')) | list | sort
+            == groups.get('openbao', []) | list | sort
+        fail_msg: >-
+          OpenBao registry-remap maintenance requires an explicit limit selecting
+          exactly all three OpenBao hosts and no other inventory hosts.
+      run_once: true # noqa run-once[task]
+
+- name: Maintain active OpenBao registry remaps
+  hosts: openbao
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require enabled OpenBao registry-remap maintenance
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | list | sort == groups.get('openbao', []) | list | sort
+          - openbao_enabled | default(false) | bool
+          - podman_host_registry_remaps | default({}) | length > 0
+        fail_msg: >-
+          OpenBao registry-remap maintenance requires enabled OpenBao on the
+          complete three-node cluster and an explicit nonempty mapping.
+
+    - name: Inspect exact active OpenBao lifecycle
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+
+    - name: Collect active OpenBao lifecycle observations
+      ansible.builtin.set_fact:
+        openbao_registry_remap_active_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_active_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one exact active OpenBao cluster
+      ansible.builtin.assert:
+        that:
+          - openbao_registry_remap_active_observations | length == 3
+          - >-
+            openbao_registry_remap_active_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            openbao_registry_remap_active_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            openbao_registry_remap_active_observations
+            | map(attribute='node_id') | unique | length == 3
+        fail_msg: Registry-remap maintenance requires one exact active OpenBao cluster.
+      run_once: true # noqa run-once[task]
+
+    - name: Apply Podman registry remaps
+      ansible.builtin.include_role:
+        name: podman_registry_remaps

@@ -1,0 +1,8 @@
+---
+- name: Record mocked OpenBao registry-remap convergence
+  ansible.builtin.copy:
+    content: complete
+    dest: "{{ openbao_registry_remaps_test_marker }}"
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true # noqa run-once[task]

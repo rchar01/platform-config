@@ -1,4 +1,5 @@
 ---
 dependencies:
+  - role: podman_registry_remaps
   - role: rocky_repository_policy
   - role: container_runtime_kernel

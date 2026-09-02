@@ -82,6 +82,11 @@ Available maintenance playbooks:
   It requires an outside-Git read-only token, does not follow token-bearing
   redirects, and never initializes, unseals, restarts, or reconfigures OpenBao.
   HAProxy, VIP, and firewall connectivity remain separate acceptance gates.
+- `openbao-registry-remaps.yml`: applies only `podman_registry_remaps` after
+  requiring an exact explicit three-host limit and validating each host's
+  observed active lifecycle plus cross-host cluster identity. It changes no
+  Podman package, storage, socket, kernel, or OpenBao service state and is not
+  imported by `site.yml`.
 - `openbao-rolling-restart.yml`: explicitly invoked post-initialization
   convergence. It requires all three hosts and a strict healthy baseline, queues
   current standbys before the active node, uses `serial: 1`, aborts on leadership

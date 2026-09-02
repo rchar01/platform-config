@@ -1,0 +1,8 @@
+{% for prefix, location in podman_host_registry_remaps | dictsort %}
+[[registry]]
+prefix = "{{ prefix }}"
+location = "{{ location }}"
+{% if not loop.last %}
+
+{% endif %}
+{% endfor %}

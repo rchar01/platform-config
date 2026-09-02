@@ -2,10 +2,11 @@
 
 Prepares hosts to run Podman-managed service containers.
 
-The role depends on `container_runtime_kernel`, installs one exact Podman RPM,
-creates the system Quadlet directory at `/etc/containers/systemd`, and manages
-`podman.socket`. The dependency ensures OverlayFS is loaded for every
-`podman_host` invocation. Its policy exception is enabled by default; see the
+The role depends on `podman_registry_remaps` and `container_runtime_kernel`,
+installs one exact Podman RPM, creates the system Quadlet directory at
+`/etc/containers/systemd`, and manages `podman.socket`. The kernel dependency
+ensures OverlayFS is loaded for every `podman_host` invocation. Its policy
+exception is enabled by default; see the
 [`container_runtime_kernel` role](../container_runtime_kernel/README.md) for the
 fail-closed opt-out behavior.
 
@@ -26,6 +27,21 @@ The socket is disabled and stopped by default because service roles should run
 containers through systemd units unless inventory explicitly enables the API
 socket. The kernel prerequisite does not alter Podman packages, Quadlets, socket
 settings, or the Podman storage driver.
+
+The [`podman_registry_remaps` dependency](../podman_registry_remaps/README.md)
+optionally maps logical image prefixes to physical registry locations before
+Podman package convergence. Direct `location` remapping has no fallback to the
+logical upstream registry when the managed entry is effective:
+
+```yaml
+podman_host_registry_remaps:
+  ghcr.io/example/service: registry.example.test/example/service
+```
+
+Different inventories may select different physical locations while service
+roles retain one reviewed logical image reference. Registry trust,
+authentication, precedence behavior, and independent active-service maintenance
+are documented by the dependency role.
 
 `podman_host_storage_contract_enabled` optionally requires an exact dedicated
 XFS mount at `podman_host_storage_mountpoint` before Podman or its API socket is

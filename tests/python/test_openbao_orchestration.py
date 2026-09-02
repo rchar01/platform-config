@@ -52,6 +52,17 @@ def _roles_environment(repo_root: Path) -> dict[str, str]:
     }
 
 
+def _registry_remaps_environment(repo_root: Path) -> dict[str, str]:
+    return {
+        "ANSIBLE_ROLES_PATH": os.pathsep.join(
+            [
+                str(repo_root / "tests/fixtures/openbao-registry-remaps/roles"),
+                str(repo_root / "roles"),
+            ]
+        )
+    }
+
+
 def test_openbao_orchestration_source_contract(repo_root: Path) -> None:
     playbook = (repo_root / "playbooks/openbao.yml").read_text(encoding="utf-8")
     role = (repo_root / "roles/openbao/tasks/main.yml").read_text(encoding="utf-8")
@@ -136,3 +147,71 @@ def test_openbao_orchestration_allows_unaffected_homelab_inventory(
         repo_root / "playbooks/openbao.yml",
         inventory=repo_root / "inventories/homelab/hosts.yml.example",
     ).assert_success()
+
+
+def test_openbao_registry_remap_maintenance_requires_complete_active_scope(
+    repo_root: Path, command_runner: CommandRunner, isolated_test_dir: Path
+) -> None:
+    inventory = repo_root / "tests/fixtures/openbao-orchestration/inventory.yml"
+    playbook = repo_root / "playbooks/maintenance/openbao-registry-remaps.yml"
+    marker = isolated_test_dir / "registry-remaps"
+    variables = {
+        "openbao_registry_remaps_test_marker": str(marker),
+        "podman_host_registry_remaps": {
+            "ghcr.io/openbao/openbao": "registry.example.test/openbao/openbao"
+        },
+    }
+
+    run_playbook(
+        command_runner,
+        playbook,
+        inventory=inventory,
+        extra_vars=(variables,),
+        limit="openbao",
+        environment=_registry_remaps_environment(repo_root),
+    ).assert_success()
+    assert marker.read_text(encoding="utf-8") == "complete"
+
+    for case_id, extra_vars, limit, message in (
+        (
+            "missing-limit",
+            {},
+            None,
+            "requires an explicit limit selecting exactly all three OpenBao hosts",
+        ),
+        (
+            "partial",
+            {},
+            "bao-stage-1",
+            "requires an explicit limit selecting exactly all three OpenBao hosts",
+        ),
+        (
+            "inactive",
+            {"openbao_registry_remaps_test_inactive_host": "bao-stage-3"},
+            "openbao",
+            "Mocked active OpenBao lifecycle preflight failed",
+        ),
+        (
+            "mismatched-cluster",
+            {"openbao_registry_remaps_test_mismatched_host": "bao-stage-3"},
+            "openbao",
+            "requires one exact active OpenBao cluster",
+        ),
+        (
+            "unrelated",
+            {},
+            "unrelated-stage",
+            "requires an explicit limit selecting exactly all three OpenBao hosts",
+        ),
+    ):
+        marker.unlink(missing_ok=True)
+        result = run_playbook(
+            command_runner,
+            playbook,
+            inventory=inventory,
+            extra_vars=({**variables, **extra_vars},),
+            limit=limit,
+            environment=_registry_remaps_environment(repo_root),
+        )
+        assert_failed_with(result, message)
+        assert not marker.exists(), case_id

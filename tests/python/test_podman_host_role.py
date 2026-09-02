@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment, FileSystemLoader
 
 
 def load_yaml(path: Path):
@@ -83,6 +85,67 @@ def test_podman_host_preserves_unrelated_versionlocks(repo_root: Path) -> None:
         "{{ podman_host_versionlock_path }}"
     )
     assert converge["ansible.builtin.copy"]["mode"] == "0644"
+
+
+def test_podman_registry_remaps_are_direct_and_optional(repo_root: Path) -> None:
+    role_root = repo_root / "roles/podman_registry_remaps"
+    defaults = load_yaml(role_root / "defaults/main.yml")
+    tasks = load_yaml(role_root / "tasks/main.yml")
+    by_name = {task["name"]: task for task in tasks}
+    metadata = load_yaml(repo_root / "roles/podman_host/meta/main.yml")
+    remaps = {
+        "ghcr.io/openbao/openbao": (
+            "registry.example.test/docker-ghcr/openbao/openbao"
+        ),
+        "quay.io/example": "registry.example.test/quay/example",
+    }
+    environment = Environment(
+        loader=FileSystemLoader(role_root / "templates"),
+        keep_trailing_newline=True,
+    )
+    rendered = environment.get_template("registry-remaps.conf.j2").render(
+        podman_host_registry_remaps=remaps
+    )
+
+    assert tomllib.loads(rendered) == {
+        "registry": [
+            {
+                "prefix": "ghcr.io/openbao/openbao",
+                "location": (
+                    "registry.example.test/docker-ghcr/openbao/openbao"
+                ),
+            },
+            {
+                "prefix": "quay.io/example",
+                "location": "registry.example.test/quay/example",
+            },
+        ]
+    }
+    assert "[[registry.mirror]]" not in rendered
+    assert defaults["podman_host_registry_remaps"] == {}
+    assert metadata["dependencies"][0] == {"role": "podman_registry_remaps"}
+
+    validation = by_name["Validate Podman registry remaps"]
+    assert validation["loop"] == "{{ podman_host_registry_remaps | dict2items }}"
+    assertions = validation["ansible.builtin.assert"]["that"]
+    assert "item.key is string" in assertions
+    assert "item.value is string" in assertions
+    assert any("item.key.split('/')[0] is match" in assertion for assertion in assertions)
+    assert any("item.value.split('/')[0] is match" in assertion for assertion in assertions)
+    assert sum("reject('match'" in assertion for assertion in assertions) == 2
+    assert sum("range(1, 65536)" in assertion for assertion in assertions) == 2
+
+    write = by_name["Write Podman registry remaps"]
+    assert write["ansible.builtin.template"]["dest"] == (
+        "/etc/containers/registries.conf.d/90-platform-config-remaps.conf"
+    )
+    assert write["ansible.builtin.template"]["mode"] == "0644"
+    remove = by_name["Remove disabled Podman registry remaps"]
+    assert remove["ansible.builtin.file"] == {
+        "path": "/etc/containers/registries.conf.d/90-platform-config-remaps.conf",
+        "state": "absent",
+    }
+    assert remove["when"] == "podman_host_registry_remaps | length == 0"
 
 
 def test_podman_host_rejects_unsafe_versionlock_paths(repo_root: Path) -> None:

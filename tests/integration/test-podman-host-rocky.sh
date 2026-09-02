@@ -134,6 +134,11 @@ if bare_output="$(run_playbook -e podman_host_package_nevra=podman 2>&1)"; then
 fi
 grep -q 'requires one exact x86_64 Podman NEVRA' <<< "$bare_output" \
   || fail 'Podman host role did not explain exact-NEVRA rejection'
+if invalid_remap_output="$(run_playbook -e '{"podman_host_registry_remaps":{"ghcr.io/openbao/openbao":"registry.example.test:65536/openbao/openbao"}}' 2>&1)"; then
+  fail 'Podman host role accepted a registry remap with an invalid port'
+fi
+grep -q 'registry remaps require credential-free logical prefixes' <<< "$invalid_remap_output" \
+  || fail 'Podman host role did not explain registry remap rejection'
 if podman exec "$CONTAINER" rpm -q python3-dnf-plugin-versionlock >/dev/null 2>&1; then
   fail 'Rejected Podman input installed the versionlock provider'
 fi
@@ -275,6 +280,57 @@ podman exec "$CONTAINER" systemctl daemon-reload
 podman exec "$CONTAINER" systemctl cat qualification.service >/dev/null
 if podman exec "$CONTAINER" systemctl is-active --quiet qualification.service; then
   fail 'Quadlet qualification service started unexpectedly'
+fi
+
+for invalid_registry_location in \
+  '-registry.example.test/openbao/openbao' \
+  'registry..example.test/openbao/openbao' \
+  'registry.example.test/openbao/openbao/' \
+  'registry.example.test/openbao/../openbao'; do
+  invalid_registry_remap="{\"podman_host_registry_remaps\":{\"ghcr.io/openbao/openbao\":\"${invalid_registry_location}\"}}"
+  if invalid_remap_output="$(run_playbook -e "$invalid_registry_remap" 2>&1)"; then
+    printf '%s\n' "$invalid_remap_output" >&2
+    fail "Podman registry remap accepted invalid location: ${invalid_registry_location}"
+  fi
+  grep -q 'Podman registry remaps require credential-free logical prefixes' \
+    <<< "$invalid_remap_output" \
+    || fail "Podman registry remap did not explain invalid location: ${invalid_registry_location}"
+done
+
+registry_remaps='{"podman_host_registry_remaps":{"ghcr.io/openbao/openbao":"registry.example.test/openbao/openbao"}}'
+if ! remap_check_output="$(run_playbook --check -e "$registry_remaps" 2>&1)"; then
+  printf '%s\n' "$remap_check_output" >&2
+  fail 'Podman registry remap check mode failed'
+fi
+grep -qE 'changed=[1-9][0-9]*.*failed=0' <<< "$remap_check_output" \
+  || fail 'Podman registry remap check mode did not report the pending file'
+if podman exec "$CONTAINER" test -e /etc/containers/registries.conf.d/90-platform-config-remaps.conf; then
+  fail 'Podman registry remap check mode created the managed drop-in'
+fi
+run_playbook -e "$registry_remaps" >/dev/null
+expected_registry_remaps=$'[[registry]]\nprefix = "ghcr.io/openbao/openbao"\nlocation = "registry.example.test/openbao/openbao"'
+[[ "$(podman exec "$CONTAINER" cat /etc/containers/registries.conf.d/90-platform-config-remaps.conf)" == "$expected_registry_remaps" ]] \
+  || fail 'Podman host role did not render the exact registry remap'
+[[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a' /etc/containers/registries.conf.d/90-platform-config-remaps.conf)" == root:root:644 ]] \
+  || fail 'Podman registry remap metadata is invalid'
+if ! remap_idempotent_output="$(run_playbook -e "$registry_remaps" 2>&1)"; then
+  printf '%s\n' "$remap_idempotent_output" >&2
+  fail 'Second Podman registry remap convergence failed'
+fi
+grep -qE 'changed=0.*failed=0' <<< "$remap_idempotent_output" \
+  || fail 'Second Podman registry remap convergence was not idempotent'
+remap_checksum_before_disable_check="$(podman exec "$CONTAINER" sha256sum /etc/containers/registries.conf.d/90-platform-config-remaps.conf)"
+if ! disable_check_output="$(run_playbook --check 2>&1)"; then
+  printf '%s\n' "$disable_check_output" >&2
+  fail 'Disabled Podman registry remap check mode failed'
+fi
+grep -qE 'changed=[1-9][0-9]*.*failed=0' <<< "$disable_check_output" \
+  || fail 'Disabled Podman registry remap check mode did not report removal'
+[[ "$(podman exec "$CONTAINER" sha256sum /etc/containers/registries.conf.d/90-platform-config-remaps.conf)" == "$remap_checksum_before_disable_check" ]] \
+  || fail 'Disabled Podman registry remap check mode changed the managed drop-in'
+run_playbook >/dev/null
+if podman exec "$CONTAINER" test -e /etc/containers/registries.conf.d/90-platform-config-remaps.conf; then
+  fail 'Empty Podman registry remaps did not remove the managed drop-in'
 fi
 
 if ! idempotent_output="$(run_playbook 2>&1)"; then
