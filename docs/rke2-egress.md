@@ -4,6 +4,9 @@ This matrix documents the external artifacts used by the qualified native-RPM
 RKE2 installation path. It applies to RKE2 `v1.35.5+rke2r2` on EL10 AMD64 with
 Calico, Traefik, and kube-vip. Update and requalify it whenever any package,
 chart, image, repository, base image, or build dependency changes.
+Changing `rke2_cni`, `platform_ingress_controller`, artifact-affecting
+`rke2_extra_config`, or deployed workloads requires regenerating and
+requalifying the matrix because those inputs may introduce additional artifacts.
 
 Private inventory may replace every environment-specific repository and
 registry endpoint with an approved internal mirror. This public document names
@@ -90,10 +93,12 @@ repositories require a separate secret-backed interface.
 | Server package | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-server-1.35.5~rke2r2-0.el10.x86_64.rpm` |
 | Agent package | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-agent-1.35.5~rke2r2-0.el10.x86_64.rpm` |
 
-DNF reads `repomd.xml` and then follows its hashed metadata filenames. Those
-filenames and repository contents are mutable and cannot be represented by one
-permanent list of object URLs. Use an immutable repository snapshot when that
-boundary is unacceptable.
+With repository GPG verification enabled, DNF also requests the detached
+metadata signature, normally `repodata/repomd.xml.asc`. DNF then reads
+`repomd.xml` and follows its hashed metadata filenames. Those filenames and
+repository contents are mutable and cannot be represented by one permanent list
+of object URLs. Use an immutable repository snapshot when that boundary is
+unacceptable.
 
 The role directly requests the exact SELinux package and one exact server or
 agent package. Their RPM metadata selects the exact matching
@@ -258,27 +263,36 @@ Consequently:
 - containerd may fall back to a public registry endpoint after a configured
   mirror fails unless that fallback is explicitly disabled.
 
-### Optional Docker Hub Mirror
+### Optional Public Registry Mirrors
 
-Private inventory can use `rke2_registry_mirrors` to route the unchanged
-`docker.io/...` RKE2 image references through an HTTPS OCI pull-through mirror.
-Set `rke2_disable_default_registry_endpoint` to prevent fallback:
+Private inventory can use `rke2_registry_mirrors` to route unchanged
+`docker.io/...` RKE2 and `ghcr.io/...` kube-vip image references through HTTPS
+OCI pull-through mirrors. Set `rke2_disable_default_registry_endpoint` to
+prevent fallback:
 
 ```yaml
 rke2_registry_mirrors:
   docker.io:
     endpoint:
       - https://nexus.example.test/repository/docker-hub/v2
+  ghcr.io:
+    endpoint:
+      - https://nexus.example.test/repository/docker-ghcr/v2
 rke2_disable_default_registry_endpoint: true
 ```
 
 For a path-based Nexus repository, configure the Docker Distribution API root;
-the example therefore includes the explicit `/v2` suffix. The role requires at
-least one HTTPS endpoint and requires the global fallback setting whenever a
-`docker.io` mirror is present. That RKE2 setting disables default-endpoint
-fallback for every registry that has a mirror entry; registries without mirror
-entries retain their normal default endpoint behavior. Mirror endpoint
-definitions remain independent entries.
+the examples therefore include the explicit `/v2` suffix. Every mirror entry
+must contain at least one credential-free HTTPS endpoint. The role requires the
+global fallback setting whenever a `docker.io` or `ghcr.io` mirror is present.
+That RKE2 setting disables default-endpoint fallback for every registry that has
+a mirror entry; registries without mirror entries retain their normal default
+endpoint behavior. Mirror endpoint definitions remain independent entries.
+
+The `ghcr.io` mirror covers the kube-vip image only. It does not proxy the
+kube-vip Helm index or chart archive, which continue to use the sources in
+[kube-vip Sources](#kube-vip-sources) unless `rke2_kube_vip_chart_repo` selects
+an approved internal Helm repository.
 
 If the mirror certificate is not already trusted by the host image, RKE2 can
 reuse the optional `registry_ca_trust` role. Its
@@ -335,6 +349,10 @@ self-managed GitLab repositories selected by immutable commits. The operational
 container needs the same GitLab HTTPS endpoint, managed-host SSH endpoints, and
 internal API/smoke endpoints. These are private operational paths, not public
 artifact sources.
+
+Attended local commands may build `Containerfile.dev` and therefore also require
+its base-image, APT, pip, and Galaxy sources. That developer build chain is not
+separately qualified here.
 
 ## Firewall Policy
 

@@ -1,0 +1,7 @@
+---
+- name: Exercise RKE2 registry mirror validation
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run RKE2 registry mirror validation
+      ansible.builtin.include_tasks: ../../../roles/rke2/tasks/validate_registry_mirrors.yml

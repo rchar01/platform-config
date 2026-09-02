@@ -1,4 +1,7 @@
 ---
+- name: Validate RKE2 registry mirror configuration
+  ansible.builtin.import_tasks: validate_registry_mirrors.yml
+
 - name: Assert RKE2 inputs are configured
   ansible.builtin.assert:
     that:
@@ -9,31 +12,7 @@
       - kong_ingress_enabled is not defined
       - "'ingress-controller' not in rke2_extra_config"
       - "'disable-default-registry-endpoint' not in rke2_extra_config"
-      - rke2_registry_mirrors is mapping
       - rke2_registry_configs is mapping
-      - rke2_disable_default_registry_endpoint is boolean
-      - >-
-        'docker.io' not in rke2_registry_mirrors
-        or (
-          rke2_registry_mirrors['docker.io'] is mapping
-          and rke2_registry_mirrors['docker.io'].get('endpoint', []) is sequence
-          and rke2_registry_mirrors['docker.io'].get('endpoint', []) is not string
-          and rke2_registry_mirrors['docker.io'].get('endpoint', []) is not mapping
-          and rke2_registry_mirrors['docker.io'].get('endpoint', []) | length > 0
-          and (
-            rke2_registry_mirrors['docker.io'].get('endpoint', [])
-            | reject('string')
-            | list
-            | length
-          ) == 0
-          and (
-            rke2_registry_mirrors['docker.io'].get('endpoint', [])
-            | reject('match', '^https://[^/@\s]+(?:/[^\s]*)?$')
-            | list
-            | length
-          ) == 0
-          and rke2_disable_default_registry_endpoint
-        )
       - rke2_kernel_module_package_state in ['present', 'latest']
       - rke2_kernel_module_reboot_timeout | int > 0
       - rke2_kernel_module_reboot_marker_path | length > 0
@@ -68,10 +47,7 @@
       through platform_ingress_controller rather than rke2_extra_config and
       remove the retired kong_ingress_enabled variable before applying this role.
       The rke2_bootstrap_host must resolve to an inventory host with a non-empty
-      ansible_ssh_private_key_file for delegated readiness checks. Registry
-      mirror maps must use HTTPS endpoints; a docker.io mirror requires
-      rke2_disable_default_registry_endpoint so failed mirrors cannot fall back
-      to Docker Hub.
+      ansible_ssh_private_key_file for delegated readiness checks.
 
 - name: Schedule RKE2 restart after system registry trust changes
   ansible.builtin.debug:

@@ -53,8 +53,9 @@ rke2_registry_configs: "{{ {
     }
   }
 } }}"
-# To use an optional Docker Hub pull-through mirror, add a docker.io entry to
-# rke2_registry_mirrors and set this to true. See docs/rke2-egress.md.
+# To use optional public-registry pull-through mirrors, add docker.io and/or
+# ghcr.io entries to rke2_registry_mirrors and set this to true. See
+# docs/rke2-egress.md.
 rke2_disable_default_registry_endpoint: false
 rke2_firewalld_cluster_sources:
   - 192.0.2.66/32

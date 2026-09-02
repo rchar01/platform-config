@@ -1,0 +1,45 @@
+---
+- name: Validate RKE2 registry mirror inputs
+  ansible.builtin.assert:
+    that:
+      - rke2_registry_mirrors is mapping
+      - rke2_disable_default_registry_endpoint is boolean
+      - "'docker.io' not in rke2_registry_mirrors or rke2_disable_default_registry_endpoint"
+      - "'ghcr.io' not in rke2_registry_mirrors or rke2_disable_default_registry_endpoint"
+    fail_msg: >-
+      Registry mirrors must be a mapping. docker.io and ghcr.io mirrors require
+      rke2_disable_default_registry_endpoint so failed mirrors cannot fall back
+      to their public registries.
+
+- name: Validate RKE2 registry mirror mappings
+  ansible.builtin.assert:
+    that:
+      - item.key is string
+      - item.key | length > 0
+      - item.value is mapping
+    fail_msg: >-
+      Registry mirror names must be non-empty strings and their values must be
+      mappings.
+  loop: "{{ rke2_registry_mirrors | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Validate RKE2 registry mirror endpoints
+  ansible.builtin.assert:
+    that:
+      - item.value.get('endpoint', []) is sequence
+      - item.value.get('endpoint', []) is not string
+      - item.value.get('endpoint', []) is not mapping
+      - item.value.get('endpoint', []) | length > 0
+      - item.value.get('endpoint', []) | reject('string') | list | length == 0
+      - >-
+        item.value.get('endpoint', [])
+        | reject('match', '^https://[^/@\s]+(?:/[^\s]*)?$')
+        | list
+        | length == 0
+    fail_msg: >-
+      Registry mirror {{ item.key }} must define at least one credential-free
+      HTTPS endpoint.
+  loop: "{{ rke2_registry_mirrors | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

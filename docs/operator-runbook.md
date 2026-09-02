@@ -970,10 +970,11 @@ When the optional CA file is configured, the operator workstation reads it from
 the private checkout and a future CI job reads the same tracked file from its
 immutable private checkout; do not duplicate it in a GitLab File variable.
 System trust is node-wide, so review the complete bundle before enabling it.
-Configure the mirror through
-`rke2_registry_mirrors`, use its Docker API `/v2` endpoint, and set
-`rke2_disable_default_registry_endpoint: true` to prevent direct Docker Hub
-fallback.
+Configure Docker Hub and GHCR mirrors through `rke2_registry_mirrors`, use their
+Docker API `/v2` endpoints, and set
+`rke2_disable_default_registry_endpoint: true` to prevent direct public-registry
+fallback. The GHCR mirror covers the kube-vip image, not its Helm index or chart
+archive.
 
 ```bash
 make inventory ENV=dev
