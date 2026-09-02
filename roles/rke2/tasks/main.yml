@@ -2,6 +2,9 @@
 - name: Validate RKE2 registry mirror configuration
   ansible.builtin.import_tasks: validate_registry_mirrors.yml
 
+- name: Validate RKE2 RPM source configuration
+  ansible.builtin.import_tasks: validate_rpm_sources.yml
+
 - name: Assert RKE2 inputs are configured
   ansible.builtin.assert:
     that:
@@ -20,8 +23,6 @@
       - rke2_kernel_module_reboot_marker_path != rke2_kernel_module_readiness_marker_path
       - groups.get(rke2_server_group, []) | length > 0
       - rke2_version is match('^v[0-9]+\.[0-9]+\.[0-9]+\+rke2r[0-9]+$')
-      - rke2_rpm_common_repository_url is match('^https://.+$')
-      - rke2_rpm_version_repository_url is match('^https://.+$')
       - rke2_rpm_common_repository_id | length > 0
       - rke2_rpm_version_repository_id | length > 0
       - rke2_rpm_common_repository_id != rke2_rpm_version_repository_id
@@ -31,7 +32,6 @@
       - ansible_architecture == rke2_rpm_arch
       - rke2_rpm_package_release is match('^[0-9]+\.el[0-9]+$')
       - rke2_rpm_selinux_package_nevra is match('^rke2-selinux-[0-9][A-Za-z0-9_.~+-]*-[0-9]+\.el[0-9]+\.noarch$')
-      - rke2_rpm_gpg_key_url is match('^https://.+$')
       - rke2_rpm_gpg_key_sha256 is match('^[0-9a-f]{64}$')
       - rke2_rpm_gpg_key_fingerprint is match('^[0-9A-F]{40}$')
       - >-
@@ -710,6 +710,7 @@
       - "{{ rke2_rpm_selinux_package_nevra }}"
       - "{{ rke2_rpm_node_package_nevra }}"
     state: present
+    allow_downgrade: false
     enablerepo:
       - "{{ rke2_rpm_common_repository_id }}"
       - "{{ rke2_rpm_version_repository_id }}"
@@ -734,6 +735,7 @@
     fail_msg: >-
       Expected {{ rke2_rpm_node_package_nevra }}, found
       {{ rke2_installed_package.stdout | default('no installed package', true) }}.
+      Reviewed RKE2 downgrades are not supported by this role.
   when: not ansible_check_mode
 
 - name: Read the installed RKE2 SELinux package identity

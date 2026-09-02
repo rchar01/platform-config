@@ -43,6 +43,9 @@ def test_rke2_composes_optional_registry_trust_and_fails_closed(
     mirror_tasks = yaml.safe_load(
         (repo_root / "roles/rke2/tasks/validate_registry_mirrors.yml").read_text()
     )
+    rpm_source_tasks = yaml.safe_load(
+        (repo_root / "roles/rke2/tasks/validate_rpm_sources.yml").read_text()
+    )
     preflight = _named(tasks, "Assert RKE2 inputs are configured")
     mirror_inputs = _named(mirror_tasks, "Validate RKE2 registry mirror inputs")
     mirror_mappings = _named(mirror_tasks, "Validate RKE2 registry mirror mappings")
@@ -59,6 +62,15 @@ def test_rke2_composes_optional_registry_trust_and_fails_closed(
     assert _named(tasks, "Validate RKE2 registry mirror configuration")[
         "ansible.builtin.import_tasks"
     ] == "validate_registry_mirrors.yml"
+    assert _named(tasks, "Validate RKE2 RPM source configuration")[
+        "ansible.builtin.import_tasks"
+    ] == "validate_rpm_sources.yml"
+    rpm_sources = _named(rpm_source_tasks, "Validate RKE2 RPM source URLs")
+    assert rpm_sources["loop"] == [
+        "{{ rke2_rpm_common_repository_url }}",
+        "{{ rke2_rpm_version_repository_url }}",
+        "{{ rke2_rpm_gpg_key_url }}",
+    ]
     assertions = preflight["ansible.builtin.assert"]["that"]
     assert "'disable-default-registry-endpoint' not in rke2_extra_config" in assertions
     input_assertions = mirror_inputs["ansible.builtin.assert"]["that"]
@@ -107,6 +119,8 @@ def test_rke2_composes_optional_registry_trust_and_fails_closed(
     assert "registry_ca_trust_source | default('') | length > 0" in complete["when"]
     assert "{% if rke2_disable_default_registry_endpoint | bool %}" in config_template
     assert "disable-default-registry-endpoint: true" in config_template
+    install = _named(tasks, "Install exact native RKE2 RPM packages")
+    assert install["ansible.builtin.dnf"]["allow_downgrade"] is False
 
 
 def _run_rke2_registry_mirror_validation(
@@ -135,6 +149,66 @@ def _run_rke2_registry_mirror_validation(
         capture_output=True,
         text=True,
     )
+
+
+def _run_rke2_rpm_source_validation(
+    repo_root: Path, source: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            "-c",
+            "local",
+            str(repo_root / "tests/fixtures/rke2-rpm-sources/playbook.yml"),
+            "--extra-vars",
+            json.dumps(
+                {
+                    "rke2_rpm_common_repository_url": source,
+                    "rke2_rpm_version_repository_url": (
+                        "https://rpm.example.test/rke2/1.35/x86_64"
+                    ),
+                    "rke2_rpm_gpg_key_url": "https://rpm.example.test/public.key",
+                }
+            ),
+        ],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_rke2_rpm_source_validation_accepts_canonical_https_url(
+    repo_root: Path,
+) -> None:
+    result = _run_rke2_rpm_source_validation(
+        repo_root, "https://rpm.example.test:8443/rke2/common"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "http://rpm.example.test/rke2/common",
+        "https://user:password@rpm.example.test/rke2/common",
+        "https://rpm..example.test/rke2/common",
+        "https://rpm.example.test:0/rke2/common",
+        "https://rpm.example.test:65536/rke2/common",
+        "https://rpm.example.test/rke2/common?channel=stable",
+        "https://rpm.example.test/rke2/common\nother",
+    ],
+)
+def test_rke2_rpm_source_validation_rejects_unsafe_url(
+    repo_root: Path, source: str
+) -> None:
+    result = _run_rke2_rpm_source_validation(repo_root, source)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "password" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
@@ -238,6 +312,9 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
         (repo_root / "roles/rke2/defaults/main.yml").read_text()
     )
     tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    rpm_source_tasks = yaml.safe_load(
+        (repo_root / "roles/rke2/tasks/validate_rpm_sources.yml").read_text()
+    )
     preflight = _named(tasks, "Assert RKE2 inputs are configured")
     key_download = _named(tasks, "Download the RKE2 RPM signing key")
     key_import = _named(tasks, "Import the verified RKE2 RPM signing key")
@@ -257,8 +334,11 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
     assert defaults["rke2_rpm_gpg_key_fingerprint"] == ""
 
     assertions = preflight["ansible.builtin.assert"]["that"]
-    assert "rke2_rpm_common_repository_url is match('^https://.+$')" in assertions
-    assert "rke2_rpm_version_repository_url is match('^https://.+$')" in assertions
+    rpm_sources = _named(rpm_source_tasks, "Validate RKE2 RPM source URLs")
+    assert any(
+        "item is match(rke2_rpm_source_url_pattern)" in assertion
+        for assertion in rpm_sources["ansible.builtin.assert"]["that"]
+    )
     assert "ansible_distribution_major_version == rke2_rpm_el_major" in assertions
     assert "ansible_architecture == rke2_rpm_arch" in assertions
     assert "rke2_rpm_gpg_key_sha256 is match('^[0-9a-f]{64}$')" in assertions
@@ -294,6 +374,7 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
         "{{ rke2_rpm_common_repository_id }}",
         "{{ rke2_rpm_version_repository_id }}",
     ]
+    assert install["ansible.builtin.dnf"]["allow_downgrade"] is False
     assert "Download RKE2 install script" not in names
     assert "Install RKE2" not in names
 

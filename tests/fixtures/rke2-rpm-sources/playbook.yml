@@ -1,0 +1,7 @@
+---
+- name: Exercise RKE2 RPM source validation
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run RKE2 RPM source validation
+      ansible.builtin.include_tasks: ../../../roles/rke2/tasks/validate_rpm_sources.yml

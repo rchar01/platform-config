@@ -361,6 +361,17 @@ def read_managed_file(path: Path) -> bytes:
     return data
 
 
+def check_ssh_directory_entries(directory: Path) -> None:
+    try:
+        entries = {entry.name for entry in directory.iterdir()}
+    except OSError:
+        raise PreparationError("cannot inspect the automation .ssh directory") from None
+    require(
+        entries <= {AUTHORIZED_KEYS.name, AUTHORIZED_KEYS_2.name},
+        "automation .ssh directory contains unexpected entries",
+    )
+
+
 def check_account(public_key: PublicKey) -> None:
     user = account()
     primary = check_account_identity(user)
@@ -380,6 +391,7 @@ def check_account(public_key: PublicKey) -> None:
     check_path(AUTHORIZED_KEYS, uid=user.pw_uid, gid=primary.gr_gid, mode=0o600, directory=False)
     require(read_managed_file(AUTHORIZED_KEYS) == public_key.content, "authorized key differs from the supplied per-VM key")
     require(not path_exists(AUTHORIZED_KEYS_2), f"conflicting key file exists: {AUTHORIZED_KEYS_2}")
+    check_ssh_directory_entries(AUTOMATION_HOME / ".ssh")
     check_path(SUDOERS_FILE, uid=0, gid=0, mode=0o440, directory=False)
     require(read_managed_file(SUDOERS_FILE) == SUDOERS_CONTENT, "managed sudoers policy differs from the required policy")
     run_command("runuser", "-u", AUTOMATION_USER, "--", command_path("sudo"), "-n", "true")
@@ -491,6 +503,7 @@ def ensure_account_state_before_apply() -> tuple[pwd.struct_passwd | None, grp.s
         info = (AUTOMATION_HOME / ".ssh").lstat()
         require(stat.S_ISDIR(info.st_mode), "existing .ssh path is not a directory")
         require(info.st_uid == user.pw_uid and info.st_gid == primary.gr_gid, "existing .ssh directory has unexpected ownership")
+        check_ssh_directory_entries(AUTOMATION_HOME / ".ssh")
     return user, primary
 
 

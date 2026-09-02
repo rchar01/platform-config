@@ -87,7 +87,8 @@ fingerprint during import, and configures common and version repositories with
 both package and repository GPG checks enabled. Both repositories remain
 disabled by default and are enabled only for the exact RKE2 package transaction.
 The installed node-package NEVRA, SELinux-package NEVRA, and RKE2 binary version
-are verified before the service is managed.
+are verified before the service is managed. The role permits upgrades but does
+not perform downgrades; selecting a lower package identity fails closed.
 
 Rancher publishes Enterprise Linux packages under `centos/<major>` paths. Rocky
 10.0, 10.1, and 10.2 therefore use native `centos/10` RKE2 repositories; the

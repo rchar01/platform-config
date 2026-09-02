@@ -1,0 +1,24 @@
+---
+- name: Validate RKE2 RPM source URLs
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match(rke2_rpm_source_url_pattern)
+      - >-
+        ':' not in item.split('/')[2]
+        or item.split('/')[2].rsplit(':', 1)[1] | int in range(1, 65536)
+    fail_msg: >-
+      RKE2 RPM sources must be credential-free HTTPS URLs with canonical DNS
+      hostnames, valid optional ports, and no query or fragment.
+  loop:
+    - "{{ rke2_rpm_common_repository_url }}"
+    - "{{ rke2_rpm_version_repository_url }}"
+    - "{{ rke2_rpm_gpg_key_url }}"
+  loop_control:
+    index_var: rke2_rpm_source_index
+    label: "source-{{ rke2_rpm_source_index + 1 }}"
+  no_log: >-
+    {{ item is not string or item is search('[@?#\s]') }}
+  vars:
+    rke2_rpm_source_url_pattern: >-
+      ^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$

@@ -526,6 +526,33 @@ def test_home_staging_directory_is_root_only(
         helper.ensure_home_staging_directory()
 
 
+def test_existing_account_preflight_rejects_ssh_startup_files(
+    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _helper(repo_root)
+    home = tmp_path / "rocky"
+    ssh_directory = home / ".ssh"
+    home.mkdir(mode=0o700)
+    ssh_directory.mkdir()
+    authorized_keys = ssh_directory / "authorized_keys"
+    authorized_keys.write_bytes(_public_key())
+    (ssh_directory / "rc").write_text("exit 0\n", encoding="ascii")
+    user = SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid())
+    primary = SimpleNamespace(gr_gid=os.getegid())
+
+    monkeypatch.setattr(helper, "AUTOMATION_HOME", home)
+    monkeypatch.setattr(helper, "AUTHORIZED_KEYS", authorized_keys)
+    monkeypatch.setattr(helper, "AUTHORIZED_KEYS_2", ssh_directory / "authorized_keys2")
+    monkeypatch.setattr(helper.pwd, "getpwnam", lambda _name: user)
+    monkeypatch.setattr(helper, "check_account_identity", lambda _user: primary)
+    monkeypatch.setattr(helper, "password_is_locked", lambda: True)
+    monkeypatch.setattr(helper.grp, "getgrnam", lambda _name: primary)
+    monkeypatch.setattr(helper, "account_groups", lambda _user: {primary.gr_gid})
+
+    with pytest.raises(helper.PreparationError, match="unexpected entries"):
+        helper.ensure_account_state_before_apply()
+
+
 def test_apply_resumes_exact_key_only_partial_state(
     repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -633,3 +660,4 @@ def test_helper_keeps_access_only_boundary(repo_root: Path) -> None:
     assert "ssh-keygen" not in source
     assert "shell=True" not in source
     assert "users_manage_ansible_user" not in source
+    assert source.count('check_ssh_directory_entries(AUTOMATION_HOME / ".ssh")') == 2
