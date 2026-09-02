@@ -1,3 +1,5 @@
 ---
 dependencies:
   - role: rocky_repository_policy
+  - role: registry_ca_trust
+    registry_ca_trust_defer_marker_clear: true

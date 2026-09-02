@@ -2,3 +2,5 @@
 registry_ca_trust_source: ""
 registry_ca_trust_sha256: ""
 registry_ca_trust_target: /etc/pki/ca-trust/source/anchors/platform-registry-ca.crt
+registry_ca_trust_refresh_marker: /var/lib/platform-config/registry-ca-trust-refresh-pending
+registry_ca_trust_defer_marker_clear: false

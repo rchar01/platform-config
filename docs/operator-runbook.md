@@ -955,6 +955,26 @@ The bootstrap preflight is read-only even though it uses the generic `apply`
 target. It must report `changed=0` and rejects existing RKE2 packages,
 configuration, binaries, service units, or state.
 
+An optional private `docker.io` mirror may use a reviewed public CA tracked in
+the private repository at
+`config/files/registry/<environment>/ca-bundle.crt`. Private inventory sets
+`registry_ca_trust_source` to that controller-side file, pins
+`registry_ca_trust_sha256`, and selects the system anchor destination. Do not
+copy the CA to nodes manually: the optional RKE2 dependency installs it and runs
+`update-ca-trust extract` before RKE2 starts. Both values remain empty when
+another managed baseline guarantees active system trust for the mirror on every
+current and replacement node, or when no mirror is configured. In no-op mode
+Ansible does not inspect or verify the preinstalled trust state.
+
+When the optional CA file is configured, the operator workstation reads it from
+the private checkout and a future CI job reads the same tracked file from its
+immutable private checkout; do not duplicate it in a GitLab File variable.
+System trust is node-wide, so review the complete bundle before enabling it.
+Configure the mirror through
+`rke2_registry_mirrors`, use its Docker API `/v2` endpoint, and set
+`rke2_disable_default_registry_endpoint: true` to prevent direct Docker Hub
+fallback.
+
 ```bash
 make inventory ENV=dev
 make ping ENV=dev LIMIT=rke2_cluster
@@ -968,8 +988,10 @@ make check ENV=dev PLAYBOOK=playbooks/rke2.yml LIMIT=rke2_cluster
 Review check-mode output before installation. It must select the expected native
 Enterprise Linux major, architecture, exact node and SELinux package identities,
 disabled Rancher repositories, repository and package GPG checks, and approved
-kernel transition. Stop on an unexpected repository, release, package, trust
-identity, enabled OS repository, or host. Never bypass those checks.
+kernel transition. When configured, it must also show the reviewed system trust
+anchor, Docker Hub mirror, and disabled public fallback. Stop on an unexpected
+repository, release, package, trust identity, mirror, enabled OS repository, or
+host. Never bypass those checks.
 
 Install the base cluster, run its smoke suite, and apply again. The first apply
 may reboot nodes serially to activate verified kernel modules. The playbook

@@ -72,6 +72,7 @@ rke2_traefik_https_node_port: 30443
 
 rke2_registry_mirrors: {}
 rke2_registry_configs: {}
+rke2_disable_default_registry_endpoint: false
 rke2_registry_ca_src: ""
 rke2_registry_ca_path: "{{ rke2_config_dir }}/registry-ca.crt"
 

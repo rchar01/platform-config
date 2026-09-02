@@ -5,7 +5,10 @@
       - registry_ca_trust_source is string
       - registry_ca_trust_sha256 is string
       - registry_ca_trust_target is string
+      - registry_ca_trust_refresh_marker is string
+      - registry_ca_trust_defer_marker_clear is boolean
       - registry_ca_trust_target is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
+      - registry_ca_trust_refresh_marker is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*$')
       - >-
         (registry_ca_trust_source | length == 0
          and registry_ca_trust_sha256 | length == 0)
@@ -23,6 +26,33 @@
     mode: "0755"
   when: registry_ca_trust_source | length > 0
 
+- name: Prepare registry CA trust refresh state directory
+  ansible.builtin.file:
+    path: "{{ registry_ca_trust_refresh_marker | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: registry_ca_trust_source | length > 0
+
+- name: Check for a pending registry CA trust refresh
+  ansible.builtin.stat:
+    path: "{{ registry_ca_trust_refresh_marker }}"
+  register: registry_ca_trust_refresh_pending
+  when: registry_ca_trust_source | length > 0
+
+- name: Record a pending registry CA trust refresh
+  ansible.builtin.file:
+    path: "{{ registry_ca_trust_refresh_marker }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+  changed_when: false
+  when:
+    - registry_ca_trust_source | length > 0
+    - not ansible_check_mode
+
 - name: Install reviewed registry CA trust anchor
   platform_pki_reviewed_ca:
     source: "{{ registry_ca_trust_source }}"
@@ -32,12 +62,32 @@
   register: registry_ca_trust_install
   when: registry_ca_trust_source | length > 0
 
+- name: Determine whether registry CA trust requires refresh
+  ansible.builtin.set_fact:
+    registry_ca_trust_refresh_required: >-
+      {{
+        registry_ca_trust_install is changed
+        or registry_ca_trust_refresh_pending.stat.exists | default(false)
+      }}
+  when: registry_ca_trust_source | length > 0
+
 - name: Refresh system CA trust
   ansible.builtin.command:
     argv:
       - update-ca-trust
       - extract
-  changed_when: registry_ca_trust_install is changed
+  changed_when: true
   when:
     - registry_ca_trust_source | length > 0
+    - registry_ca_trust_refresh_required | bool
+    - not ansible_check_mode
+
+- name: Clear the pending registry CA trust refresh
+  ansible.builtin.file:
+    path: "{{ registry_ca_trust_refresh_marker }}"
+    state: absent
+  changed_when: false
+  when:
+    - registry_ca_trust_source | length > 0
+    - not registry_ca_trust_defer_marker_clear | bool
     - not ansible_check_mode

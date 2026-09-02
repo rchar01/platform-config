@@ -31,6 +31,54 @@ them only for the exact RKE2 transaction. Both package and repository GPG checks
 are enabled. The signing key is independently pinned by SHA-256 and OpenPGP
 fingerprint.
 
+### Configuring RPM Sources
+
+These variables are the public configuration interface for RKE2 RPM sources:
+
+| Variable | Purpose |
+| --- | --- |
+| `rke2_rpm_common_repository_url` | HTTPS DNF base URL containing common packages such as `rke2-selinux`. |
+| `rke2_rpm_version_repository_url` | HTTPS DNF base URL containing versioned `rke2-server`, `rke2-agent`, and `rke2-common` packages. |
+| `rke2_rpm_gpg_key_url` | HTTPS source for the repository signing key. |
+| `rke2_rpm_gpg_key_sha256` | Reviewed lowercase SHA-256 of the downloaded key. |
+| `rke2_rpm_gpg_key_fingerprint` | Reviewed uppercase OpenPGP fingerprint. |
+
+The repository values are base URLs, not individual RPM URLs or OCI registry
+references. They must contain metadata and packages matching `rke2_version`,
+`rke2_rpm_el_major`, `rke2_rpm_arch`, `rke2_rpm_package_release`, and
+`rke2_rpm_selinux_package_nevra`. Role defaults are intentionally empty so each
+inventory must select and review its sources.
+
+Real environment values belong in private inventory. For example, an internal
+immutable mirror that preserves Rancher's packages, metadata signatures, and
+signing key could use this public placeholder configuration:
+
+```yaml
+rke2_version: v1.35.5+rke2r2
+rke2_rpm_el_major: "10"
+rke2_rpm_arch: x86_64
+rke2_rpm_package_release: 0.el10
+rke2_rpm_selinux_package_nevra: rke2-selinux-0.23-1.el10.noarch
+
+rke2_rpm_common_repository_url: >-
+  https://rpm-mirror.example.test/rke2/v1.35.5-rke2r2/common/centos/10/noarch
+rke2_rpm_version_repository_url: >-
+  https://rpm-mirror.example.test/rke2/v1.35.5-rke2r2/1.35/centos/10/x86_64
+rke2_rpm_gpg_key_url: >-
+  https://rpm-mirror.example.test/rke2/v1.35.5-rke2r2/public.key
+rke2_rpm_gpg_key_sha256: >-
+  7d2415f7fc532c365c8874bfad966566daaa0d04a9a5ba14d1db6080a9c12629
+rke2_rpm_gpg_key_fingerprint: C8CFF216455126E9B9C918BE925EA29AE257814A # gitleaks:allow - Public signing-key fingerprint.
+```
+
+The existing checksum and fingerprint remain valid only when the mirror serves
+the unchanged Rancher key and preserves both upstream signature sets. A mirror
+that re-signs content must sign both RPM packages and repository metadata with
+the one configured key, publish that reviewed key, and configure its SHA-256 and
+fingerprint. Separate package-signing and metadata-signing keys require a role
+enhancement. Do not embed credentials in repository URLs; authenticated
+repositories require a separate secret-backed interface.
+
 | Artifact | Exact upstream source |
 | --- | --- |
 | Rancher signing key | `https://rpm.rancher.io/public.key` |
@@ -198,10 +246,9 @@ manifest, blob, and package-delivery endpoints dynamically. Allowing only
 
 ## Internal Registry Boundary
 
-The rendered `registries.yaml` entry maps only the internal registry's own
+The qualified development configuration maps only the internal registry's own
 hostname to its HTTPS endpoint and CA. It does not mirror `docker.io`, `ghcr.io`,
-or a wildcard, and the deployment does not set
-`disable-default-registry-endpoint: true`.
+or a wildcard.
 
 Consequently:
 
@@ -210,6 +257,59 @@ Consequently:
 - only references already named with the internal registry hostname use Zot.
 - containerd may fall back to a public registry endpoint after a configured
   mirror fails unless that fallback is explicitly disabled.
+
+### Optional Docker Hub Mirror
+
+Private inventory can use `rke2_registry_mirrors` to route the unchanged
+`docker.io/...` RKE2 image references through an HTTPS OCI pull-through mirror.
+Set `rke2_disable_default_registry_endpoint` to prevent fallback:
+
+```yaml
+rke2_registry_mirrors:
+  docker.io:
+    endpoint:
+      - https://nexus.example.test/repository/docker-hub/v2
+rke2_disable_default_registry_endpoint: true
+```
+
+For a path-based Nexus repository, configure the Docker Distribution API root;
+the example therefore includes the explicit `/v2` suffix. The role requires at
+least one HTTPS endpoint and requires the global fallback setting whenever a
+`docker.io` mirror is present. That RKE2 setting disables default-endpoint
+fallback for every registry that has a mirror entry; registries without mirror
+entries retain their normal default endpoint behavior. Mirror endpoint
+definitions remain independent entries.
+
+If the mirror certificate is not already trusted by the host image, RKE2 can
+reuse the optional `registry_ca_trust` role. Its
+`registry_ca_trust_source`, `registry_ca_trust_sha256`, and
+`registry_ca_trust_target` variables describe a controller-side file, not inline
+YAML content:
+
+```yaml
+registry_ca_trust_source: >-
+  {{ inventory_dir | dirname | dirname }}/files/registry/<environment>/ca-bundle.crt
+registry_ca_trust_sha256: >-
+  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+registry_ca_trust_target: >-
+  /etc/pki/ca-trust/source/anchors/registry-ca-bundle.crt
+```
+
+Both source and digest are empty by default, making system trust installation a
+no-op. In no-op mode the role does not inspect or verify preinstalled trust;
+another managed host baseline must guarantee that the mirror validates on every
+current and replacement node. When enabled, Ansible verifies the source digest,
+installs the anchor, runs `update-ca-trust extract`, and restarts RKE2 through
+its existing guarded readiness path when trust changes. A private inventory may
+track a reviewed public registry CA under
+`config/files/registry/<environment>/ca-bundle.crt`; the local operator and a
+future CI job then consume the same file from their immutable private checkout.
+No GitLab File variable or public pipeline change is required.
+
+System trust applies to every process on the node. Review the complete bundle and
+prefer only the issuing CA chain required by the mirror. The RKE2-specific
+`rke2_registry_ca_src` and `rke2_registry_configs` variables remain available for
+a CA scoped only to a configured containerd registry endpoint.
 
 When preserving upstream image references, a disconnected design must mirror
 each source registry, configure explicit `docker.io` and `ghcr.io` entries,
@@ -259,7 +359,7 @@ one mirror response. A finite, reviewable egress policy requires:
    reviewed digests.
 3. An internally hosted checksum-verified kube-vip chart archive or repository.
 4. When preserving upstream references, explicit containerd mirror entries with
-   public fallback disabled.
+   public fallback disabled through `rke2_disable_default_registry_endpoint`.
 5. A separately mirrored and reproducible CI image build chain.
 
 ## Qualification Procedure

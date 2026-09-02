@@ -30,6 +30,65 @@ def test_rke2_playbook_is_serial_and_fatal(repo_root: Path) -> None:
     assert all(play["any_errors_fatal"] is True for play in plays)
 
 
+def test_rke2_composes_optional_registry_trust_and_fails_closed(
+    repo_root: Path,
+) -> None:
+    dependencies = yaml.safe_load(
+        (repo_root / "roles/rke2/meta/main.yml").read_text()
+    )["dependencies"]
+    defaults = yaml.safe_load(
+        (repo_root / "roles/rke2/defaults/main.yml").read_text()
+    )
+    tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    preflight = _named(tasks, "Assert RKE2 inputs are configured")
+    assertions = preflight["ansible.builtin.assert"]["that"]
+    restart = _named(tasks, "Schedule RKE2 restart after system registry trust changes")
+    config_template = (repo_root / "roles/rke2/templates/config.yaml.j2").read_text()
+
+    assert [dependency["role"] for dependency in dependencies] == [
+        "rocky_repository_policy",
+        "registry_ca_trust",
+    ]
+    assert dependencies[1]["registry_ca_trust_defer_marker_clear"] is True
+    assert defaults["rke2_disable_default_registry_endpoint"] is False
+    assert "'disable-default-registry-endpoint' not in rke2_extra_config" in assertions
+    assert any("'docker.io' not in rke2_registry_mirrors" in item for item in assertions)
+    mirror_assertion = next(
+        item
+        for item in assertions
+        if "rke2_registry_mirrors['docker.io'] is mapping" in item
+    )
+    assert "is sequence" in mirror_assertion
+    assert "is not string" in mirror_assertion
+    assert "reject('string')" in mirror_assertion
+    assert "reject('match', '^https://[^/@\\s]+" in mirror_assertion
+    assert any("rke2_disable_default_registry_endpoint" in item for item in assertions)
+    assert restart["notify"] == "Restart RKE2"
+    assert (
+        "registry_ca_trust_refresh_required | default(false) | bool"
+        in restart["when"]
+    )
+    assert tasks.index(restart) < next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("name") == "Apply pending RKE2 restart before readiness checks"
+    )
+    complete = _named(tasks, "Complete RKE2 system registry trust convergence")
+    assert complete["changed_when"] is False
+    assert tasks.index(complete) > next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("name") == "Wait for the converged RKE2 node to become Ready"
+    )
+    assert complete["ansible.builtin.file"] == {
+        "path": "{{ registry_ca_trust_refresh_marker }}",
+        "state": "absent",
+    }
+    assert "registry_ca_trust_source | default('') | length > 0" in complete["when"]
+    assert "{% if rke2_disable_default_registry_endpoint | bool %}" in config_template
+    assert "disable-default-registry-endpoint: true" in config_template
+
+
 def test_rke2_bootstrap_requires_clean_nodes(repo_root: Path) -> None:
     plays = yaml.safe_load(
         (repo_root / "playbooks/rke2-bootstrap-preflight.yml").read_text()
@@ -246,6 +305,26 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
         (repo_root / "roles/rke2/defaults/main.yml").read_text()
     )
     effective_inputs = rke2_defaults | kube_vip_defaults | inventory
+
+    for name in (
+        "rke2_rpm_common_repository_url",
+        "rke2_rpm_version_repository_url",
+        "rke2_rpm_gpg_key_url",
+        "rke2_rpm_gpg_key_sha256",
+        "rke2_rpm_gpg_key_fingerprint",
+    ):
+        assert f"`{name}`" in matrix
+    assert "config/files/registry/<environment>/ca-bundle.crt" in matrix
+
+    for name in (
+        "rke2_registry_mirrors",
+        "rke2_disable_default_registry_endpoint",
+        "registry_ca_trust_source",
+        "registry_ca_trust_sha256",
+        "registry_ca_trust_target",
+    ):
+        assert f"`{name}`" in matrix
+    assert "does not inspect or verify preinstalled trust" in matrix
 
     for name in (
         "rke2_version",

@@ -2,6 +2,9 @@ node-name: {{ rke2_node_name | to_json }}
 node-ip: {{ rke2_node_ip | to_json }}
 token-file: {{ rke2_token_path | to_json }}
 selinux: {{ rke2_selinux | bool | to_json }}
+{% if rke2_disable_default_registry_endpoint | bool %}
+disable-default-registry-endpoint: true
+{% endif %}
 {% if rke2_node_role == 'server' %}
 advertise-address: {{ rke2_node_ip | to_json }}
 write-kubeconfig-mode: {{ rke2_write_kubeconfig_mode | to_json }}
