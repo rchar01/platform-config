@@ -64,6 +64,17 @@ comparison; CR and embedded LF remain invalid. Normal convergence never rotates
 cluster credentials. The role writes the equivalent target token with exactly
 one final LF so repeated convergence does not report byte-level drift.
 
+When both desired registry mappings are empty, the same preflight refuses to
+remove registry configuration while `registry.dev/` remains in standard
+Kubernetes Pod, ReplicationController, Deployment, ReplicaSet, StatefulSet,
+DaemonSet, Job, or CronJob container, init-container, or ephemeral-container
+images. It also scans the complete static-manifest tree on every RKE2 server.
+Inspection results remain under `no_log`; failures report only a fixed reason,
+not workload payloads, image values, manifest paths, or manifest contents.
+Custom workload resources are outside this fixed built-in workload query and
+require a separately reviewed discovery and access policy before relying on
+them during registry retirement.
+
 The launcher translates `HUP`, `INT`, and `TERM` into `TERM` for its active
 Ansible child, waits for that child, and returns the conventional launcher
 status of 129, 130, or 143. Cancellation stops later fixed commands, but it

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from conftest import CommandRunner
+from conftest import CommandResult, CommandRunner
 
 
 def _named(items: list[dict], name: str) -> dict:
@@ -51,6 +51,9 @@ def test_rke2_composes_optional_registry_trust_and_fails_closed(
     mirror_mappings = _named(mirror_tasks, "Validate RKE2 registry mirror mappings")
     mirror_endpoints = _named(mirror_tasks, "Validate RKE2 registry mirror endpoints")
     restart = _named(tasks, "Schedule RKE2 restart after system registry trust changes")
+    registry_ca_removal = _named(
+        tasks, "Remove RKE2 registry CA certificate when unused"
+    )
     config_template = (repo_root / "roles/rke2/templates/config.yaml.j2").read_text()
 
     assert [dependency["role"] for dependency in dependencies] == [
@@ -72,8 +75,8 @@ def test_rke2_composes_optional_registry_trust_and_fails_closed(
         "{{ rke2_rpm_gpg_key_url }}",
     ]
     assertions = preflight["ansible.builtin.assert"]["that"]
-    assert "'disable-default-registry-endpoint' not in rke2_extra_config" in assertions
     input_assertions = mirror_inputs["ansible.builtin.assert"]["that"]
+    assert "'disable-default-registry-endpoint' not in rke2_extra_config" in assertions
     for registry in ("docker.io", "ghcr.io"):
         assert (
             f"'{registry}' not in rke2_registry_mirrors "
@@ -119,6 +122,16 @@ def test_rke2_composes_optional_registry_trust_and_fails_closed(
     assert "registry_ca_trust_source | default('') | length > 0" in complete["when"]
     assert "{% if rke2_disable_default_registry_endpoint | bool %}" in config_template
     assert "disable-default-registry-endpoint: true" in config_template
+    assert registry_ca_removal["ansible.builtin.file"] == {
+        "path": "{{ rke2_registry_ca_path }}",
+        "state": "absent",
+    }
+    assert registry_ca_removal["when"] == [
+        "rke2_registry_ca_src | length == 0",
+        "rke2_registry_mirrors | length == 0",
+        "rke2_registry_configs | length == 0",
+    ]
+    assert "notify" not in registry_ca_removal
     install = _named(tasks, "Install exact native RKE2 RPM packages")
     assert install["ansible.builtin.dnf"]["allow_downgrade"] is False
 
@@ -371,6 +384,231 @@ def test_rke2_convergence_preflight_is_secret_safe(repo_root: Path) -> None:
     assert "regex_replace('\\n\\Z', '')" in content
     assert content.endswith("\n")
     assert token_copy["no_log"] is True
+
+
+def test_rke2_registry_removal_preflight_is_fixed_and_non_leaking(
+    repo_root: Path,
+) -> None:
+    play = yaml.safe_load(
+        (repo_root / "playbooks/rke2-convergence-preflight.yml").read_text()
+    )[1]
+    tasks = play["tasks"]
+    workload = _named(tasks, "Inspect Kubernetes workload image references")
+    workload_args = workload["ansible.builtin.command"]["argv"]
+    image_jsonpath = play["vars"]["rke2_convergence_registry_image_jsonpath"]
+    manifest_scan = _named(
+        tasks, "Search RKE2 server manifests for registry.dev references"
+    )
+
+    assert play["hosts"] == "rke2_servers"
+    assert play["gather_facts"] is False
+    assert play["any_errors_fatal"] is True
+    assert "rke2_convergence_registry_guard_required" not in play["vars"]
+    for task in tasks:
+        assert "rke2_registry_mirrors | default({}) | length == 0" in task["when"]
+        assert "rke2_registry_configs | default({}) | length == 0" in task["when"]
+    assert "run_once" not in workload
+    assert (
+        "inventory_hostname == rke2_convergence_registry_bootstrap_host"
+        in workload["when"]
+    )
+    assert workload["check_mode"] is False
+    assert workload["changed_when"] is False
+    assert workload["failed_when"] is False
+    assert workload["no_log"] is True
+    assert (
+        "pods,replicationcontrollers,deployments.apps,replicasets.apps,"
+        "statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch"
+    ) in workload_args
+    for path in (
+        ".spec.containers[*]",
+        ".spec.initContainers[*]",
+        ".spec.ephemeralContainers[*]",
+        ".spec.template.spec.containers[*]",
+        ".spec.template.spec.initContainers[*]",
+        ".spec.template.spec.ephemeralContainers[*]",
+        ".spec.jobTemplate.spec.template.spec.containers[*]",
+        ".spec.jobTemplate.spec.template.spec.initContainers[*]",
+        ".spec.jobTemplate.spec.template.spec.ephemeralContainers[*]",
+    ):
+        assert path in image_jsonpath
+    assert manifest_scan["ansible.builtin.find"]["recurse"] is True
+    assert manifest_scan["ansible.builtin.find"]["hidden"] is True
+    assert manifest_scan["ansible.builtin.find"]["read_whole_file"] is True
+    assert manifest_scan["no_log"] is True
+    for task in tasks:
+        fail_msg = task.get("ansible.builtin.assert", {}).get("fail_msg", "")
+        assert "{{" not in fail_msg
+
+
+def _run_rke2_registry_removal_preflight(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    *,
+    workload_output: str = "",
+    kubectl_status: int = 0,
+    manifest_reference: bool = False,
+    registry_configured: bool = False,
+) -> tuple[CommandResult, Path]:
+    source_token = isolated_test_dir / "source-token"
+    source_token.write_bytes(b"registry-guard-token-secret")
+    fake_kubectl = isolated_test_dir / "kubectl"
+    kubectl_called = isolated_test_dir / "kubectl-called"
+    kubeconfig = isolated_test_dir / "kubeconfig"
+    kubeconfig.write_text("test fixture\n", encoding="utf-8")
+    expected_kubectl_args = [
+        "--kubeconfig",
+        str(kubeconfig),
+        "get",
+        (
+            "pods,replicationcontrollers,deployments.apps,replicasets.apps,"
+            "statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch"
+        ),
+        "--all-namespaces",
+        "-o",
+    ]
+    fake_kubectl.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib\n"
+        "import sys\n"
+        f"pathlib.Path({str(kubectl_called)!r}).touch()\n"
+        f"expected = {expected_kubectl_args!r}\n"
+        "if sys.argv[1:7] != expected or len(sys.argv) != 8:\n"
+        "    raise SystemExit(97)\n"
+        "required = ('.spec.containers[*]', '.spec.initContainers[*]', "
+        "'.spec.ephemeralContainers[*]', '.spec.template.spec.containers[*]', "
+        "'.spec.jobTemplate.spec.template.spec.containers[*]')\n"
+        "if not sys.argv[7].startswith('jsonpath=') or "
+        "not all(item in sys.argv[7] for item in required):\n"
+        "    raise SystemExit(98)\n"
+        f"print({workload_output!r}, file=sys.stderr if {kubectl_status} else sys.stdout)\n"
+        f"raise SystemExit({kubectl_status})\n",
+        encoding="utf-8",
+    )
+    fake_kubectl.chmod(0o755)
+    hosts: dict[str, dict[str, object]] = {}
+    manifest_dirs: dict[str, Path] = {}
+    for name in ("server-a", "server-b"):
+        installed_token = isolated_test_dir / f"{name}-token"
+        installed_token.write_bytes(b"registry-guard-token-secret\n")
+        manifest_dir = isolated_test_dir / f"{name}-manifests"
+        manifest_dir.mkdir()
+        manifest_dirs[name] = manifest_dir
+        hosts[name] = {
+            "ansible_connection": "local",
+            "ansible_become": False,
+            "rke2_token_path": str(installed_token),
+            "rke2_server_manifest_dir": str(manifest_dir),
+            "rke2_kubectl": str(fake_kubectl),
+            "rke2_kubeconfig": str(kubeconfig),
+        }
+    if manifest_reference:
+        hidden_dir = manifest_dirs["server-b"] / ".nested"
+        hidden_dir.mkdir()
+        (hidden_dir / "private-manifest-sentinel").write_text(
+            "image: registry.dev/private/manifest-secret\n", encoding="utf-8"
+        )
+    inventory = isolated_test_dir / "inventory.yml"
+    inventory.write_text(
+        yaml.safe_dump(
+            {
+                "all": {
+                    "children": {
+                        "rke2_cluster": {
+                            "children": {"rke2_servers": {"hosts": hosts}}
+                        }
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    ansible_tmp = isolated_test_dir / "ansible-tmp"
+    ansible_tmp.mkdir()
+    extra_vars: dict[str, object] = {"rke2_token_src": str(source_token)}
+    if registry_configured:
+        extra_vars["rke2_registry_configs"] = {"registry.dev": {}}
+    result = command_runner.run(
+        [
+            "ansible-playbook",
+            "-i",
+            inventory,
+            repo_root / "playbooks/rke2-convergence-preflight.yml",
+            "--extra-vars",
+            json.dumps(extra_vars),
+        ],
+        environment={"ANSIBLE_LOCAL_TEMP": str(ansible_tmp)},
+        redactions=(
+            "registry-guard-token-secret",
+            "registry.dev/private/workload-secret",
+            "registry.dev/private/manifest-secret",
+            "kubectl-private-error",
+            "private-manifest-sentinel",
+        ),
+    )
+    return result, kubectl_called
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_message"),
+    [
+        ("clean", ""),
+        (
+            "workload-reference",
+            "Kubernetes workloads still reference registry.dev/",
+        ),
+        (
+            "kubectl-failure",
+            "Unable to inspect Kubernetes workloads before removing RKE2",
+        ),
+        (
+            "manifest-reference",
+            "RKE2 server manifests still reference registry.dev/",
+        ),
+        ("registry-configured", ""),
+    ],
+)
+def test_rke2_registry_removal_preflight_contract(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    case: str,
+    expected_message: str,
+) -> None:
+    result, kubectl_called = _run_rke2_registry_removal_preflight(
+        repo_root,
+        isolated_test_dir,
+        command_runner,
+        workload_output=(
+            "kubectl-private-error"
+            if case == "kubectl-failure"
+            else (
+                "registry.dev/private/workload-secret"
+                if case in ("workload-reference", "registry-configured")
+                else ""
+            )
+        ),
+        kubectl_status=2 if case == "kubectl-failure" else 0,
+        manifest_reference=case == "manifest-reference",
+        registry_configured=case == "registry-configured",
+    )
+    if expected_message:
+        result.assert_failure()
+        assert expected_message in result.stdout + result.stderr
+    else:
+        result.assert_success()
+    output = result.stdout + result.stderr
+    for sensitive in (
+        "registry-guard-token-secret",
+        "registry.dev/private/workload-secret",
+        "registry.dev/private/manifest-secret",
+        "kubectl-private-error",
+        "private-manifest-sentinel",
+    ):
+        assert sensitive not in output
+    assert kubectl_called.exists() is (case != "registry-configured")
 
 
 def test_rke2_token_copy_is_canonical_and_idempotent(

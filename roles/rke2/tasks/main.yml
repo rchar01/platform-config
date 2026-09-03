@@ -896,6 +896,15 @@
     - rke2_registry_ca_src | length > 0
     - not ansible_check_mode or rke2_config_dir_stat.stat.exists
 
+- name: Remove RKE2 registry CA certificate when unused
+  ansible.builtin.file:
+    path: "{{ rke2_registry_ca_path }}"
+    state: absent
+  when:
+    - rke2_registry_ca_src | length == 0
+    - rke2_registry_mirrors | length == 0
+    - rke2_registry_configs | length == 0
+
 - name: Write RKE2 configuration
   ansible.builtin.template:
     src: config.yaml.j2

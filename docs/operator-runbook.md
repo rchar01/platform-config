@@ -111,7 +111,10 @@ make smoke-<service> ENV=dev
 make apply ENV=dev PLAYBOOK=playbooks/<service>.yml
 ```
 
-For RKE2, update `rke2_version` in the private environment, keep the server and agent play serial order from `playbooks/rke2.yml`, then run `make smoke-rke2 ENV=dev` and a final idempotency apply.
+For RKE2, update `rke2_version` in the private environment, run and review the
+fixed `rke2-converge-plan` operation, then separately authorize its matching
+`rke2-deploy` operation. The fixed deployment preserves server-before-agent
+serial order and runs the complete smoke path.
 
 ## Private Environment Files
 
@@ -425,7 +428,6 @@ After issuing or renewing, deploy the exported files with the matching playbooks
 make apply ENV=homelab PLAYBOOK=playbooks/gitlab.yml
 make apply ENV=dev PLAYBOOK=playbooks/gitlab-runners.yml
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 ```
 
 Run the matching smoke checks:
@@ -434,7 +436,6 @@ Run the matching smoke checks:
 make smoke-gitlab
 make smoke-runners ENV=dev
 make smoke-registry ENV=dev
-make smoke-rke2 ENV=dev
 ```
 
 ## PKI Operations
@@ -459,9 +460,7 @@ platform-pki service-renew registry-example \
 platform-pki service-verify registry-example
 platform-pki export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 make smoke-registry ENV=dev
-make smoke-rke2 ENV=dev
 ```
 
 Rotate a service private key and certificate when the key may be exposed or a rotation is intentionally scheduled:
@@ -473,9 +472,7 @@ platform-pki service-renew registry-example \
 platform-pki service-verify registry-example
 platform-pki export-ansible --force
 make apply ENV=dev PLAYBOOK=playbooks/registry.yml
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 make smoke-registry ENV=dev
-make smoke-rke2 ENV=dev
 ```
 
 Use the same pattern for GitLab, but include runner trust deployment:
@@ -949,6 +946,10 @@ below use `dev` as a safe example environment; private inventory selects the
 real hosts, addresses, repository URLs, VIP, interface, trust files, and exact
 package releases. Do not copy those values into this public runbook. Do not use
 `site.yml` or `scripts/run-dev.sh` while the monitoring phase remains blocked.
+The direct base-playbook commands in this section are only for pristine
+bootstrap and its immediate second-apply qualification. Existing-cluster
+convergence must use the fixed operation so core health, token identity, and
+registry-removal guards run before check mode or mutation.
 
 Validate inventory, SSH access, syntax, and pristine state before check mode.
 The bootstrap preflight is read-only even though it uses the generic `apply`
@@ -1013,7 +1014,19 @@ Delegated readiness checks intentionally use the bootstrap host's
 inventory-selected SSH identity; each private inventory or CI controller must
 provide a resolvable per-host key for that server.
 
-RKE2 uses the dev Zot registry through `registries.yaml`. On Enterprise Linux 10, the role installs `kernel-modules-extra` for `br_netfilter`; `overlay` is provided by `kernel-modules-core`. After its guarded kernel transition, RKE2 consumes the shared container-runtime OverlayFS policy and continues to own `br_netfilter` plus the Kubernetes networking sysctls. Set `rke2_reboot_for_kernel_modules: true` only where the role may perform a controlled serial reboot when the installed module package targets a newer kernel. On clean nodes, the role verifies the exact boot target and module availability after reboot before installing or starting RKE2. An installed node must be active, API-healthy where applicable, and Kubernetes `Ready` before reboot; it must return `Ready` before the serial play advances.
+Initial RKE2 desired state does not configure the dev Zot registry, its CA, or
+`registries.yaml`; add that integration later only through a separately
+reviewed guarded convergence after Zot is reachable and TLS-qualified. On
+Enterprise Linux 10, the role installs `kernel-modules-extra` for
+`br_netfilter`; `overlay` is provided by `kernel-modules-core`. After its
+guarded kernel transition, RKE2 consumes the shared container-runtime OverlayFS
+policy and continues to own `br_netfilter` plus the Kubernetes networking
+sysctls. Set `rke2_reboot_for_kernel_modules: true` only where the role may
+perform a controlled serial reboot when the installed module package targets a
+newer kernel. On clean nodes, the role verifies the exact boot target and module
+availability after reboot before installing or starting RKE2. An installed node
+must be active, API-healthy where applicable, and Kubernetes `Ready` before
+reboot; it must return `Ready` before the serial play advances.
 
 Kernel transitions use `/var/lib/rke2-kernel-reboot-target` to record the exact expected kernel and `/var/lib/rke2-kernel-reboot-readiness` to retain pending cluster-readiness validation for an existing node. An interruption after the target marker is written but before reboot fails closed on the next run; boot the recorded target, verify both required modules, and rerun the role. Clean nodes need only complete that kernel verification. For existing nodes, a retained readiness marker automatically resumes the service, API, and Kubernetes `Ready` gates without issuing another reboot. Remove the target marker manually only after the recorded kernel and modules are verified, and remove the readiness marker only after the installed node is healthy and `Ready`.
 
@@ -1036,11 +1049,13 @@ image and leader-election policy, one ready DaemonSet pod per server, and API
 reachability through the VIP from both the bootstrap server and bastion group.
 
 For guarded CI convergence of an existing cluster, the automatic plan first
-requires only core service, API, and Node health, then checks base RKE2 and
-kube-vip changes. The blocking deployment repeats core health, converges base
-RKE2 serially, converges kube-vip, and runs both complete smoke suites. Missing
-or drifted Traefik or kube-vip state is therefore repaired rather than required
-by the initial health gate.
+requires core service, API, and Node health, proves token equivalence, and
+blocks registry removal while a standard workload image or any server static
+manifest references `registry.dev/`. It then checks base RKE2 and kube-vip
+changes. The blocking deployment repeats these preflights, converges base RKE2
+serially, converges kube-vip, and runs both complete smoke suites. Missing or
+drifted Traefik or kube-vip state is therefore repaired rather than required by
+the initial health gate.
 
 Do not rerun the pristine preflight after packages have been installed. If a
 base apply fails, first establish whether the failure is target state or only a
@@ -1062,10 +1077,11 @@ Do not change the selector on an existing cluster as an ordinary convergence ope
 make smoke-kong-ingress ENV=dev
 ```
 
-Only when Kong is selected and its private pins are configured:
+Only when Kong is selected and its private pins are configured, run and review
+the fixed `rke2-converge-plan`, then separately authorize its matching
+`rke2-deploy` operation before continuing:
 
 ```bash
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 make smoke-rke2 ENV=dev
 make check ENV=dev PLAYBOOK=playbooks/kong-ingress.yml
 make apply ENV=dev PLAYBOOK=playbooks/kong-ingress.yml

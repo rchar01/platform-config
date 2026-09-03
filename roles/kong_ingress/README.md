@@ -19,10 +19,10 @@ kong_ingress_proxy_https_node_port: 30443
 
 Selecting Kong configures RKE2 with `ingress-controller: none`, so the packaged Traefik and ingress-nginx controllers are not installed. `traefik` and `kong` are alternatives rather than coexisting platform controllers.
 
-Apply and verify the RKE2 selection before installing Kong:
+Run and review the fixed `rke2-converge-plan`, then separately authorize its
+matching `rke2-deploy` operation before installing Kong:
 
 ```bash
-make apply ENV=dev PLAYBOOK=playbooks/rke2.yml
 make smoke-rke2 ENV=dev
 make apply ENV=dev PLAYBOOK=playbooks/kong-ingress.yml
 make smoke-kong-ingress ENV=dev

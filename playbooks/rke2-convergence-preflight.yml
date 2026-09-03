@@ -57,3 +57,146 @@
           installed token. Normal convergence does not rotate cluster
           credentials.
         quiet: true
+
+- name: Require unused RKE2 registry configuration
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_convergence_registry_kubectl: >-
+      {{ rke2_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}
+    rke2_convergence_registry_kubeconfig: >-
+      {{ rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}
+    rke2_convergence_registry_bootstrap_host: >-
+      {{ groups['rke2_servers'][0] }}
+    rke2_convergence_registry_manifest_dir: >-
+      {{
+        rke2_server_manifest_dir
+        | default('/var/lib/rancher/rke2/server/manifests')
+      }}
+    rke2_convergence_registry_image_jsonpath: >-
+      {range .items[*]}
+      {range .spec.containers[*]}{.image}{"\n"}{end}
+      {range .spec.initContainers[*]}{.image}{"\n"}{end}
+      {range .spec.ephemeralContainers[*]}{.image}{"\n"}{end}
+      {range .spec.template.spec.containers[*]}{.image}{"\n"}{end}
+      {range .spec.template.spec.initContainers[*]}{.image}{"\n"}{end}
+      {range .spec.template.spec.ephemeralContainers[*]}{.image}{"\n"}{end}
+      {range .spec.jobTemplate.spec.template.spec.containers[*]}{.image}{"\n"}{end}
+      {range .spec.jobTemplate.spec.template.spec.initContainers[*]}{.image}{"\n"}{end}
+      {range .spec.jobTemplate.spec.template.spec.ephemeralContainers[*]}{.image}{"\n"}{end}
+      {end}
+  tasks:
+    - name: Inspect Kubernetes workload image references
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_convergence_registry_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_convergence_registry_kubeconfig }}"
+          - get
+          - pods,replicationcontrollers,deployments.apps,replicasets.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch
+          - --all-namespaces
+          - -o
+          - "jsonpath={{ rke2_convergence_registry_image_jsonpath }}"
+      register: rke2_convergence_registry_workload_images
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+        - inventory_hostname == rke2_convergence_registry_bootstrap_host
+
+    - name: Require successful Kubernetes workload inspection
+      ansible.builtin.assert:
+        that:
+          - rke2_convergence_registry_workload_images.rc | default(-1) == 0
+        fail_msg: >-
+          Unable to inspect Kubernetes workloads before removing RKE2 registry
+          configuration.
+        quiet: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+        - inventory_hostname == rke2_convergence_registry_bootstrap_host
+
+    - name: Require Kubernetes workloads independent of registry.dev
+      ansible.builtin.assert:
+        that:
+          - >-
+            'registry.dev/' not in
+            (rke2_convergence_registry_workload_images.stdout | default(''))
+        fail_msg: >-
+          Kubernetes workloads still reference registry.dev/; migrate those
+          references before removing RKE2 registry configuration.
+        quiet: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+        - inventory_hostname == rke2_convergence_registry_bootstrap_host
+
+    - name: Inspect RKE2 server manifest directory
+      ansible.builtin.stat:
+        path: "{{ rke2_convergence_registry_manifest_dir }}"
+      register: rke2_convergence_registry_manifest_dir_stat
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+
+    - name: Require an inspectable RKE2 server manifest directory
+      ansible.builtin.assert:
+        that:
+          - rke2_convergence_registry_manifest_dir_stat.stat.exists | default(false)
+          - rke2_convergence_registry_manifest_dir_stat.stat.isdir | default(false)
+        fail_msg: >-
+          Unable to inspect RKE2 server manifests before removing RKE2 registry
+          configuration.
+        quiet: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+
+    - name: Search RKE2 server manifests for registry.dev references
+      ansible.builtin.find:
+        paths:
+          - "{{ rke2_convergence_registry_manifest_dir }}"
+        file_type: file
+        recurse: true
+        hidden: true
+        contains: registry[.]dev/
+        read_whole_file: true
+      register: rke2_convergence_registry_manifest_matches
+      failed_when: false
+      no_log: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+
+    - name: Require successful RKE2 server manifest inspection
+      ansible.builtin.assert:
+        that:
+          - rke2_convergence_registry_manifest_matches.matched is defined
+        fail_msg: >-
+          Unable to inspect RKE2 server manifests before removing RKE2 registry
+          configuration.
+        quiet: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
+
+    - name: Require RKE2 server manifests independent of registry.dev
+      ansible.builtin.assert:
+        that:
+          - rke2_convergence_registry_manifest_matches.matched == 0
+        fail_msg: >-
+          RKE2 server manifests still reference registry.dev/; migrate those
+          references before removing RKE2 registry configuration.
+        quiet: true
+      when:
+        - rke2_registry_mirrors | default({}) | length == 0
+        - rke2_registry_configs | default({}) | length == 0
