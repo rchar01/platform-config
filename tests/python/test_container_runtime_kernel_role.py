@@ -173,15 +173,25 @@ def test_rke2_integrates_after_kernel_transition_and_avoids_duplicate_overlay(
     task_names = [task["name"] for task in tasks]
     integration_index = task_names.index("Prepare the RKE2 container runtime kernel")
     persistence_index = task_names.index("Persist RKE2 kernel modules")
+    module_load_index = task_names.index("Load RKE2 kernel modules")
     integration = tasks[integration_index]
     persistence = tasks[persistence_index]["ansible.builtin.copy"]["content"]
+    module_load = tasks[module_load_index]
 
     assert integration_index > task_names.index("Verify RKE2 kernel modules are available")
     assert integration_index < persistence_index
+    assert persistence_index < module_load_index
     assert integration["ansible.builtin.include_role"] == {
         "name": "container_runtime_kernel"
     }
     assert "rke2_direct_kernel_modules" in persistence
+    assert module_load["ansible.builtin.command"]["argv"] == [
+        "/usr/sbin/modprobe",
+        "{{ item }}",
+    ]
+    assert module_load["changed_when"] is False
+    assert module_load["loop"] == "{{ rke2_direct_kernel_modules }}"
+    assert module_load["when"] == "not ansible_check_mode"
 
 
 def test_bastion_uses_shared_podman_foundation(repo_root: Path) -> None:

@@ -556,10 +556,12 @@
       {% endfor %}
 
 - name: Load RKE2 kernel modules
-  community.general.modprobe:
-    name: "{{ item }}"
-    state: present
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/modprobe
+      - "{{ item }}"
   loop: "{{ rke2_direct_kernel_modules }}"
+  changed_when: false
   when: not ansible_check_mode
 
 - name: Configure RKE2 sysctl settings
