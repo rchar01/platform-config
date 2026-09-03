@@ -1,0 +1,59 @@
+---
+- name: Require matching RKE2 convergence credentials
+  hosts: rke2_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Read the supplied RKE2 cluster token
+      ansible.builtin.slurp:
+        src: "{{ rke2_token_src }}"
+      delegate_to: localhost
+      become: false
+      register: rke2_convergence_source_token
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Read the installed RKE2 cluster token
+      ansible.builtin.slurp:
+        src: >-
+          {{ rke2_token_path | default('/etc/rancher/rke2/cluster-token') }}
+      register: rke2_convergence_installed_token
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Compare RKE2 cluster tokens
+      ansible.builtin.set_fact:
+        rke2_convergence_token_matches: >-
+          {{
+            rke2_convergence_source_token.content is defined
+            and rke2_convergence_installed_token.content is defined
+            and rke2_convergence_source_value | length > 0
+            and rke2_convergence_installed_value | length > 0
+            and '\r' not in rke2_convergence_source_value
+            and '\n' not in rke2_convergence_source_value
+            and '\r' not in rke2_convergence_installed_value
+            and '\n' not in rke2_convergence_installed_normalized
+            and rke2_convergence_source_value
+              == rke2_convergence_installed_normalized
+          }}
+      vars:
+        rke2_convergence_source_value: >-
+          {{ rke2_convergence_source_token.content | default('') | b64decode }}
+        rke2_convergence_installed_value: >-
+          {{ rke2_convergence_installed_token.content | default('') | b64decode }}
+        rke2_convergence_installed_normalized: >-
+          {{ rke2_convergence_installed_value | regex_replace('\n\Z', '') }}
+      no_log: true
+
+    - name: Require an unchanged RKE2 cluster token
+      ansible.builtin.assert:
+        that:
+          - rke2_convergence_token_matches | bool
+        fail_msg: >-
+          RKE2 cluster token is unavailable, malformed, or differs from the
+          installed token. Normal convergence does not rotate cluster
+          credentials.
+        quiet: true

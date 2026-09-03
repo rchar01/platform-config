@@ -12,9 +12,9 @@ absolute inventory path, and one absolute controller-variable file.
 | Operation | Commands |
 | --- | --- |
 | `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node preflight, then fixed base RKE2 check mode with diff. |
-| `rke2-converge-plan` | Inventory validation, cluster ping, core-health preflight, then fixed base RKE2 and kube-vip check mode with diff. |
+| `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2 and kube-vip check mode with diff. |
 | `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip convergence, then base and kube-vip smoke checks. |
-| `rke2-deploy` | Core-health preflight, serial RKE2 convergence, kube-vip convergence, then full base and kube-vip smoke checks. |
+| `rke2-deploy` | Core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip convergence, then full base and kube-vip smoke checks. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
 
 The launcher does not accept limits, tags, playbook paths, modules, extra vars,
@@ -55,6 +55,14 @@ and Node readiness gates. This deployment path is for an existing healthy
 cluster; use `rke2-bootstrap` for explicitly recreated clean nodes.
 Delegated Kubernetes readiness checks connect to the bootstrap server with that
 host's inventory-selected SSH key rather than the current serial node's key.
+
+The convergence preflight reads the controller and installed cluster-token files
+under `no_log` and fails before check mode or mutation unless their semantic
+values match. The controller token must be a nonempty single line with no CR or
+LF. An installed token may have one final LF, which is ignored only for the
+comparison; CR and embedded LF remain invalid. Normal convergence never rotates
+cluster credentials. The role writes the equivalent target token with exactly
+one final LF so repeated convergence does not report byte-level drift.
 
 The launcher translates `HUP`, `INT`, and `TERM` into `TERM` for its active
 Ansible child, waits for that child, and returns the conventional launcher

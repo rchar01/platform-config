@@ -123,6 +123,7 @@ case "$operation" in
     inventory_check
     ping_group rke2_cluster
     run_playbook playbooks/rke2-core-health.yml rke2_cluster
+    run_playbook playbooks/rke2-convergence-preflight.yml rke2_cluster
     run_playbook playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     ;;
@@ -137,6 +138,7 @@ case "$operation" in
     ;;
   rke2-deploy)
     run_playbook playbooks/rke2-core-health.yml rke2_cluster
+    run_playbook playbooks/rke2-convergence-preflight.yml rke2_cluster
     run_playbook playbooks/rke2.yml rke2_cluster
     run_playbook playbooks/rke2-kube-vip.yml rke2_servers
     run_playbook playbooks/rke2-smoke.yml rke2_cluster

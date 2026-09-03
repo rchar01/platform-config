@@ -871,7 +871,11 @@
 
 - name: Copy RKE2 cluster token
   ansible.builtin.copy:
-    src: "{{ rke2_token_src }}"
+    content: |
+      {{
+        (lookup('ansible.builtin.file', rke2_token_src, rstrip=false)
+        | regex_replace('\n\Z', ''))
+      }}
     dest: "{{ rke2_token_path }}"
     owner: root
     group: root

@@ -334,6 +334,185 @@ def test_rke2_core_health_is_separate_from_ingress(repo_root: Path) -> None:
     assert _named(smoke[1]["tasks"], "Wait for bundled Traefik HelmCharts")
 
 
+def test_rke2_convergence_preflight_is_secret_safe(repo_root: Path) -> None:
+    play = yaml.safe_load(
+        (repo_root / "playbooks/rke2-convergence-preflight.yml").read_text()
+    )[0]
+    tasks = play["tasks"]
+
+    assert play["hosts"] == "rke2_cluster"
+    assert play["gather_facts"] is False
+    assert play["any_errors_fatal"] is True
+    supplied = _named(tasks, "Read the supplied RKE2 cluster token")
+    installed = _named(tasks, "Read the installed RKE2 cluster token")
+    comparison = _named(tasks, "Compare RKE2 cluster tokens")
+    equivalent = _named(tasks, "Require an unchanged RKE2 cluster token")
+    assert supplied["delegate_to"] == "localhost"
+    assert supplied["become"] is False
+    assert supplied["no_log"] is True
+    assert installed["no_log"] is True
+    assert comparison["no_log"] is True
+    comparison_value = comparison["ansible.builtin.set_fact"][
+        "rke2_convergence_token_matches"
+    ]
+    assert "'\\r' not in rke2_convergence_source_value" in comparison_value
+    assert "'\\n' not in rke2_convergence_source_value" in comparison_value
+    assert "'\\r' not in rke2_convergence_installed_value" in comparison_value
+    assert "'\\n' not in rke2_convergence_installed_normalized" in comparison_value
+    assert equivalent["ansible.builtin.assert"]["that"] == [
+        "rke2_convergence_token_matches | bool"
+    ]
+
+    role_tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    token_copy = _named(role_tasks, "Copy RKE2 cluster token")
+    assert "src" not in token_copy["ansible.builtin.copy"]
+    content = token_copy["ansible.builtin.copy"]["content"]
+    assert "rstrip=false" in content
+    assert "regex_replace('\\n\\Z', '')" in content
+    assert content.endswith("\n")
+    assert token_copy["no_log"] is True
+
+
+def test_rke2_token_copy_is_canonical_and_idempotent(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+) -> None:
+    role_tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
+    copy_args = dict(
+        _named(role_tasks, "Copy RKE2 cluster token")["ansible.builtin.copy"]
+    )
+    source_path = isolated_test_dir / "source-token"
+    target_path = isolated_test_dir / "target-token"
+    playbook = isolated_test_dir / "copy-token.yml"
+    source_path.write_bytes(b"canonical-token-secret")
+    target_path.write_bytes(b"canonical-token-secret")
+    copy_args["dest"] = str(target_path)
+    copy_args.pop("owner")
+    copy_args.pop("group")
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Test canonical RKE2 token copy",
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": "Copy RKE2 cluster token",
+                            "ansible.builtin.copy": copy_args,
+                            "no_log": True,
+                        }
+                    ],
+                }
+            ],
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    environment = {"ANSIBLE_LOCAL_TEMP": str(isolated_test_dir / "ansible-tmp")}
+    (isolated_test_dir / "ansible-tmp").mkdir()
+    command = [
+        "ansible-playbook",
+        "-i",
+        "localhost,",
+        "-c",
+        "local",
+        playbook,
+        "--extra-vars",
+        json.dumps({"rke2_token_src": str(source_path)}),
+    ]
+
+    command_runner.run(command, environment=environment).assert_success()
+    assert target_path.read_bytes() == b"canonical-token-secret\n"
+    second = command_runner.run(command, environment=environment).assert_success()
+    assert "changed=0" in second.stdout
+    assert "canonical-token-secret" not in second.stdout + second.stderr
+
+
+@pytest.mark.parametrize(
+    ("source", "installed", "expected_success"),
+    [
+        (b"cluster-token-secret", b"cluster-token-secret", True),
+        (b"cluster-token-secret", b"cluster-token-secret\n", True),
+        (b"cluster-token-secret\n", b"cluster-token-secret\n", False),
+        (b"cluster-token-secret", b"cluster-token-secret\nextra", False),
+        (b"cluster-token-secret\r", b"cluster-token-secret", False),
+        (b"cluster-token-secret", b"cluster-token-secret\r", False),
+        (b"cluster-token-secret", b"cluster-token-secret\n\n", False),
+        (b"cluster-token-secret", b"different-token-secret\n", False),
+    ],
+    ids=(
+        "exact",
+        "installed-final-lf",
+        "source-final-lf",
+        "installed-embedded-lf",
+        "source-cr",
+        "installed-cr",
+        "installed-double-final-lf",
+        "mismatch",
+    ),
+)
+def test_rke2_convergence_preflight_token_contract(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    source: bytes,
+    installed: bytes,
+    expected_success: bool,
+) -> None:
+    source_path = isolated_test_dir / "source-token"
+    installed_path = isolated_test_dir / "installed-token"
+    inventory = isolated_test_dir / "inventory.yml"
+    source_path.write_bytes(source)
+    installed_path.write_bytes(installed)
+    inventory.write_text(
+        """---
+all:
+  children:
+    rke2_cluster:
+      hosts:
+        rke2-test:
+          ansible_connection: local
+          ansible_become: false
+""",
+        encoding="utf-8",
+    )
+    (isolated_test_dir / "ansible-local-tmp").mkdir()
+    (isolated_test_dir / "ansible-remote-tmp").mkdir()
+    result = command_runner.run(
+        [
+            "ansible-playbook",
+            "-i",
+            inventory,
+            repo_root / "playbooks/rke2-convergence-preflight.yml",
+            "--limit",
+            "rke2_cluster",
+            "--extra-vars",
+            json.dumps(
+                {
+                    "rke2_token_src": str(source_path),
+                    "rke2_token_path": str(installed_path),
+                }
+            ),
+        ],
+        environment={
+            "ANSIBLE_LOCAL_TEMP": str(isolated_test_dir / "ansible-local-tmp"),
+            "ANSIBLE_REMOTE_TEMP": str(isolated_test_dir / "ansible-remote-tmp"),
+        },
+        redactions=(source.decode(errors="replace"), installed.decode(errors="replace")),
+    )
+    if expected_success:
+        result.assert_success()
+    else:
+        result.assert_failure()
+    output = result.stdout + result.stderr
+    assert "cluster-token-secret" not in output
+    assert "different-token-secret" not in output
+    if not expected_success:
+        assert "RKE2 cluster token is unavailable, malformed" in output
+
+
 def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
     defaults = yaml.safe_load(
         (repo_root / "roles/rke2/defaults/main.yml").read_text()
@@ -647,6 +826,7 @@ def test_operation_launcher_rejects_unsafe_arguments(
                 ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
                 ["ansible", "-i", "{inventory}", "rke2_cluster", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-core-health.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-convergence-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
@@ -667,6 +847,7 @@ def test_operation_launcher_rejects_unsafe_arguments(
             "rke2-deploy",
             [
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-core-health.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-convergence-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
