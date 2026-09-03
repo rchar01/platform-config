@@ -4,6 +4,21 @@
   become: true
   any_errors_fatal: true
   tasks:
+    - name: Require coherent RKE2 inventory groups
+      ansible.builtin.assert:
+        that:
+          - groups.get('rke2_servers', []) | length > 0
+          - groups.get('rke2_servers', []) | intersect(groups.get('rke2_agents', [])) | length == 0
+          - >-
+            groups.get('rke2_cluster', []) | sort
+            ==
+            (groups.get('rke2_servers', []) + groups.get('rke2_agents', []))
+            | unique
+            | sort
+        fail_msg: >-
+          RKE2 inventory requires a nonempty server group, disjoint server and
+          agent groups, and rke2_cluster as their exact union.
+
     - name: Check for existing RKE2 packages
       ansible.builtin.command:
         argv:

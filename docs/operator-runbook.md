@@ -1035,6 +1035,13 @@ The second kube-vip apply must report `changed=0`. Smoke must confirm the pinned
 image and leader-election policy, one ready DaemonSet pod per server, and API
 reachability through the VIP from both the bootstrap server and bastion group.
 
+For guarded CI convergence of an existing cluster, the automatic plan first
+requires only core service, API, and Node health, then checks base RKE2 and
+kube-vip changes. The blocking deployment repeats core health, converges base
+RKE2 serially, converges kube-vip, and runs both complete smoke suites. Missing
+or drifted Traefik or kube-vip state is therefore repaired rather than required
+by the initial health gate.
+
 Do not rerun the pristine preflight after packages have been installed. If a
 base apply fails, first establish whether the failure is target state or only a
 controller transport/readiness observation. A complete passing base smoke test

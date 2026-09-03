@@ -1,0 +1,100 @@
+---
+- name: Check RKE2 node service health
+  hosts: rke2_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require coherent RKE2 inventory groups
+      ansible.builtin.assert:
+        that:
+          - groups.get('rke2_servers', []) | length > 0
+          - groups.get('rke2_servers', []) | intersect(groups.get('rke2_agents', [])) | length == 0
+          - >-
+            groups.get('rke2_cluster', []) | sort
+            ==
+            (groups.get('rke2_servers', []) + groups.get('rke2_agents', []))
+            | unique
+            | sort
+        fail_msg: >-
+          RKE2 inventory requires a nonempty server group, disjoint server and
+          agent groups, and rke2_cluster as their exact union.
+
+    - name: Check RKE2 service active state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ rke2_service_name | default('rke2-server.service' if inventory_hostname in groups.get('rke2_servers', []) else 'rke2-agent.service') }}"
+      register: rke2_core_health_service_active
+      changed_when: false
+
+    - name: Assert RKE2 service is active
+      ansible.builtin.assert:
+        that:
+          - rke2_core_health_service_active.stdout == 'active'
+        fail_msg: "RKE2 service is not active."
+
+- name: Check RKE2 Kubernetes API and node health
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_core_health_is_bootstrap: "{{ inventory_hostname == groups['rke2_servers'][0] }}"
+    rke2_core_health_expected_nodes: "{{ groups.get('rke2_cluster', []) | length }}"
+    rke2_core_health_kubectl: /var/lib/rancher/rke2/bin/kubectl
+    rke2_core_health_kubeconfig: /etc/rancher/rke2/rke2.yaml
+  tasks:
+    - name: Check RKE2 Kubernetes API readiness
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_core_health_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_core_health_kubeconfig }}"
+          - get
+          - --raw=/readyz
+      register: rke2_core_health_api
+      changed_when: false
+      when: rke2_core_health_is_bootstrap | bool
+
+    - name: Assert RKE2 Kubernetes API is ready
+      ansible.builtin.assert:
+        that:
+          - rke2_core_health_api.stdout == 'ok'
+        fail_msg: "RKE2 Kubernetes API is not ready."
+      when: rke2_core_health_is_bootstrap | bool
+
+    - name: Wait for all RKE2 nodes to become Ready
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_core_health_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_core_health_kubeconfig }}"
+          - wait
+          - --for=condition=Ready
+          - nodes
+          - --all
+          - --timeout=600s
+      changed_when: false
+      when: rke2_core_health_is_bootstrap | bool
+
+    - name: List RKE2 nodes
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_core_health_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_core_health_kubeconfig }}"
+          - get
+          - nodes
+          - --no-headers
+      register: rke2_core_health_nodes
+      changed_when: false
+      when: rke2_core_health_is_bootstrap | bool
+
+    - name: Assert expected RKE2 node count
+      ansible.builtin.assert:
+        that:
+          - rke2_core_health_nodes.stdout_lines | length == rke2_core_health_expected_nodes | int
+        fail_msg: "Unexpected RKE2 node count."
+      when: rke2_core_health_is_bootstrap | bool

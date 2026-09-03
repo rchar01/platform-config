@@ -290,6 +290,11 @@ def test_rke2_bootstrap_requires_clean_nodes(repo_root: Path) -> None:
 
     assert play["hosts"] == "rke2_cluster"
     assert play["any_errors_fatal"] is True
+    topology = _named(tasks, "Require coherent RKE2 inventory groups")
+    topology_assertions = topology["ansible.builtin.assert"]["that"]
+    assert any("rke2_servers" in assertion for assertion in topology_assertions)
+    assert any("rke2_agents" in assertion for assertion in topology_assertions)
+    assert any("rke2_cluster" in assertion for assertion in topology_assertions)
     assert _named(tasks, "Check for existing RKE2 packages")["loop"] == [
         "rke2-server",
         "rke2-agent",
@@ -305,6 +310,28 @@ def test_rke2_bootstrap_requires_clean_nodes(repo_root: Path) -> None:
     pristine = _named(tasks, "Require pristine RKE2 nodes")
     assertions = pristine["ansible.builtin.assert"]["that"]
     assert any("difference([0, 1])" in assertion for assertion in assertions)
+
+
+def test_rke2_core_health_is_separate_from_ingress(repo_root: Path) -> None:
+    core_path = repo_root / "playbooks/rke2-core-health.yml"
+    core = yaml.safe_load(core_path.read_text())
+    smoke = yaml.safe_load((repo_root / "playbooks/rke2-smoke.yml").read_text())
+
+    assert [play["hosts"] for play in core] == ["rke2_cluster", "rke2_servers"]
+    assert all(play["any_errors_fatal"] is True for play in core)
+    assert _named(core[0]["tasks"], "Require coherent RKE2 inventory groups")
+    assert _named(core[0]["tasks"], "Check RKE2 service active state")
+    assert _named(core[1]["tasks"], "Check RKE2 Kubernetes API readiness")
+    assert _named(core[1]["tasks"], "Wait for all RKE2 nodes to become Ready")
+    assert _named(core[1]["tasks"], "Assert expected RKE2 node count")
+
+    normalized_core = core_path.read_text().lower()
+    assert "traefik" not in normalized_core
+    assert "kong" not in normalized_core
+    assert "kube-vip" not in normalized_core
+    assert smoke[0]["ansible.builtin.import_playbook"] == "rke2-core-health.yml"
+    assert smoke[1]["hosts"] == "rke2_servers"
+    assert _named(smoke[1]["tasks"], "Wait for bundled Traefik HelmCharts")
 
 
 def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
@@ -590,8 +617,8 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
         [],
         ["unknown"],
         ["rke2-plan"],
-        ["rke2-plan", "--inventory", "relative.yml", "--controller-vars", "/tmp/x"],
-        ["rke2-plan", "--inventory", "/tmp/inventory", "--limit", "host"],
+        ["rke2-bootstrap-plan", "--inventory", "relative.yml", "--controller-vars", "/tmp/x"],
+        ["rke2-converge-plan", "--inventory", "/tmp/inventory", "--limit", "host"],
     ],
 )
 def test_operation_launcher_rejects_unsafe_arguments(
@@ -606,12 +633,22 @@ def test_operation_launcher_rejects_unsafe_arguments(
     ("operation", "commands"),
     [
         (
-            "rke2-plan",
+            "rke2-bootstrap-plan",
             [
                 ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
                 ["ansible", "-i", "{inventory}", "rke2_cluster", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
-                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--syntax-check", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-bootstrap-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "rke2-converge-plan",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "rke2_cluster", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-core-health.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -629,9 +666,11 @@ def test_operation_launcher_rejects_unsafe_arguments(
         (
             "rke2-deploy",
             [
-                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-core-health.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -700,6 +739,54 @@ with pathlib.Path(os.environ["PLATFORM_CONFIG_OPERATION_LOG"]).open("a") as stre
     assert observed == expected
 
 
+def test_operation_launcher_stops_after_failed_core_health(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    log = isolated_test_dir / "commands"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    extra_vars.write_text("---\n{}\n", encoding="utf-8")
+
+    fake_bin = isolated_test_dir / "bin"
+    fake_bin.mkdir()
+    for name in ("ansible", "ansible-inventory"):
+        _write_executable(fake_bin / name, "#!/bin/sh\nexit 0\n")
+    _write_executable(
+        fake_bin / "ansible-playbook",
+        """#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$PLATFORM_CONFIG_OPERATION_LOG"
+case "$*" in
+  *rke2-core-health.yml*) exit 1 ;;
+esac
+exit 0
+""",
+    )
+
+    command_runner.run(
+        [
+            repo_root / "scripts/platform-config-operation",
+            "rke2-converge-plan",
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        environment={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_OPERATION_LOG": str(log),
+        },
+    ).assert_failure()
+
+    observed = log.read_text(encoding="utf-8")
+    assert "rke2-core-health.yml" in observed
+    assert "playbooks/rke2.yml" not in observed
+    assert "rke2-kube-vip.yml" not in observed
+
+
 @pytest.mark.parametrize(
     ("signal_number", "expected_status"),
     [
@@ -744,7 +831,7 @@ while :; do sleep 1; done
     process = subprocess.Popen(
         [
             repo_root / "scripts/platform-config-operation",
-            "rke2-plan",
+            "rke2-bootstrap-plan",
             "--inventory",
             inventory,
             "--controller-vars",

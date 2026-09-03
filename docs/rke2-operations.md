@@ -11,9 +11,10 @@ absolute inventory path, and one absolute controller-variable file.
 
 | Operation | Commands |
 | --- | --- |
-| `rke2-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, RKE2 syntax check, then fixed check mode with diff. |
+| `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node preflight, then fixed base RKE2 check mode with diff. |
+| `rke2-converge-plan` | Inventory validation, cluster ping, core-health preflight, then fixed base RKE2 and kube-vip check mode with diff. |
 | `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip convergence, then base and kube-vip smoke checks. |
-| `rke2-deploy` | Full-cluster pre-smoke, serial RKE2 convergence, then full-cluster post-smoke. |
+| `rke2-deploy` | Core-health preflight, serial RKE2 convergence, kube-vip convergence, then full base and kube-vip smoke checks. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
 
 The launcher does not accept limits, tags, playbook paths, modules, extra vars,
@@ -31,18 +32,22 @@ It records the exact qualified package, chart, and release-bundle inputs, where
 each fetch originates, and which dynamic upstream services require internal
 mirroring for a finite firewall policy.
 
-On fresh nodes, check mode validates the RKE2, registry, and Traefik templates
-without creating target directories and reports the exact package and managed
-configuration scope as changed. Child-file diffs become available after their
-parent directories exist; the bootstrap job still requires a reviewed plan.
+The bootstrap plan fails before check mode unless every selected node is
+pristine. On fresh nodes, check mode validates the RKE2, registry, and Traefik
+templates without creating target directories and reports the exact package and
+managed configuration scope as changed. Child-file diffs become available after
+their parent directories exist; the bootstrap job still requires a reviewed
+plan.
 
 RKE2 bootstrap accepts only recreated nodes without existing RKE2 packages,
 configuration, state, or binaries. It is a one-time installation path and does
 not uninstall or migrate an existing cluster. Recreate a node before retrying a
 bootstrap that failed after package installation; the guard intentionally does
-not resume a partially installed node. RKE2 convergence runs servers
-before agents with `serial: 1` and `any_errors_fatal: true`. Each enabled,
-started node must recover its local
+not resume a partially installed node. The convergence plan and deployment
+require core cluster health without requiring the desired Traefik or kube-vip
+state, so those managed resources can be repaired. RKE2 convergence runs servers
+before agents with `serial: 1` and `any_errors_fatal: true`, then reconciles
+kube-vip and verifies both layers. Each enabled, started node must recover its local
 service and Kubernetes Node `Ready` condition before the next serial host can
 start. Server nodes must also recover the supervisor port and local API
 `/readyz` response. RKE2-specific firewall policy is reconciled before the API
