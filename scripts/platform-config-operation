@@ -19,6 +19,17 @@ require_private_file() {
   [[ -f $path && ! -L $path ]] || fail "$name must be a regular non-symlink file"
 }
 
+require_owner_private_file() {
+  local name=$1
+  local path=$2
+  local mode
+
+  require_private_file "$name" "$path"
+  [[ -O $path ]] || fail "$name must be owned by the current user"
+  mode=$(stat -c '%a' -- "$path") || fail "$name mode is unavailable"
+  (( (8#$mode & 077) == 0 )) || fail "$name must not be group- or world-readable"
+}
+
 [[ $# -gt 0 ]] || {
   usage
   exit 2
@@ -30,6 +41,81 @@ case "$operation" in
   rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status) ;;
   *) fail "unsupported operation: $operation" ;;
 esac
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+summary_tool="$repo_root/scripts/platform-config-operation-summary"
+summary_dir=
+summary_events=
+active_pid=
+
+fallback_summary() {
+  printf '%s\n' \
+    'PLATFORM CONFIG OPERATION SUMMARY' \
+    "Operation: $operation" \
+    'Execution context: GitLab Runner' \
+    'Overall: FAIL' \
+    'Selected VMs: none established' \
+    '' \
+    'Changed tasks:' \
+    '  none' \
+    '' \
+    'Observed failed tasks:' \
+    '  none' \
+    '' \
+    'Unreachable tasks:' \
+    '  none'
+}
+
+finish() {
+  local status=$?
+  local render_status=0
+  local cleanup_status=0
+  local rendered_summary=
+
+  trap - EXIT HUP INT TERM
+  if [[ -n $active_pid ]]; then
+    kill -s TERM "$active_pid" 2>/dev/null || true
+    wait "$active_pid" 2>/dev/null || true
+    active_pid=
+  fi
+  if [[ -n $summary_events && -f $summary_events ]]; then
+    if rendered_summary=$(
+      "$summary_tool" render --input "$summary_events" --status "$status"
+    ); then
+      render_status=0
+    else
+      render_status=$?
+    fi
+    if [[ -n $rendered_summary ]]; then
+      printf '%s\n' "$rendered_summary"
+    else
+      fallback_summary
+    fi
+  else
+    render_status=2
+    fallback_summary
+  fi
+  if [[ -n $summary_dir ]] && ! rm -rf -- "$summary_dir"; then
+    cleanup_status=2
+    printf '%s\n' 'platform-config-operation: summary cleanup failed' >&2
+  fi
+  if [[ $status -eq 0 && ( $render_status -ne 0 || $cleanup_status -ne 0 ) ]]; then
+    status=2
+  fi
+  exit "$status"
+}
+
+trap finish EXIT
+umask 077
+summary_dir=$(mktemp -d "${TMPDIR:-/tmp}/platform-config-operation.XXXXXXXX")
+chmod 0700 "$summary_dir"
+summary_events="$summary_dir/events.jsonl"
+"$summary_tool" initialize --operation "$operation" --output "$summary_events"
+
+export ANSIBLE_CALLBACK_PLUGINS="$repo_root/plugins/callback"
+export ANSIBLE_CALLBACKS_ENABLED=platform_config_operation_summary
+export ANSIBLE_LOAD_CALLBACK_PLUGINS=1
+export PLATFORM_CONFIG_OPERATION_SUMMARY_PATH="$summary_events"
 
 inventory=""
 controller_vars=""
@@ -52,13 +138,11 @@ done
 [[ -n $inventory ]] || fail "--inventory is required"
 [[ -n $controller_vars ]] || fail "--controller-vars is required"
 require_private_file inventory "$inventory"
-require_private_file controller-vars "$controller_vars"
+require_owner_private_file controller-vars "$controller_vars"
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
 
 extra_vars=(--extra-vars "@$controller_vars")
-active_pid=
 
 forward_signal() {
   local exit_status=$1
@@ -89,64 +173,129 @@ trap 'forward_signal 129' HUP
 trap 'forward_signal 130' INT
 trap 'forward_signal 143' TERM
 
-inventory_check() {
-  run_command ansible-inventory -i "$inventory" --list "${extra_vars[@]}"
+record_phase() {
+  local phase=$1
+  local state=$2
+  local status=${3:-}
+
+  if [[ $state == completed ]]; then
+    "$summary_tool" phase --output "$summary_events" --phase "$phase" \
+      --state "$state" --status "$status"
+  else
+    "$summary_tool" phase --output "$summary_events" --phase "$phase" \
+      --state "$state"
+  fi
+}
+
+initialize_hosts() {
+  local phase=${1:-}
+  local inventory_output="$summary_dir/inventory.json"
+  local status
+
+  : >"$inventory_output"
+  chmod 0600 "$inventory_output"
+  if [[ -n $phase ]]; then
+    record_phase "$phase" started
+    export PLATFORM_CONFIG_OPERATION_PHASE="$phase"
+  else
+    unset PLATFORM_CONFIG_OPERATION_PHASE
+  fi
+  if run_command ansible-inventory -i "$inventory" --list \
+    "${extra_vars[@]}" >"$inventory_output"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ $status -eq 0 ]]; then
+    if "$summary_tool" hosts --operation "$operation" \
+      --inventory "$inventory_output" --output "$summary_events"; then
+      status=0
+    else
+      status=$?
+    fi
+  fi
+  if ! rm -f -- "$inventory_output"; then
+    status=2
+  fi
+  if [[ -n $phase ]]; then
+    record_phase "$phase" completed "$status"
+  fi
+  return "$status"
+}
+
+run_phase() {
+  local phase=$1
+  local status
+  shift
+
+  record_phase "$phase" started
+  export PLATFORM_CONFIG_OPERATION_PHASE="$phase"
+  if run_command "$@"; then
+    status=0
+  else
+    status=$?
+  fi
+  record_phase "$phase" completed "$status"
+  return "$status"
 }
 
 ping_group() {
-  local group=$1
+  local phase=$1
+  local group=$2
 
-  run_command ansible -i "$inventory" "$group" \
+  run_phase "$phase" ansible -i "$inventory" "$group" \
     -m ansible.builtin.ping \
     "${extra_vars[@]}"
 }
 
 run_playbook() {
-  local playbook=$1
-  local limit=$2
-  shift 2
+  local phase=$1
+  local playbook=$2
+  local limit=$3
+  shift 3
 
-  run_command ansible-playbook -i "$inventory" "$repo_root/$playbook" \
+  run_phase "$phase" ansible-playbook -i "$inventory" "$repo_root/$playbook" \
     --limit "$limit" \
     "$@" \
     "${extra_vars[@]}"
 }
 
 case "$operation" in
+  rke2-deploy) initialize_hosts ;;
+  *) initialize_hosts inventory ;;
+esac
+
+case "$operation" in
   rke2-bootstrap-plan)
-    inventory_check
-    ping_group rke2_cluster
-    run_playbook playbooks/rke2-bootstrap-preflight.yml rke2_cluster
-    run_playbook playbooks/rke2.yml rke2_cluster --check --diff
+    ping_group connectivity rke2_cluster
+    run_playbook bootstrap-preflight playbooks/rke2-bootstrap-preflight.yml rke2_cluster
+    run_playbook rke2-plan playbooks/rke2.yml rke2_cluster --check --diff
     ;;
   rke2-converge-plan)
-    inventory_check
-    ping_group rke2_cluster
-    run_playbook playbooks/rke2-core-health.yml rke2_cluster
-    run_playbook playbooks/rke2-convergence-preflight.yml rke2_cluster
-    run_playbook playbooks/rke2.yml rke2_cluster --check --diff
-    run_playbook playbooks/rke2-kube-vip.yml rke2_servers --check --diff
+    ping_group connectivity rke2_cluster
+    run_playbook core-health playbooks/rke2-core-health.yml rke2_cluster
+    run_playbook convergence-preflight playbooks/rke2-convergence-preflight.yml rke2_cluster
+    run_playbook rke2-plan playbooks/rke2.yml rke2_cluster --check --diff
+    run_playbook kube-vip-plan playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     ;;
   rke2-bootstrap)
-    inventory_check
-    ping_group rke2_cluster
-    run_playbook playbooks/rke2-bootstrap-preflight.yml rke2_cluster
-    run_playbook playbooks/rke2.yml rke2_cluster
-    run_playbook playbooks/rke2-kube-vip.yml rke2_servers
-    run_playbook playbooks/rke2-smoke.yml rke2_cluster
-    run_playbook playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    ping_group connectivity rke2_cluster
+    run_playbook bootstrap-preflight playbooks/rke2-bootstrap-preflight.yml rke2_cluster
+    run_playbook rke2-apply playbooks/rke2.yml rke2_cluster
+    run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
+    run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
+    run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
     ;;
   rke2-deploy)
-    run_playbook playbooks/rke2-core-health.yml rke2_cluster
-    run_playbook playbooks/rke2-convergence-preflight.yml rke2_cluster
-    run_playbook playbooks/rke2.yml rke2_cluster
-    run_playbook playbooks/rke2-kube-vip.yml rke2_servers
-    run_playbook playbooks/rke2-smoke.yml rke2_cluster
-    run_playbook playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    run_playbook core-health playbooks/rke2-core-health.yml rke2_cluster
+    run_playbook convergence-preflight playbooks/rke2-convergence-preflight.yml rke2_cluster
+    run_playbook rke2-apply playbooks/rke2.yml rke2_cluster
+    run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
+    run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
+    run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
     ;;
   openbao-status)
-    inventory_check
-    ping_group openbao
-    run_playbook playbooks/maintenance/openbao-status.yml openbao
+    ping_group connectivity openbao
+    run_playbook openbao-status playbooks/maintenance/openbao-status.yml openbao
     ;;
 esac

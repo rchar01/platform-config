@@ -14,13 +14,34 @@ absolute inventory path, and one absolute controller-variable file.
 | `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node preflight, then fixed base RKE2 check mode with diff. |
 | `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2 and kube-vip check mode with diff. |
 | `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip convergence, then base and kube-vip smoke checks. |
-| `rke2-deploy` | Core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip convergence, then full base and kube-vip smoke checks. |
+| `rke2-deploy` | Local inventory resolution for summary initialization, core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip convergence, then full base and kube-vip smoke checks. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
 
 The launcher does not accept limits, tags, playbook paths, modules, extra vars,
 or arbitrary Ansible arguments. CI generates the controller-variable file for
 strict per-host SSH identities and clears password-based SSH and become values
 without disabling inventory-authorized passwordless privilege escalation.
+
+Every fixed launcher operation ends with a deterministic plain-text summary on
+both success and failure. It lists only inventory hostnames selected for that
+operation, their operation-neutral `server`, `agent`, or `openbao` role,
+per-phase `PASS`, `FAIL`, or `N/A` status, recap counts, and the overall result.
+An RKE2 host receives role `N/A` only when selected inventory membership cannot
+establish exactly one of `server` or `agent`; that unresolved role makes the
+summary and otherwise successful operation fail closed.
+Changed, observed-failed, and unreachable task names are grouped with affected
+VM names. The GitLab Runner appears only as execution context; delegated
+localhost, unrelated inventory groups, and the untargeted bastion are excluded.
+
+An opt-in aggregate callback records only the phase, inventory hostname, safe
+task name, outcome category, and recap counters. It never records task results,
+arguments, values, diffs, addresses, exceptions, or delegated-host data. Raw
+inventory output is reduced to host and role records in an invocation-private
+directory and deleted immediately. The callback event file is mode `0600`, the
+directory is mode `0700`, no summary artifact or cache is published, and the
+launcher removes temporary summary state after success, failure, or a handled
+signal. Failure before inventory resolution still prints `Overall: FAIL`
+without fabricating a VM row.
 
 For attended qualification before CI adoption, follow the complete manual
 fresh-install sequence in the [operator runbook](operator-runbook.md). It uses

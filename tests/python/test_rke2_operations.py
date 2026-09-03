@@ -22,6 +22,64 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
+def _operation_fake_script() -> str:
+    return """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import stat
+import sys
+
+name = pathlib.Path(sys.argv[0]).name
+log = os.environ.get("PLATFORM_CONFIG_OPERATION_LOG")
+if log:
+    with pathlib.Path(log).open("a") as stream:
+        stream.write(json.dumps([name, *sys.argv[1:]]) + "\\n")
+if name == "ansible-inventory":
+    print(json.dumps({
+        "rke2_cluster": {"hosts": ["server-a", "agent-a"]},
+        "rke2_servers": {"hosts": ["server-a"]},
+        "rke2_agents": {"hosts": ["agent-a"]},
+        "openbao": {"hosts": ["openbao-a"]},
+    }))
+    raise SystemExit(0)
+
+phase = os.environ["PLATFORM_CONFIG_OPERATION_PHASE"]
+arguments = " ".join(sys.argv[1:])
+summary_path = pathlib.Path(os.environ["PLATFORM_CONFIG_OPERATION_SUMMARY_PATH"])
+if stat.S_IMODE(summary_path.stat().st_mode) != 0o600:
+    raise SystemExit(96)
+if stat.S_IMODE(summary_path.parent.stat().st_mode) != 0o700:
+    raise SystemExit(96)
+if "openbao" in arguments:
+    hosts = ["openbao-a"]
+elif "rke2_servers" in arguments:
+    hosts = ["server-a"]
+else:
+    hosts = ["server-a", "agent-a"]
+failure_match = os.environ.get("PLATFORM_CONFIG_FAIL_MATCH", "")
+failure = bool(failure_match) and failure_match in arguments
+with summary_path.open("a") as stream:
+    for index, host in enumerate(hosts):
+        stream.write(json.dumps({
+            "schema": 1,
+            "kind": "recap",
+            "phase": phase,
+            "host": host,
+            "counters": {
+                "ok": 1,
+                "changed": 0,
+                "failures": 1 if failure and index == 0 else 0,
+                "unreachable": 0,
+                "skipped": 0,
+                "rescued": 0,
+                "ignored": 0,
+            },
+        }, separators=(",", ":")) + "\\n")
+raise SystemExit(1 if failure else 0)
+"""
+
+
 def test_rke2_playbook_is_serial_and_fatal(repo_root: Path) -> None:
     plays = yaml.safe_load((repo_root / "playbooks/rke2.yml").read_text())
 
@@ -1041,7 +1099,7 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
 def test_operation_launcher_rejects_unsafe_arguments(
     repo_root: Path, command_runner: CommandRunner, argv: list[str]
 ) -> None:
-    command_runner.run(
+    result = command_runner.run(
         [repo_root / "scripts/platform-config-operation", *argv]
     ).assert_failure()
 
@@ -1084,6 +1142,7 @@ def test_operation_launcher_rejects_unsafe_arguments(
         (
             "rke2-deploy",
             [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-core-health.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-convergence-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
@@ -1114,20 +1173,11 @@ def test_operation_launcher_uses_fixed_commands(
     log = isolated_test_dir / "commands.jsonl"
     inventory.write_text("all: {}\n", encoding="utf-8")
     extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    extra_vars.chmod(0o600)
 
     fake_bin = isolated_test_dir / "bin"
     fake_bin.mkdir()
-    fake_content = (
-        """#!/usr/bin/env python3
-import json
-import os
-import pathlib
-import sys
-
-with pathlib.Path(os.environ["PLATFORM_CONFIG_OPERATION_LOG"]).open("a") as stream:
-    stream.write(json.dumps([pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]) + "\\n")
-"""
-    )
+    fake_content = _operation_fake_script()
     for name in ("ansible", "ansible-inventory", "ansible-playbook"):
         _write_executable(fake_bin / name, fake_content)
 
@@ -1135,7 +1185,7 @@ with pathlib.Path(os.environ["PLATFORM_CONFIG_OPERATION_LOG"]).open("a") as stre
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "PLATFORM_CONFIG_OPERATION_LOG": str(log),
     }
-    command_runner.run(
+    result = command_runner.run(
         [
             repo_root / "scripts/platform-config-operation",
             operation,
@@ -1146,6 +1196,10 @@ with pathlib.Path(os.environ["PLATFORM_CONFIG_OPERATION_LOG"]).open("a") as stre
         ],
         environment=environment,
     ).assert_success()
+    assert "PLATFORM CONFIG OPERATION SUMMARY" in result.stdout
+    assert "Overall: PASS" in result.stdout
+    assert "Execution context: GitLab Runner" in result.stdout
+    assert not list((isolated_test_dir / "tmp").glob("platform-config-operation.*"))
 
     observed = [json.loads(line) for line in log.read_text().splitlines()]
     expected = [
@@ -1168,24 +1222,14 @@ def test_operation_launcher_stops_after_failed_core_health(
     log = isolated_test_dir / "commands"
     inventory.write_text("all: {}\n", encoding="utf-8")
     extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    extra_vars.chmod(0o600)
 
     fake_bin = isolated_test_dir / "bin"
     fake_bin.mkdir()
-    for name in ("ansible", "ansible-inventory"):
-        _write_executable(fake_bin / name, "#!/bin/sh\nexit 0\n")
-    _write_executable(
-        fake_bin / "ansible-playbook",
-        """#!/bin/sh
-set -eu
-printf '%s\n' "$*" >>"$PLATFORM_CONFIG_OPERATION_LOG"
-case "$*" in
-  *rke2-core-health.yml*) exit 1 ;;
-esac
-exit 0
-""",
-    )
+    for name in ("ansible", "ansible-inventory", "ansible-playbook"):
+        _write_executable(fake_bin / name, _operation_fake_script())
 
-    command_runner.run(
+    result = command_runner.run(
         [
             repo_root / "scripts/platform-config-operation",
             "rke2-converge-plan",
@@ -1197,6 +1241,7 @@ exit 0
         environment={
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "PLATFORM_CONFIG_OPERATION_LOG": str(log),
+            "PLATFORM_CONFIG_FAIL_MATCH": "rke2-core-health.yml",
         },
     ).assert_failure()
 
@@ -1204,6 +1249,9 @@ exit 0
     assert "rke2-core-health.yml" in observed
     assert "playbooks/rke2.yml" not in observed
     assert "rke2-kube-vip.yml" not in observed
+    assert "PLATFORM CONFIG OPERATION SUMMARY" in result.stdout
+    assert "Overall: FAIL" in result.stdout
+    assert not list((isolated_test_dir / "tmp").glob("platform-config-operation.*"))
 
 
 @pytest.mark.parametrize(
@@ -1227,6 +1275,7 @@ def test_operation_launcher_stops_active_child_on_signal(
     terminated = isolated_test_dir / "terminated"
     inventory.write_text("all: {}\n", encoding="utf-8")
     extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    extra_vars.chmod(0o600)
     fake_bin.mkdir()
     _write_executable(
         fake_bin / "ansible-inventory",
@@ -1245,6 +1294,7 @@ while :; do sleep 1; done
             "PATH": f"{fake_bin}:{environment['PATH']}",
             "PLATFORM_CONFIG_STARTED": str(started),
             "PLATFORM_CONFIG_TERMINATED": str(terminated),
+            "TMPDIR": str(isolated_test_dir),
         }
     )
     process = subprocess.Popen(
@@ -1268,6 +1318,7 @@ while :; do sleep 1; done
         os.kill(process.pid, signal_number)
         assert process.wait(timeout=5) == expected_status
         assert terminated.read_text(encoding="utf-8") == "terminated"
+        assert not list(isolated_test_dir.glob("platform-config-operation.*"))
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)

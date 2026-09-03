@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import os
+import stat
+import sys
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+
+OPERATIONS = {
+    "rke2-bootstrap-plan": (
+        "inventory",
+        "connectivity",
+        "bootstrap-preflight",
+        "rke2-plan",
+    ),
+    "rke2-converge-plan": (
+        "inventory",
+        "connectivity",
+        "core-health",
+        "convergence-preflight",
+        "rke2-plan",
+        "kube-vip-plan",
+    ),
+    "rke2-bootstrap": (
+        "inventory",
+        "connectivity",
+        "bootstrap-preflight",
+        "rke2-apply",
+        "kube-vip-apply",
+        "rke2-smoke",
+        "kube-vip-smoke",
+    ),
+    "rke2-deploy": (
+        "core-health",
+        "convergence-preflight",
+        "rke2-apply",
+        "kube-vip-apply",
+        "rke2-smoke",
+        "kube-vip-smoke",
+    ),
+    "openbao-status": ("inventory", "connectivity", "openbao-status"),
+}
+COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
+MAX_INPUT_BYTES = 32 * 1024 * 1024
+
+
+class SummaryError(Exception):
+    pass
+
+
+def safe_text(value: object, maximum: int) -> str:
+    if not isinstance(value, str) or not value or len(value) > maximum:
+        raise SummaryError
+    if not value.isascii() or any(not 32 <= ord(character) <= 126 for character in value):
+        raise SummaryError
+    return value
+
+
+def safe_host(value: object) -> str:
+    host = safe_text(value, 255)
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    raise SummaryError
+
+
+def private_parent(path: Path) -> None:
+    details = path.parent.stat()
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or details.st_uid != os.geteuid()
+        or stat.S_IMODE(details.st_mode) != 0o700
+    ):
+        raise SummaryError
+
+
+def open_private(path: Path, flags: int, mode: int | None = None) -> int:
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, mode or 0o600)
+    details = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_uid != os.geteuid()
+        or stat.S_IMODE(details.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise SummaryError
+    return descriptor
+
+
+def write_records(path: Path, records: list[dict[str, Any]], *, create: bool) -> None:
+    private_parent(path)
+    flags = os.O_WRONLY | (os.O_CREAT | os.O_EXCL if create else os.O_APPEND)
+    descriptor = open_private(path, flags)
+    try:
+        for record in records:
+            payload = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+            remaining = memoryview(payload.encode("ascii") + b"\n")
+            while remaining:
+                remaining = remaining[os.write(descriptor, remaining) :]
+    finally:
+        os.close(descriptor)
+
+
+def read_private(path: Path) -> bytes:
+    descriptor = open_private(path, os.O_RDONLY)
+    try:
+        chunks = []
+        size = 0
+        while chunk := os.read(descriptor, min(65536, MAX_INPUT_BYTES + 1 - size)):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > MAX_INPUT_BYTES:
+                raise SummaryError
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks)
+
+
+def command_initialize(args: argparse.Namespace) -> None:
+    operation = safe_text(args.operation, 64)
+    phases = OPERATIONS.get(operation)
+    if phases is None:
+        raise SummaryError
+    write_records(
+        args.output,
+        [
+            {
+                "schema": 1,
+                "kind": "operation",
+                "operation": operation,
+                "phases": list(phases),
+            }
+        ],
+        create=True,
+    )
+
+
+def group_hosts(inventory: dict[str, Any], group: str) -> set[str]:
+    found: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise SummaryError
+        value = inventory.get(name)
+        if not isinstance(value, dict):
+            return
+        visiting.add(name)
+        hosts = value.get("hosts", [])
+        children = value.get("children", [])
+        if not isinstance(hosts, list) or not isinstance(children, list):
+            raise SummaryError
+        for host in hosts:
+            found.add(safe_host(host))
+        for child in children:
+            visit(safe_text(child, 255))
+        visiting.remove(name)
+
+    visit(group)
+    return found
+
+
+def command_hosts(args: argparse.Namespace) -> None:
+    operation = safe_text(args.operation, 64)
+    if operation not in OPERATIONS:
+        raise SummaryError
+    try:
+        inventory = json.loads(read_private(args.inventory))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise SummaryError from None
+    if not isinstance(inventory, dict):
+        raise SummaryError
+    records = []
+    if operation == "openbao-status":
+        for host in sorted(group_hosts(inventory, "openbao")):
+            records.append({"schema": 1, "kind": "host", "host": host, "role": "openbao"})
+    else:
+        selected = group_hosts(inventory, "rke2_cluster")
+        servers = group_hosts(inventory, "rke2_servers")
+        agents = group_hosts(inventory, "rke2_agents")
+        for host in sorted(selected):
+            if (host in servers) == (host in agents):
+                role = "N/A"
+            else:
+                role = "server" if host in servers else "agent"
+            records.append({"schema": 1, "kind": "host", "host": host, "role": role})
+    write_records(args.output, records, create=False)
+
+
+def command_phase(args: argparse.Namespace) -> None:
+    phase = safe_text(args.phase, 64)
+    state = safe_text(args.state, 16)
+    if state == "started":
+        if args.status is not None:
+            raise SummaryError
+        record = {"schema": 1, "kind": "phase", "phase": phase, "state": state}
+    elif state == "completed" and args.status is not None and 0 <= args.status <= 255:
+        record = {
+            "schema": 1,
+            "kind": "phase",
+            "phase": phase,
+            "state": state,
+            "status": args.status,
+        }
+    else:
+        raise SummaryError
+    write_records(args.output, [record], create=False)
+
+
+def exact_keys(record: dict[str, Any], expected: set[str]) -> None:
+    if set(record) != expected or record.get("schema") != 1:
+        raise SummaryError
+
+
+def parse_records(path: Path) -> tuple[str, tuple[str, ...], dict[str, str], list[dict[str, Any]]]:
+    try:
+        lines = read_private(path).decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        raise SummaryError from None
+    records: list[dict[str, Any]] = []
+    for line in lines:
+        if not line:
+            raise SummaryError
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            raise SummaryError from None
+        if not isinstance(record, dict):
+            raise SummaryError
+        records.append(record)
+    if not records:
+        raise SummaryError
+    operation_record = records.pop(0)
+    exact_keys(operation_record, {"schema", "kind", "operation", "phases"})
+    operation = safe_text(operation_record.get("operation"), 64)
+    phases_value = operation_record.get("phases")
+    if (
+        operation_record.get("kind") != "operation"
+        or not isinstance(phases_value, list)
+        or tuple(phases_value) != OPERATIONS.get(operation)
+    ):
+        raise SummaryError
+    phases = tuple(phases_value)
+    hosts: dict[str, str] = {}
+    remaining = []
+    for record in records:
+        if record.get("kind") != "host":
+            remaining.append(record)
+            continue
+        exact_keys(record, {"schema", "kind", "host", "role"})
+        host = safe_host(record.get("host"))
+        role = safe_text(record.get("role"), 16)
+        if role not in {"server", "agent", "openbao", "N/A"} or host in hosts:
+            raise SummaryError
+        hosts[host] = role
+    return operation, phases, hosts, remaining
+
+
+def applicable(role: str, phase: str) -> bool:
+    return not phase.startswith("kube-vip-") or role == "server"
+
+
+def print_table(rows: list[list[str]]) -> None:
+    widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
+    for row in rows:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip())
+
+
+def command_render(args: argparse.Namespace) -> int:
+    if not 0 <= args.status <= 255:
+        raise SummaryError
+    operation, phases, hosts, records = parse_records(args.input)
+    phase_status: dict[str, int | None] = {}
+    recaps: dict[tuple[str, str], dict[str, int]] = {}
+    tasks: dict[str, dict[str, set[str]]] = {
+        outcome: defaultdict(set) for outcome in ("changed", "failed", "unreachable")
+    }
+    invalid = False
+    for record in records:
+        kind = record.get("kind")
+        if kind == "phase":
+            state = record.get("state")
+            expected = {"schema", "kind", "phase", "state"}
+            if state == "completed":
+                expected.add("status")
+            exact_keys(record, expected)
+            phase = safe_text(record.get("phase"), 64)
+            if phase not in phases:
+                raise SummaryError
+            if state == "started" and phase not in phase_status:
+                phase_status[phase] = None
+            elif (
+                state == "completed"
+                and phase in phase_status
+                and phase_status[phase] is None
+                and isinstance(record.get("status"), int)
+                and not isinstance(record.get("status"), bool)
+                and 0 <= record["status"] <= 255
+            ):
+                phase_status[phase] = record["status"]
+            else:
+                raise SummaryError
+        elif kind == "task":
+            exact_keys(record, {"schema", "kind", "phase", "host", "outcome", "task"})
+            phase = safe_text(record.get("phase"), 64)
+            host = safe_host(record.get("host"))
+            outcome = safe_text(record.get("outcome"), 16)
+            task = safe_text(record.get("task"), 255)
+            if phase not in phases or outcome not in tasks:
+                raise SummaryError
+            if host in hosts:
+                tasks[outcome][task].add(host)
+        elif kind == "recap":
+            exact_keys(record, {"schema", "kind", "phase", "host", "counters"})
+            phase = safe_text(record.get("phase"), 64)
+            host = safe_host(record.get("host"))
+            counters = record.get("counters")
+            if phase not in phases or not isinstance(counters, dict) or set(counters) != set(COUNTERS):
+                raise SummaryError
+            if any(
+                not isinstance(counters[counter], int)
+                or isinstance(counters[counter], bool)
+                or not 0 <= counters[counter] <= 1_000_000
+                for counter in COUNTERS
+            ):
+                raise SummaryError
+            if host in hosts:
+                key = (phase, host)
+                if key in recaps:
+                    raise SummaryError
+                recaps[key] = counters
+        elif kind == "error":
+            exact_keys(record, {"schema", "kind", "phase"})
+            if safe_text(record.get("phase"), 64) not in phases:
+                raise SummaryError
+            invalid = True
+        else:
+            raise SummaryError
+
+    if invalid:
+        raise SummaryError
+
+    host_results: dict[str, str] = {}
+    rendered: list[list[str]] = []
+    for host in sorted(hosts):
+        role = hosts[host]
+        statuses = []
+        host_rows = []
+        for phase in phases:
+            if not applicable(role, phase):
+                phase_result = "N/A"
+                counts = ("-", "-", "-")
+            elif phase not in phase_status:
+                phase_result = "N/A"
+                counts = ("-", "-", "-")
+            elif phase == "inventory":
+                phase_result = "PASS" if phase_status[phase] == 0 else "FAIL"
+                counts = ("0", "0", "0")
+            elif phase_status[phase] != 0:
+                phase_result = "FAIL"
+                if (phase, host) in recaps:
+                    recap = recaps[(phase, host)]
+                    counts = tuple(
+                        str(recap[name])
+                        for name in ("changed", "failures", "unreachable")
+                    )
+                else:
+                    counts = ("-", "-", "-")
+            elif (phase, host) in recaps:
+                recap = recaps[(phase, host)]
+                phase_result = (
+                    "FAIL"
+                    if recap["failures"] > 0 or recap["unreachable"] > 0
+                    else "PASS"
+                )
+                counts = tuple(str(recap[name]) for name in ("changed", "failures", "unreachable"))
+            else:
+                phase_result = "FAIL"
+                counts = ("-", "-", "-")
+            if applicable(role, phase):
+                statuses.append(phase_result)
+            host_rows.append([host, role, phase, phase_result, *counts])
+        if not statuses:
+            host_result = "N/A"
+        elif (
+            role != "N/A"
+            and args.status == 0
+            and all(status == "PASS" for status in statuses)
+        ):
+            host_result = "PASS"
+        elif any(status != "N/A" for status in statuses):
+            host_result = "FAIL"
+        else:
+            host_result = "N/A"
+        host_results[host] = host_result
+        for row in host_rows:
+            rendered.append([*row, host_result])
+
+    complete = (
+        bool(hosts)
+        and not invalid
+        and args.status == 0
+        and all(role != "N/A" for role in hosts.values())
+        and all(result == "PASS" for result in host_results.values())
+        and all(phase in phase_status and phase_status[phase] == 0 for phase in phases)
+    )
+    print("PLATFORM CONFIG OPERATION SUMMARY")
+    print(f"Operation: {operation}")
+    print("Execution context: GitLab Runner")
+    print(f"Overall: {'PASS' if complete else 'FAIL'}")
+    if hosts:
+        print()
+        print_table(
+            [
+                ["VM", "ROLE", "PHASE", "STATUS", "CHANGED", "FAILED", "UNREACHABLE", "RESULT"],
+                *rendered,
+            ]
+        )
+    else:
+        print("Selected VMs: none established")
+    labels = {
+        "changed": "Changed tasks",
+        "failed": "Observed failed tasks",
+        "unreachable": "Unreachable tasks",
+    }
+    for outcome in ("changed", "failed", "unreachable"):
+        print()
+        print(f"{labels[outcome]}:")
+        if not tasks[outcome]:
+            print("  none")
+            continue
+        for task in sorted(tasks[outcome]):
+            print(f"  {task}: {', '.join(sorted(tasks[outcome][task]))}")
+    return 0 if args.status != 0 or complete else 2
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(add_help=False)
+    subparsers = result.add_subparsers(dest="command", required=True)
+    initialize = subparsers.add_parser("initialize", add_help=False)
+    initialize.add_argument("--operation", required=True)
+    initialize.add_argument("--output", required=True, type=Path)
+    hosts = subparsers.add_parser("hosts", add_help=False)
+    hosts.add_argument("--operation", required=True)
+    hosts.add_argument("--inventory", required=True, type=Path)
+    hosts.add_argument("--output", required=True, type=Path)
+    phase = subparsers.add_parser("phase", add_help=False)
+    phase.add_argument("--output", required=True, type=Path)
+    phase.add_argument("--phase", required=True)
+    phase.add_argument("--state", required=True)
+    phase.add_argument("--status", type=int)
+    render = subparsers.add_parser("render", add_help=False)
+    render.add_argument("--input", required=True, type=Path)
+    render.add_argument("--status", required=True, type=int)
+    return result
+
+
+def main() -> int:
+    try:
+        args = parser().parse_args()
+        if args.command == "initialize":
+            command_initialize(args)
+        elif args.command == "hosts":
+            command_hosts(args)
+        elif args.command == "phase":
+            command_phase(args)
+        elif args.command == "render":
+            return command_render(args)
+        else:
+            raise SummaryError
+    except (OSError, SummaryError, ValueError):
+        print("platform-config-operation-summary: invalid summary input", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
