@@ -31,6 +31,17 @@ def _assert_no_mutating_actions(node: Any) -> None:
             _assert_no_mutating_actions(value)
 
 
+def _assert_no_external_collection_actions(node: Any) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str) and key.count(".") == 2:
+                assert key.startswith("ansible.builtin.")
+            _assert_no_external_collection_actions(value)
+    elif isinstance(node, list):
+        for value in node:
+            _assert_no_external_collection_actions(value)
+
+
 def test_openbao_status_source_security_contract(repo_root: Path) -> None:
     main = (repo_root / "roles/openbao_status/tasks/main.yml").read_text(encoding="utf-8")
     raft = (repo_root / "roles/openbao_status/tasks/observe_raft.yml").read_text(encoding="utf-8")
@@ -51,10 +62,30 @@ def test_openbao_status_role_contains_no_explicit_mutating_modules(repo_root: Pa
         _assert_no_mutating_actions(data)
 
 
+def test_openbao_status_path_uses_no_external_collection_actions(
+    repo_root: Path,
+) -> None:
+    paths = [
+        repo_root / "playbooks/maintenance/openbao-status.yml",
+        repo_root / "roles/openbao/tasks/active_preflight.yml",
+        *sorted((repo_root / "roles/openbao_status/tasks").glob("*.yml")),
+    ]
+    for path in paths:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        _assert_no_external_collection_actions(data)
+
+
 def test_openbao_status_mutation_scanner_rejects_nested_shell() -> None:
     with pytest.raises(AssertionError):
         _assert_no_mutating_actions(
             [{"block": [{"ansible.builtin.shell": "touch /tmp/unsafe"}]}]
+        )
+
+
+def test_openbao_status_collection_scanner_rejects_external_action() -> None:
+    with pytest.raises(AssertionError):
+        _assert_no_external_collection_actions(
+            [{"ansible.posix.firewalld": {"state": "enabled"}}]
         )
 
 
