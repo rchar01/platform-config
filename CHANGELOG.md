@@ -35,6 +35,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Retired the repository-built operational image and its Ansible Core 2.20 pin
+  after RKE2 and OpenBao qualified a maintained digest-pinned GHCR runtime.
 - Moved request publication and exact response download behind a fixed
   target-local GitLab facade with protected spools and local activation recovery.
 - Returned the request ID needed by the separately authorized offline GitLab

@@ -881,23 +881,6 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
     assert "Install RKE2" not in names
 
 
-def test_operational_image_pins_ansible_toolchain(repo_root: Path) -> None:
-    containerfile = (repo_root / "Containerfile.ci").read_text(encoding="utf-8")
-    requirements = (repo_root / "requirements-ci.txt").read_text(encoding="utf-8")
-    collections = yaml.safe_load((repo_root / "requirements.yml").read_text())
-
-    assert requirements == "ansible-core==2.20.0\n"
-    assert "ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections" in containerfile
-    assert "COPY requirements-ci.txt requirements.yml" in containerfile
-    assert "ansible-galaxy collection install" in containerfile
-    assert collections == {
-        "collections": [
-            {"name": "ansible.posix", "version": "2.2.2"},
-            {"name": "community.general", "version": "12.6.0"},
-        ]
-    }
-
-
 def test_rke2_flushes_restart_before_readiness(repo_root: Path) -> None:
     tasks = yaml.safe_load((repo_root / "roles/rke2/tasks/main.yml").read_text())
     names = [task.get("name") for task in tasks]
@@ -1070,20 +1053,15 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
     common_repo = inventory["rke2_rpm_common_repository_url"]
     assert f"{common_repo}/{inventory['rke2_rpm_selinux_package_nevra']}.rpm" in matrix
 
-    containerfile = (repo_root / "Containerfile.ci").read_text()
-    base_image = containerfile.splitlines()[0].removeprefix("FROM ")
-    assert base_image in matrix
-
-    ci_requirements = (repo_root / "requirements-ci.txt").read_text().splitlines()
-    assert all(requirement in matrix for requirement in ci_requirements)
-
-    collections = yaml.safe_load((repo_root / "requirements.yml").read_text())[
-        "collections"
-    ]
-    assert all(
-        collection["name"] in matrix and collection["version"] in matrix
-        for collection in collections
+    operational_image = (
+        "ghcr.io/ansible/community-ansible-dev-tools:v26.8.0@"
+        "sha256:70f705fee2386deb320598ea011812292598111cca85f0107ee9479062628e79"
     )
+    assert operational_image in matrix
+    assert "Ansible Core `2.21.x`" in normalized_matrix
+    assert "`ansible.posix` `2.2.2`" in matrix
+    assert "requires no external collection" in normalized_matrix
+    assert "does not build or publish an operational image" in normalized_matrix
 
 
 @pytest.mark.parametrize(

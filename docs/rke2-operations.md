@@ -1,9 +1,9 @@
 # RKE2 Operations
 
-`platform-config` provides a fixed launcher and a dedicated CI image source for
-reviewed RKE2 bootstrap and convergence plus read-only OpenBao status jobs. The
-launcher is not a generic Ansible wrapper: it accepts one operation, one
-absolute inventory path, and one absolute controller-variable file.
+`platform-config` provides a fixed launcher for reviewed RKE2 bootstrap and
+convergence plus read-only OpenBao status jobs. The launcher is not a generic
+Ansible wrapper: it accepts one operation, one absolute inventory path, and one
+absolute controller-variable file.
 
 ## Fixed Operations
 
@@ -104,19 +104,21 @@ cannot roll back changes already completed by Ansible or a managed host.
 
 ## Operational Image
 
-`Containerfile.ci` builds the direct-Ansible job image. It pins Ansible Core in
-`requirements-ci.txt` and installs the exact collection versions from
-`requirements.yml`:
+This repository does not build or publish an operational job image. Private CI
+bindings select a maintained image by immutable registry digest, and the public
+components verify its complete reference, architecture, and required toolchain
+before fetching `platform-config`.
 
-```bash
-podman build -f Containerfile.ci -t platform-config-ci:local .
-podman run --rm platform-config-ci:local ansible --version
-podman run --rm platform-config-ci:local ansible-galaxy collection list
+The qualified dev binding pulls this upstream image directly from GHCR:
+
+```text
+ghcr.io/ansible/community-ansible-dev-tools:v26.8.0@sha256:70f705fee2386deb320598ea011812292598111cca85f0107ee9479062628e79
 ```
 
-Publish the reviewed image through the approved registry workflow and bind jobs
-to its registry digest. A local image tag or mutable registry tag is not an
-operational identity.
+The fixed paths require Ansible Core `2.21.x`; RKE2 additionally requires
+`ansible.posix` `2.2.2`, while OpenBao status requires no external collection.
+Jobs must not install packages or collections at runtime. A mutable tag or local
+image name is not an operational identity.
 
 ## RPM Repository Trust
 

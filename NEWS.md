@@ -21,6 +21,8 @@ GitLab or target-local filesystem transport.
 
 ### Changes
 
+- Retire the repository-built operational image in favor of the qualified
+  digest-pinned upstream Ansible runtime pulled directly from GHCR.
 - Publish requests and download exact responses directly from the target through
   a fixed GitLab facade without carrying package bytes through Ansible.
 - Return the authenticated request ID after successful publication so the

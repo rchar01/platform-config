@@ -19,8 +19,7 @@ interfaces, credentials, or trust-file locations.
 | --- | --- | --- |
 | RKE2 nodes | Rancher signing key and repository metadata; exact node and SELinux RPMs; requested firewalld, kernel-module, and kmod package payloads; OCI image manifests for workloads scheduled on that node. | Hashed DNF metadata, dependency-selected RPMs, and OS package closure; registry authentication plus image config, layer, and redirect destinations. |
 | RKE2 Helm Controller job | kube-vip Helm index. The job may run on any eligible cluster node. | Chart URL selected from the index and its release-asset redirect. |
-| CI image builder | Python base-image manifest; top-level APT, pip, and Galaxy package requests. | OCI layers and authentication; APT metadata/dependencies; Python dependencies; collection download storage. |
-| CI Runner and operational job | Digest-pinned operational image and immutable GitLab repositories, then SSH and internal smoke endpoints. | Registry authentication and image layers. The job does not proxy target-node RPM or OCI downloads. |
+| CI Runner and operational job | Digest-pinned maintained operational image from GHCR and immutable GitLab repositories, then SSH and internal smoke endpoints. | GHCR authentication and image layers. The job does not proxy target-node RPM or OCI downloads. |
 
 The pristine-node preflight, Ansible template rendering, guarded reboot,
 second-apply idempotency checks, and smoke playbooks do not intentionally fetch
@@ -334,15 +333,20 @@ complete digest inventory and proof that no rendered reference reaches upstream.
 
 ## Operational Image Egress
 
-Building `Containerfile.ci` requires these sources:
+`platform-config` does not build or publish an operational image. The qualified
+dev binding selects the maintained upstream image directly from GHCR by release
+tag and OCI index digest:
 
-| Build input | Source and pinning |
-| --- | --- |
-| Base image | `docker.io/library/python:3.14.7-slim-trixie@sha256:83c1cebb322d099ac9e3a3a532ba74b0146d702838b25e4c75c02fa81ffeb910` |
-| Debian packages | Base-image-configured APT repositories; package versions, metadata, and transitive closure are not locked. |
-| Python packages | Configured pip index and package storage; `ansible-core==2.20.0` is pinned, but hashes and transitive dependencies are not locked. |
-| Ansible collections | Configured Galaxy server and download storage; `ansible.posix` `2.2.2` and `community.general` `12.6.0` are version-pinned without artifact hashes. |
-| Publication | Approved destination OCI registry; jobs consume the result only by digest. |
+```text
+ghcr.io/ansible/community-ansible-dev-tools:v26.8.0@sha256:70f705fee2386deb320598ea011812292598111cca85f0107ee9479062628e79
+```
+
+The Runner resolves GHCR authentication, the selected manifest, its Linux
+`amd64` child, image configuration, and layers. The public components verify the
+complete image reference and architecture. They also require Ansible Core
+`2.21.x`; RKE2 requires `ansible.posix` `2.2.2`, while OpenBao status uses only
+built-in modules and requires no external collection. Jobs install no runtime
+packages or collections.
 
 At job time, the Runner needs the digest-pinned operational image and the
 self-managed GitLab repositories selected by immutable commits. The operational
