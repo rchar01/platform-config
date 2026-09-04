@@ -59,6 +59,9 @@
       - openbao_bootstrap_marker_path is match('^/[A-Za-z0-9_./-]+$')
       - openbao_bootstrap_marker_owner == 'root'
       - openbao_bootstrap_marker_group == 'root'
+      - >-
+        openbao_lifecycle_preflight_mode
+        in ['inactive-custody', 'active-maintenance']
       - openbao_audit_1_dir is match('^/[A-Za-z0-9_./-]+$')
       - openbao_audit_2_dir is match('^/[A-Za-z0-9_./-]+$')
       - openbao_container_audit_1_dir == '/openbao/audit-1'

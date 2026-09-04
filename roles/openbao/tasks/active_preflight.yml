@@ -98,14 +98,86 @@
       - openbao_active_request_ids | unique | length == 1
     fail_msg: Active OpenBao lifecycle rejects dormant or ambiguous TLS custody.
 
+- name: Inspect active OpenBao TLS versions root
+  ansible.builtin.stat:
+    path: /etc/openbao/tls-versions
+    follow: false
+  register: openbao_active_versions_root_stat
+
+- name: Inspect selected active OpenBao TLS version directory
+  ansible.builtin.stat:
+    path: "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}"
+    follow: false
+  register: openbao_active_version_directory_stat
+
 - name: Inspect active OpenBao host-local leaf files
   ansible.builtin.stat:
     path: "{{ item }}"
     checksum_algorithm: sha256
+    follow: false
   register: openbao_active_leaf_stats
   loop:
     - "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/fullchain.crt"
     - "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/tls.key"
+
+- name: Require exact desired active OpenBao listener
+  ansible.builtin.assert:
+    that:
+      - openbao_active_lifecycle_stats.results[4].stat.exists
+      - openbao_active_lifecycle_stats.results[4].stat.isreg
+      - not openbao_active_lifecycle_stats.results[4].stat.islnk
+      - openbao_active_lifecycle_stats.results[4].stat.pw_name == 'root'
+      - openbao_active_lifecycle_stats.results[4].stat.gid == openbao_container_gid | int
+      - openbao_active_lifecycle_stats.results[4].stat.mode == '0640'
+      - >-
+        openbao_active_lifecycle_stats.results[4].stat.checksum
+        == (
+          lookup('ansible.builtin.template', 'listener.hcl.j2')
+          | replace(
+              '/openbao/config/tls/tls.crt',
+              '/openbao/config/tls-versions/'
+              ~ (openbao_active_request_ids | first)
+              ~ '/fullchain.crt'
+            )
+          | replace(
+              '/openbao/config/tls/tls.key',
+              '/openbao/config/tls-versions/'
+              ~ (openbao_active_request_ids | first)
+              ~ '/tls.key'
+            )
+          | hash('sha256')
+        )
+    fail_msg: Active OpenBao listener differs from its exact selected TLS version.
+
+- name: Require exact selected active OpenBao TLS artifact metadata
+  ansible.builtin.assert:
+    that:
+      - openbao_active_versions_root_stat.stat.exists
+      - openbao_active_versions_root_stat.stat.isdir
+      - not openbao_active_versions_root_stat.stat.islnk
+      - openbao_active_versions_root_stat.stat.pw_name == 'root'
+      - openbao_active_versions_root_stat.stat.gid == openbao_container_gid | int
+      - openbao_active_versions_root_stat.stat.mode == '0750'
+      - openbao_active_version_directory_stat.stat.exists
+      - openbao_active_version_directory_stat.stat.isdir
+      - not openbao_active_version_directory_stat.stat.islnk
+      - openbao_active_version_directory_stat.stat.pw_name == 'root'
+      - openbao_active_version_directory_stat.stat.gid == openbao_container_gid | int
+      - openbao_active_version_directory_stat.stat.mode == '0750'
+      - openbao_active_leaf_stats.results[0].stat.exists
+      - openbao_active_leaf_stats.results[0].stat.isreg
+      - not openbao_active_leaf_stats.results[0].stat.islnk
+      - openbao_active_leaf_stats.results[0].stat.pw_name == 'root'
+      - openbao_active_leaf_stats.results[0].stat.gr_name == 'root'
+      - openbao_active_leaf_stats.results[0].stat.gid == 0
+      - openbao_active_leaf_stats.results[0].stat.mode == '0644'
+      - openbao_active_leaf_stats.results[1].stat.exists
+      - openbao_active_leaf_stats.results[1].stat.isreg
+      - not openbao_active_leaf_stats.results[1].stat.islnk
+      - openbao_active_leaf_stats.results[1].stat.pw_name == 'root'
+      - openbao_active_leaf_stats.results[1].stat.gid == openbao_container_gid | int
+      - openbao_active_leaf_stats.results[1].stat.mode == '0640'
+    fail_msg: Active OpenBao selected TLS directory or leaf metadata is unsafe.
 
 - name: Inspect active OpenBao service state
   ansible.builtin.service_facts:

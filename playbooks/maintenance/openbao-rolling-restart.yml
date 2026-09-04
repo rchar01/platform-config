@@ -208,6 +208,13 @@
       ansible.builtin.set_fact:
         openbao_restart_required: false
 
+    - name: Refresh active OpenBao lifecycle proof before voter mutation
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+      vars:
+        openbao_active_preflight_allow_desired_config_drift: true
+
     - name: Create host-local OpenBao rolling transaction
       ansible.builtin.include_role:
         name: openbao
@@ -218,6 +225,7 @@
         name: openbao
       vars:
         openbao_active_preflight_allow_desired_config_drift: true
+        openbao_lifecycle_preflight_mode: active-maintenance
 
     - name: Apply any explicit unchanged-voter restart
       ansible.builtin.include_role:

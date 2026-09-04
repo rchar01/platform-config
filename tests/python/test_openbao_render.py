@@ -252,6 +252,61 @@ def test_openbao_custody_checks_canonical_ca_chain(repo_root: Path) -> None:
     assert "/{{ openbao_tls_custody.request_id }}/chain.crt" not in custody
 
 
+def test_openbao_active_preflight_authenticates_selected_tls_version(
+    repo_root: Path,
+) -> None:
+    preflight = (repo_root / "roles/openbao/tasks/active_preflight.yml").read_text(
+        encoding="utf-8"
+    )
+    refresh = (repo_root / "roles/openbao/tasks/refresh_active_marker.yml").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "lookup('ansible.builtin.template', 'listener.hcl.j2')",
+        "'/openbao/config/tls/tls.crt'",
+        "'/openbao/config/tls/tls.key'",
+        "~ '/fullchain.crt'",
+        "~ '/tls.key'",
+    ):
+        assert fragment in preflight
+        assert fragment in refresh
+    for fragment in (
+        "path: /etc/openbao/tls-versions",
+        "openbao_active_versions_root_stat.stat.exists",
+        "openbao_active_versions_root_stat.stat.isdir",
+        "not openbao_active_versions_root_stat.stat.islnk",
+        "openbao_active_versions_root_stat.stat.pw_name == 'root'",
+        "openbao_active_versions_root_stat.stat.gid == openbao_container_gid | int",
+        "openbao_active_versions_root_stat.stat.mode == '0750'",
+        "openbao_active_version_directory_stat.stat.isdir",
+        "not openbao_active_version_directory_stat.stat.islnk",
+        "openbao_active_version_directory_stat.stat.pw_name == 'root'",
+        "openbao_active_version_directory_stat.stat.gid == openbao_container_gid | int",
+        "openbao_active_version_directory_stat.stat.mode == '0750'",
+        "openbao_active_leaf_stats.results[0].stat.isreg",
+        "not openbao_active_leaf_stats.results[0].stat.islnk",
+        "openbao_active_leaf_stats.results[0].stat.pw_name == 'root'",
+        "openbao_active_leaf_stats.results[0].stat.gr_name == 'root'",
+        "openbao_active_leaf_stats.results[0].stat.gid == 0",
+        "openbao_active_leaf_stats.results[0].stat.mode == '0644'",
+        "openbao_active_leaf_stats.results[1].stat.isreg",
+        "not openbao_active_leaf_stats.results[1].stat.islnk",
+        "openbao_active_leaf_stats.results[1].stat.pw_name == 'root'",
+        "openbao_active_leaf_stats.results[1].stat.gid == openbao_container_gid | int",
+        "openbao_active_leaf_stats.results[1].stat.mode == '0640'",
+    ):
+        assert fragment in preflight
+    listener_index = "openbao_active_lifecycle_stats.results[4].stat"
+    for suffix in (
+        "isreg",
+        "islnk",
+        "pw_name == 'root'",
+        "gid == openbao_container_gid | int",
+        "mode == '0640'",
+    ):
+        assert f"{listener_index}.{suffix}" in preflight
+
+
 def test_openbao_role_has_no_controller_leaf_transfer(repo_root: Path) -> None:
     role_root = repo_root / "roles/openbao"
     sources = "\n".join(
@@ -279,6 +334,7 @@ def test_openbao_role_has_no_controller_leaf_transfer(repo_root: Path) -> None:
         ("identity-mismatch", {"openbao_test_local_node_name": "not-bao-1"}, "local node identity must exactly match"),
         ("transit-seal", {"openbao_test_seal_type": "transit"}, "approved immutable amd64 2.6.1 image"),
         ("active-service", {"openbao_service_enabled": True}, "approved immutable amd64 2.6.1 image"),
+        ("invalid-lifecycle-mode", {"openbao_lifecycle_preflight_mode": "automatic"}, "approved immutable amd64 2.6.1 image"),
         ("wrong-mounts", {"openbao_required_mounts": ["/tmp/a", "/tmp/b", "/tmp/c", "/tmp/d"]}, "approved immutable amd64 2.6.1 image"),
         ("invalid-source", {"openbao_backend_allowed_sources": ["999.51.100.1/32"]}, "is invalid"),
         ("two-members", {"openbao_test_cluster_members": [{"name": "localhost", "node_id": "bao-1", "address": "192.0.2.10", "dns": "bao-1.internal.invalid"}, {"name": "test-node-02", "node_id": "bao-2", "address": "192.0.2.11", "dns": "bao-2.internal.invalid"}]}, "exactly three members with unique"),

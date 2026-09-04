@@ -1,4 +1,10 @@
 ---
+- name: Require mocked active OpenBao maintenance lifecycle mode
+  ansible.builtin.assert:
+    that:
+      - openbao_lifecycle_preflight_mode | default('') == 'active-maintenance'
+    fail_msg: Mocked OpenBao convergence requires active maintenance lifecycle mode.
+
 - name: Require mocked desired audit drift allowance during convergence
   ansible.builtin.assert:
     that:

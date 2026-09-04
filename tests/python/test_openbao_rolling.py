@@ -555,7 +555,7 @@ def test_openbao_active_preflight_drift_override_is_narrow(repo_root: Path) -> N
     assert f"{variable}\n        or openbao_active_audit_config_stat.stat.checksum" in preflight
     assert "openbao_active_marker.audit_config_checksum" in preflight
     assert "== openbao_active_audit_config_stat.stat.checksum" in preflight
-    assert rolling.count(f"{variable}: true") == 2
+    assert rolling.count(f"{variable}: true") == 3
     assert active_check.count(f"{variable}: true") == 2
     rolling_convergence = rolling[
         rolling.index("Converge this OpenBao voter") : rolling.index(
@@ -574,6 +574,47 @@ def test_openbao_active_preflight_drift_override_is_narrow(repo_root: Path) -> N
     assert f"{variable}: true" in active_check_convergence
     assert variable not in final_validation
     assert variable not in status
+
+
+def test_openbao_active_maintenance_mode_and_fresh_voter_preflight(
+    repo_root: Path,
+) -> None:
+    mode = "openbao_lifecycle_preflight_mode: active-maintenance"
+    rolling = (repo_root / "playbooks/maintenance/openbao-rolling-restart.yml").read_text(
+        encoding="utf-8"
+    )
+    active_check = (repo_root / "playbooks/maintenance/openbao-active-check.yml").read_text(
+        encoding="utf-8"
+    )
+    assert rolling.count(mode) == 1
+    assert active_check.count(mode) == 1
+    rolling_convergence = rolling[
+        rolling.index("Converge this OpenBao voter") : rolling.index(
+            "Apply any explicit unchanged-voter restart"
+        )
+    ]
+    active_check_convergence = active_check[
+        active_check.index("Check OpenBao role convergence") :
+    ]
+    assert mode in rolling_convergence
+    assert mode in active_check_convergence
+    leadership = rolling.index("Stop if OpenBao leadership changed across the planned order")
+    fresh_preflight = rolling.index(
+        "Refresh active OpenBao lifecycle proof before voter mutation"
+    )
+    transaction = rolling.index("Create host-local OpenBao rolling transaction")
+    assert leadership < fresh_preflight < transaction
+    fresh_preflight_block = rolling[fresh_preflight:transaction]
+    assert "tasks_from: active_preflight.yml" in fresh_preflight_block
+    assert "openbao_active_preflight_allow_desired_config_drift: true" in (
+        fresh_preflight_block
+    )
+    final_validation = rolling[
+        rolling.index("Recheck exact active OpenBao lifecycle after recovery") : rolling.index(
+            "Remove successful host-local OpenBao rolling transaction"
+        )
+    ]
+    assert "openbao_lifecycle_preflight_mode" not in final_validation
 
 
 def test_openbao_active_check_source_contract(repo_root: Path) -> None:

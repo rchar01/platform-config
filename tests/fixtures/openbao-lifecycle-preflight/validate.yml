@@ -1,0 +1,23 @@
+---
+- name: Exercise production OpenBao lifecycle preflight branching
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    openbao_lifecycle_preflight_mode: active-maintenance
+    openbao_active_preflight_allow_desired_config_drift: false
+    openbao_listener_path: "{{ openbao_lifecycle_test_root }}/listener.hcl"
+    openbao_config_path: "{{ openbao_lifecycle_test_root }}/openbao.hcl"
+    openbao_audit_config_path: "{{ openbao_lifecycle_test_root }}/audit.hcl"
+    openbao_quadlet_path: "{{ openbao_lifecycle_test_root }}/openbao.container"
+    openbao_tls_ca_path: "{{ openbao_lifecycle_test_root }}/ca.crt"
+    openbao_bootstrap_marker_path: "{{ openbao_lifecycle_test_root }}/marker.json"
+    openbao_dormant_tls_cert_path: "{{ openbao_lifecycle_test_root }}/tls.crt"
+    openbao_dormant_tls_key_path: "{{ openbao_lifecycle_test_root }}/tls.key"
+    openbao_service_name: openbao.service
+    pki_host_local_certificate_state_root: "{{ openbao_lifecycle_test_root }}/state"
+    pki_host_local_certificate_lifecycle_helper_path: /bin/false
+  tasks:
+    - name: Run production OpenBao lifecycle preflight
+      ansible.builtin.include_tasks: >-
+        {{ playbook_dir }}/../../../roles/openbao/tasks/lifecycle_preflight.yml

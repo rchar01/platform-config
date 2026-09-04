@@ -105,3 +105,4 @@
         name: openbao
       vars:
         openbao_active_preflight_allow_desired_config_drift: true
+        openbao_lifecycle_preflight_mode: active-maintenance

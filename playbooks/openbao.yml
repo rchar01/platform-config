@@ -51,6 +51,9 @@
           - (openbao_service_enabled | default(false)) is boolean
           - not (openbao_service_enabled | default(false))
           - openbao_service_state | default('stopped') == 'stopped'
+          - >-
+            openbao_lifecycle_preflight_mode | default('inactive-custody')
+            == 'inactive-custody'
           - (openbao_haproxy_service_enabled | default(false)) is boolean
           - not (openbao_haproxy_service_enabled | default(false))
           - openbao_haproxy_service_state | default('stopped') == 'stopped'
@@ -59,8 +62,8 @@
           - keepalived_vip_service_state | default('stopped') == 'stopped'
         fail_msg: >-
           OpenBao staging requires an explicit ready contract, enabled role
-          ownership, and stopped/disabled OpenBao, HAProxy, and Keepalived
-          services on every node.
+          ownership, inactive custody preflight, and stopped/disabled OpenBao,
+          HAProxy, and Keepalived services on every node.
 
     - name: Validate OpenBao configuration inputs before staging
       ansible.builtin.include_role:

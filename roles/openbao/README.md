@@ -137,6 +137,15 @@ artifacts at the immutable
 `/var/lib/platform-config/openbao-rolling-transaction` path before each voter
 converges.
 
+Role lifecycle preflight defaults to `inactive-custody`, which preserves the
+installed custody helper's rejection of active/generated services.
+`active-maintenance` is a privileged caller-selected mode reserved for the fixed
+active-check and rolling playbooks. It always reruns strict active preflight for
+the marker, selected listener, TLS directories, and leaf metadata without invoking
+the inactive custody helper. It is not a general PKI or custody mode and cannot
+change listener selection, CA, certificate, private key, or lifecycle
+active/rollback records. Ordinary `playbooks/openbao.yml` explicitly rejects it.
+
 Set `openbao_rolling_force_restart: true` only through the reviewed fixed rolling
 route when an unchanged voter must restart. A convergence-triggered restart takes
 precedence, so the force flag never restarts that voter twice. Ansible emits only

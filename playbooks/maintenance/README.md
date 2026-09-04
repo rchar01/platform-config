@@ -100,11 +100,18 @@ Available maintenance playbooks:
   is independently recovered and exact, its transaction is removed to avoid
   retaining root-only TLS key copies; later failures do not recreate prior voter
   snapshots. There is no automatic rollback or stale cleanup. The playbook never
-  initializes or unseals OpenBao and is not imported by `site.yml`.
+  initializes or unseals OpenBao and is not imported by `site.yml`. Its explicit
+  privileged caller-selected active-maintenance mode is reserved for this fixed
+  playbook, always reruns strict active preflight, and is not a general PKI or
+  custody mode. It cannot change listener selection, CA, certificate, key, or
+  lifecycle active/rollback records.
 - `openbao-active-check.yml`: requires an explicit exact three-host limit, active
   lifecycle and strict status, then runs the OpenBao role only in Ansible check
   mode. It applies the same unchanged-image and PKI guard and never enters rolling
-  maintenance.
+  maintenance. Its privileged caller-selected active-maintenance mode is reserved
+  for this fixed playbook, always reruns strict active preflight, and is not a
+  general PKI or custody mode. Ordinary `openbao.yml` explicitly rejects that
+  mode.
 - `storage-volume-test.yml`: exercises one isolated disposable storage fixture
   through the supported `scripts/storage-volume-test` boundary. It requires an
   exact host, stable by-id/by-path disk, strict SSH, and playbook-owned
