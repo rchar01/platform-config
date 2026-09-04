@@ -1,0 +1,46 @@
+---
+- name: Create mocked OpenBao managed state directory
+  ansible.builtin.file:
+    path: "{{ openbao_state_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create mocked OpenBao rolling transaction
+  ansible.builtin.file:
+    path: "{{ openbao_test_transaction_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Save mocked active OpenBao marker
+  ansible.builtin.copy:
+    dest: "{{ openbao_test_transaction_dir }}/active-marker.json"
+    content: "mock active marker for {{ inventory_hostname }}\n"
+    mode: "0600"
+
+- name: Inject mocked OpenBao snapshot creation failure
+  ansible.builtin.fail:
+    msg: Mocked OpenBao transaction snapshot creation failed.
+  when: inventory_hostname == (openbao_test_snapshot_failure_host | default(''))
+
+- name: Save representative mocked OpenBao recovery artifacts
+  ansible.builtin.copy:
+    dest: "{{ openbao_test_transaction_dir }}/{{ item.name }}"
+    content: "{{ item.content }} for {{ inventory_hostname }}\n"
+    mode: "0600"
+  loop:
+    - name: openbao.container
+      content: mock Quadlet
+    - name: openbao.hcl
+      content: mock base config
+    - name: listener.hcl
+      content: mock active listener
+    - name: audit.hcl
+      content: mock audit config
+    - name: ca.crt
+      content: mock CA certificate
+    - name: fullchain.crt
+      content: mock leaf certificate
+    - name: tls.key
+      content: mock TLS private key
+  loop_control:
+    label: "{{ item.name }}"

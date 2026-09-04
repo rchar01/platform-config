@@ -21,6 +21,16 @@ def _summary_root(isolated_test_dir: Path) -> tuple[Path, Path]:
     return root, root / "events.jsonl"
 
 
+def _launcher_summary_output(isolated_test_dir: Path) -> Path:
+    root = isolated_test_dir / "launcher-summary"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    output = root / "summary.txt"
+    output.touch(mode=0o600)
+    output.chmod(0o600)
+    return output
+
+
 def _initialize(
     repo_root: Path,
     command_runner: CommandRunner,
@@ -342,6 +352,63 @@ def test_summary_initializes_only_selected_inventory_hosts(
     assert "inventory-secret" not in output
 
 
+def test_openbao_summary_requires_exact_three_host_evidence(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+) -> None:
+    events = _initialize(
+        repo_root, command_runner, isolated_test_dir, "openbao-restart-plan"
+    )
+    for host in ("openbao-a", "openbao-b"):
+        _append(events, {"schema": 1, "kind": "host", "host": host, "role": "openbao"})
+    for phase in (
+        "inventory",
+        "connectivity",
+        "openbao-status",
+        "openbao-restart-check",
+    ):
+        _append(events, *_phase(phase))
+        if phase != "inventory":
+            for host in ("openbao-a", "openbao-b"):
+                _append(events, _recap(phase, host))
+
+    result = _render(repo_root, command_runner, events, 0).assert_failure()
+
+    assert result.returncode == 2
+    assert "Overall: FAIL" in result.stdout
+
+
+def test_summary_marks_missing_applicable_openbao_phase_failed(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+) -> None:
+    events = _initialize(
+        repo_root, command_runner, isolated_test_dir, "openbao-converge-plan"
+    )
+    for host in ("openbao-a", "openbao-b", "openbao-c"):
+        _append(events, {"schema": 1, "kind": "host", "host": host, "role": "openbao"})
+    for phase in ("inventory", "connectivity", "openbao-status"):
+        _append(events, *_phase(phase))
+        if phase != "inventory":
+            for host in ("openbao-a", "openbao-b", "openbao-c"):
+                _append(events, _recap(phase, host))
+
+    result = _render(repo_root, command_runner, events, 0).assert_failure()
+
+    assert result.returncode == 2
+    missing_phase_rows = [
+        line.split()[:4]
+        for line in result.stdout.splitlines()
+        if "openbao-converge-check" in line
+    ]
+    assert missing_phase_rows == [
+        [host, "openbao", "openbao-converge-check", "FAIL"]
+        for host in ("openbao-a", "openbao-b", "openbao-c")
+    ]
+
+
 @pytest.mark.parametrize(
     "invalid_record",
     [
@@ -653,6 +720,77 @@ def test_launcher_prints_empty_failure_summary_and_cleans_up(
     assert "Overall: FAIL" in result.stdout
     assert "Selected VMs: none established" in result.stdout
     assert not list((isolated_test_dir / "tmp").glob("platform-config-operation.*"))
+
+
+def test_launcher_hands_failed_operation_summary_to_wrapper(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+) -> None:
+    output = _launcher_summary_output(isolated_test_dir)
+
+    result = command_runner.run(
+        [repo_root / "scripts/platform-config-operation", "openbao-status"],
+        environment={"PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT": str(output)},
+    ).assert_failure()
+
+    summary = output.read_text(encoding="utf-8")
+    assert result.stdout == ""
+    assert summary.count("=== PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+    assert summary.count("=== END PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+    assert "Overall: FAIL" in summary
+    assert "Selected VMs: none established" in summary
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    ["empty", "relative", "missing", "symlink", "parent-symlink", "public-parent"],
+)
+def test_launcher_rejects_unsafe_summary_output_without_disclosure(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    unsafe_kind: str,
+) -> None:
+    private = isolated_test_dir / "private-output"
+    private.mkdir(mode=0o700)
+    private.chmod(0o700)
+    target = private / "unsafe-summary-secret.txt"
+    target.write_text("unchanged", encoding="utf-8")
+    target.chmod(0o600)
+
+    if unsafe_kind == "empty":
+        output = ""
+    elif unsafe_kind == "relative":
+        output = "unsafe-summary-secret.txt"
+    elif unsafe_kind == "missing":
+        output = str(private / "missing-unsafe-summary-secret.txt")
+    elif unsafe_kind == "symlink":
+        link = private / "symlink-unsafe-summary-secret.txt"
+        link.symlink_to(target)
+        output = str(link)
+    elif unsafe_kind == "parent-symlink":
+        parent_link = isolated_test_dir / "linked-private-output"
+        parent_link.symlink_to(private, target_is_directory=True)
+        output = str(parent_link / target.name)
+    else:
+        public = isolated_test_dir / "public-output"
+        public.mkdir(mode=0o755)
+        public.chmod(0o755)
+        public_target = public / "unsafe-summary-secret.txt"
+        public_target.touch(mode=0o600)
+        output = str(public_target)
+
+    result = command_runner.run(
+        [repo_root / "scripts/platform-config-operation", "openbao-status"],
+        environment={"PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT": output},
+    ).assert_failure()
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "PLATFORM CONFIG OPERATION SUMMARY" not in result.stderr
+    assert "unsafe-summary-secret" not in result.stdout + result.stderr
+    assert target.read_text(encoding="utf-8") == "unchanged"
 
 
 def test_launcher_rejects_public_controller_vars(

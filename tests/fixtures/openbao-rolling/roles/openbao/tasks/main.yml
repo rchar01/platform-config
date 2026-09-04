@@ -1,4 +1,12 @@
 ---
+- name: Require mocked desired audit drift allowance during convergence
+  ansible.builtin.assert:
+    that:
+      - >-
+        inventory_hostname != (openbao_test_desired_audit_drift_host | default(''))
+        or openbao_active_preflight_allow_desired_config_drift | default(false)
+    fail_msg: Mocked OpenBao convergence requires the desired audit drift allowance.
+
 - name: Record mocked OpenBao voter convergence
   ansible.builtin.lineinfile:
     path: "{{ openbao_test_order_path }}"
@@ -9,7 +17,20 @@
 
 - name: Report no mocked OpenBao restart
   ansible.builtin.set_fact:
-    openbao_restart_required: false
+    openbao_restart_required: >-
+      {{
+        inventory_hostname
+        in (openbao_test_convergence_changed_hosts | default([]))
+      }}
+
+- name: Record mocked convergence restart
+  ansible.builtin.lineinfile:
+    path: "{{ openbao_test_restart_path }}"
+    line: "{{ inventory_hostname }}"
+    create: true
+    mode: "0600"
+  delegate_to: localhost
+  when: openbao_restart_required | bool
 
 - name: Move mocked OpenBao leadership after selected convergence
   ansible.builtin.set_fact:

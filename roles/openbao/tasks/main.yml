@@ -215,6 +215,7 @@
           - "{{ openbao_image }}"
       register: openbao_image_inspect
       changed_when: false
+      check_mode: false
       when: openbao_image_ready | bool
 
     - name: Parse exact OpenBao image metadata

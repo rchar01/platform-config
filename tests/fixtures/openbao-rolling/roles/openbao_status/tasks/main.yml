@@ -15,3 +15,10 @@
         | selectattr('name', 'equalto', openbao_test_current_active_name)
         | first
       }}
+
+- name: Publish mocked OpenBao health identity
+  ansible.builtin.set_fact:
+    openbao_status_health_results:
+      results:
+        - json:
+            cluster_id: openbao-test-cluster

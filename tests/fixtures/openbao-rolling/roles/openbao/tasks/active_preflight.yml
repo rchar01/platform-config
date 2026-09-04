@@ -1,0 +1,74 @@
+---
+- name: Validate mocked active OpenBao preflight mode
+  ansible.builtin.assert:
+    that:
+      - (openbao_active_preflight_allow_desired_config_drift | default(false)) is boolean
+    fail_msg: Mocked OpenBao active preflight drift control must be a boolean.
+
+- name: Inspect mocked pending OpenBao rolling transaction
+  ansible.builtin.stat:
+    path: "{{ openbao_test_transaction_dir }}"
+  register: openbao_test_pending_transaction_stat
+  when: openbao_active_preflight_allow_desired_config_drift | default(false)
+
+- name: Reject mocked pending OpenBao rolling transaction
+  ansible.builtin.assert:
+    that:
+      - not openbao_test_pending_transaction_stat.stat.exists
+    fail_msg: >-
+      OpenBao rolling maintenance found a pending transaction. Preserve it for
+      reviewed recovery; automation will not clear or overwrite it.
+  when: openbao_active_preflight_allow_desired_config_drift | default(false)
+
+- name: Require mocked desired OpenBao audit configuration
+  ansible.builtin.assert:
+    that:
+      - >-
+        inventory_hostname != (openbao_test_desired_audit_drift_host | default(''))
+        or openbao_active_preflight_allow_desired_config_drift | default(false)
+        or openbao_test_desired_audit_drift_resolved | default(false)
+    fail_msg: Active OpenBao lifecycle requires its exact desired audit configuration.
+
+- name: Reject mocked OpenBao image transition
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname != (openbao_test_image_mismatch_host | default(''))
+    fail_msg: Active OpenBao lifecycle rejects an image transition.
+
+- name: Reject mocked OpenBao CA transition
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname != (openbao_test_ca_mismatch_host | default(''))
+    fail_msg: Active OpenBao lifecycle rejects a controller CA transition.
+
+- name: Publish mocked active OpenBao marker
+  ansible.builtin.set_fact:
+    openbao_active_marker:
+      node_id: >-
+        {{
+          (openbao_cluster_members
+           | selectattr('name', 'equalto', inventory_hostname)
+           | first).node_id
+        }}
+      cluster_id: openbao-test-cluster
+      cluster_signature: "{{ 'a' * 64 }}"
+      image_digest: "sha256:{{ 'b' * 64 }}"
+      ca_checksum: "{{ 'c' * 64 }}"
+      certificate_checksum: "{{ 'd' * 64 }}"
+      key_checksum: "{{ 'e' * 64 }}"
+    openbao_active_request_ids:
+      - 0123456789abcdef0123456789abcdef
+      - 0123456789abcdef0123456789abcdef
+    openbao_active_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: >-
+        {{
+          (openbao_cluster_members
+           | selectattr('name', 'equalto', inventory_hostname)
+           | first).node_id
+        }}
+      cluster_id: openbao-test-cluster
+      cluster_signature: "{{ 'a' * 64 }}"
+      image_digest: "sha256:{{ 'b' * 64 }}"
+      image_reference: "example.invalid/openbao@sha256:{{ 'b' * 64 }}"
+      ca_checksum: "{{ 'c' * 64 }}"

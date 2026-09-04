@@ -1,0 +1,47 @@
+---
+- name: Create mocked OpenBao unseal attempt directory
+  ansible.builtin.file:
+    path: "{{ openbao_test_unseal_attempt_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+
+- name: Poll mocked OpenBao voter for at most three attempts
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      attempt=0
+      if [ -f "${OPENBAO_TEST_ATTEMPT_PATH}" ]; then
+        IFS= read -r attempt < "${OPENBAO_TEST_ATTEMPT_PATH}"
+      fi
+      attempt=$((attempt + 1))
+      printf '%s\n' "${attempt}" > "${OPENBAO_TEST_ATTEMPT_PATH}"
+      if [ "${attempt}" -le "${OPENBAO_TEST_SEALED_ATTEMPTS}" ]; then
+        printf '%s\n' 'Mocked OpenBao voter remains sealed.' >&2
+        exit 1
+      fi
+    executable: /bin/sh
+  environment:
+    OPENBAO_TEST_ATTEMPT_PATH: >-
+      {{ openbao_test_unseal_attempt_dir }}/{{ inventory_hostname }}
+    OPENBAO_TEST_SEALED_ATTEMPTS: >-
+      {{
+        (openbao_test_unseal_sealed_attempts | default({})).get(
+          inventory_hostname,
+          0
+        )
+      }}
+  delegate_to: localhost
+  register: openbao_test_unseal_poll
+  changed_when: false
+  retries: 2
+  delay: 0
+  until: openbao_test_unseal_poll.rc == 0
+
+- name: Record mocked external OpenBao unseal wait
+  ansible.builtin.lineinfile:
+    path: "{{ openbao_test_unseal_path }}"
+    line: "{{ inventory_hostname }}"
+    create: true
+    mode: "0600"
+  delegate_to: localhost

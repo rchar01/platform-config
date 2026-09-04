@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import signal
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 import yaml
 
 from conftest import CommandResult, CommandRunner
+
+
+OPENBAO_STATUS_DRIFT_VARIABLE = (
+    "openbao_active_preflight_allow_desired_config_drift"
+)
+OPENBAO_STATUS_STRICT_EXTRA_VAR = json.dumps(
+    {OPENBAO_STATUS_DRIFT_VARIABLE: False}, separators=(",", ":")
+)
+OPENBAO_STATUS_CONVERGE_EXTRA_VAR = json.dumps(
+    {OPENBAO_STATUS_DRIFT_VARIABLE: True}, separators=(",", ":")
+)
 
 
 def _named(items: list[dict], name: str) -> dict:
@@ -31,6 +42,24 @@ import stat
 import sys
 
 name = pathlib.Path(sys.argv[0]).name
+expected_summary_output = os.environ.get("PLATFORM_CONFIG_EXPECTED_SUMMARY_OUTPUT")
+if expected_summary_output:
+    if "PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT" in os.environ:
+        raise SystemExit(94)
+    expected_summary_stat = os.stat(expected_summary_output)
+    for descriptor_name in os.listdir("/proc/self/fd"):
+        try:
+            descriptor_stat = os.fstat(int(descriptor_name))
+        except OSError:
+            continue
+        if (
+            descriptor_stat.st_dev == expected_summary_stat.st_dev
+            and descriptor_stat.st_ino == expected_summary_stat.st_ino
+        ):
+            raise SystemExit(95)
+    boundary_log = pathlib.Path(os.environ["PLATFORM_CONFIG_CHILD_BOUNDARY_LOG"])
+    with boundary_log.open("a") as stream:
+        stream.write(name + "\\n")
 log = os.environ.get("PLATFORM_CONFIG_OPERATION_LOG")
 if log:
     with pathlib.Path(log).open("a") as stream:
@@ -40,7 +69,7 @@ if name == "ansible-inventory":
         "rke2_cluster": {"hosts": ["server-a", "agent-a"]},
         "rke2_servers": {"hosts": ["server-a"]},
         "rke2_agents": {"hosts": ["agent-a"]},
-        "openbao": {"hosts": ["openbao-a"]},
+        "openbao": {"hosts": ["openbao-a", "openbao-b", "openbao-c"]},
     }))
     raise SystemExit(0)
 
@@ -52,13 +81,34 @@ if stat.S_IMODE(summary_path.stat().st_mode) != 0o600:
 if stat.S_IMODE(summary_path.parent.stat().st_mode) != 0o700:
     raise SystemExit(96)
 if "openbao" in arguments:
-    hosts = ["openbao-a"]
+    hosts = ["openbao-a", "openbao-b", "openbao-c"]
 elif "rke2_servers" in arguments:
     hosts = ["server-a"]
 else:
     hosts = ["server-a", "agent-a"]
 failure_match = os.environ.get("PLATFORM_CONFIG_FAIL_MATCH", "")
 failure = bool(failure_match) and failure_match in arguments
+if (
+    os.environ.get("PLATFORM_CONFIG_DESIRED_AUDIT_DRIFT") == "1"
+    and name == "ansible-playbook"
+    and phase == "openbao-status"
+    and "playbooks/maintenance/openbao-status.yml" in arguments
+):
+    drift_controls = []
+    for index, argument in enumerate(sys.argv[:-1]):
+        if argument != "--extra-vars":
+            continue
+        value = sys.argv[index + 1]
+        try:
+            if value.startswith("@"):
+                candidate = json.loads(pathlib.Path(value[1:]).read_text())
+            else:
+                candidate = json.loads(value)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(candidate, dict) and "openbao_active_preflight_allow_desired_config_drift" in candidate:
+            drift_controls.append(candidate["openbao_active_preflight_allow_desired_config_drift"])
+    failure = failure or not drift_controls or drift_controls[-1] is not True
 changed = os.environ.get("PLATFORM_CONFIG_CHANGED_PHASE", "") == phase
 with summary_path.open("a") as stream:
     if changed:
@@ -1148,7 +1198,47 @@ def test_operation_launcher_rejects_unsafe_arguments(
             [
                 ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
                 ["ansible", "-i", "{inventory}", "openbao", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
-                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_STRICT_EXTRA_VAR],
+            ],
+        ),
+        (
+            "openbao-restart-plan",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "openbao", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_STRICT_EXTRA_VAR],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-active-check.yml", "--limit", "openbao", "--check", "--diff", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "openbao-converge-plan",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "openbao", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_CONVERGE_EXTRA_VAR],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-active-check.yml", "--limit", "openbao", "--check", "--diff", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "openbao-restart",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "openbao", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_STRICT_EXTRA_VAR],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-rolling-restart.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", "openbao_rolling_restart_confirm=true", "--extra-vars", "openbao_rolling_force_restart=true"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_STRICT_EXTRA_VAR],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-active-check.yml", "--limit", "openbao", "--check", "--diff", "--extra-vars", "@{vars}"],
+            ],
+        ),
+        (
+            "openbao-deploy",
+            [
+                ["ansible-inventory", "-i", "{inventory}", "--list", "--extra-vars", "@{vars}"],
+                ["ansible", "-i", "{inventory}", "openbao", "-m", "ansible.builtin.ping", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_CONVERGE_EXTRA_VAR],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-rolling-restart.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", "openbao_rolling_restart_confirm=true"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-status.yml", "--limit", "openbao", "--extra-vars", "@{vars}", "--extra-vars", OPENBAO_STATUS_STRICT_EXTRA_VAR],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/maintenance/openbao-active-check.yml", "--limit", "openbao", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
     ],
@@ -1197,11 +1287,133 @@ def test_operation_launcher_uses_fixed_commands(
     expected = [
         [
             value.format(inventory=inventory, vars=extra_vars, repo=repo_root)
+            if any(token in value for token in ("{inventory}", "{vars}", "{repo}"))
+            else value
             for value in command
         ]
         for command in commands
     ]
     assert observed == expected
+
+
+def test_operation_launcher_hands_success_summary_to_wrapper(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    fake_bin = isolated_test_dir / "bin"
+    output_dir = isolated_test_dir / "summary-output"
+    output = output_dir / "summary.txt"
+    child_boundary_log = isolated_test_dir / "child-boundary.log"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    extra_vars.chmod(0o600)
+    fake_bin.mkdir()
+    output_dir.mkdir(mode=0o700)
+    output_dir.chmod(0o700)
+    output.touch(mode=0o600)
+    for name in ("ansible", "ansible-inventory", "ansible-playbook"):
+        _write_executable(fake_bin / name, _operation_fake_script())
+
+    result = command_runner.run(
+        [
+            repo_root / "scripts/platform-config-operation",
+            "rke2-converge-plan",
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        environment={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_CHILD_BOUNDARY_LOG": str(child_boundary_log),
+            "PLATFORM_CONFIG_EXPECTED_SUMMARY_OUTPUT": str(output),
+            "PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT": str(output),
+        },
+    ).assert_success()
+
+    summary = output.read_text(encoding="utf-8")
+    assert "PLATFORM CONFIG OPERATION SUMMARY" not in result.stdout
+    assert summary.count("=== PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+    assert summary.count("=== END PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+    assert "Overall: PASS" in summary
+    assert child_boundary_log.read_text(encoding="utf-8").splitlines() == [
+        "ansible-inventory",
+        "ansible",
+        "ansible-playbook",
+        "ansible-playbook",
+        "ansible-playbook",
+        "ansible-playbook",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_modes", "expected_success"),
+    [
+        ("openbao-status", [False], False),
+        ("openbao-restart-plan", [False], False),
+        ("openbao-restart", [False], False),
+        ("openbao-converge-plan", [True], True),
+        ("openbao-deploy", [True, False], True),
+    ],
+)
+def test_openbao_launcher_enforces_preliminary_status_drift_policy(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    operation: str,
+    expected_modes: list[bool],
+    expected_success: bool,
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    log = isolated_test_dir / "commands.jsonl"
+    fake_bin = isolated_test_dir / "bin"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    controller_mode = not expected_modes[0]
+    extra_vars.write_text(
+        json.dumps({OPENBAO_STATUS_DRIFT_VARIABLE: controller_mode}),
+        encoding="utf-8",
+    )
+    extra_vars.chmod(0o600)
+    fake_bin.mkdir()
+    for name in ("ansible", "ansible-inventory", "ansible-playbook"):
+        _write_executable(fake_bin / name, _operation_fake_script())
+
+    result = command_runner.run(
+        [
+            repo_root / "scripts/platform-config-operation",
+            operation,
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        environment={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_DESIRED_AUDIT_DRIFT": "1",
+            "PLATFORM_CONFIG_OPERATION_LOG": str(log),
+        },
+    )
+
+    if expected_success:
+        result.assert_success()
+        assert "Overall: PASS" in result.stdout
+    else:
+        result.assert_failure()
+        assert "Overall: FAIL" in result.stdout
+
+    commands = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    status_commands = [
+        command
+        for command in commands
+        if any(value.endswith("/playbooks/maintenance/openbao-status.yml") for value in command)
+    ]
+    assert [json.loads(command[-1])[OPENBAO_STATUS_DRIFT_VARIABLE] for command in status_commands] == expected_modes
+    assert all(command[-3] == f"@{extra_vars}" for command in status_commands)
+    assert all(command[-2] == "--extra-vars" for command in status_commands)
 
 
 @pytest.mark.parametrize("operation", ["rke2-bootstrap", "rke2-deploy"])
@@ -1264,6 +1476,62 @@ def test_operation_launcher_fails_when_post_check_predicts_drift(
         assert sum("--check" not in command for command in matching) == 1
 
 
+@pytest.mark.parametrize(
+    ("operation", "changed_phase", "expected_success"),
+    [
+        ("openbao-restart-plan", "openbao-restart-check", False),
+        ("openbao-converge-plan", "openbao-converge-check", True),
+        ("openbao-restart", "openbao-post-check", False),
+        ("openbao-deploy", "openbao-post-check", False),
+    ],
+)
+def test_openbao_operation_launcher_applies_phase_drift_policy(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    operation: str,
+    changed_phase: str,
+    expected_success: bool,
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    fake_bin = isolated_test_dir / "bin"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    extra_vars.chmod(0o600)
+    fake_bin.mkdir()
+    fake_content = _operation_fake_script()
+    for name in ("ansible", "ansible-inventory", "ansible-playbook"):
+        _write_executable(fake_bin / name, fake_content)
+
+    result = command_runner.run(
+        [
+            repo_root / "scripts/platform-config-operation",
+            operation,
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        environment={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_CHANGED_PHASE": changed_phase,
+        },
+    )
+
+    if expected_success:
+        result.assert_success()
+        assert "Overall: PASS" in result.stdout
+    else:
+        result.assert_failure()
+        assert result.returncode == 2
+        assert "Overall: FAIL" in result.stdout
+        assert any(
+            line.split()[:4] == ["openbao-a", "openbao", changed_phase, "FAIL"]
+            for line in result.stdout.splitlines()
+        )
+
+
 def test_operation_launcher_stops_after_failed_core_health(
     repo_root: Path,
     isolated_test_dir: Path,
@@ -1323,29 +1591,43 @@ def test_operation_launcher_stops_active_child_on_signal(
     inventory = isolated_test_dir / "hosts.yml"
     extra_vars = isolated_test_dir / "connection.yml"
     fake_bin = isolated_test_dir / "bin"
-    started = isolated_test_dir / "started"
     terminated = isolated_test_dir / "terminated"
+    output_dir = isolated_test_dir / "summary-output"
+    output = output_dir / "summary.txt"
     inventory.write_text("all: {}\n", encoding="utf-8")
     extra_vars.write_text("---\n{}\n", encoding="utf-8")
     extra_vars.chmod(0o600)
     fake_bin.mkdir()
+    output_dir.mkdir(mode=0o700)
+    output_dir.chmod(0o700)
+    output.touch(mode=0o600)
     _write_executable(
         fake_bin / "ansible-inventory",
-        """#!/bin/sh
-set -eu
-printf started >"$PLATFORM_CONFIG_STARTED"
-trap 'printf terminated >"$PLATFORM_CONFIG_TERMINATED"; exit 0' TERM
-while :; do sleep 1; done
+        """#!/usr/bin/env python3
+import os
+import pathlib
+import signal
+
+def stop(_signal, _frame):
+    pathlib.Path(os.environ["PLATFORM_CONFIG_TERMINATED"]).write_text("terminated")
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+os.write(int(os.environ["PLATFORM_CONFIG_STARTED_FD"]), b"started")
+while True:
+    signal.pause()
 """,
     )
     for name in ("ansible", "ansible-playbook"):
         _write_executable(fake_bin / name, "#!/bin/sh\nexit 99\n")
     environment = os.environ.copy()
+    started_read, started_write = os.pipe()
     environment.update(
         {
             "PATH": f"{fake_bin}:{environment['PATH']}",
-            "PLATFORM_CONFIG_STARTED": str(started),
+            "PLATFORM_CONFIG_STARTED_FD": str(started_write),
             "PLATFORM_CONFIG_TERMINATED": str(terminated),
+            "PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT": str(output),
             "TMPDIR": str(isolated_test_dir),
         }
     )
@@ -1360,18 +1642,29 @@ while :; do sleep 1; done
         ],
         cwd=repo_root,
         env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(started_write,),
         start_new_session=True,
     )
+    os.close(started_write)
     try:
-        deadline = time.monotonic() + 5
-        while not started.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert started.exists()
+        ready, _, _ = select.select([started_read], [], [], 5)
+        assert ready
+        assert os.read(started_read, 7) == b"started"
         os.kill(process.pid, signal_number)
         assert process.wait(timeout=5) == expected_status
+        stdout, _ = process.communicate()
         assert terminated.read_text(encoding="utf-8") == "terminated"
+        summary = output.read_text(encoding="utf-8")
+        assert "PLATFORM CONFIG OPERATION SUMMARY" not in stdout
+        assert summary.count("=== PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+        assert summary.count("=== END PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+        assert "Overall: FAIL" in summary
         assert not list(isolated_test_dir.glob("platform-config-operation.*"))
     finally:
+        os.close(started_read)
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)

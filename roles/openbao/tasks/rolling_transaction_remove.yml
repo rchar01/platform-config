@@ -1,0 +1,13 @@
+---
+- name: Require fixed OpenBao rolling transaction path before removal
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_rolling_transaction_dir
+        == '/var/lib/platform-config/openbao-rolling-transaction'
+    fail_msg: OpenBao rolling transaction path must be the fixed approved path.
+
+- name: Remove successful OpenBao rolling transaction
+  ansible.builtin.file:
+    path: "{{ openbao_rolling_transaction_dir }}"
+    state: absent

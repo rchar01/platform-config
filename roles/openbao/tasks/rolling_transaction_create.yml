@@ -1,0 +1,75 @@
+---
+- name: Require fixed OpenBao rolling transaction path before creation
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_rolling_transaction_dir
+        == '/var/lib/platform-config/openbao-rolling-transaction'
+    fail_msg: OpenBao rolling transaction path must be the fixed approved path.
+
+- name: Recheck absent OpenBao rolling transaction on this voter
+  ansible.builtin.stat:
+    path: "{{ openbao_rolling_transaction_dir }}"
+    follow: false
+  register: openbao_rolling_local_transaction_stat
+
+- name: Refuse an existing OpenBao rolling transaction on this voter
+  ansible.builtin.assert:
+    that:
+      - not openbao_rolling_local_transaction_stat.stat.exists
+    fail_msg: >-
+      OpenBao rolling maintenance found a pending transaction. Preserve it for
+      reviewed recovery; automation will not clear or overwrite it.
+
+- name: Create exclusive root-only OpenBao rolling transaction directory
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/mkdir
+      - --mode=0700
+      - --
+      - "{{ openbao_rolling_transaction_dir }}"
+  changed_when: true
+
+- name: Inspect new OpenBao rolling transaction directory
+  ansible.builtin.stat:
+    path: "{{ openbao_rolling_transaction_dir }}"
+    follow: false
+  register: openbao_rolling_new_transaction_stat
+
+- name: Require exact root-only OpenBao rolling transaction directory
+  ansible.builtin.assert:
+    that:
+      - openbao_rolling_new_transaction_stat.stat.isdir
+      - openbao_rolling_new_transaction_stat.stat.pw_name == 'root'
+      - openbao_rolling_new_transaction_stat.stat.gr_name == 'root'
+      - openbao_rolling_new_transaction_stat.stat.mode == '0700'
+    fail_msg: OpenBao rolling transaction directory ownership or mode is unsafe.
+
+- name: Save marker-bound OpenBao rolling recovery artifacts
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ openbao_rolling_transaction_dir }}/{{ item.dest }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - src: "{{ openbao_bootstrap_marker_path }}"
+      dest: active-marker.json
+    - src: "{{ openbao_quadlet_path }}"
+      dest: openbao.container
+    - src: "{{ openbao_config_path }}"
+      dest: openbao.hcl
+    - src: "{{ openbao_listener_path }}"
+      dest: listener.hcl
+    - src: "{{ openbao_audit_config_path }}"
+      dest: audit.hcl
+    - src: "{{ openbao_tls_ca_path }}"
+      dest: ca.crt
+    - src: "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/fullchain.crt"
+      dest: fullchain.crt
+    - src: "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/tls.key"
+      dest: tls.key
+  loop_control:
+    label: "{{ item.dest }}"
+  no_log: true

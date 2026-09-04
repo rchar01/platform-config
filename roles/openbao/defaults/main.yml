@@ -85,6 +85,12 @@ openbao_firewalld_manifest_path: "{{ openbao_state_dir }}/openbao-firewalld.yml"
 openbao_bootstrap_marker_path: "{{ openbao_state_dir }}/openbao-bootstrap.json"
 openbao_bootstrap_marker_owner: root
 openbao_bootstrap_marker_group: root
+openbao_active_preflight_allow_desired_config_drift: false
+openbao_rolling_force_restart: false
+openbao_rolling_unseal_retries: 60
+openbao_rolling_unseal_delay: 20
+openbao_rolling_unseal_request_timeout: 5
+openbao_rolling_transaction_dir: /var/lib/platform-config/openbao-rolling-transaction
 
 pki_host_local_certificate_lifecycle_helper_path: /usr/local/libexec/platform-pki-host-local-lifecycle
 pki_host_local_certificate_openbao_backend_port: "{{ openbao_backend_port }}"

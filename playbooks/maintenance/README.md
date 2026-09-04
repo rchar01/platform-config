@@ -88,11 +88,23 @@ Available maintenance playbooks:
   Podman package, storage, socket, kernel, or OpenBao service state and is not
   imported by `site.yml`.
 - `openbao-rolling-restart.yml`: explicitly invoked post-initialization
-  convergence. It requires all three hosts and a strict healthy baseline, queues
-  current standbys before the active node, uses `serial: 1`, aborts on leadership
-  drift, pauses after an actual restart for the two-custodian manual unseal, and
-  requires strict three-voter recovery before advancing. It never initializes or
-  unseals OpenBao and is not imported by `site.yml`.
+  convergence. It requires exact active lifecycle, unchanged image and PKI,
+  absent host-local transactions, all three hosts, and a strict healthy baseline.
+  It queues current standbys before the active node, uses `serial: 1`, snapshots
+  marker-bound files in a root-only transaction directory, and aborts on
+  leadership drift. After an actual restart it emits the voter identity for the
+  external two-custodian unseal and boundedly polls only direct TLS health. Strict
+  recovery precedes deterministic marker refresh, active lifecycle revalidation,
+  and per-voter transaction removal. A failure before a voter's revalidation
+  retains that voter's transaction and stops before the next voter. After a voter
+  is independently recovered and exact, its transaction is removed to avoid
+  retaining root-only TLS key copies; later failures do not recreate prior voter
+  snapshots. There is no automatic rollback or stale cleanup. The playbook never
+  initializes or unseals OpenBao and is not imported by `site.yml`.
+- `openbao-active-check.yml`: requires an explicit exact three-host limit, active
+  lifecycle and strict status, then runs the OpenBao role only in Ansible check
+  mode. It applies the same unchanged-image and PKI guard and never enters rolling
+  maintenance.
 - `storage-volume-test.yml`: exercises one isolated disposable storage fixture
   through the supported `scripts/storage-volume-test` boundary. It requires an
   exact host, stable by-id/by-path disk, strict SSH, and playbook-owned

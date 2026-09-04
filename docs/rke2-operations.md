@@ -1,9 +1,9 @@
-# RKE2 Operations
+# Fixed RKE2 and OpenBao Operations
 
 `platform-config` provides a fixed launcher for reviewed RKE2 bootstrap and
-convergence plus read-only OpenBao status jobs. The launcher is not a generic
-Ansible wrapper: it accepts one operation, one absolute inventory path, and one
-absolute controller-variable file.
+convergence plus OpenBao status, restart, and convergence jobs. The launcher is
+not a generic Ansible wrapper: it accepts one operation, one absolute inventory
+path, and one absolute controller-variable file.
 
 ## Fixed Operations
 
@@ -16,6 +16,10 @@ absolute controller-variable file.
 | `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip convergence, base and kube-vip smoke, then post-smoke base and kube-vip check mode. |
 | `rke2-deploy` | Local inventory resolution for summary initialization, core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip convergence, full base and kube-vip smoke, then post-smoke base and kube-vip check mode. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
+| `openbao-restart-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Predicted changes fail the plan. |
+| `openbao-converge-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Reviewed same-version configuration changes are valid plan output. |
+| `openbao-restart` | The OpenBao preflight, one rolling convergence with fixed restart confirmation and forced restart, strict final status, then an unchanged active check with diff. |
+| `openbao-deploy` | The OpenBao preflight, one rolling convergence with fixed restart confirmation and no forced restart, strict final status, then an unchanged active check with diff. |
 
 The launcher does not accept limits, tags, playbook paths, modules, extra vars,
 or arbitrary Ansible arguments. CI generates the controller-variable file for
@@ -38,6 +42,9 @@ summary and otherwise successful operation fail closed.
 Ordinary plan and apply phases may report changes. The `rke2-post-check` and
 `kube-vip-post-check` phases fail when they predict a change; kube-vip remains
 server-only and renders `N/A` for agents.
+The `openbao-restart-check` and `openbao-post-check` phases likewise require
+`changed=0`; the `openbao-converge-check` phase permits reviewed changes. Every
+OpenBao phase applies to exactly three OpenBao hosts, so none renders `N/A`.
 Changed, observed-failed, and unreachable task names are grouped with affected
 VM names. The GitLab Runner appears only as execution context; delegated
 localhost, unrelated inventory groups, and the untargeted bastion are excluded.
@@ -52,6 +59,14 @@ launcher removes temporary summary state after success, failure, or a handled
 signal. Matching ASCII start and end delimiters separate the summary from
 surrounding CI output. Failure before inventory resolution still prints
 `Overall: FAIL` without fabricating a VM row.
+
+By default, the launcher writes that terminal summary to standard output. A
+trusted wrapper may instead pre-create a regular file and set the internal
+`PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT` environment variable to its absolute
+path. The file must not be a symlink, and its immediate parent must be a
+non-symlink directory with no group or other permissions. The launcher then
+writes the same single terminal summary to that file instead of standard output;
+this internal handoff is not an operator argument.
 
 For attended qualification before CI adoption, follow the complete manual
 fresh-install sequence in the [operator runbook](operator-runbook.md). It uses

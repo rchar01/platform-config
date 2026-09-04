@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: platform-config-operation {rke2-bootstrap-plan|rke2-converge-plan|rke2-bootstrap|rke2-deploy|openbao-status} --inventory PATH --controller-vars PATH' >&2
+    'Usage: platform-config-operation {rke2-bootstrap-plan|rke2-converge-plan|rke2-bootstrap|rke2-deploy|openbao-status|openbao-restart-plan|openbao-restart|openbao-converge-plan|openbao-deploy} --inventory PATH --controller-vars PATH' >&2
 }
 
 fail() {
@@ -30,6 +30,48 @@ require_owner_private_file() {
   (( (8#$mode & 077) == 0 )) || fail "$name must not be group- or world-readable"
 }
 
+require_summary_output() {
+  local path=$1
+  local parent
+  local mode
+  local path_identity
+  local descriptor_identity
+
+  [[ $path == /* ]] || fail "operation summary output must be an absolute path"
+  [[ -f $path && ! -L $path ]] ||
+    fail "operation summary output must be an existing regular non-symlink file"
+  parent=${path%/*}
+  [[ -n $parent ]] || parent=/
+  [[ -d $parent && ! -L $parent ]] ||
+    fail "operation summary output parent must be a non-symlink directory"
+  mode=$(stat -c '%a' -- "$parent" 2>/dev/null) ||
+    fail "operation summary output parent mode is unavailable"
+  (( (8#$mode & 077) == 0 )) ||
+    fail "operation summary output parent must not be accessible by group or other"
+
+  if ! open_summary_output "$path" 2>/dev/null; then
+    fail "operation summary output is not writable"
+  fi
+  path_identity=$(stat -c '%d:%i' -- "$path" 2>/dev/null) ||
+    fail "operation summary output identity is unavailable"
+  descriptor_identity=$(
+    stat -Lc '%d:%i' -- "/proc/self/fd/$summary_output_fd" 2>/dev/null
+  ) || fail "operation summary output identity is unavailable"
+  [[ -f $path && ! -L $path && $path_identity == "$descriptor_identity" ]] ||
+    fail "operation summary output changed during validation"
+  if ! truncate_summary_output 2>/dev/null; then
+    fail "operation summary output is not writable"
+  fi
+}
+
+open_summary_output() {
+  exec {summary_output_fd}>>"$1"
+}
+
+truncate_summary_output() {
+  : >"/proc/self/fd/$summary_output_fd"
+}
+
 [[ $# -gt 0 ]] || {
   usage
   exit 2
@@ -38,7 +80,7 @@ require_owner_private_file() {
 operation=$1
 shift
 case "$operation" in
-  rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status) ;;
+  rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status | openbao-restart-plan | openbao-restart | openbao-converge-plan | openbao-deploy) ;;
   *) fail "unsupported operation: $operation" ;;
 esac
 
@@ -47,6 +89,13 @@ summary_tool="$repo_root/scripts/platform-config-operation-summary"
 summary_dir=
 summary_events=
 active_pid=
+summary_output=
+summary_output_fd=
+
+if [[ ${PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT+x} == x ]]; then
+  summary_output=$PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT
+  require_summary_output "$summary_output"
+fi
 
 fallback_summary() {
   printf '%s\n' \
@@ -68,11 +117,21 @@ fallback_summary() {
     '=== END PLATFORM CONFIG OPERATION SUMMARY ==='
 }
 
+write_summary() {
+  if [[ -n $summary_output_fd ]]; then
+    printf '%s\n' "$1" >&"$summary_output_fd"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 finish() {
   local status=$?
   local render_status=0
   local cleanup_status=0
+  local write_status=0
   local rendered_summary=
+  local summary=
 
   trap - EXIT HUP INT TERM
   if [[ -n $active_pid ]]; then
@@ -89,19 +148,23 @@ finish() {
       render_status=$?
     fi
     if [[ -n $rendered_summary ]]; then
-      printf '%s\n' "$rendered_summary"
+      summary=$rendered_summary
     else
-      fallback_summary
+      summary=$(fallback_summary)
     fi
   else
     render_status=2
-    fallback_summary
+    summary=$(fallback_summary)
+  fi
+  if ! write_summary "$summary"; then
+    write_status=2
+    printf '%s\n' 'platform-config-operation: summary output failed' >&2
   fi
   if [[ -n $summary_dir ]] && ! rm -rf -- "$summary_dir"; then
     cleanup_status=2
     printf '%s\n' 'platform-config-operation: summary cleanup failed' >&2
   fi
-  if [[ $status -eq 0 && ( $render_status -ne 0 || $cleanup_status -ne 0 ) ]]; then
+  if [[ $status -eq 0 && ( $render_status -ne 0 || $write_status -ne 0 || $cleanup_status -ne 0 ) ]]; then
     status=2
   fi
   exit "$status"
@@ -160,7 +223,13 @@ forward_signal() {
 run_command() {
   local status
 
-  "$@" &
+  (
+    unset PLATFORM_CONFIG_OPERATION_SUMMARY_OUTPUT
+    if [[ -n $summary_output_fd ]]; then
+      exec {summary_output_fd}>&-
+    fi
+    exec "$@"
+  ) &
   active_pid=$!
   if wait "$active_pid"; then
     status=0
@@ -262,6 +331,34 @@ run_playbook() {
     "${extra_vars[@]}"
 }
 
+run_openbao_status() {
+  local phase=$1
+  local allow_desired_config_drift=$2
+
+  case "$allow_desired_config_drift" in
+    true | false) ;;
+    *) return 2 ;;
+  esac
+  run_phase "$phase" ansible-playbook -i "$inventory" \
+    "$repo_root/playbooks/maintenance/openbao-status.yml" \
+    --limit openbao \
+    "${extra_vars[@]}" \
+    --extra-vars \
+    "{\"openbao_active_preflight_allow_desired_config_drift\":$allow_desired_config_drift}"
+}
+
+run_openbao_roll() {
+  local phase=$1
+  shift
+
+  run_phase "$phase" ansible-playbook -i "$inventory" \
+    "$repo_root/playbooks/maintenance/openbao-rolling-restart.yml" \
+    --limit openbao \
+    "${extra_vars[@]}" \
+    --extra-vars openbao_rolling_restart_confirm=true \
+    "$@"
+}
+
 case "$operation" in
   rke2-deploy) initialize_hosts ;;
   *) initialize_hosts inventory ;;
@@ -302,6 +399,30 @@ case "$operation" in
     ;;
   openbao-status)
     ping_group connectivity openbao
-    run_playbook openbao-status playbooks/maintenance/openbao-status.yml openbao
+    run_openbao_status openbao-status false
+    ;;
+  openbao-restart-plan)
+    ping_group connectivity openbao
+    run_openbao_status openbao-status false
+    run_playbook openbao-restart-check playbooks/maintenance/openbao-active-check.yml openbao --check --diff
+    ;;
+  openbao-converge-plan)
+    ping_group connectivity openbao
+    run_openbao_status openbao-status true
+    run_playbook openbao-converge-check playbooks/maintenance/openbao-active-check.yml openbao --check --diff
+    ;;
+  openbao-restart)
+    ping_group connectivity openbao
+    run_openbao_status openbao-status false
+    run_openbao_roll openbao-roll --extra-vars openbao_rolling_force_restart=true
+    run_openbao_status openbao-final-status false
+    run_playbook openbao-post-check playbooks/maintenance/openbao-active-check.yml openbao --check --diff
+    ;;
+  openbao-deploy)
+    ping_group connectivity openbao
+    run_openbao_status openbao-status true
+    run_openbao_roll openbao-roll
+    run_openbao_status openbao-final-status false
+    run_playbook openbao-post-check playbooks/maintenance/openbao-active-check.yml openbao --check --diff
     ;;
 esac

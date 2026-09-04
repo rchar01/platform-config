@@ -1,4 +1,10 @@
 ---
+- name: Validate active OpenBao preflight mode
+  ansible.builtin.assert:
+    that:
+      - openbao_active_preflight_allow_desired_config_drift is boolean
+    fail_msg: OpenBao active preflight drift control must be a boolean.
+
 - name: Inspect active OpenBao lifecycle artifacts
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -21,6 +27,29 @@
       - openbao_active_lifecycle_stats.results[0].stat.mode == '0600'
     fail_msg: OpenBao active lifecycle requires a private completion marker.
 
+- name: Inspect controller OpenBao CA source for active lifecycle
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_ca_src }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  check_mode: false
+  register: openbao_active_controller_ca_stat
+
+- name: Require current controller CA for active OpenBao lifecycle
+  ansible.builtin.assert:
+    that:
+      - openbao_active_controller_ca_stat.stat.exists
+      - openbao_active_controller_ca_stat.stat.isreg
+      - >-
+        openbao_active_controller_ca_stat.stat.checksum
+        == openbao_active_lifecycle_stats.results[5].stat.checksum
+    fail_msg: >-
+      Active OpenBao lifecycle rejects a controller CA transition or a CA that
+      differs from the marker-bound host artifact.
+
 - name: Inspect active declarative OpenBao audit configuration
   ansible.builtin.stat:
     path: "{{ openbao_audit_config_path }}"
@@ -33,8 +62,9 @@
       - openbao_active_audit_config_stat.stat.exists
       - openbao_active_audit_config_stat.stat.isreg
       - >-
-        openbao_active_audit_config_stat.stat.checksum
-        == lookup('ansible.builtin.template', 'audit.hcl.j2') | hash('sha256')
+        openbao_active_preflight_allow_desired_config_drift
+        or openbao_active_audit_config_stat.stat.checksum
+           == lookup('ansible.builtin.template', 'audit.hcl.j2') | hash('sha256')
     fail_msg: Active OpenBao lifecycle requires its exact audit configuration.
 
 - name: Read active OpenBao marker
@@ -85,6 +115,7 @@
     argv: [/usr/bin/podman, container, inspect, "{{ openbao_container_name }}"]
   register: openbao_active_container_inspect_command
   changed_when: false
+  check_mode: false
 
 - name: Parse active OpenBao container state
   ansible.builtin.set_fact:
@@ -136,3 +167,5 @@
       cluster_id: "{{ openbao_active_marker.cluster_id }}"
       cluster_signature: "{{ openbao_active_marker.cluster_signature }}"
       image_digest: "{{ openbao_active_marker.image_digest }}"
+      image_reference: "{{ openbao_image }}"
+      ca_checksum: "{{ openbao_active_marker.ca_checksum }}"

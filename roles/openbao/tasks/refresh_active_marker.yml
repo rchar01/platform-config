@@ -1,0 +1,101 @@
+---
+- name: Inspect current marker-bound OpenBao artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  register: openbao_marker_refresh_stats
+  loop:
+    - "{{ openbao_quadlet_path }}"
+    - "{{ openbao_config_path }}"
+    - "{{ openbao_listener_path }}"
+    - "{{ openbao_audit_config_path }}"
+    - "{{ openbao_tls_ca_path }}"
+    - "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/fullchain.crt"
+    - "/etc/openbao/tls-versions/{{ openbao_active_request_ids | first }}/tls.key"
+
+- name: Reinspect controller OpenBao CA for marker refresh
+  ansible.builtin.stat:
+    path: "{{ openbao_tls_ca_src }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  check_mode: false
+  register: openbao_marker_refresh_controller_ca_stat
+
+- name: Verify current OpenBao marker-bound artifacts
+  ansible.builtin.assert:
+    that:
+      - openbao_marker_refresh_stats.results | rejectattr('stat.exists', 'equalto', true) | list | length == 0
+      - openbao_marker_refresh_stats.results | rejectattr('stat.isreg', 'equalto', true) | list | length == 0
+      - openbao_marker_refresh_stats.results[0].stat.checksum == lookup('ansible.builtin.template', 'openbao.container.j2') | hash('sha256')
+      - openbao_marker_refresh_stats.results[1].stat.checksum == lookup('ansible.builtin.template', 'openbao.hcl.j2') | hash('sha256')
+      - >-
+        openbao_marker_refresh_stats.results[2].stat.checksum
+        == (
+          lookup('ansible.builtin.template', 'listener.hcl.j2')
+          | replace(
+              '/openbao/config/tls/tls.crt',
+              '/openbao/config/tls-versions/'
+              ~ (openbao_active_request_ids | first)
+              ~ '/fullchain.crt'
+            )
+          | replace(
+              '/openbao/config/tls/tls.key',
+              '/openbao/config/tls-versions/'
+              ~ (openbao_active_request_ids | first)
+              ~ '/tls.key'
+            )
+          | hash('sha256')
+        )
+      - openbao_marker_refresh_stats.results[3].stat.checksum == lookup('ansible.builtin.template', 'audit.hcl.j2') | hash('sha256')
+      - openbao_marker_refresh_controller_ca_stat.stat.exists
+      - openbao_marker_refresh_controller_ca_stat.stat.isreg
+      - openbao_marker_refresh_stats.results[4].stat.checksum == openbao_marker_refresh_controller_ca_stat.stat.checksum
+      - openbao_marker_refresh_stats.results[4].stat.checksum == openbao_active_marker.ca_checksum
+      - openbao_marker_refresh_stats.results[5].stat.checksum == openbao_active_marker.certificate_checksum
+      - openbao_marker_refresh_stats.results[6].stat.checksum == openbao_active_marker.key_checksum
+      - openbao_active_marker.image_digest == openbao_image_digest
+    fail_msg: >-
+      OpenBao marker refresh requires verified desired configuration and unchanged
+      image, CA, certificate, and key artifacts.
+
+- name: Refresh active OpenBao marker from verified artifacts
+  ansible.builtin.copy:
+    dest: "{{ openbao_bootstrap_marker_path }}"
+    owner: "{{ openbao_bootstrap_marker_owner }}"
+    group: "{{ openbao_bootstrap_marker_group }}"
+    mode: "0600"
+    content: >-
+      {{
+        {
+          'schema': 1,
+          'state': 'active',
+          'inventory_hosts': openbao_active_marker.inventory_hosts,
+          'inventory_host': openbao_active_marker.inventory_host,
+          'node_id': openbao_active_marker.node_id,
+          'cluster_signature': openbao_active_marker.cluster_signature,
+          'cluster_id': openbao_active_marker.cluster_id,
+          'audit_config_checksum': openbao_marker_refresh_stats.results[3].stat.checksum,
+          'config_checksum': ({
+            'base_config_sha256': openbao_marker_refresh_stats.results[1].stat.checksum,
+            'listener_sha256': openbao_marker_refresh_stats.results[2].stat.checksum
+          } | to_json | hash('sha256')),
+          'quadlet_checksum': openbao_marker_refresh_stats.results[0].stat.checksum,
+          'ca_checksum': openbao_marker_refresh_stats.results[4].stat.checksum,
+          'certificate_checksum': openbao_marker_refresh_stats.results[5].stat.checksum,
+          'key_checksum': openbao_marker_refresh_stats.results[6].stat.checksum,
+          'image_digest': openbao_active_marker.image_digest
+        } | to_nice_json
+      }}
+  when: >-
+    openbao_active_marker.audit_config_checksum
+    != openbao_marker_refresh_stats.results[3].stat.checksum
+    or openbao_active_marker.config_checksum
+    != ({
+      'base_config_sha256': openbao_marker_refresh_stats.results[1].stat.checksum,
+      'listener_sha256': openbao_marker_refresh_stats.results[2].stat.checksum
+    } | to_json | hash('sha256'))
+    or openbao_active_marker.quadlet_checksum
+    != openbao_marker_refresh_stats.results[0].stat.checksum

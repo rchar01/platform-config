@@ -1,0 +1,41 @@
+---
+- name: Report external OpenBao unseal checkpoint
+  ansible.builtin.debug:
+    msg: >-
+      OpenBao voter {{ inventory_hostname }} ({{ openbao_node_name }}) restarted.
+      Approved custodians must unseal only this voter through the external
+      custody procedure. Ansible will only poll its direct TLS health endpoint.
+
+- name: Poll direct OpenBao voter health for external unseal
+  ansible.builtin.uri:
+    url: "https://{{ openbao_node_dns }}:{{ openbao_backend_port }}/v1/sys/health"
+    method: GET
+    ca_path: "{{ openbao_tls_ca_src }}"
+    validate_certs: true
+    use_proxy: false
+    follow_redirects: none
+    return_content: true
+    status_code:
+      - 200
+      - 429
+      - 472
+      - 473
+      - 501
+      - 503
+    timeout: "{{ openbao_rolling_unseal_request_timeout }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: openbao_rolling_unseal_health
+  changed_when: false
+  check_mode: false
+  retries: "{{ openbao_rolling_unseal_retries }}"
+  delay: "{{ openbao_rolling_unseal_delay }}"
+  until:
+    - openbao_rolling_unseal_health.status | default(0) in [200, 429]
+    - openbao_rolling_unseal_health.json | default(none) is mapping
+    - openbao_rolling_unseal_health.json.get('initialized') is boolean
+    - openbao_rolling_unseal_health.json.get('initialized') == true
+    - openbao_rolling_unseal_health.json.get('sealed') is boolean
+    - openbao_rolling_unseal_health.json.get('sealed') == false

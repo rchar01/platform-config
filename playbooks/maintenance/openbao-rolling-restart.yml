@@ -36,9 +36,116 @@
           OpenBao rolling maintenance requires an enabled and started service
           contract on this node before any voter can converge.
 
+    - name: Inspect exact active OpenBao lifecycle before rolling mutation
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+      vars:
+        openbao_active_preflight_allow_desired_config_drift: true
+
+    - name: Require safe bounded OpenBao rolling controls
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_rolling_force_restart is boolean
+            or (
+              openbao_rolling_force_restart | type_debug == 'str'
+              and openbao_rolling_force_restart in ['true', 'false']
+            )
+          - openbao_rolling_unseal_retries | type_debug == 'int'
+          - openbao_rolling_unseal_retries >= 1
+          - openbao_rolling_unseal_retries <= 120
+          - openbao_rolling_unseal_delay | type_debug == 'int'
+          - openbao_rolling_unseal_delay >= 5
+          - openbao_rolling_unseal_delay <= 60
+          - openbao_rolling_unseal_request_timeout | type_debug == 'int'
+          - openbao_rolling_unseal_request_timeout >= 1
+          - openbao_rolling_unseal_request_timeout <= 10
+          - >-
+            3
+            * (
+              (
+                (openbao_rolling_unseal_retries + 1)
+                * openbao_rolling_unseal_request_timeout
+              )
+              + (
+                openbao_rolling_unseal_retries
+                * openbao_rolling_unseal_delay
+              )
+            )
+            <= 6600
+          - >-
+            openbao_rolling_transaction_dir
+            == '/var/lib/platform-config/openbao-rolling-transaction'
+        fail_msg: >-
+          OpenBao rolling maintenance requires a boolean force flag, the fixed
+          host-local transaction path, and polling bounded to at most 110 minutes for
+          all three voters.
+
+    - name: Inspect pending OpenBao rolling transaction before mutation
+      ansible.builtin.stat:
+        path: "{{ openbao_rolling_transaction_dir }}"
+        follow: false
+      register: openbao_rolling_pending_transaction_stat
+
+    - name: Reject a pending OpenBao rolling transaction anywhere
+      ansible.builtin.assert:
+        that:
+          - not openbao_rolling_pending_transaction_stat.stat.exists
+        fail_msg: >-
+          OpenBao rolling maintenance found a pending transaction. Preserve it
+          for reviewed recovery; automation will not clear or overwrite it.
+
+    - name: Collect active OpenBao lifecycle observations
+      ansible.builtin.set_fact:
+        openbao_rolling_active_observations: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'openbao_active_observation')
+            | sort(attribute='inventory_host')
+            | list
+          }}
+      run_once: true # noqa run-once[task]
+
+    - name: Require one exact marker-bound OpenBao cluster
+      ansible.builtin.assert:
+        that:
+          - openbao_rolling_active_observations | length == 3
+          - >-
+            openbao_rolling_active_observations
+            | map(attribute='cluster_id') | unique | length == 1
+          - >-
+            openbao_rolling_active_observations
+            | map(attribute='cluster_signature') | unique | length == 1
+          - >-
+            openbao_rolling_active_observations
+            | map(attribute='node_id') | unique | length == 3
+          - >-
+            openbao_rolling_active_observations
+            | map(attribute='image_digest') | unique | length == 1
+          - >-
+            openbao_rolling_active_observations
+            | map(attribute='image_reference') | unique | length == 1
+          - >-
+            openbao_rolling_active_observations
+            | map(attribute='ca_checksum') | unique | length == 1
+        fail_msg: >-
+          OpenBao rolling maintenance requires one exact active cluster on the
+          same desired image reference, digest, and controller CA.
+      run_once: true # noqa run-once[task]
+
     - name: Establish strict healthy OpenBao cluster baseline
       ansible.builtin.include_role:
         name: openbao_status
+      run_once: true # noqa run-once[task]
+
+    - name: Require runtime and marked OpenBao cluster identity match
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_health_results.results[0].json.cluster_id
+            == openbao_rolling_active_observations[0].cluster_id
+        fail_msg: OpenBao runtime cluster identity does not match active markers.
       run_once: true # noqa run-once[task]
 
     - name: Queue current OpenBao standby nodes first
@@ -101,22 +208,54 @@
       ansible.builtin.set_fact:
         openbao_restart_required: false
 
+    - name: Create host-local OpenBao rolling transaction
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: rolling_transaction_create.yml
+
     - name: Converge this OpenBao voter
       ansible.builtin.include_role:
         name: openbao
+      vars:
+        openbao_active_preflight_allow_desired_config_drift: true
 
-    - name: Wait for custodians to unseal the restarted OpenBao voter
-      ansible.builtin.pause:
-        prompt: >-
-          OpenBao {{ inventory_hostname }} restarted and remains sealed. Have two
-          approved custodians unseal only this node, then press Enter. Automation
-          will independently verify all three healthy voters before continuing.
-      when: openbao_restart_required | bool
+    - name: Apply any explicit unchanged-voter restart
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: rolling_restart.yml
+
+    - name: Wait boundedly for external OpenBao unseal
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: rolling_unseal_wait.yml
+      when: openbao_rolling_restart_performed | bool
 
     - name: Require strict voter recovery before advancing
       ansible.builtin.include_role:
         name: openbao_status
-      when: openbao_restart_required | bool
+
+    - name: Require recovered OpenBao cluster identity to remain exact
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_status_health_results.results[0].json.cluster_id
+            == openbao_active_marker.cluster_id
+        fail_msg: Recovered OpenBao runtime no longer matches the active marker.
+
+    - name: Refresh marker from verified current OpenBao artifacts
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: refresh_active_marker.yml
+
+    - name: Recheck exact active OpenBao lifecycle after recovery
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: active_preflight.yml
+
+    - name: Remove successful host-local OpenBao rolling transaction
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: rolling_transaction_remove.yml
 
 - name: Confirm strict OpenBao state after rolling maintenance
   hosts: openbao_rolling_order

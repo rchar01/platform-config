@@ -1,0 +1,22 @@
+---
+- name: Record mocked forced OpenBao restart
+  ansible.builtin.lineinfile:
+    path: "{{ openbao_test_restart_path }}"
+    line: "{{ inventory_hostname }}"
+    create: true
+    mode: "0600"
+  delegate_to: localhost
+  when:
+    - openbao_rolling_force_restart | bool
+    - not openbao_restart_required | bool
+
+- name: Publish mocked OpenBao restart result
+  ansible.builtin.set_fact:
+    openbao_rolling_restart_performed: >-
+      {{
+        openbao_restart_required | bool
+        or (
+          openbao_rolling_force_restart | bool
+          and not openbao_restart_required | bool
+        )
+      }}

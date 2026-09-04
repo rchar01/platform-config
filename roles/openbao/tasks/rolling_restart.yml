@@ -1,0 +1,19 @@
+---
+- name: Force one OpenBao restart when convergence did not restart it
+  ansible.builtin.systemd_service:
+    name: "{{ openbao_service_name }}"
+    state: restarted
+  when:
+    - openbao_rolling_force_restart | bool
+    - not openbao_restart_required | bool
+
+- name: Track whether this OpenBao voter restarted
+  ansible.builtin.set_fact:
+    openbao_rolling_restart_performed: >-
+      {{
+        openbao_restart_required | bool
+        or (
+          openbao_rolling_force_restart | bool
+          and not openbao_restart_required | bool
+        )
+      }}

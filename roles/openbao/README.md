@@ -128,6 +128,33 @@ partially initialized state is preserved for reviewed recovery rather than reset
 Post-initialization changes that may restart OpenBao belong in the explicit
 `playbooks/maintenance/openbao-rolling-restart.yml` workflow. The role reports
 `openbao_restart_required` only when restart-notifying content changed while the
-service is enabled and requested started. The maintenance playbook owns
-standby-first serial ordering, the manual-unseal pause, and strict voter recovery
-before another node can converge.
+service is enabled and requested started. Before any mutation, the maintenance
+playbook requires exact active markers on all three voters, the unchanged image
+reference and digest, the controller CA matching each marker-bound host CA, and
+no pending rolling transaction on any voter. It then owns standby-first serial
+ordering and creates a root-only host-local snapshot of the marker-bound managed
+artifacts at the immutable
+`/var/lib/platform-config/openbao-rolling-transaction` path before each voter
+converges.
+
+Set `openbao_rolling_force_restart: true` only through the reviewed fixed rolling
+route when an unchanged voter must restart. A convergence-triggered restart takes
+precedence, so the force flag never restarts that voter twice. Ansible emits only
+the voter identity and external-custodian instruction, then polls the direct TLS
+health endpoint with bounded defaults until the voter is initialized and
+unsealed; Shamir shares and root tokens remain outside Ansible. Strict cluster
+status, deterministic active-marker refresh, and active lifecycle preflight must
+all succeed for a voter before that voter's transaction snapshot is removed. A
+failure before that lifecycle revalidation retains the current voter's snapshot
+and stops before the next voter. Once a voter is independently recovered and
+exact, its snapshot is removed; a later voter or final-operation failure does not
+recreate prior snapshots. This intentionally avoids retaining root-only copies of
+TLS key material after verified per-voter completion. No failure triggers
+automatic rollback or stale transaction cleanup. Mocked tests cover orchestration
+and exactly-once intent; real systemd restart semantics remain a live
+qualification requirement.
+
+Use `playbooks/maintenance/openbao-active-check.yml` with `--check` and an
+explicit limit selecting exactly all three OpenBao hosts to check active role
+convergence. This separate path requires the same marker, image, CA, and strict
+cluster status gates and never enters rolling maintenance.

@@ -1,0 +1,5 @@
+---
+- name: Remove mocked successful OpenBao rolling transaction
+  ansible.builtin.file:
+    path: "{{ openbao_test_transaction_dir }}"
+    state: absent

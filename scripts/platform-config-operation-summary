@@ -49,9 +49,53 @@ OPERATIONS = {
         "kube-vip-post-check",
     ),
     "openbao-status": ("inventory", "connectivity", "openbao-status"),
+    "openbao-restart-plan": (
+        "inventory",
+        "connectivity",
+        "openbao-status",
+        "openbao-restart-check",
+    ),
+    "openbao-converge-plan": (
+        "inventory",
+        "connectivity",
+        "openbao-status",
+        "openbao-converge-check",
+    ),
+    "openbao-restart": (
+        "inventory",
+        "connectivity",
+        "openbao-status",
+        "openbao-roll",
+        "openbao-final-status",
+        "openbao-post-check",
+    ),
+    "openbao-deploy": (
+        "inventory",
+        "connectivity",
+        "openbao-status",
+        "openbao-roll",
+        "openbao-final-status",
+        "openbao-post-check",
+    ),
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
-UNCHANGED_PHASES = frozenset({"rke2-post-check", "kube-vip-post-check"})
+OPENBAO_OPERATIONS = frozenset(
+    {
+        "openbao-status",
+        "openbao-restart-plan",
+        "openbao-converge-plan",
+        "openbao-restart",
+        "openbao-deploy",
+    }
+)
+UNCHANGED_PHASES = frozenset(
+    {
+        "rke2-post-check",
+        "kube-vip-post-check",
+        "openbao-restart-check",
+        "openbao-post-check",
+    }
+)
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 
 
@@ -184,7 +228,7 @@ def command_hosts(args: argparse.Namespace) -> None:
     if not isinstance(inventory, dict):
         raise SummaryError
     records = []
-    if operation == "openbao-status":
+    if operation in OPENBAO_OPERATIONS:
         for host in sorted(group_hosts(inventory, "openbao")):
             records.append({"schema": 1, "kind": "host", "host": host, "role": "openbao"})
     else:
@@ -364,7 +408,7 @@ def command_render(args: argparse.Namespace) -> int:
                 phase_result = "N/A"
                 counts = ("-", "-", "-")
             elif phase not in phase_status:
-                phase_result = "N/A"
+                phase_result = "FAIL"
                 counts = ("-", "-", "-")
             elif phase == "inventory":
                 phase_result = "PASS" if phase_status[phase] == 0 else "FAIL"
@@ -417,6 +461,7 @@ def command_render(args: argparse.Namespace) -> int:
         bool(hosts)
         and not invalid
         and args.status == 0
+        and (operation not in OPENBAO_OPERATIONS or len(hosts) == 3)
         and all(role != "N/A" for role in hosts.values())
         and all(result == "PASS" for result in host_results.values())
         and all(phase in phase_status and phase_status[phase] == 0 for phase in phases)

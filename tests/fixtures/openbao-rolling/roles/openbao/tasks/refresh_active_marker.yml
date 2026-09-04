@@ -1,0 +1,10 @@
+---
+- name: Reject mocked OpenBao marker refresh
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname != (openbao_test_refresh_failure_host | default(''))
+    fail_msg: Mocked OpenBao marker refresh failed.
+
+- name: Resolve mocked desired OpenBao audit configuration drift
+  ansible.builtin.set_fact:
+    openbao_test_desired_audit_drift_resolved: true
