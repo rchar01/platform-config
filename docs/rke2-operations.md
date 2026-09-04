@@ -40,8 +40,9 @@ inventory output is reduced to host and role records in an invocation-private
 directory and deleted immediately. The callback event file is mode `0600`, the
 directory is mode `0700`, no summary artifact or cache is published, and the
 launcher removes temporary summary state after success, failure, or a handled
-signal. Failure before inventory resolution still prints `Overall: FAIL`
-without fabricating a VM row.
+signal. Matching ASCII start and end delimiters separate the summary from
+surrounding CI output. Failure before inventory resolution still prints
+`Overall: FAIL` without fabricating a VM row.
 
 For attended qualification before CI adoption, follow the complete manual
 fresh-install sequence in the [operator runbook](operator-runbook.md). It uses

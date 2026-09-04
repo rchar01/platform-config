@@ -154,6 +154,8 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
 
     result = _render(repo_root, command_runner, events, 0).assert_success()
 
+    assert result.stdout.splitlines()[0] == "=== PLATFORM CONFIG OPERATION SUMMARY ==="
+    assert result.stdout.splitlines()[-1] == "=== END PLATFORM CONFIG OPERATION SUMMARY ==="
     assert "Overall: PASS" in result.stdout
     assert "agent-b" in result.stdout
     assert "server-a" in result.stdout
@@ -602,8 +604,10 @@ def test_launcher_rejects_public_controller_vars(
         ]
     ).assert_failure()
 
+    lines = result.stdout.splitlines()
     assert "controller-vars must not be group- or world-readable" in result.stderr
-    assert result.stdout.count("PLATFORM CONFIG OPERATION SUMMARY") == 1
+    assert lines.count("=== PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+    assert lines.count("=== END PLATFORM CONFIG OPERATION SUMMARY ===") == 1
     assert "Overall: FAIL" in result.stdout
 
 
@@ -642,7 +646,9 @@ print(json.dumps({"openbao": {"hosts": ["openbao-a"]}}))
         environment={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
     ).assert_failure()
 
+    lines = result.stdout.splitlines()
     assert result.returncode == 2
-    assert result.stdout.count("PLATFORM CONFIG OPERATION SUMMARY") == 1
+    assert lines.count("=== PLATFORM CONFIG OPERATION SUMMARY ===") == 1
+    assert lines.count("=== END PLATFORM CONFIG OPERATION SUMMARY ===") == 1
     assert "Overall: FAIL" in result.stdout
     assert not list((isolated_test_dir / "tmp").glob("platform-config-operation.*"))

@@ -50,7 +50,7 @@ active_pid=
 
 fallback_summary() {
   printf '%s\n' \
-    'PLATFORM CONFIG OPERATION SUMMARY' \
+    '=== PLATFORM CONFIG OPERATION SUMMARY ===' \
     "Operation: $operation" \
     'Execution context: GitLab Runner' \
     'Overall: FAIL' \
@@ -63,7 +63,9 @@ fallback_summary() {
     '  none' \
     '' \
     'Unreachable tasks:' \
-    '  none'
+    '  none' \
+    '' \
+    '=== END PLATFORM CONFIG OPERATION SUMMARY ==='
 }
 
 finish() {

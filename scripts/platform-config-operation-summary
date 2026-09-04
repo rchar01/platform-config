@@ -412,7 +412,7 @@ def command_render(args: argparse.Namespace) -> int:
         and all(result == "PASS" for result in host_results.values())
         and all(phase in phase_status and phase_status[phase] == 0 for phase in phases)
     )
-    print("PLATFORM CONFIG OPERATION SUMMARY")
+    print("=== PLATFORM CONFIG OPERATION SUMMARY ===")
     print(f"Operation: {operation}")
     print("Execution context: GitLab Runner")
     print(f"Overall: {'PASS' if complete else 'FAIL'}")
@@ -439,6 +439,8 @@ def command_render(args: argparse.Namespace) -> int:
             continue
         for task in sorted(tasks[outcome]):
             print(f"  {task}: {', '.join(sorted(tasks[outcome][task]))}")
+    print()
+    print("=== END PLATFORM CONFIG OPERATION SUMMARY ===")
     return 0 if args.status != 0 or complete else 2
 
 
