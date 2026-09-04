@@ -76,6 +76,7 @@ def test_openbao_rolling_source_contract(repo_root: Path) -> None:
         "openbao_rolling_unseal_request_timeout: 5",
     ):
         assert re.search(rf"^{re.escape(line)}$", defaults, re.MULTILINE)
+        assert len(re.findall(rf"^    {re.escape(line)}$", playbook, re.MULTILINE)) == 2
     for fragment in (
         "ansible.builtin.uri:",
         "https://{{ openbao_node_dns }}:{{ openbao_backend_port }}/v1/sys/health",
@@ -92,6 +93,9 @@ def test_openbao_rolling_source_contract(repo_root: Path) -> None:
     assert "tls.key" in transaction
     assert "no_log: true" in transaction
     assert "openbao_rolling_force_restart in ['true', 'false']" in playbook
+    assert "openbao_rolling_unseal_retries is integer" in playbook
+    assert "openbao_rolling_unseal_delay is integer" in playbook
+    assert "openbao_rolling_unseal_request_timeout is integer" in playbook
     fixed_transaction_path = "/var/lib/platform-config/openbao-rolling-transaction"
     assert f"openbao_rolling_transaction_dir: {fixed_transaction_path}" in defaults
     assert "{{ openbao_state_dir }}/openbao-rolling-transaction" not in defaults
@@ -199,6 +203,7 @@ def test_openbao_rolling_runs_standbys_before_active(
         "bao-test-3",
         "bao-test-1",
     ]
+    assert not (isolated_test_dir / "restarts").exists()
     for host in ("bao-test-1", "bao-test-2", "bao-test-3"):
         assert not (
             isolated_test_dir / f"state/{host}/openbao-rolling-transaction"
@@ -260,6 +265,28 @@ def test_openbao_rolling_rejects_duration_old_formula_would_accept(
             "openbao_rolling_unseal_request_timeout": 10,
         },
     )
+    assert_failed_with(result, "polling bounded to at most 110 minutes")
+    assert not order.exists()
+    assert not (isolated_test_dir / "state").exists()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("openbao_rolling_unseal_retries", "60"),
+        ("openbao_rolling_unseal_delay", True),
+        ("openbao_rolling_unseal_request_timeout", 5.0),
+    ],
+)
+def test_openbao_rolling_rejects_noninteger_polling_controls(
+    variable: str,
+    value: object,
+    repo_root: Path,
+    command_runner: CommandRunner,
+    isolated_test_dir: Path,
+) -> None:
+    order = isolated_test_dir / "order"
+    result = _run_mocked(repo_root, command_runner, order, {variable: value})
     assert_failed_with(result, "polling bounded to at most 110 minutes")
     assert not order.exists()
     assert not (isolated_test_dir / "state").exists()

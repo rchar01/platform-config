@@ -14,6 +14,12 @@
   hosts: openbao
   gather_facts: false
   any_errors_fatal: true
+  vars:
+    openbao_rolling_force_restart: false
+    openbao_rolling_unseal_retries: 60
+    openbao_rolling_unseal_delay: 20
+    openbao_rolling_unseal_request_timeout: 5
+    openbao_rolling_transaction_dir: /var/lib/platform-config/openbao-rolling-transaction
   tasks:
     - name: Require explicit full-cluster rolling maintenance
       ansible.builtin.assert:
@@ -52,13 +58,13 @@
               openbao_rolling_force_restart | type_debug == 'str'
               and openbao_rolling_force_restart in ['true', 'false']
             )
-          - openbao_rolling_unseal_retries | type_debug == 'int'
+          - openbao_rolling_unseal_retries is integer
           - openbao_rolling_unseal_retries >= 1
           - openbao_rolling_unseal_retries <= 120
-          - openbao_rolling_unseal_delay | type_debug == 'int'
+          - openbao_rolling_unseal_delay is integer
           - openbao_rolling_unseal_delay >= 5
           - openbao_rolling_unseal_delay <= 60
-          - openbao_rolling_unseal_request_timeout | type_debug == 'int'
+          - openbao_rolling_unseal_request_timeout is integer
           - openbao_rolling_unseal_request_timeout >= 1
           - openbao_rolling_unseal_request_timeout <= 10
           - >-
@@ -180,6 +186,12 @@
   order: inventory
   serial: 1
   any_errors_fatal: true
+  vars:
+    openbao_rolling_force_restart: false
+    openbao_rolling_unseal_retries: 60
+    openbao_rolling_unseal_delay: 20
+    openbao_rolling_unseal_request_timeout: 5
+    openbao_rolling_transaction_dir: /var/lib/platform-config/openbao-rolling-transaction
   tasks:
     - name: Recheck strict OpenBao cluster state before this voter
       ansible.builtin.include_role:

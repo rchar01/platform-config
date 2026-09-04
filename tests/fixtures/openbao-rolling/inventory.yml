@@ -12,13 +12,13 @@ all:
         else 'stopped'
       }}
     openbao_state_dir: "{{ openbao_test_state_root }}/{{ inventory_hostname }}"
-    openbao_rolling_transaction_dir: /var/lib/platform-config/openbao-rolling-transaction
     openbao_test_transaction_dir: >-
       {{ openbao_state_dir }}/openbao-rolling-transaction
-    openbao_rolling_force_restart: false
-    openbao_rolling_unseal_retries: 60
-    openbao_rolling_unseal_delay: 20
-    openbao_rolling_unseal_request_timeout: 5
+    openbao_rolling_force_restart: true
+    openbao_rolling_unseal_retries: invalid
+    openbao_rolling_unseal_delay: false
+    openbao_rolling_unseal_request_timeout: 99.5
+    openbao_rolling_transaction_dir: /tmp/untrusted-openbao-transaction
     openbao_test_initial_active: bao-test-1
     openbao_cluster_members:
       - name: bao-test-1

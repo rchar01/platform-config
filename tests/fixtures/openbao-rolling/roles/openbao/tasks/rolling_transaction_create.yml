@@ -1,4 +1,21 @@
 ---
+- name: Require safe rolling controls in the mocked serial voter play
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_rolling_force_restart is boolean
+        or (
+          openbao_rolling_force_restart | type_debug == 'str'
+          and openbao_rolling_force_restart in ['true', 'false']
+        )
+      - openbao_rolling_unseal_retries is integer
+      - openbao_rolling_unseal_delay is integer
+      - openbao_rolling_unseal_request_timeout is integer
+      - >-
+        openbao_rolling_transaction_dir
+        == '/var/lib/platform-config/openbao-rolling-transaction'
+    fail_msg: Mocked serial voter did not receive safe rolling controls.
+
 - name: Create mocked OpenBao managed state directory
   ansible.builtin.file:
     path: "{{ openbao_state_dir }}"
