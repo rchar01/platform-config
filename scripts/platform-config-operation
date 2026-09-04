@@ -287,6 +287,8 @@ case "$operation" in
     run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
     run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
     run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    run_playbook rke2-post-check playbooks/rke2.yml rke2_cluster --check --diff
+    run_playbook kube-vip-post-check playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     ;;
   rke2-deploy)
     run_playbook core-health playbooks/rke2-core-health.yml rke2_cluster
@@ -295,6 +297,8 @@ case "$operation" in
     run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
     run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
     run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    run_playbook rke2-post-check playbooks/rke2.yml rke2_cluster --check --diff
+    run_playbook kube-vip-post-check playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     ;;
   openbao-status)
     ping_group connectivity openbao

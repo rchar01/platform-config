@@ -114,7 +114,10 @@ make apply ENV=dev PLAYBOOK=playbooks/<service>.yml
 For RKE2, update `rke2_version` in the private environment, run and review the
 fixed `rke2-converge-plan` operation, then separately authorize its matching
 `rke2-deploy` operation. The fixed deployment preserves server-before-agent
-serial order and runs the complete smoke path.
+serial order, runs the complete smoke path, then runs base RKE2 and kube-vip in
+check mode. The operation fails unless both post-smoke checks predict zero
+changes on every applicable host. This does not replace the second live apply
+used for attended release qualification.
 
 ## Private Environment Files
 
@@ -1055,7 +1058,9 @@ manifest references `registry.dev/`. It then checks base RKE2 and kube-vip
 changes. The blocking deployment repeats these preflights, converges base RKE2
 serially, converges kube-vip, and runs both complete smoke suites. Missing or
 drifted Traefik or kube-vip state is therefore repaired rather than required by
-the initial health gate.
+the initial health gate. After smoke passes, the same job checks base RKE2 and
+kube-vip again with `--check --diff` and fails if either predicts a change. It
+does not perform a second live apply.
 
 Do not rerun the pristine preflight after packages have been installed. If a
 base apply fails, first establish whether the failure is target state or only a

@@ -21,6 +21,8 @@ GitLab or target-local filesystem transport.
 
 ### Changes
 
+- Verify fixed RKE2 bootstrap and deployment idempotence after smoke through
+  non-mutating checks that fail when any applicable host predicts a change.
 - Retire the repository-built operational image in favor of the qualified
   digest-pinned upstream Ansible runtime pulled directly from GHCR.
 - Publish requests and download exact responses directly from the target through

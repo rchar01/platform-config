@@ -35,6 +35,8 @@ OPERATIONS = {
         "kube-vip-apply",
         "rke2-smoke",
         "kube-vip-smoke",
+        "rke2-post-check",
+        "kube-vip-post-check",
     ),
     "rke2-deploy": (
         "core-health",
@@ -43,10 +45,13 @@ OPERATIONS = {
         "kube-vip-apply",
         "rke2-smoke",
         "kube-vip-smoke",
+        "rke2-post-check",
+        "kube-vip-post-check",
     ),
     "openbao-status": ("inventory", "connectivity", "openbao-status"),
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
+UNCHANGED_PHASES = frozenset({"rke2-post-check", "kube-vip-post-check"})
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 
 
@@ -378,7 +383,11 @@ def command_render(args: argparse.Namespace) -> int:
                 recap = recaps[(phase, host)]
                 phase_result = (
                     "FAIL"
-                    if recap["failures"] > 0 or recap["unreachable"] > 0
+                    if (
+                        recap["failures"] > 0
+                        or recap["unreachable"] > 0
+                        or (phase in UNCHANGED_PHASES and recap["changed"] > 0)
+                    )
                     else "PASS"
                 )
                 counts = tuple(str(recap[name]) for name in ("changed", "failures", "unreachable"))

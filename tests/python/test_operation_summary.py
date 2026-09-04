@@ -165,6 +165,79 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
     assert "Observed failed tasks:\n  none" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("changed_phase", "changed_host"),
+    [
+        (None, None),
+        ("rke2-post-check", "server-a"),
+        ("rke2-post-check", "agent-b"),
+        ("kube-vip-post-check", "server-a"),
+    ],
+)
+def test_summary_requires_post_checks_to_predict_no_changes(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    changed_phase: str | None,
+    changed_host: str | None,
+) -> None:
+    events = _initialize(repo_root, command_runner, isolated_test_dir, "rke2-deploy")
+    _append(
+        events,
+        {"schema": 1, "kind": "host", "host": "server-a", "role": "server"},
+        {"schema": 1, "kind": "host", "host": "agent-b", "role": "agent"},
+    )
+    phases = (
+        "core-health",
+        "convergence-preflight",
+        "rke2-apply",
+        "kube-vip-apply",
+        "rke2-smoke",
+        "kube-vip-smoke",
+        "rke2-post-check",
+        "kube-vip-post-check",
+    )
+    for phase in phases:
+        _append(events, *_phase(phase))
+        server_changed = phase == "rke2-apply" or (
+            phase == changed_phase and changed_host == "server-a"
+        )
+        _append(events, _recap(phase, "server-a", changed=int(server_changed)))
+        if not phase.startswith("kube-vip-"):
+            agent_changed = phase == "rke2-apply" or (
+                phase == changed_phase and changed_host == "agent-b"
+            )
+            _append(
+                events,
+                _recap(phase, "agent-b", changed=int(agent_changed)),
+            )
+
+    result = _render(repo_root, command_runner, events, 0)
+    if changed_phase is None:
+        result.assert_success()
+        assert "Overall: PASS" in result.stdout
+    else:
+        result.assert_failure()
+        assert result.returncode == 2
+        assert "Overall: FAIL" in result.stdout
+        assert changed_host is not None
+        role = "server" if changed_host == "server-a" else "agent"
+        assert any(
+            line.split()[:4] == [changed_host, role, changed_phase, "FAIL"]
+            for line in result.stdout.splitlines()
+        )
+
+    assert any(
+        line.split()[:4] == ["server-a", "server", "rke2-apply", "PASS"]
+        and line.split()[4] == "1"
+        for line in result.stdout.splitlines()
+    )
+    assert any(
+        line.split()[:4] == ["agent-b", "agent", "kube-vip-post-check", "N/A"]
+        for line in result.stdout.splitlines()
+    )
+
+
 def test_summary_renders_failed_unreachable_and_partial_hosts(
     repo_root: Path,
     isolated_test_dir: Path,

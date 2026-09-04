@@ -59,7 +59,17 @@ else:
     hosts = ["server-a", "agent-a"]
 failure_match = os.environ.get("PLATFORM_CONFIG_FAIL_MATCH", "")
 failure = bool(failure_match) and failure_match in arguments
+changed = os.environ.get("PLATFORM_CONFIG_CHANGED_PHASE", "") == phase
 with summary_path.open("a") as stream:
+    if changed:
+        stream.write(json.dumps({
+            "schema": 1,
+            "kind": "task",
+            "phase": phase,
+            "host": hosts[0],
+            "outcome": "changed",
+            "task": "Post-check predicted drift",
+        }, separators=(",", ":")) + "\\n")
     for index, host in enumerate(hosts):
         stream.write(json.dumps({
             "schema": 1,
@@ -68,7 +78,7 @@ with summary_path.open("a") as stream:
             "host": host,
             "counters": {
                 "ok": 1,
-                "changed": 0,
+                "changed": 1 if changed and index == 0 else 0,
                 "failures": 1 if failure and index == 0 else 0,
                 "unreachable": 0,
                 "skipped": 0,
@@ -1115,6 +1125,8 @@ def test_operation_launcher_rejects_unsafe_arguments(
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -1127,6 +1139,8 @@ def test_operation_launcher_rejects_unsafe_arguments(
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -1188,6 +1202,66 @@ def test_operation_launcher_uses_fixed_commands(
         for command in commands
     ]
     assert observed == expected
+
+
+@pytest.mark.parametrize("operation", ["rke2-bootstrap", "rke2-deploy"])
+@pytest.mark.parametrize("changed_phase", ["rke2-post-check", "kube-vip-post-check"])
+def test_operation_launcher_fails_when_post_check_predicts_drift(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    operation: str,
+    changed_phase: str,
+) -> None:
+    inventory = isolated_test_dir / "hosts.yml"
+    extra_vars = isolated_test_dir / "connection.yml"
+    log = isolated_test_dir / "commands.jsonl"
+    inventory.write_text("all: {}\n", encoding="utf-8")
+    extra_vars.write_text("---\n{}\n", encoding="utf-8")
+    extra_vars.chmod(0o600)
+
+    fake_bin = isolated_test_dir / "bin"
+    fake_bin.mkdir()
+    fake_content = _operation_fake_script()
+    for name in ("ansible", "ansible-inventory", "ansible-playbook"):
+        _write_executable(fake_bin / name, fake_content)
+
+    result = command_runner.run(
+        [
+            repo_root / "scripts/platform-config-operation",
+            operation,
+            "--inventory",
+            inventory,
+            "--controller-vars",
+            extra_vars,
+        ],
+        environment={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "PLATFORM_CONFIG_OPERATION_LOG": str(log),
+            "PLATFORM_CONFIG_CHANGED_PHASE": changed_phase,
+        },
+    ).assert_failure()
+
+    assert result.returncode == 2
+    assert "Overall: FAIL" in result.stdout
+    assert "Post-check predicted drift: server-a" in result.stdout
+    assert any(
+        line.split()[:4] == ["server-a", "server", changed_phase, "FAIL"]
+        for line in result.stdout.splitlines()
+    )
+
+    observed = [json.loads(line) for line in log.read_text().splitlines()]
+    post_checks = [command for command in observed if "--check" in command]
+    assert len(post_checks) == 2
+    assert all("--diff" in command for command in post_checks)
+    for playbook in ("playbooks/rke2.yml", "playbooks/rke2-kube-vip.yml"):
+        matching = [
+            command
+            for command in observed
+            if any(playbook in value for value in command)
+        ]
+        assert len(matching) == 2
+        assert sum("--check" not in command for command in matching) == 1
 
 
 def test_operation_launcher_stops_after_failed_core_health(

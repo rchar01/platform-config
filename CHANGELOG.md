@@ -35,6 +35,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Added fail-closed post-smoke RKE2 and kube-vip check-mode phases to both fixed
+  mutating routes, requiring every applicable host to predict zero changes.
 - Retired the repository-built operational image and its Ansible Core 2.20 pin
   after RKE2 and OpenBao qualified a maintained digest-pinned GHCR runtime.
 - Moved request publication and exact response download behind a fixed
