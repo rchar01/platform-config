@@ -23,6 +23,7 @@ from pathlib import Path
 
 
 AUTOMATION_USER = "rocky"
+AUTOMATION_COMMENT = "Platform Ansible automation account"
 PRIMARY_GROUP = "rocky"
 ACCESS_GROUP = "access_ssh"
 AUTOMATION_HOME = Path("/home/rocky")
@@ -324,6 +325,7 @@ def account_groups(user: pwd.struct_passwd) -> set[int]:
 
 def check_account_identity(user: pwd.struct_passwd) -> grp.struct_group:
     require(user.pw_uid >= 1000, "automation account UID must be at least 1000")
+    require(user.pw_gecos == AUTOMATION_COMMENT, "automation account comment is unexpected")
     require(user.pw_dir == os.fspath(AUTOMATION_HOME), "automation account home is unexpected")
     require(user.pw_shell == "/bin/bash", "automation account shell must be /bin/bash")
     try:
@@ -627,6 +629,8 @@ def apply(settings: Settings, public_key: PublicKey) -> None:
                 "useradd",
                 "--create-home",
                 "--user-group",
+                "--comment",
+                AUTOMATION_COMMENT,
                 "--shell",
                 "/bin/bash",
                 AUTOMATION_USER,

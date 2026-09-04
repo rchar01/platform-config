@@ -415,11 +415,14 @@ def test_apply_checks_effective_ssh_before_granting_access(
         "preflight_managed_files",
         lambda _key: events.append("managed-files"),
     )
-    monkeypatch.setattr(
-        helper,
-        "run_command",
-        lambda name, *_args: events.append(name) or "",
-    )
+    def record_command(name: str, *arguments: str) -> str:
+        events.append(name)
+        if name == "useradd":
+            comment_index = arguments.index("--comment")
+            assert arguments[comment_index + 1] == helper.AUTOMATION_COMMENT
+        return ""
+
+    monkeypatch.setattr(helper, "run_command", record_command)
     monkeypatch.setattr(helper, "account", lambda: user)
     monkeypatch.setattr(helper, "check_account_identity", lambda _user: primary)
     monkeypatch.setattr(
@@ -457,6 +460,28 @@ def test_apply_checks_effective_ssh_before_granting_access(
         "usermod",
         "effective-ssh",
     ]
+
+
+def test_account_identity_requires_automation_comment(
+    repo_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _helper(repo_root)
+    user = SimpleNamespace(
+        pw_uid=1000,
+        pw_gid=1000,
+        pw_gecos=helper.AUTOMATION_COMMENT,
+        pw_dir="/home/rocky",
+        pw_shell="/bin/bash",
+    )
+    primary = SimpleNamespace(gr_name="rocky")
+    monkeypatch.setattr(helper.grp, "getgrgid", lambda _gid: primary)
+    monkeypatch.setattr(helper.pwd, "getpwall", lambda: [user])
+
+    assert helper.check_account_identity(user) is primary
+
+    user.pw_gecos = ""
+    with pytest.raises(helper.PreparationError, match="comment"):
+        helper.check_account_identity(user)
 
 
 def test_apply_refuses_group_grant_after_access_files_exist(
