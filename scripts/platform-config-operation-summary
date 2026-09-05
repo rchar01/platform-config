@@ -26,6 +26,7 @@ OPERATIONS = {
         "convergence-preflight",
         "rke2-plan",
         "kube-vip-plan",
+        "rke2-gitlab-runner-plan",
     ),
     "rke2-bootstrap": (
         "inventory",
@@ -33,20 +34,26 @@ OPERATIONS = {
         "bootstrap-preflight",
         "rke2-apply",
         "kube-vip-apply",
+        "rke2-gitlab-runner-apply",
         "rke2-smoke",
         "kube-vip-smoke",
+        "rke2-gitlab-runner-smoke",
         "rke2-post-check",
         "kube-vip-post-check",
+        "rke2-gitlab-runner-post-check",
     ),
     "rke2-deploy": (
         "core-health",
         "convergence-preflight",
         "rke2-apply",
         "kube-vip-apply",
+        "rke2-gitlab-runner-apply",
         "rke2-smoke",
         "kube-vip-smoke",
+        "rke2-gitlab-runner-smoke",
         "rke2-post-check",
         "kube-vip-post-check",
+        "rke2-gitlab-runner-post-check",
     ),
     "openbao-status": ("inventory", "connectivity", "openbao-status"),
     "openbao-restart-plan": (
@@ -92,6 +99,7 @@ UNCHANGED_PHASES = frozenset(
     {
         "rke2-post-check",
         "kube-vip-post-check",
+        "rke2-gitlab-runner-post-check",
         "openbao-restart-check",
         "openbao-post-check",
     }
@@ -314,7 +322,8 @@ def parse_records(path: Path) -> tuple[str, tuple[str, ...], dict[str, str], lis
 
 
 def applicable(role: str, phase: str) -> bool:
-    return not phase.startswith("kube-vip-") or role == "server"
+    server_only = phase.startswith(("kube-vip-", "rke2-gitlab-runner-"))
+    return not server_only or role == "server"
 
 
 def print_table(rows: list[list[str]]) -> None:

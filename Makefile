@@ -29,7 +29,7 @@ LIMIT_ARG := $(if $(strip $(LIMIT)),--limit $(LIMIT),)
 sh_quote = '$(subst ','"'"',$(1))'
 CONTROLLER_ROOT_ARG := $(if $(strip $(CONTROLLER_ROOT)),--controller-root $(call sh_quote,$(CONTROLLER_ROOT)))
 
-.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
+.PHONY: help deps shell container-build inventory ping syntax check apply verify verify-parallel lint yamllint test test-parallel check-dev-toolchain check-test-container-profile check-container-wrapper test-keepalived-vip-rocky test-keepalived-vip-behavior test-podman-host-rocky test-gitlab-runner-podman-rocky test-platform-external-probe-alloy test-openbao-haproxy-rocky test-monitoring-haproxy-capabilities test-monitoring-artifact-identities test-monitoring-etcd-image test-monitoring-etcd-cluster test-monitoring-garage-cluster test-monitoring-garage-loki test-monitoring-garage-loki-cluster test-monitoring-garage-mimir test-monitoring-grafana-postgresql test-openbao-image test-openbao-rocky storage-test-preflight storage-test-initialize storage-test-check storage-test-converge storage-test-reboot deploy-bootstrap-token-issuer-staging deploy-openbao-observers syntax-openbao-observers status-openbao roll-openbao smoke-firewalld smoke-container smoke-registry smoke-openbao smoke-openbao-observers smoke-gitlab smoke-runners smoke-monitoring smoke-rke2 smoke-rke2-kube-vip smoke-rke2-gitlab-runner smoke-kong-ingress smoke-workload-lb smoke-k8s-bastion clean _guard-inventory _guard-env-file _guard-staging-mode _guard-storage-test _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
 
 .PHONY: activate-monitoring-etcd status-monitoring-etcd
 .PHONY: start-openbao-bootstrap migrate-openbao-audit complete-openbao-bootstrap activate-openbao-haproxy
@@ -75,6 +75,7 @@ help:
 	@printf '  %s\n' 'make smoke-monitoring ENV=dev  # blocked until HA replacement'
 	@printf '  %s\n' 'make smoke-rke2 ENV=dev'
 	@printf '  %s\n' 'make smoke-rke2-kube-vip ENV=dev'
+	@printf '  %s\n' 'make smoke-rke2-gitlab-runner ENV=dev'
 	@printf '  %s\n' 'make smoke-kong-ingress ENV=dev'
 	@printf '  %s\n' 'make smoke-workload-lb ENV=dev'
 	@printf '  %s\n' 'make smoke-k8s-bastion ENV=dev'
@@ -373,6 +374,10 @@ smoke-rke2:
 ## Smoke test RKE2 kube-vip API HA
 smoke-rke2-kube-vip:
 	@$(MAKE) apply PLAYBOOK=playbooks/rke2-kube-vip-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
+
+## Smoke test RKE2 GitLab Runner
+smoke-rke2-gitlab-runner:
+	@$(MAKE) apply PLAYBOOK=playbooks/rke2-gitlab-runner-smoke.yml ENV=$(ENV) LIMIT="$(LIMIT)" EXTRA_ARGS="$(EXTRA_ARGS)"
 
 ## Smoke test Kong ingress controller
 smoke-kong-ingress:

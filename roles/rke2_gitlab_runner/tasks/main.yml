@@ -1,0 +1,511 @@
+---
+- name: Assert RKE2 GitLab Runner server topology is configured
+  ansible.builtin.assert:
+    that:
+      - groups.get('rke2_servers', []) | length > 0
+    fail_msg: "RKE2 GitLab Runner requires at least one host in rke2_servers."
+  when: rke2_gitlab_runner_enabled | bool
+
+- name: Configure RKE2 GitLab Runner from the bootstrap server
+  vars:
+    rke2_gitlab_runner_namespace: gitlab-runner
+    rke2_gitlab_runner_release_name: rke2-gitlab-runner
+    rke2_gitlab_runner_manifest_dir: /var/lib/rancher/rke2/server/manifests
+    rke2_gitlab_runner_manifest_path: /var/lib/rancher/rke2/server/manifests/rke2-gitlab-runner.yaml
+    rke2_gitlab_runner_kubectl: /var/lib/rancher/rke2/bin/kubectl
+    rke2_gitlab_runner_kubeconfig: /etc/rancher/rke2/rke2.yaml
+    rke2_gitlab_runner_token_secret_name: rke2-gitlab-runner-token
+    rke2_gitlab_runner_ca_secret_name: rke2-gitlab-runner-ca
+    rke2_gitlab_runner_job_service_account: rke2-gitlab-runner-job
+  when:
+    - rke2_gitlab_runner_enabled | bool
+    - inventory_hostname == groups['rke2_servers'][0]
+  block:
+    - name: Assert RKE2 GitLab Runner inputs are configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            rke2_gitlab_runner_gitlab_url is match(
+              '^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+              '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*'
+              '(?::[1-9][0-9]{0,4})?/?$'
+            )
+          - rke2_gitlab_runner_token_src is match('^/[^\r\n]+$')
+          - rke2_gitlab_runner_tls_ca_cert_src is match('^/[^\r\n]+$')
+          - rke2_gitlab_runner_tls_ca_cert_sha256 is match('^[0-9a-f]{64}$')
+          - rke2_gitlab_runner_name is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+          - rke2_gitlab_runner_chart_version == '0.88.3'
+          - rke2_gitlab_runner_manager_image is match('^docker\.io/gitlab/gitlab-runner:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
+          - rke2_gitlab_runner_helper_image is match('^docker\.io/gitlab/gitlab-runner-helper:x86_64-[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
+          - rke2_gitlab_runner_default_job_image is match('^docker\.io/library/alpine:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          RKE2 GitLab Runner requires an HTTPS GitLab URL, absolute token and CA
+          source paths, the reviewed CA checksum, a safe Runner name, chart
+          0.88.3, and digest-pinned Runner 18.11.3 images.
+
+    - name: Derive fixed RKE2 GitLab Runner values
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_gitlab_host: >-
+          {{ rke2_gitlab_runner_gitlab_url
+             | regex_replace('^https://([^/:]+)(?::[0-9]+)?/?$', '\1') }}
+        rke2_gitlab_runner_gitlab_port: >-
+          {{ rke2_gitlab_runner_gitlab_url
+             | regex_replace('^https://[^/:]+(?::([0-9]+))?/?$', '\1')
+             | default('443', true) | int }}
+        rke2_gitlab_runner_manager_image_tag: >-
+          {{ rke2_gitlab_runner_manager_image
+             | regex_replace('^docker\.io/gitlab/gitlab-runner:', '') }}
+
+    - name: Assert RKE2 GitLab Runner GitLab port is valid
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_gitlab_port | int <= 65535
+        fail_msg: "RKE2 GitLab Runner GitLab URL port must not exceed 65535."
+
+    - name: Check RKE2 GitLab Runner token source
+      ansible.builtin.stat:
+        path: "{{ rke2_gitlab_runner_token_src }}"
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: rke2_gitlab_runner_token_stat
+      no_log: true
+
+    - name: Assert RKE2 GitLab Runner token source is private
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_token_stat.stat.exists
+          - rke2_gitlab_runner_token_stat.stat.isreg
+          - not rke2_gitlab_runner_token_stat.stat.islnk
+          - rke2_gitlab_runner_token_stat.stat.mode in ['0400', '0600']
+          - rke2_gitlab_runner_token_stat.stat.size > 5
+          - rke2_gitlab_runner_token_stat.stat.size <= 512
+        fail_msg: >-
+          RKE2 GitLab Runner token source must be a private regular file with
+          mode 0400 or 0600 and bounded content.
+      no_log: true
+
+    - name: Read RKE2 GitLab Runner token source
+      ansible.builtin.slurp:
+        src: "{{ rke2_gitlab_runner_token_src }}"
+      delegate_to: localhost
+      become: false
+      register: rke2_gitlab_runner_token_content
+      no_log: true
+
+    - name: Decode RKE2 GitLab Runner token
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_token: "{{ rke2_gitlab_runner_token_content.content | b64decode }}"
+      no_log: true
+
+    - name: Assert RKE2 GitLab Runner token is canonical
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_token is match('^glrt-[A-Za-z0-9_-]+$')
+        fail_msg: "RKE2 GitLab Runner token must be one canonical glrt- token without a trailing newline."
+      no_log: true
+
+    - name: Check RKE2 GitLab Runner CA source
+      ansible.builtin.stat:
+        path: "{{ rke2_gitlab_runner_tls_ca_cert_src }}"
+        follow: false
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: rke2_gitlab_runner_ca_stat
+
+    - name: Assert RKE2 GitLab Runner CA source is reviewed
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_ca_stat.stat.exists
+          - rke2_gitlab_runner_ca_stat.stat.isreg
+          - not rke2_gitlab_runner_ca_stat.stat.islnk
+          - rke2_gitlab_runner_ca_stat.stat.size > 0
+          - rke2_gitlab_runner_ca_stat.stat.size <= 1048576
+          - rke2_gitlab_runner_ca_stat.stat.checksum == rke2_gitlab_runner_tls_ca_cert_sha256
+        fail_msg: "RKE2 GitLab Runner CA source must be a reviewed regular file with the configured SHA-256."
+
+    - name: Read RKE2 GitLab Runner CA source
+      ansible.builtin.slurp:
+        src: "{{ rke2_gitlab_runner_tls_ca_cert_src }}"
+      delegate_to: localhost
+      become: false
+      register: rke2_gitlab_runner_ca_content
+      no_log: true
+
+    - name: Check RKE2 server service on bootstrap server
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - rke2-server.service
+      register: rke2_gitlab_runner_server_service
+      check_mode: false
+      changed_when: false
+
+    - name: Assert RKE2 server service is active on bootstrap server
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_server_service.stdout == 'active'
+        fail_msg: "rke2-server.service must be active before installing GitLab Runner."
+
+    - name: Check RKE2 GitLab Runner manifest directory
+      ansible.builtin.stat:
+        path: "{{ rke2_gitlab_runner_manifest_dir }}"
+      register: rke2_gitlab_runner_manifest_dir_stat
+
+    - name: Assert RKE2 GitLab Runner manifest directory exists
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_manifest_dir_stat.stat.exists
+          - rke2_gitlab_runner_manifest_dir_stat.stat.isdir
+        fail_msg: "RKE2 manifest directory does not exist: {{ rke2_gitlab_runner_manifest_dir }}"
+
+    - name: Define RKE2 GitLab Runner namespace
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_desired_namespace:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ rke2_gitlab_runner_namespace }}"
+            labels:
+              pod-security.kubernetes.io/enforce: baseline
+
+    - name: Read RKE2 GitLab Runner namespace
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - get
+          - namespace
+          - "{{ rke2_gitlab_runner_namespace }}"
+          - --ignore-not-found
+          - -o=json
+      register: rke2_gitlab_runner_namespace_result
+      check_mode: false
+      changed_when: false
+
+    - name: Detect RKE2 GitLab Runner namespace drift
+      vars:
+        rke2_gitlab_runner_current_namespace: >-
+          {{ rke2_gitlab_runner_namespace_result.stdout | from_json
+             if rke2_gitlab_runner_namespace_result.stdout | length > 0 else {} }}
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_namespace_changed: >-
+          {{
+            not rke2_gitlab_runner_current_namespace
+            or rke2_gitlab_runner_current_namespace.get('metadata', {}).get('labels', {}).get(
+              'pod-security.kubernetes.io/enforce', '') != 'baseline'
+          }}
+
+    - name: Report RKE2 GitLab Runner namespace drift
+      ansible.builtin.debug:
+        msg: "RKE2 GitLab Runner namespace requires reconciliation."
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - rke2_gitlab_runner_namespace_changed | bool
+
+    - name: Reconcile RKE2 GitLab Runner namespace
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - apply
+          - -f
+          - '-'
+        stdin: "{{ rke2_gitlab_runner_desired_namespace | to_json }}"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - rke2_gitlab_runner_namespace_changed | bool
+
+    - name: Check for an existing RKE2 GitLab Runner Deployment
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_namespace }}"
+          - get
+          - deployment
+          - "{{ rke2_gitlab_runner_release_name }}"
+          - --ignore-not-found
+          - -o=name
+      register: rke2_gitlab_runner_deployment_before_secrets
+      check_mode: false
+      changed_when: false
+
+    - name: Define RKE2 GitLab Runner Secrets
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_desired_secrets:
+          - name: "{{ rke2_gitlab_runner_token_secret_name }}"
+            object:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: "{{ rke2_gitlab_runner_token_secret_name }}"
+                namespace: "{{ rke2_gitlab_runner_namespace }}"
+                labels:
+                  app.kubernetes.io/managed-by: platform-config
+              type: Opaque
+              data:
+                runner-token: "{{ rke2_gitlab_runner_token | b64encode }}"
+                runner-registration-token: ""
+          - name: "{{ rke2_gitlab_runner_ca_secret_name }}"
+            object:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: "{{ rke2_gitlab_runner_ca_secret_name }}"
+                namespace: "{{ rke2_gitlab_runner_namespace }}"
+                labels:
+                  app.kubernetes.io/managed-by: platform-config
+              type: Opaque
+              data:
+                "{{ rke2_gitlab_runner_gitlab_host }}.crt": "{{ rke2_gitlab_runner_ca_content.content }}"
+      no_log: true
+
+    - name: Read existing RKE2 GitLab Runner Secrets
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_namespace }}"
+          - get
+          - secret
+          - "{{ item.name }}"
+          - --ignore-not-found
+          - -o=json
+      loop: "{{ rke2_gitlab_runner_desired_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: rke2_gitlab_runner_secret_results
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Assert existing RKE2 GitLab Runner Secrets are role-managed
+      vars:
+        rke2_gitlab_runner_current_secret: >-
+          {{ item.stdout | from_json if item.stdout | length > 0 else {} }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            not rke2_gitlab_runner_current_secret
+            or rke2_gitlab_runner_current_secret.get('metadata', {}).get('labels', {}).get(
+              'app.kubernetes.io/managed-by', '') == 'platform-config'
+        fail_msg: "Refusing to replace an existing RKE2 GitLab Runner Secret not managed by platform-config."
+      loop: "{{ rke2_gitlab_runner_secret_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      no_log: true
+
+    - name: Initialize RKE2 GitLab Runner Secret drift
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_secrets_changed: false
+      no_log: true
+
+    - name: Detect RKE2 GitLab Runner Secret drift
+      vars:
+        rke2_gitlab_runner_current_secret: >-
+          {{ item.stdout | from_json if item.stdout | length > 0 else {} }}
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_secrets_changed: true
+      when: >-
+        not rke2_gitlab_runner_current_secret
+        or rke2_gitlab_runner_current_secret.get('type', '') != item.item.object.type
+        or rke2_gitlab_runner_current_secret.get('data', {}) != item.item.object.data
+        or rke2_gitlab_runner_current_secret.get('metadata', {}).get('labels', {}).get(
+          'app.kubernetes.io/managed-by', '') != 'platform-config'
+      loop: "{{ rke2_gitlab_runner_secret_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      no_log: true
+
+    - name: Report RKE2 GitLab Runner Secret drift
+      ansible.builtin.debug:
+        msg: "RKE2 GitLab Runner Secrets require reconciliation."
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - rke2_gitlab_runner_secrets_changed | bool
+      no_log: true
+
+    - name: Reconcile RKE2 GitLab Runner Secrets
+      vars:
+        rke2_gitlab_runner_current_secret: >-
+          {{ item.stdout | from_json if item.stdout | length > 0 else {} }}
+        rke2_gitlab_runner_secret_changed: >-
+          {{
+            not rke2_gitlab_runner_current_secret
+            or rke2_gitlab_runner_current_secret.get('type', '') != item.item.object.type
+            or rke2_gitlab_runner_current_secret.get('data', {}) != item.item.object.data
+            or rke2_gitlab_runner_current_secret.get('metadata', {}).get('labels', {}).get(
+              'app.kubernetes.io/managed-by', '') != 'platform-config'
+          }}
+        rke2_gitlab_runner_reconciled_secret: >-
+          {{
+            item.item.object
+            | combine({
+              'metadata': item.item.object.metadata
+              | combine({
+                'resourceVersion': rke2_gitlab_runner_current_secret.metadata.resourceVersion
+              })
+            })
+            if rke2_gitlab_runner_current_secret else item.item.object
+          }}
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - "{{ 'replace' if rke2_gitlab_runner_current_secret else 'create' }}"
+          - -f
+          - '-'
+        stdin: "{{ rke2_gitlab_runner_reconciled_secret | to_json }}"
+      loop: "{{ rke2_gitlab_runner_secret_results.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - rke2_gitlab_runner_secret_changed | bool
+      no_log: true
+
+    - name: Check existing RKE2 GitLab Runner manifest
+      ansible.builtin.stat:
+        path: "{{ rke2_gitlab_runner_manifest_path }}"
+      register: rke2_gitlab_runner_manifest_stat
+
+    - name: Read existing RKE2 GitLab Runner Helm install Job identity
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - -n
+          - kube-system
+          - get
+          - job
+          - helm-install-rke2-gitlab-runner
+          - --ignore-not-found
+          - -o=jsonpath={.metadata.uid}
+      register: rke2_gitlab_runner_helm_job_before_manifest
+      check_mode: false
+      changed_when: false
+
+    - name: Read existing RKE2 GitLab Runner manifest
+      ansible.builtin.slurp:
+        path: "{{ rke2_gitlab_runner_manifest_path }}"
+      register: rke2_gitlab_runner_manifest_content
+      when: rke2_gitlab_runner_manifest_stat.stat.exists
+
+    - name: Initialize existing RKE2 GitLab Runner manifest validation
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_existing_manifest_valid: false
+
+    - name: Parse Ansible-owned fields from existing RKE2 GitLab Runner manifest
+      when: rke2_gitlab_runner_manifest_stat.stat.exists
+      block:
+        - name: Parse existing RKE2 GitLab Runner manifest
+          ansible.builtin.set_fact:
+            rke2_gitlab_runner_existing_manifest: >-
+              {{ rke2_gitlab_runner_manifest_content.content | b64decode | from_yaml }}
+
+        - name: Remove RKE2-managed fields from existing GitLab Runner manifest
+          ansible.builtin.set_fact:
+            # RKE2 injects cluster-global spec.set values into HelmChart files.
+            rke2_gitlab_runner_existing_ansible_fields: >-
+              {{
+                rke2_gitlab_runner_existing_manifest
+                | combine({
+                  'spec': rke2_gitlab_runner_existing_manifest.get('spec', {})
+                  | dict2items
+                  | rejectattr('key', 'equalto', 'set')
+                  | items2dict
+                })
+              }}
+            rke2_gitlab_runner_existing_manifest_valid: true
+
+      rescue:
+        - name: Mark invalid RKE2 GitLab Runner manifest for repair
+          ansible.builtin.set_fact:
+            rke2_gitlab_runner_existing_manifest_valid: false
+
+    - name: Write RKE2 GitLab Runner HelmChart when Ansible-owned fields differ
+      vars:
+        rke2_gitlab_runner_desired_manifest: >-
+          {{ lookup('ansible.builtin.template', 'gitlab-runner-helmchart.yaml.j2') | from_yaml }}
+      ansible.builtin.template:
+        src: gitlab-runner-helmchart.yaml.j2
+        dest: "{{ rke2_gitlab_runner_manifest_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      register: rke2_gitlab_runner_manifest_result
+      when: >-
+        not rke2_gitlab_runner_manifest_stat.stat.exists
+        or not rke2_gitlab_runner_existing_manifest_valid
+        or rke2_gitlab_runner_existing_ansible_fields != rke2_gitlab_runner_desired_manifest
+
+    - name: Wait for replacement RKE2 GitLab Runner Helm install Job
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - -n
+          - kube-system
+          - get
+          - job
+          - helm-install-rke2-gitlab-runner
+          - --ignore-not-found
+          - >-
+            -o=jsonpath={.metadata.uid}|{.status.conditions[?(@.type=="Complete")].status}|{.status.conditions[?(@.type=="Failed")].status}
+      register: rke2_gitlab_runner_helm_job_after_manifest
+      retries: 60
+      delay: 5
+      until: >-
+        rke2_gitlab_runner_helm_job_after_manifest.stdout.split('|') | length == 3
+        and rke2_gitlab_runner_helm_job_after_manifest.stdout.split('|')[0] | length > 0
+        and rke2_gitlab_runner_helm_job_after_manifest.stdout.split('|')[0]
+          != rke2_gitlab_runner_helm_job_before_manifest.stdout
+        and rke2_gitlab_runner_helm_job_after_manifest.stdout.split('|')[1] == 'True'
+        and rke2_gitlab_runner_helm_job_after_manifest.stdout.split('|')[2] != 'True'
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - rke2_gitlab_runner_manifest_result.changed | default(false)
+
+    - name: Enforce RKE2 GitLab Runner manifest metadata
+      ansible.builtin.file:
+        path: "{{ rke2_gitlab_runner_manifest_path }}"
+        state: file
+        owner: root
+        group: root
+        mode: "0644"
+      when: rke2_gitlab_runner_manifest_stat.stat.exists or not ansible_check_mode
+
+    - name: Restart existing RKE2 GitLab Runner manager after Secret changes
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_namespace }}"
+          - rollout
+          - restart
+          - deployment/{{ rke2_gitlab_runner_release_name }}
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - rke2_gitlab_runner_secrets_changed | bool
+        - rke2_gitlab_runner_deployment_before_secrets.stdout | length > 0
+      no_log: true

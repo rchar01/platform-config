@@ -2,8 +2,9 @@
 
 This matrix documents the external artifacts used by the qualified native-RPM
 RKE2 installation path. It applies to RKE2 `v1.35.5+rke2r2` on EL10 AMD64 with
-Calico, Traefik, and kube-vip. Update and requalify it whenever any package,
-chart, image, repository, base image, or build dependency changes.
+Calico, Traefik, kube-vip, and the optional GitLab Runner add-on. Update and
+requalify it whenever any package, chart, image, repository, base image, or
+build dependency changes.
 Changing `rke2_cni`, `platform_ingress_controller`, artifact-affecting
 `rke2_extra_config`, or deployed workloads requires regenerating and
 requalifying the matrix because those inputs may introduce additional artifacts.
@@ -18,7 +19,7 @@ interfaces, credentials, or trust-file locations.
 | Origin | Direct requests | Dynamic or transitive requests |
 | --- | --- | --- |
 | RKE2 nodes | Rancher signing key and repository metadata; exact node and SELinux RPMs; requested firewalld, kernel-module, and kmod package payloads; OCI image manifests for workloads scheduled on that node. | Hashed DNF metadata, dependency-selected RPMs, and OS package closure; registry authentication plus image config, layer, and redirect destinations. |
-| RKE2 Helm Controller job | kube-vip Helm index. The job may run on any eligible cluster node. | Chart URL selected from the index and its release-asset redirect. |
+| RKE2 Helm Controller job | kube-vip and GitLab Runner Helm indexes. The job may run on any eligible cluster node. | Chart URLs selected from the indexes and any release-asset redirects. |
 | CI Runner and operational job | Digest-pinned maintained operational image from GHCR and immutable GitLab repositories, then SSH and internal smoke endpoints. | GHCR authentication and image layers. The job does not proxy target-node RPM or OCI downloads. |
 
 The pristine-node preflight, Ansible template rendering, guarded reboot,
@@ -248,6 +249,30 @@ temporary GitHub release-asset URL. GHCR pulls also resolve authentication,
 manifest, blob, and package-delivery endpoints dynamically. Allowing only
 `kube-vip.github.io` and `ghcr.io` is therefore not a complete firewall policy.
 
+## GitLab Runner Sources
+
+When enabled, the GitLab Runner role writes a local `HelmChart` manifest. The
+Helm Controller fetches the repository index and chart archive, and containerd
+pulls the manager, helper, and default job images.
+
+| Artifact | Exact upstream source or identity |
+| --- | --- |
+| Helm index | `https://charts.gitlab.io/index.yaml` |
+| Chart archive | `https://gitlab-charts.s3.amazonaws.com/gitlab-runner-0.88.3.tgz` |
+| Observed chart SHA-256 | `e1d1bfafb3592f7bac1c730a25c04afe672303ad66722f9f6775e60783652627` |
+| Manager image | `docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e` |
+| Helper image | `docker.io/gitlab/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c` |
+| Default job image | `docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1` |
+
+The chart version is fixed, but RKE2's repository-plus-version HelmChart flow
+does not enforce the observed archive checksum. An immutable internal chart
+mirror is required where that runtime trust boundary is unacceptable. Docker
+Hub pulls also resolve authentication, manifest, blob, and delivery endpoints
+dynamically. Manager and job traffic to the configured GitLab HTTPS endpoint is
+an environment-specific runtime path, not an upstream artifact fetch. The first
+deployment intentionally defines no NetworkPolicy, so network reachability must
+be qualified during the protected canary rollout.
+
 ## Internal Registry Boundary
 
 The qualified development configuration maps only the internal registry's own
@@ -256,7 +281,7 @@ or a wildcard.
 
 Consequently:
 
-- RKE2 and Traefik images use Docker Hub.
+- RKE2, Traefik, and enabled GitLab Runner images use Docker Hub.
 - kube-vip uses GHCR.
 - only references already named with the internal registry hostname use Zot.
 - containerd may fall back to a public registry endpoint after a configured
@@ -288,10 +313,11 @@ That RKE2 setting disables default-endpoint fallback for every registry that has
 a mirror entry; registries without mirror entries retain their normal default
 endpoint behavior. Mirror endpoint definitions remain independent entries.
 
-The `ghcr.io` mirror covers the kube-vip image only. It does not proxy the
-kube-vip Helm index or chart archive, which continue to use the sources in
-[kube-vip Sources](#kube-vip-sources) unless `rke2_kube_vip_chart_repo` selects
-an approved internal Helm repository.
+The `ghcr.io` mirror covers the kube-vip image only, and it does not proxy the
+kube-vip Helm index or chart archive. A `docker.io` mirror covers enabled GitLab
+Runner images but not its Helm index or chart archive. Those continue to use
+[kube-vip Sources](#kube-vip-sources) and
+[GitLab Runner Sources](#gitlab-runner-sources).
 
 If the mirror certificate is not already trusted by the host image, RKE2 can
 reuse the optional `registry_ca_trust` role. Its

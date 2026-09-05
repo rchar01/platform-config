@@ -1049,7 +1049,12 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
     rke2_defaults = yaml.safe_load(
         (repo_root / "roles/rke2/defaults/main.yml").read_text()
     )
-    effective_inputs = rke2_defaults | kube_vip_defaults | inventory
+    gitlab_runner_defaults = yaml.safe_load(
+        (repo_root / "roles/rke2_gitlab_runner/defaults/main.yml").read_text()
+    )
+    effective_inputs = (
+        rke2_defaults | kube_vip_defaults | gitlab_runner_defaults | inventory
+    )
 
     for name in (
         "rke2_rpm_common_repository_url",
@@ -1093,8 +1098,16 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
         "rke2_kube_vip_chart_repo",
         "rke2_kube_vip_chart_version",
         "rke2_kube_vip_image_tag",
+        "rke2_gitlab_runner_chart_version",
+        "rke2_gitlab_runner_manager_image",
+        "rke2_gitlab_runner_helper_image",
+        "rke2_gitlab_runner_default_job_image",
     ):
         assert str(effective_inputs[name]) in matrix
+
+    assert "https://charts.gitlab.io/index.yaml" in matrix
+    assert "gitlab-runner-0.88.3.tgz" in matrix
+    assert "e1d1bfafb3592f7bac1c730a25c04afe672303ad66722f9f6775e60783652627" in matrix
 
     rpm_version = (
         inventory["rke2_version"]
@@ -1163,6 +1176,7 @@ def test_operation_launcher_rejects_unsafe_arguments(
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-convergence-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -1173,10 +1187,13 @@ def test_operation_launcher_rejects_unsafe_arguments(
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-bootstrap-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -1187,10 +1204,13 @@ def test_operation_launcher_rejects_unsafe_arguments(
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-convergence-preflight.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-smoke.yml", "--limit", "rke2_cluster", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner-smoke.yml", "--limit", "rke2_servers", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2.yml", "--limit", "rke2_cluster", "--check", "--diff", "--extra-vars", "@{vars}"],
                 ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-kube-vip.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
+                ["ansible-playbook", "-i", "{inventory}", "{repo}/playbooks/rke2-gitlab-runner.yml", "--limit", "rke2_servers", "--check", "--diff", "--extra-vars", "@{vars}"],
             ],
         ),
         (
@@ -1346,6 +1366,7 @@ def test_operation_launcher_hands_success_summary_to_wrapper(
         "ansible-playbook",
         "ansible-playbook",
         "ansible-playbook",
+        "ansible-playbook",
     ]
 
 
@@ -1417,7 +1438,10 @@ def test_openbao_launcher_enforces_preliminary_status_drift_policy(
 
 
 @pytest.mark.parametrize("operation", ["rke2-bootstrap", "rke2-deploy"])
-@pytest.mark.parametrize("changed_phase", ["rke2-post-check", "kube-vip-post-check"])
+@pytest.mark.parametrize(
+    "changed_phase",
+    ["rke2-post-check", "kube-vip-post-check", "rke2-gitlab-runner-post-check"],
+)
 def test_operation_launcher_fails_when_post_check_predicts_drift(
     repo_root: Path,
     isolated_test_dir: Path,
@@ -1464,9 +1488,13 @@ def test_operation_launcher_fails_when_post_check_predicts_drift(
 
     observed = [json.loads(line) for line in log.read_text().splitlines()]
     post_checks = [command for command in observed if "--check" in command]
-    assert len(post_checks) == 2
+    assert len(post_checks) == 3
     assert all("--diff" in command for command in post_checks)
-    for playbook in ("playbooks/rke2.yml", "playbooks/rke2-kube-vip.yml"):
+    for playbook in (
+        "playbooks/rke2.yml",
+        "playbooks/rke2-kube-vip.yml",
+        "playbooks/rke2-gitlab-runner.yml",
+    ):
         matching = [
             command
             for command in observed

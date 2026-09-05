@@ -21,6 +21,9 @@ GitLab or target-local filesystem transport.
 
 ### Changes
 
+- Add an optional RKE2-managed GitLab Runner with outside-Git token and CA
+  custody, constrained namespace RBAC, immutable images, agent-only placement,
+  and fixed operation smoke and post-check phases.
 - Verify fixed RKE2 bootstrap and deployment idempotence after smoke through
   non-mutating checks that fail when any applicable host predicts a change.
 - Retire the repository-built operational image in favor of the qualified

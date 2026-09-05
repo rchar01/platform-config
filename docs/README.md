@@ -54,6 +54,9 @@ and other secrets belong outside Git.
 - [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.
+- [RKE2 GitLab Runner Role](../roles/rke2_gitlab_runner/README.md): Install an
+  optional, namespace-scoped Kubernetes executor through the RKE2 Helm
+  Controller without putting Runner credentials in the static manifest.
 - [GitLab PKI Package Exchange](pki-gitlab-package.md): Integration guidance for
   schema-2 request/response payloads, target-local token custody, and the live
   GitLab rollout gate.

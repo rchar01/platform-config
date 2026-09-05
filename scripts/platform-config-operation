@@ -376,26 +376,33 @@ case "$operation" in
     run_playbook convergence-preflight playbooks/rke2-convergence-preflight.yml rke2_cluster
     run_playbook rke2-plan playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook kube-vip-plan playbooks/rke2-kube-vip.yml rke2_servers --check --diff
+    run_playbook rke2-gitlab-runner-plan playbooks/rke2-gitlab-runner.yml rke2_servers --check --diff
     ;;
   rke2-bootstrap)
     ping_group connectivity rke2_cluster
     run_playbook bootstrap-preflight playbooks/rke2-bootstrap-preflight.yml rke2_cluster
     run_playbook rke2-apply playbooks/rke2.yml rke2_cluster
     run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
+    run_playbook rke2-gitlab-runner-apply playbooks/rke2-gitlab-runner.yml rke2_servers
     run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
     run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    run_playbook rke2-gitlab-runner-smoke playbooks/rke2-gitlab-runner-smoke.yml rke2_servers
     run_playbook rke2-post-check playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook kube-vip-post-check playbooks/rke2-kube-vip.yml rke2_servers --check --diff
+    run_playbook rke2-gitlab-runner-post-check playbooks/rke2-gitlab-runner.yml rke2_servers --check --diff
     ;;
   rke2-deploy)
     run_playbook core-health playbooks/rke2-core-health.yml rke2_cluster
     run_playbook convergence-preflight playbooks/rke2-convergence-preflight.yml rke2_cluster
     run_playbook rke2-apply playbooks/rke2.yml rke2_cluster
     run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
+    run_playbook rke2-gitlab-runner-apply playbooks/rke2-gitlab-runner.yml rke2_servers
     run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
     run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
+    run_playbook rke2-gitlab-runner-smoke playbooks/rke2-gitlab-runner-smoke.yml rke2_servers
     run_playbook rke2-post-check playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook kube-vip-post-check playbooks/rke2-kube-vip.yml rke2_servers --check --diff
+    run_playbook rke2-gitlab-runner-post-check playbooks/rke2-gitlab-runner.yml rke2_servers --check --diff
     ;;
   openbao-status)
     ping_group connectivity openbao

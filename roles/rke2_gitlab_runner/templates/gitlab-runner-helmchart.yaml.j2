@@ -1,0 +1,129 @@
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: {{ rke2_gitlab_runner_release_name | to_json }}
+  namespace: kube-system
+spec:
+  chart: gitlab-runner
+  createNamespace: false
+  repo: https://charts.gitlab.io
+  targetNamespace: {{ rke2_gitlab_runner_namespace | to_json }}
+  version: {{ rke2_gitlab_runner_chart_version | to_json }}
+  valuesContent: |-
+    fullnameOverride: {{ rke2_gitlab_runner_release_name | to_json }}
+    gitlabUrl: {{ rke2_gitlab_runner_gitlab_url | to_json }}
+    certsSecretName: {{ rke2_gitlab_runner_ca_secret_name | to_json }}
+    unregisterRunners: false
+    concurrent: 1
+    checkInterval: 3
+    image:
+      registry: docker.io
+      image: gitlab/gitlab-runner
+      tag: {{ rke2_gitlab_runner_manager_image_tag | to_json }}
+    imagePullPolicy: Always
+    rbac:
+      create: true
+      clusterWideAccess: false
+      rules:
+        - apiGroups: [""]
+          resources: ["events"]
+          verbs: ["list", "watch"]
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["create", "delete", "get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["pods/attach", "pods/exec"]
+          verbs: ["create", "delete", "get", "patch"]
+        - apiGroups: [""]
+          resources: ["pods/log"]
+          verbs: ["get", "list"]
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["create", "delete", "get", "update"]
+        - apiGroups: [""]
+          resources: ["serviceaccounts"]
+          verbs: ["get"]
+        - apiGroups: [""]
+          resources: ["services"]
+          verbs: ["create", "get"]
+    serviceAccount:
+      create: true
+      name: {{ rke2_gitlab_runner_release_name | to_json }}
+    automountServiceAccountToken: true
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+      capabilities:
+        drop: ["ALL"]
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+    runners:
+      name: {{ rke2_gitlab_runner_name | to_json }}
+      secret: {{ rke2_gitlab_runner_token_secret_name | to_json }}
+      executor: kubernetes
+      jobNamespace: {{ rke2_gitlab_runner_namespace | to_json }}
+      config: |-
+        [[runners]]
+          name = {{ rke2_gitlab_runner_name | to_json }}
+          url = {{ rke2_gitlab_runner_gitlab_url | to_json }}
+          executor = "kubernetes"
+          [runners.kubernetes]
+            namespace = {{ rke2_gitlab_runner_namespace | to_json }}
+            image = {{ rke2_gitlab_runner_default_job_image | to_json }}
+            helper_image = {{ rke2_gitlab_runner_helper_image | to_json }}
+            service_account = {{ rke2_gitlab_runner_job_service_account | to_json }}
+            automount_service_account_token = false
+            privileged = false
+            allow_privilege_escalation = false
+            pull_policy = ["always"]
+            allowed_pull_policies = ["always"]
+            allowed_images = [{{ rke2_gitlab_runner_default_job_image | to_json }}]
+            allowed_services = [{{ rke2_gitlab_runner_default_job_image | to_json }}]
+            cap_drop = ["ALL"]
+            cpu_request = "100m"
+            cpu_limit = "1"
+            memory_request = "128Mi"
+            memory_limit = "512Mi"
+            ephemeral_storage_request = "256Mi"
+            ephemeral_storage_limit = "1Gi"
+            helper_cpu_request = "50m"
+            helper_cpu_limit = "500m"
+            helper_memory_request = "64Mi"
+            helper_memory_limit = "256Mi"
+            helper_ephemeral_storage_request = "128Mi"
+            helper_ephemeral_storage_limit = "512Mi"
+            service_cpu_request = "50m"
+            service_cpu_limit = "500m"
+            service_memory_request = "64Mi"
+            service_memory_limit = "256Mi"
+            service_ephemeral_storage_request = "128Mi"
+            service_ephemeral_storage_limit = "512Mi"
+            [runners.kubernetes.affinity]
+              [runners.kubernetes.affinity.node_affinity]
+                [runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution]
+                  [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms]]
+                    [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms.match_expressions]]
+                      key = "node-role.kubernetes.io/control-plane"
+                      operator = "DoesNotExist"
+    extraObjects:
+      - apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: {{ rke2_gitlab_runner_job_service_account | to_json }}
+          namespace: {{ rke2_gitlab_runner_namespace | to_json }}
+        automountServiceAccountToken: false

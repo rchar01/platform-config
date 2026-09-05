@@ -134,13 +134,14 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
         "convergence-preflight",
         "rke2-plan",
         "kube-vip-plan",
+        "rke2-gitlab-runner-plan",
     )
     for phase in phases:
         _append(events, *_phase(phase))
         if phase == "inventory":
             continue
         _append(events, _recap(phase, "server-a", changed=1 if phase == "rke2-plan" else 0))
-        if phase != "kube-vip-plan":
+        if not phase.startswith(("kube-vip-", "rke2-gitlab-runner-")):
             _append(events, _recap(phase, "agent-b", rescued=1 if phase == "core-health" else 0))
     _append(
         events,
@@ -170,6 +171,7 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
     assert "agent-b" in result.stdout
     assert "server-a" in result.stdout
     assert "kube-vip-plan" in result.stdout
+    assert "rke2-gitlab-runner-plan" in result.stdout
     assert "N/A" in result.stdout
     assert "Write RKE2 configuration: agent-b, server-a" in result.stdout
     assert "Observed failed tasks:\n  none" in result.stdout
@@ -182,6 +184,7 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
         ("rke2-post-check", "server-a"),
         ("rke2-post-check", "agent-b"),
         ("kube-vip-post-check", "server-a"),
+        ("rke2-gitlab-runner-post-check", "server-a"),
     ],
 )
 def test_summary_requires_post_checks_to_predict_no_changes(
@@ -202,10 +205,13 @@ def test_summary_requires_post_checks_to_predict_no_changes(
         "convergence-preflight",
         "rke2-apply",
         "kube-vip-apply",
+        "rke2-gitlab-runner-apply",
         "rke2-smoke",
         "kube-vip-smoke",
+        "rke2-gitlab-runner-smoke",
         "rke2-post-check",
         "kube-vip-post-check",
+        "rke2-gitlab-runner-post-check",
     )
     for phase in phases:
         _append(events, *_phase(phase))
@@ -213,7 +219,7 @@ def test_summary_requires_post_checks_to_predict_no_changes(
             phase == changed_phase and changed_host == "server-a"
         )
         _append(events, _recap(phase, "server-a", changed=int(server_changed)))
-        if not phase.startswith("kube-vip-"):
+        if not phase.startswith(("kube-vip-", "rke2-gitlab-runner-")):
             agent_changed = phase == "rke2-apply" or (
                 phase == changed_phase and changed_host == "agent-b"
             )
@@ -244,6 +250,11 @@ def test_summary_requires_post_checks_to_predict_no_changes(
     )
     assert any(
         line.split()[:4] == ["agent-b", "agent", "kube-vip-post-check", "N/A"]
+        for line in result.stdout.splitlines()
+    )
+    assert any(
+        line.split()[:4]
+        == ["agent-b", "agent", "rke2-gitlab-runner-post-check", "N/A"]
         for line in result.stdout.splitlines()
     )
 

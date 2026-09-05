@@ -11,6 +11,7 @@
 - import_playbook: monitoring.yml
 - import_playbook: rke2.yml
 - import_playbook: rke2-kube-vip.yml
+- import_playbook: rke2-gitlab-runner.yml
 - import_playbook: kong-ingress.yml
 - import_playbook: workload-lb.yml
 - import_playbook: bastion-host.yml

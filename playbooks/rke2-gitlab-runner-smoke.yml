@@ -1,0 +1,258 @@
+---
+- name: Smoke test RKE2 GitLab Runner from bootstrap server
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_gitlab_runner_smoke_bootstrap_host: "{{ (groups.get('rke2_servers', []) | first) | default('') }}"
+    rke2_gitlab_runner_smoke_is_bootstrap: "{{ inventory_hostname == rke2_gitlab_runner_smoke_bootstrap_host }}"
+    rke2_gitlab_runner_smoke_kubectl: /var/lib/rancher/rke2/bin/kubectl
+    rke2_gitlab_runner_smoke_kubeconfig: /etc/rancher/rke2/rke2.yaml
+    rke2_gitlab_runner_smoke_namespace: gitlab-runner
+    rke2_gitlab_runner_smoke_release_name: rke2-gitlab-runner
+    rke2_gitlab_runner_smoke_job_service_account: rke2-gitlab-runner-job
+    rke2_gitlab_runner_smoke_gitlab_host: >-
+      {{ rke2_gitlab_runner_gitlab_url
+         | regex_replace('^https://([^/:]+)(?::[0-9]+)?/?$', '\1') }}
+    rke2_gitlab_runner_smoke_expected_agents: >-
+      [{% for host in groups.get('rke2_agents', []) %}{{ hostvars[host].get('rke2_node_name', host) | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}]
+    rke2_gitlab_runner_smoke_expected_role_rules:
+      - apiGroups: [""]
+        resources: [events]
+        verbs: [list, watch]
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [create, delete, get, list, watch]
+      - apiGroups: [""]
+        resources: [pods/attach, pods/exec]
+        verbs: [create, delete, get, patch]
+      - apiGroups: [""]
+        resources: [pods/log]
+        verbs: [get, list]
+      - apiGroups: [""]
+        resources: [secrets]
+        verbs: [create, delete, get, update]
+      - apiGroups: [""]
+        resources: [serviceaccounts]
+        verbs: [get]
+      - apiGroups: [""]
+        resources: [services]
+        verbs: [create, get]
+  tasks:
+    - name: Assert RKE2 GitLab Runner smoke topology
+      ansible.builtin.assert:
+        that:
+          - groups.get('rke2_servers', []) | length > 0
+          - groups.get('rke2_agents', []) | length > 0
+        fail_msg: "RKE2 GitLab Runner smoke requires server and agent inventory groups."
+      when: rke2_gitlab_runner_enabled | bool
+
+    - name: Confirm RKE2 GitLab Runner HelmChart exists
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_smoke_kubeconfig }}"
+          - -n
+          - kube-system
+          - get
+          - helmchart
+          - "{{ rke2_gitlab_runner_smoke_release_name }}"
+          - -o=json
+      register: rke2_gitlab_runner_smoke_helmchart
+      retries: 30
+      delay: 5
+      until: rke2_gitlab_runner_smoke_helmchart.rc == 0
+      changed_when: false
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Wait for RKE2 GitLab Runner Deployment creation
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_smoke_namespace }}"
+          - get
+          - deployment
+          - "{{ rke2_gitlab_runner_smoke_release_name }}"
+          - -o=name
+      register: rke2_gitlab_runner_smoke_deployment_discovery
+      retries: 60
+      delay: 5
+      until: >-
+        rke2_gitlab_runner_smoke_deployment_discovery.stdout
+        == 'deployment.apps/' ~ rke2_gitlab_runner_smoke_release_name
+      changed_when: false
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Wait for RKE2 GitLab Runner Deployment rollout
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_smoke_namespace }}"
+          - rollout
+          - status
+          - deployment/{{ rke2_gitlab_runner_smoke_release_name }}
+          - --timeout=300s
+      changed_when: false
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Read RKE2 GitLab Runner namespace
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_smoke_kubeconfig }}"
+          - get
+          - namespace
+          - "{{ rke2_gitlab_runner_smoke_namespace }}"
+          - -o=json
+      register: rke2_gitlab_runner_smoke_namespace_result
+      changed_when: false
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Read namespaced RKE2 GitLab Runner resources
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_smoke_namespace }}"
+          - get
+          - "{{ item.kind }}"
+          - "{{ item.name }}"
+          - -o=json
+      loop:
+        - { key: deployment, kind: deployment, name: rke2-gitlab-runner }
+        - { key: role, kind: role, name: rke2-gitlab-runner }
+        - { key: rolebinding, kind: rolebinding, name: rke2-gitlab-runner }
+        - { key: manager_sa, kind: serviceaccount, name: rke2-gitlab-runner }
+        - { key: job_sa, kind: serviceaccount, name: rke2-gitlab-runner-job }
+        - { key: configmap, kind: configmap, name: rke2-gitlab-runner }
+        - { key: token_secret, kind: secret, name: rke2-gitlab-runner-token }
+        - { key: ca_secret, kind: secret, name: rke2-gitlab-runner-ca }
+      loop_control:
+        label: "{{ item.key }}"
+      register: rke2_gitlab_runner_smoke_resources
+      changed_when: false
+      no_log: true
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Index RKE2 GitLab Runner resources
+      ansible.builtin.set_fact:
+        rke2_gitlab_runner_smoke_objects: >-
+          {{ rke2_gitlab_runner_smoke_objects
+             | default({'namespace': rke2_gitlab_runner_smoke_namespace_result.stdout | from_json})
+             | combine({item.item.key: item.stdout | from_json}) }}
+      loop: "{{ rke2_gitlab_runner_smoke_resources.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      no_log: true
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Read RKE2 GitLab Runner manager pods
+      ansible.builtin.command:
+        argv:
+          - "{{ rke2_gitlab_runner_smoke_kubectl }}"
+          - --kubeconfig
+          - "{{ rke2_gitlab_runner_smoke_kubeconfig }}"
+          - -n
+          - "{{ rke2_gitlab_runner_smoke_namespace }}"
+          - get
+          - pods
+          - -l
+          - app={{ rke2_gitlab_runner_smoke_release_name }}
+          - -o=json
+      register: rke2_gitlab_runner_smoke_pods_result
+      changed_when: false
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
+    - name: Assert RKE2 GitLab Runner security contract
+      vars:
+        rke2_gitlab_runner_smoke_namespace_object: "{{ rke2_gitlab_runner_smoke_objects.namespace }}"
+        rke2_gitlab_runner_smoke_deployment: "{{ rke2_gitlab_runner_smoke_objects.deployment }}"
+        rke2_gitlab_runner_smoke_role: "{{ rke2_gitlab_runner_smoke_objects.role }}"
+        rke2_gitlab_runner_smoke_rolebinding: "{{ rke2_gitlab_runner_smoke_objects.rolebinding }}"
+        rke2_gitlab_runner_smoke_manager_sa: "{{ rke2_gitlab_runner_smoke_objects.manager_sa }}"
+        rke2_gitlab_runner_smoke_job_sa: "{{ rke2_gitlab_runner_smoke_objects.job_sa }}"
+        rke2_gitlab_runner_smoke_config: "{{ rke2_gitlab_runner_smoke_objects.configmap.data['config.template.toml'] }}"
+        rke2_gitlab_runner_smoke_token_secret: "{{ rke2_gitlab_runner_smoke_objects.token_secret }}"
+        rke2_gitlab_runner_smoke_ca_secret: "{{ rke2_gitlab_runner_smoke_objects.ca_secret }}"
+        rke2_gitlab_runner_smoke_pods: "{{ (rke2_gitlab_runner_smoke_pods_result.stdout | from_json).items }}"
+        rke2_gitlab_runner_smoke_helmchart_object: >-
+          {{ rke2_gitlab_runner_smoke_helmchart.stdout | from_json }}
+        rke2_gitlab_runner_smoke_projected_secret: >-
+          {{
+            rke2_gitlab_runner_smoke_deployment.spec.template.spec.volumes
+            | selectattr('name', 'equalto', 'projected-secrets') | first
+          }}
+        rke2_gitlab_runner_smoke_ca_volume: >-
+          {{
+            rke2_gitlab_runner_smoke_deployment.spec.template.spec.volumes
+            | selectattr('name', 'equalto', 'custom-certs') | first
+          }}
+        rke2_gitlab_runner_smoke_affinity_expression: >-
+          {{
+            rke2_gitlab_runner_smoke_deployment.spec.template.spec.affinity.nodeAffinity
+            .requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0]
+          }}
+      ansible.builtin.assert:
+        that:
+          - rke2_gitlab_runner_smoke_namespace_object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'baseline'
+          - rke2_gitlab_runner_smoke_helmchart_object.spec.chart == 'gitlab-runner'
+          - rke2_gitlab_runner_smoke_helmchart_object.spec.repo == 'https://charts.gitlab.io'
+          - rke2_gitlab_runner_smoke_helmchart_object.spec.targetNamespace == rke2_gitlab_runner_smoke_namespace
+          - rke2_gitlab_runner_smoke_helmchart_object.spec.version == rke2_gitlab_runner_chart_version
+          - rke2_gitlab_runner_smoke_deployment.spec.template.spec.serviceAccountName == rke2_gitlab_runner_smoke_release_name
+          - rke2_gitlab_runner_smoke_affinity_expression.key == 'node-role.kubernetes.io/control-plane'
+          - rke2_gitlab_runner_smoke_affinity_expression.operator == 'DoesNotExist'
+          - rke2_gitlab_runner_smoke_deployment.spec.template.spec.containers[0].image == rke2_gitlab_runner_manager_image
+          - rke2_gitlab_runner_smoke_projected_secret.projected.sources[0].secret.name == 'rke2-gitlab-runner-token'
+          - rke2_gitlab_runner_smoke_ca_volume.secret.secretName == 'rke2-gitlab-runner-ca'
+          - not rke2_gitlab_runner_smoke_deployment.spec.template.spec.containers[0].securityContext.privileged
+          - not rke2_gitlab_runner_smoke_deployment.spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          - rke2_gitlab_runner_smoke_manager_sa.automountServiceAccountToken | default(true) | bool
+          - not (rke2_gitlab_runner_smoke_job_sa.automountServiceAccountToken | bool)
+          - rke2_gitlab_runner_smoke_rolebinding.roleRef.kind == 'Role'
+          - rke2_gitlab_runner_smoke_rolebinding.roleRef.name == rke2_gitlab_runner_smoke_release_name
+          - rke2_gitlab_runner_smoke_rolebinding.subjects[0].name == rke2_gitlab_runner_smoke_release_name
+          - rke2_gitlab_runner_smoke_role.rules == rke2_gitlab_runner_smoke_expected_role_rules
+          - rke2_gitlab_runner_helper_image in rke2_gitlab_runner_smoke_config
+          - rke2_gitlab_runner_default_job_image in rke2_gitlab_runner_smoke_config
+          - ('name = ' ~ (rke2_gitlab_runner_name | to_json)) in rke2_gitlab_runner_smoke_config
+          - ('url = ' ~ (rke2_gitlab_runner_gitlab_url | to_json)) in rke2_gitlab_runner_smoke_config
+          - ('service_account = ' ~ (rke2_gitlab_runner_smoke_job_service_account | to_json)) in rke2_gitlab_runner_smoke_config
+          - "'automount_service_account_token = false' in rke2_gitlab_runner_smoke_config"
+          - "'privileged = false' in rke2_gitlab_runner_smoke_config"
+          - "'node-role.kubernetes.io/control-plane' in rke2_gitlab_runner_smoke_config"
+          - rke2_gitlab_runner_smoke_token_secret.data.keys() | sort == ['runner-registration-token', 'runner-token']
+          - >-
+            rke2_gitlab_runner_smoke_ca_secret.data.keys() | list
+            == [rke2_gitlab_runner_smoke_gitlab_host ~ '.crt']
+          - rke2_gitlab_runner_smoke_pods | length == 1
+          - rke2_gitlab_runner_smoke_pods[0].spec.nodeName in rke2_gitlab_runner_smoke_expected_agents
+        fail_msg: "RKE2 GitLab Runner resources do not match the required security or placement contract."
+      no_log: true
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool

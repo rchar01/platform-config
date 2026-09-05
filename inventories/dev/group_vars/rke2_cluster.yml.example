@@ -40,6 +40,17 @@ rke2_kube_vip_env:
   lb_port: "6443"
   vip_interface: "{{ rke2_kube_vip_interface }}"
 
+# Optional in-cluster Runner. Enabling it requires a pre-created project Runner
+# token and reviewed GitLab CA in the outside-Git configuration tree.
+rke2_gitlab_runner_enabled: false
+rke2_gitlab_runner_gitlab_url: https://gitlab.dev.example.test
+rke2_gitlab_runner_token_src: >-
+  {{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') }}/rke2/dev/gitlab-runner-token
+rke2_gitlab_runner_tls_ca_cert_src: >-
+  {{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt
+rke2_gitlab_runner_tls_ca_cert_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+rke2_gitlab_runner_name: dev-rke2-runner-01
+
 rke2_registry_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
 rke2_registry_mirrors: "{{ {
   platform_registry_hostname: {

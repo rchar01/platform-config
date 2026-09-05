@@ -20,6 +20,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- Added a disabled-by-default RKE2 GitLab Runner with external Secret custody,
+  namespace-scoped non-wildcard RBAC, an API-token-free job ServiceAccount,
+  digest-pinned images, and control-plane scheduling exclusion.
 - Require a literal one-host Ansible limit before forced GitLab Runner
   registration can read its token or change managed state.
 - Added a required SHA-256 binding and descriptor-pinned controller source for
@@ -35,6 +38,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Added fixed RKE2 GitLab Runner plan, apply, smoke, and zero-drift post-check
+  phases after kube-vip.
 - Added fail-closed post-smoke RKE2 and kube-vip check-mode phases to both fixed
   mutating routes, requiring every applicable host to predict zero changes.
 - Retired the repository-built operational image and its Ansible Core 2.20 pin

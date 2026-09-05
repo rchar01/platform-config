@@ -12,9 +12,9 @@ path, and one absolute controller-variable file.
 | Operation | Commands |
 | --- | --- |
 | `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node preflight, then fixed base RKE2 check mode with diff. |
-| `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2 and kube-vip check mode with diff. |
-| `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip convergence, base and kube-vip smoke, then post-smoke base and kube-vip check mode. |
-| `rke2-deploy` | Local inventory resolution for summary initialization, core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip convergence, full base and kube-vip smoke, then post-smoke base and kube-vip check mode. |
+| `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2, kube-vip, and GitLab Runner check mode with diff. |
+| `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
+| `rke2-deploy` | Local inventory resolution for summary initialization, core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
 | `openbao-restart-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Predicted changes fail the plan. |
 | `openbao-converge-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Reviewed same-version configuration changes are valid plan output. |
@@ -26,11 +26,13 @@ or arbitrary Ansible arguments. CI generates the controller-variable file for
 strict per-host SSH identities and clears password-based SSH and become values
 without disabling inventory-authorized passwordless privilege escalation.
 
-Each mutating RKE2 route performs exactly one live base apply and one live
-kube-vip apply. After both smoke suites pass, it runs both playbooks with
-`--check --diff`. Every applicable post-check host must report `changed=0`,
-`failed=0`, and `unreachable=0`; otherwise the structured summary and operation
-fail. This is predictive post-apply verification, not a second live apply.
+Each mutating RKE2 route performs exactly one live base apply and one live apply
+for each enabled add-on. After all smoke suites pass, it runs the base, kube-vip,
+and GitLab Runner playbooks with `--check --diff`. Every applicable post-check
+host must report `changed=0`, `failed=0`, and `unreachable=0`; otherwise the
+structured summary and operation fail. This is predictive post-apply
+verification, not a second live apply. A disabled GitLab Runner role skips its
+management without uninstalling an existing release.
 
 Every fixed launcher operation ends with a deterministic plain-text summary on
 both success and failure. It lists only inventory hostnames selected for that
@@ -39,9 +41,10 @@ per-phase `PASS`, `FAIL`, or `N/A` status, recap counts, and the overall result.
 An RKE2 host receives role `N/A` only when selected inventory membership cannot
 establish exactly one of `server` or `agent`; that unresolved role makes the
 summary and otherwise successful operation fail closed.
-Ordinary plan and apply phases may report changes. The `rke2-post-check` and
-`kube-vip-post-check` phases fail when they predict a change; kube-vip remains
-server-only and renders `N/A` for agents.
+Ordinary plan and apply phases may report changes. The `rke2-post-check`,
+`kube-vip-post-check`, and `rke2-gitlab-runner-post-check` phases fail when they
+predict a change. Both add-ons remain server-orchestrated and render `N/A` for
+agents.
 The `openbao-restart-check` and `openbao-post-check` phases likewise require
 `changed=0`; the `openbao-converge-check` phase permits reviewed changes. Every
 OpenBao phase applies to exactly three OpenBao hosts, so none renders `N/A`.
@@ -70,8 +73,8 @@ this internal handoff is not an operator argument.
 
 For attended qualification before CI adoption, follow the complete manual
 fresh-install sequence in the [operator runbook](operator-runbook.md). It uses
-the same preflight, base, kube-vip, and smoke playbooks with explicit inventory
-group limits and requires second-apply idempotency.
+the same preflight, base, enabled add-on, and smoke playbooks with explicit
+inventory group limits and requires second-apply idempotency.
 That attended procedure remains the stronger manual release-qualification path;
 fixed GitLab deployments use the non-mutating post-smoke checks described above.
 
@@ -95,9 +98,10 @@ not resume a partially installed node. The convergence plan and deployment
 require core cluster health without requiring the desired Traefik or kube-vip
 state, so those managed resources can be repaired. RKE2 convergence runs servers
 before agents with `serial: 1` and `any_errors_fatal: true`, then reconciles
-kube-vip and verifies both layers. Each enabled, started node must recover its local
-service and Kubernetes Node `Ready` condition before the next serial host can
-start. Server nodes must also recover the supervisor port and local API
+kube-vip and the optional GitLab Runner before verifying all enabled layers.
+Each enabled, started node must recover its local service and Kubernetes Node
+`Ready` condition before the next serial host can start. Server nodes must also
+recover the supervisor port and local API
 `/readyz` response. RKE2-specific firewall policy is reconciled before the API
 and Node readiness gates. This deployment path is for an existing healthy
 cluster; use `rke2-bootstrap` for explicitly recreated clean nodes.
@@ -179,6 +183,13 @@ uses a node IP with certificate validation disabled and proves only that the
 transport endpoint returns the expected response. It is not authenticated TLS
 identity evidence and must not be used as evidence for the strict GitLab,
 registry, OpenBao, or Kubernetes API trust paths.
+
+`playbooks/rke2-gitlab-runner-smoke.yml` verifies the live manager image,
+namespace policy, namespaced non-wildcard RBAC, separate ServiceAccounts,
+rendered job constraints, Secret key names, and manager placement on an
+inventory-declared agent. It does not inspect Secret values, prove GitLab-side
+project scope or protection settings, or execute a canary job. Those remain
+attended rollout checks.
 
 Operational jobs must use an immutable `platform-config` commit, an immutable
 component commit, a digest-pinned image, a protected private inventory revision,
