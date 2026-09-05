@@ -101,7 +101,7 @@
     - name: Assert RKE2 GitLab Runner token is canonical
       ansible.builtin.assert:
         that:
-          - rke2_gitlab_runner_token is match('^glrt-[A-Za-z0-9_-]+$')
+          - rke2_gitlab_runner_token is match('^glrt-[A-Za-z0-9_.-]+$')
         fail_msg: "RKE2 GitLab Runner token must be one canonical glrt- token without a trailing newline."
       no_log: true
 

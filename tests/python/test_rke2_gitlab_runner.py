@@ -158,6 +158,7 @@ def test_rke2_gitlab_runner_role_keeps_secret_operations_redacted(
     assert "rke2_gitlab_runner_enabled | bool" in tasks[1]["when"]
     assert "state: absent" not in source
     assert " delete\n" not in source
+    assert "match('^glrt-[A-Za-z0-9_.-]+$')" in source
     assert "'replace' if rke2_gitlab_runner_current_secret else 'create'" in source
     assert "resourceVersion" in source
     assert "Wait for replacement RKE2 GitLab Runner Helm install Job" in source

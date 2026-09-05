@@ -38,6 +38,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Accept GitLab 18.11 routable Runner authentication tokens containing period
+  separators.
 - Added fixed RKE2 GitLab Runner plan, apply, smoke, and zero-drift post-check
   phases after kube-vip.
 - Added fail-closed post-smoke RKE2 and kube-vip check-mode phases to both fixed
