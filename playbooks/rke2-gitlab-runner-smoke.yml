@@ -198,7 +198,7 @@
         rke2_gitlab_runner_smoke_config: "{{ rke2_gitlab_runner_smoke_objects.configmap.data['config.template.toml'] }}"
         rke2_gitlab_runner_smoke_token_secret: "{{ rke2_gitlab_runner_smoke_objects.token_secret }}"
         rke2_gitlab_runner_smoke_ca_secret: "{{ rke2_gitlab_runner_smoke_objects.ca_secret }}"
-        rke2_gitlab_runner_smoke_pods: "{{ (rke2_gitlab_runner_smoke_pods_result.stdout | from_json).items }}"
+        rke2_gitlab_runner_smoke_pods: "{{ (rke2_gitlab_runner_smoke_pods_result.stdout | from_json)['items'] }}"
         rke2_gitlab_runner_smoke_helmchart_object: >-
           {{ rke2_gitlab_runner_smoke_helmchart.stdout | from_json }}
         rke2_gitlab_runner_smoke_projected_secret: >-

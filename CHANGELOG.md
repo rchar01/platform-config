@@ -42,6 +42,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   separators.
 - Render the GitLab hostname as the CA Secret data key instead of preserving a
   literal Jinja expression.
+- Read the Runner pod list from the Kubernetes JSON `items` key without
+  resolving the Python dictionary method during smoke assertions.
 - Added fixed RKE2 GitLab Runner plan, apply, smoke, and zero-drift post-check
   phases after kube-vip.
 - Added fail-closed post-smoke RKE2 and kube-vip check-mode phases to both fixed
