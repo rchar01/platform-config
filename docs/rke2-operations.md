@@ -188,8 +188,10 @@ registry, OpenBao, or Kubernetes API trust paths.
 namespace policy, namespaced non-wildcard RBAC, separate ServiceAccounts,
 rendered job constraints, Secret key names, and manager placement on an
 inventory-declared agent. It does not inspect Secret values, prove GitLab-side
-project scope or protection settings, or execute a canary job. Those remain
-attended rollout checks.
+project or group scope and protection settings, or execute a canary job. Select
+GitLab-side availability, tags, protection, and untagged-job policy according to
+the consuming projects' trust policy; those settings are operator guidance
+outside this implementation's acceptance checks.
 
 Operational jobs must use an immutable `platform-config` commit, an immutable
 component commit, a digest-pinned image, a protected private inventory revision,

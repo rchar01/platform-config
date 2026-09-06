@@ -34,4 +34,6 @@ an existing release. Removal requires a separately reviewed maintenance design.
 Use `playbooks/rke2-gitlab-runner-smoke.yml` after convergence. Smoke validates
 the live image, namespace policy, RBAC, ServiceAccounts, configuration, and
 manager placement on an inventory-declared RKE2 agent. GitLab-side project
-scope, tags, protected status, and untagged-job policy remain operator-managed.
+or group scope, tags, protected status, and untagged-job policy remain
+operator-managed guidance. Neither the role nor smoke inspects or enforces those
+GitLab settings.
