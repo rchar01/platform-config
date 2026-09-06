@@ -265,8 +265,13 @@
                 labels:
                   app.kubernetes.io/managed-by: platform-config
               type: Opaque
-              data:
-                "{{ rke2_gitlab_runner_gitlab_host }}.crt": "{{ rke2_gitlab_runner_ca_content.content }}"
+              data: >-
+                {{
+                  dict([(
+                    rke2_gitlab_runner_gitlab_host ~ '.crt',
+                    rke2_gitlab_runner_ca_content.content
+                  )])
+                }}
       no_log: true
 
     - name: Read existing RKE2 GitLab Runner Secrets

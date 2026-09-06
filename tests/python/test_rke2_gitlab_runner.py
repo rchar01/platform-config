@@ -166,6 +166,16 @@ def test_rke2_gitlab_runner_role_keeps_secret_operations_redacted(
     assert "Wait for RKE2 GitLab Runner Deployment creation" in smoke_source
     assert "rke2_gitlab_runner_smoke_expected_role_rules" in smoke_source
     assert "rke2_gitlab_runner_smoke_gitlab_host ~ '.crt'" in smoke_source
+    define_secrets = next(
+        item
+        for item in tasks[1]["block"]
+        if item["name"] == "Define RKE2 GitLab Runner Secrets"
+    )
+    ca_data = define_secrets["ansible.builtin.set_fact"][
+        "rke2_gitlab_runner_desired_secrets"
+    ][1]["object"]["data"]
+    assert isinstance(ca_data, str)
+    assert "rke2_gitlab_runner_gitlab_host ~ '.crt'" in ca_data
     for name in (
         "Read RKE2 GitLab Runner token source",
         "Decode RKE2 GitLab Runner token",
