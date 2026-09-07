@@ -1,0 +1,270 @@
+---
+# This entry point observes staged state. It must never converge or repair it.
+- name: Invalidate previous Keepalived activation observation
+  ansible.builtin.set_fact:
+    keepalived_vip_activation_observation: {}
+
+- name: Validate staged Keepalived activation inputs
+  ansible.builtin.include_tasks: validate.yml
+
+- name: Require enabled Keepalived configuration and actual HAProxy tracking
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_enabled
+      - keepalived_vip_track_service == 'haproxy.service'
+
+- name: Require canonical Keepalived service paths
+  ansible.builtin.include_tasks: activation_paths.yml
+
+- name: Inspect exact staged Keepalived package identity
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}', "{{ keepalived_vip_package_name }}"]
+  register: keepalived_vip_activation_package
+  changed_when: false
+  check_mode: false
+
+- name: Inspect staged Keepalived package header checksum
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, '%{SHA256HEADER}', "{{ keepalived_vip_package_name }}"]
+  register: keepalived_vip_activation_package_digest
+  changed_when: false
+  check_mode: false
+
+- name: Verify staged Keepalived non-configuration package files without scripts
+  ansible.builtin.command:
+    argv: [rpm, -V, --noscripts, --noconfig, "{{ keepalived_vip_package_name }}"]
+  changed_when: false
+  check_mode: false
+
+- name: Inspect ownership of the selected Keepalived binary
+  ansible.builtin.command:
+    argv: [rpm, -qf, --qf, '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}', "{{ keepalived_vip_binary_path }}"]
+  register: keepalived_vip_activation_binary_package
+  changed_when: false
+  check_mode: false
+
+- name: Require exact staged Keepalived package evidence
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_activation_package.stdout == keepalived_vip_package_nevra
+      - keepalived_vip_activation_binary_package.stdout == keepalived_vip_package_nevra
+      - keepalived_vip_activation_package_digest.stdout is match('^[0-9a-f]{64}$')
+    fail_msg: Keepalived activation requires the exact package and its SHA-256 header identity.
+
+- name: Inspect package ownership of the native Keepalived unit
+  ansible.builtin.command:
+    argv: [rpm, -qf, --qf, '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}', /usr/lib/systemd/system/keepalived.service]
+  register: keepalived_vip_activation_unit_package
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    keepalived_vip_activation_unit_package.rc != 0
+    or keepalived_vip_activation_unit_package.stdout != keepalived_vip_package_nevra
+
+- name: Inspect staged Keepalived activation artifacts
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    checksum_algorithm: sha256
+  register: keepalived_vip_activation_artifacts
+  loop:
+    - path: "{{ keepalived_vip_config_path }}"
+      mode: '0600'
+      template: keepalived.conf.j2
+    - path: "{{ keepalived_vip_script_path }}"
+      mode: '0755'
+      template: check-service.sh.j2
+    - path: "{{ keepalived_vip_service_drop_in_path }}"
+      mode: '0644'
+      template: platform.conf.j2
+    - path: "{{ keepalived_vip_binary_path }}"
+      mode: '0755'
+    - path: /usr/lib/systemd/system/keepalived.service
+      mode: '0644'
+    - path: /etc/sysconfig/keepalived
+      mode: '0644'
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Require exact staged Keepalived artifact metadata and current rendered content
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == item.item.mode
+      - item.stat.checksum is match('^[0-9a-f]{64}$')
+      - >-
+        item.item.template is not defined
+        or item.stat.checksum == (
+          lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.item.template)
+          | hash('sha256')
+        )
+    fail_msg: Keepalived staged artifact metadata or rendered content differs from current inventory.
+  loop: "{{ keepalived_vip_activation_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Inspect staged Keepalived managed firewall manifest
+  ansible.builtin.stat:
+    path: "{{ keepalived_vip_firewalld_manifest_path }}"
+    follow: false
+    checksum_algorithm: sha256
+  register: keepalived_vip_activation_firewall_stat
+  when: keepalived_vip_firewalld_manage
+
+- name: Bind the loaded Keepalived service to the inspected staged files
+  ansible.builtin.include_tasks: activation_systemd.yml
+
+- name: Require staged Keepalived managed firewall manifest metadata
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_activation_firewall_stat.stat.exists
+      - keepalived_vip_activation_firewall_stat.stat.isreg
+      - not keepalived_vip_activation_firewall_stat.stat.islnk
+      - keepalived_vip_activation_firewall_stat.stat.uid == 0
+      - keepalived_vip_activation_firewall_stat.stat.gid == 0
+      - keepalived_vip_activation_firewall_stat.stat.mode == '0644'
+      - keepalived_vip_activation_firewall_stat.stat.checksum is match('^[0-9a-f]{64}$')
+  when: keepalived_vip_firewalld_manage
+
+- name: Read staged Keepalived managed firewall manifest
+  ansible.builtin.slurp:
+    src: "{{ keepalived_vip_firewalld_manifest_path }}"
+  register: keepalived_vip_activation_firewall_manifest
+  when: keepalived_vip_firewalld_manage
+
+- name: Derive expected Keepalived peer firewall rules without changing policy
+  ansible.builtin.set_fact:
+    keepalived_vip_activation_firewall_rules: >-
+      {{ keepalived_vip_instances | map(attribute='peers') | flatten | unique | sort
+         | map('regex_replace', '^(.*)$', 'rule family="ipv4" source address="\1/32" protocol value="112" accept') | list }}
+
+- name: Require staged firewall manifest equality with current inventory
+  ansible.builtin.assert:
+    that:
+      - >-
+        (keepalived_vip_activation_firewall_manifest.content | b64decode | from_yaml)
+        == {'rich_rules': keepalived_vip_activation_firewall_rules}
+  when: keepalived_vip_firewalld_manage
+
+- name: Validate staged Keepalived configuration natively
+  ansible.builtin.command:
+    argv: ["{{ keepalived_vip_binary_path }}", -t, -f, "{{ keepalived_vip_config_path }}"]
+  changed_when: false
+  check_mode: false
+
+- name: Validate staged Keepalived script syntax
+  ansible.builtin.command:
+    argv: [/usr/bin/bash, -n, "{{ keepalived_vip_script_path }}"]
+  changed_when: false
+  check_mode: false
+
+- name: Check staged Keepalived readiness as the configured script identity
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ keepalived_vip_script_user }}"
+      - -g
+      - "{{ keepalived_vip_script_group }}"
+      - --
+      - "{{ keepalived_vip_script_path }}"
+  changed_when: false
+  check_mode: false
+
+- name: Observe Keepalived activation service states
+  ansible.builtin.command:
+    argv: [systemctl, "{{ item.operation }}", "{{ item.service }}"]
+  register: keepalived_vip_activation_services
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    keepalived_vip_activation_services.rc != item.rc
+    or keepalived_vip_activation_services.stdout != item.expected
+  loop: >-
+    {{ [
+      {'service': 'haproxy.service', 'operation': 'is-active', 'expected': 'active', 'rc': 0},
+      {'service': 'haproxy.service', 'operation': 'is-enabled', 'expected': 'enabled', 'rc': 0},
+      {'service': keepalived_vip_service_name, 'operation': 'is-active', 'expected': 'inactive', 'rc': 3},
+      {'service': keepalived_vip_service_name, 'operation': 'is-enabled', 'expected': 'disabled', 'rc': 1}
+    ] + ([{'service': 'firewalld.service', 'operation': 'is-active', 'expected': 'active', 'rc': 0}]
+         if keepalived_vip_firewalld_manage else []) }}
+
+- name: Verify staged Keepalived peer rules in runtime and permanent firewall policy
+  ansible.builtin.command:
+    argv: "{{ ['firewall-cmd'] + item.1 + ['--query-rich-rule=' ~ item.0] }}"
+  loop: "{{ keepalived_vip_activation_firewall_rules | product([[], ['--permanent']]) | list }}"
+  changed_when: false
+  check_mode: false
+  when: keepalived_vip_firewalld_manage
+
+- name: Observe Keepalived interface state and source addresses
+  ansible.builtin.command:
+    argv: [ip, -j, -4, address, show, dev, "{{ item.interface }}"]
+  register: keepalived_vip_activation_interfaces
+  changed_when: false
+  check_mode: false
+  loop: "{{ keepalived_vip_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Require up Keepalived interfaces with exact source addresses
+  ansible.builtin.assert:
+    that:
+      - item.stdout | from_json | length == 1
+      - (item.stdout | from_json)[0].ifname == item.item.interface
+      - "'UP' in (item.stdout | from_json)[0].flags"
+      - item.item.source_address in ((item.stdout | from_json)[0].addr_info | map(attribute='local') | list)
+    fail_msg: Keepalived activation requires an up interface with its exact configured source address.
+  loop: "{{ keepalived_vip_activation_interfaces.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Observe Keepalived VIP routes from the configured source
+  ansible.builtin.command:
+    argv: [ip, -j, -4, route, get, "{{ item.vip.split('/')[0] }}", from, "{{ item.source_address }}"]
+  register: keepalived_vip_activation_routes
+  changed_when: false
+  check_mode: false
+  loop: "{{ keepalived_vip_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Require Keepalived VIP routes through the configured interfaces
+  ansible.builtin.assert:
+    that:
+      - item.stdout | from_json | length == 1
+      - (item.stdout | from_json)[0].dev == item.item.interface
+    fail_msg: Keepalived activation requires a VIP route through its configured interface.
+  loop: "{{ keepalived_vip_activation_routes.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Verify all local Keepalived VIPs are absent
+  ansible.builtin.include_tasks: activation_vip_absence.yml
+
+- name: Publish verified staged Keepalived activation observation
+  ansible.builtin.set_fact:
+    keepalived_vip_activation_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      instances: "{{ keepalived_vip_instances }}"
+      cluster_members: "{{ keepalived_vip_cluster_members }}"
+      service_name: "{{ keepalived_vip_service_name }}"
+      config_path: "{{ keepalived_vip_config_path }}"
+      script_path: "{{ keepalived_vip_script_path }}"
+      drop_in_path: "{{ keepalived_vip_service_drop_in_path }}"
+      binary_path: "{{ keepalived_vip_binary_path }}"
+      package_nevra: "{{ keepalived_vip_activation_package.stdout }}"
+      package_checksum: "{{ keepalived_vip_activation_package_digest.stdout }}"
+      config_checksum: "{{ keepalived_vip_activation_artifacts.results[0].stat.checksum }}"
+      script_checksum: "{{ keepalived_vip_activation_artifacts.results[1].stat.checksum }}"
+      drop_in_checksum: "{{ keepalived_vip_activation_artifacts.results[2].stat.checksum }}"
+      binary_checksum: "{{ keepalived_vip_activation_artifacts.results[3].stat.checksum }}"
+      unit_checksum: "{{ keepalived_vip_activation_artifacts.results[4].stat.checksum }}"
+      sysconfig_checksum: "{{ keepalived_vip_activation_artifacts.results[5].stat.checksum }}"
+      systemd_properties: "{{ keepalived_vip_activation_systemd_properties.results | map(attribute='stdout') | list }}"
+      firewalld_manage: "{{ keepalived_vip_firewalld_manage }}"
+      firewalld_manifest_checksum: "{{ keepalived_vip_activation_firewall_stat.stat.checksum | default('unmanaged') }}"

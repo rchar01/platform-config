@@ -314,7 +314,7 @@ def test_role_runs_read_only_validation_in_check_mode(repo_root: Path) -> None:
     assert playbook[0]["roles"] == ["rocky_repository_policy"]
 
 
-def test_every_package_consuming_role_depends_on_policy(repo_root: Path) -> None:
+def test_every_package_consuming_role_requires_policy(repo_root: Path) -> None:
     role_root = repo_root / "roles"
     consumers = set()
     for task_file in role_root.glob("*/tasks/**/*.yml"):
@@ -323,6 +323,22 @@ def test_every_package_consuming_role_depends_on_policy(repo_root: Path) -> None
             consumers.add(task_file.relative_to(role_root).parts[0])
 
     for role_name in sorted(consumers):
+        if role_name in {"keepalived_vip", "openbao_haproxy"}:
+            # Read-only entry points cannot execute the policy's temporary writes.
+            # Normal convergence must still enforce it before every package task.
+            main = role_root / role_name / "tasks/main.yml"
+            tasks = next(task["block"] for task in yaml.safe_load(main.read_text()) if "block" in task)
+            policy_index = next(index for index, task in enumerate(tasks)
+                                if task.get("ansible.builtin.include_role", {}).get("name")
+                                == "rocky_repository_policy")
+            assert "when" not in tasks[policy_index]
+            for task_file in (role_root / role_name / "tasks").glob("**/*.yml"):
+                if any(module in task_file.read_text() for module in PACKAGE_MODULES):
+                    assert task_file == main
+            package_indices = [index for index, task in enumerate(tasks)
+                               if any(module in task for module in PACKAGE_MODULES)]
+            assert package_indices and all(index > policy_index for index in package_indices)
+            continue
         metadata_path = role_root / role_name / "meta/main.yml"
         assert metadata_path.is_file(), role_name
         metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))

@@ -1,0 +1,37 @@
+---
+all:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    keepalived_vip_enabled: true
+    keepalived_vip_service_enabled: true
+    keepalived_vip_service_state: started
+    keepalived_vip_firewalld_manage: false
+    keepalived_vip_service_name: keepalived.service
+    keepalived_vip_advert_interval: 1
+    keepalived_vip_track_service: haproxy.service
+    keepalived_vip_track_ports: [8200]
+    keepalived_vip_instances:
+      - vip: 192.0.2.200/24
+        interface: eth0
+    keepalived_vip_cluster_members:
+      - name: bao-1
+      - name: bao-2
+      - name: bao-3
+    openbao_service_vip: 192.0.2.200
+    openbao_service_dns: bao.example.invalid
+    openbao_client_port: 8200
+    openbao_status_request_timeout: 7
+    openbao_cluster_members:
+      - {name: bao-1, address: 192.0.2.11}
+      - {name: bao-2, address: 192.0.2.12}
+      - {name: bao-3, address: 192.0.2.13}
+  children:
+    openbao:
+      hosts:
+        bao-1:
+        bao-2:
+        bao-3:
+    unrelated:
+      hosts:
+        other:

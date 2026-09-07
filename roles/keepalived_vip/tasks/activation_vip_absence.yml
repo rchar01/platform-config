@@ -1,0 +1,31 @@
+---
+- name: Require explicit VIPs for absence verification
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_instances | length > 0
+      - keepalived_vip_instances | selectattr('vip', 'defined') | length == keepalived_vip_instances | length
+
+- name: Read IPv4 addresses on ALL local interfaces
+  ansible.builtin.command:
+    argv: [ip, -j, -4, address, show]
+  register: keepalived_vip_activation_local_addresses
+  changed_when: false
+  check_mode: false
+
+- name: Require Keepalived VIP absence on ALL local interfaces
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_activation_local_addresses.rc == 0
+      - keepalived_vip_activation_local_addresses.stdout | from_json is sequence
+      - keepalived_vip_activation_local_addresses.stdout | from_json | length > 0
+      - item.vip is match('^[0-9]{1,3}([.][0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+      - item.vip.split('/')[0].split('.') | map('int') | select('gt', 255) | length == 0
+      - >-
+        (item.vip.split('/')[0].split('.') | map('int') | map('string') | join('.')) not in (
+          keepalived_vip_activation_local_addresses.stdout | from_json
+          | map(attribute='addr_info') | flatten | map(attribute='local') | list
+        )
+    fail_msg: Keepalived activation requires VIP absence on ALL local interfaces.
+  loop: "{{ keepalived_vip_instances }}"
+  loop_control:
+    label: "{{ item.vip }}"

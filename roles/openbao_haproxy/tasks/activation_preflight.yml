@@ -1,6 +1,27 @@
 ---
+- name: Reset OpenBao HAProxy activation firewall dependency readiness
+  ansible.builtin.set_fact:
+    firewalld_dependencies_ready: false
+
 - name: Validate staged OpenBao HAProxy activation inputs
   ansible.builtin.include_tasks: validate.yml
+
+- name: Verify OpenBao HAProxy activation firewalld Python bindings
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - import firewall
+  register: openbao_haproxy_activation_firewall_import
+  changed_when: false
+  check_mode: false
+  when: openbao_haproxy_firewalld_manage | bool
+
+- name: Publish OpenBao HAProxy activation firewall dependency readiness
+  ansible.builtin.set_fact:
+    firewalld_dependencies_ready: >-
+      {{ openbao_haproxy_activation_firewall_import.rc | default(1) == 0 }}
+  when: openbao_haproxy_firewalld_manage | bool
 
 - name: Inspect staged OpenBao HAProxy activation artifacts
   ansible.builtin.stat:

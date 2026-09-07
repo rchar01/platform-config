@@ -2,6 +2,7 @@
 # Keep the staging gate false until storage, PKI, network, package, and source
 # policy inputs satisfy every role assertion. Staging owns configuration while
 # all three services remain disabled and stopped.
+# Never use ordinary openbao.yml staging on an active or initialized cluster.
 openbao_orchestration_ready: false
 openbao_enabled: false
 openbao_service_enabled: false
@@ -21,6 +22,10 @@ openbao_haproxy_package_nevra: ""
 openbao_haproxy_service_enabled: false
 openbao_haproxy_service_state: stopped
 openbao_haproxy_activation_ready: false
+# Separate per-activation approval after network/VRRP/anti-spoofing/DAD review.
+# After success, record Keepalived enabled/started below in private desired state
+# and reset this gate to false; do not rerun ordinary staging.
+openbao_keepalived_activation_ready: false
 openbao_haproxy_client_allowed_sources: []
 openbao_haproxy_stats_allowed_sources:
   - 127.0.0.1/32
@@ -112,6 +117,10 @@ pki_host_local_certificate_service_config_path: /etc/openbao/listener.hcl
 pki_host_local_certificate_openbao_node_dns: "{{ openbao_node_dns }}"
 pki_host_local_certificate_openbao_node_address: "{{ openbao_node_address }}"
 
+# Standalone dev acceptance does not require monitoring or these observers;
+# production monitoring remains required. Acceptance traffic only until named
+# administrator access, local audit rotation, and recovery gates pass and normal
+# onboarding is separately authorized.
 # Fresh OpenBao hosts can stage the observer roles after the monitoring VIP,
 # authenticated endpoints, remote-write receiver, and outside-Git identities
 # exist. Keep activation false for the first apply. The observer playbook derives

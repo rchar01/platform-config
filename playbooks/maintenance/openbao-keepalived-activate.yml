@@ -1,0 +1,338 @@
+---
+- name: Approve and activate the exact staged OpenBao VIP
+  hosts: openbao
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: true
+  tasks:
+    # Repeat the same read-only gates after approval, without role reconvergence.
+    - &openbao_keepalived_preflight
+      name: Qualify exact OpenBao Keepalived activation candidates
+      block:
+        - name: Require exact explicit OpenBao Keepalived activation selection
+          ansible.builtin.assert:
+            that:
+              - groups.get('openbao', []) | length == 3
+              - ansible_limit is defined
+              - ansible_limit | default('') | length > 0
+              - >-
+                query('ansible.builtin.inventory_hostnames', ansible_limit) | sort
+                == groups.get('openbao', []) | sort
+              - ansible_play_hosts_all | sort == groups.get('openbao', []) | sort
+              - not ansible_check_mode
+              - openbao_keepalived_activation_ready | default(false) is boolean
+              - openbao_keepalived_activation_ready | default(false)
+              - openbao_haproxy_service_enabled | default(false) is boolean
+              - openbao_haproxy_service_enabled | default(false)
+              - openbao_haproxy_service_state | default('stopped') == 'started'
+              - keepalived_vip_service_enabled | default(false) is boolean
+              - not keepalived_vip_service_enabled | default(false)
+              - keepalived_vip_service_state | default('stopped') == 'stopped'
+            fail_msg: >-
+              OpenBao Keepalived activation requires explicit boolean readiness,
+              normal apply, exactly all three hosts, desired enabled/started
+              HAProxy, and desired disabled/stopped Keepalived on every host.
+
+        - name: Gather current OpenBao activation host facts
+          ansible.builtin.setup:
+
+        - name: Inspect exact active OpenBao lifecycle
+          ansible.builtin.include_role:
+            name: openbao
+            tasks_from: active_preflight.yml
+
+        - name: Inspect exact staged OpenBao HAProxy evidence
+          ansible.builtin.include_role:
+            name: openbao_haproxy
+            tasks_from: activation_preflight.yml
+
+        - name: Inspect exact staged Keepalived activation evidence
+          ansible.builtin.include_role:
+            name: keepalived_vip
+            tasks_from: activation_preflight.yml
+
+        - name: Inspect current OpenBao edge services
+          ansible.builtin.service_facts:
+
+        - name: Require actual active HAProxy and inactive Keepalived
+          ansible.builtin.assert:
+            that:
+              - >-
+                ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('state', '')
+                == 'running'
+              - >-
+                ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', '')
+                == 'enabled'
+              - >-
+                ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', '')
+                == 'stopped'
+              - >-
+                ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('status', '')
+                == 'disabled'
+            fail_msg: Activation requires actual enabled/running HAProxy and disabled/stopped Keepalived.
+
+        - name: Bind the single OpenBao VIP to each approved Keepalived instance
+          ansible.builtin.assert:
+            that:
+              - keepalived_vip_activation_observation.inventory_host == inventory_hostname
+              - openbao_haproxy_activation_observation.inventory_host == inventory_hostname
+              - keepalived_vip_activation_observation.instances | length == 1
+              - keepalived_vip_activation_observation.instances[0].vip.split('/')[0] == openbao_service_vip
+              - openbao_service_dns == hostvars[ansible_play_hosts_all[0]].openbao_service_dns
+              - openbao_client_port == hostvars[ansible_play_hosts_all[0]].openbao_client_port
+              - >-
+                keepalived_vip_activation_observation.cluster_members | map(attribute='name') | sort
+                == groups['openbao'] | sort
+              - keepalived_vip_track_service == openbao_haproxy_service_name | default('haproxy.service')
+              - openbao_client_port in keepalived_vip_track_ports
+            fail_msg: OpenBao activation requires one canonical VIP and its HAProxy tracking contract.
+
+        - name: Collect sorted OpenBao activation evidence
+          ansible.builtin.set_fact:
+            openbao_keepalived_cluster_evidence: >-
+              {{ groups['openbao'] | map('extract', hostvars, 'openbao_active_observation')
+                 | sort(attribute='inventory_host') | list }}
+            openbao_keepalived_haproxy_evidence: >-
+              {{ groups['openbao'] | map('extract', hostvars, 'openbao_haproxy_activation_observation')
+                 | sort(attribute='inventory_host') | list }}
+            openbao_keepalived_vip_evidence: >-
+              {{ groups['openbao'] | map('extract', hostvars, 'keepalived_vip_activation_observation')
+                 | sort(attribute='inventory_host') | list }}
+          run_once: true # noqa run-once[task]
+
+        - name: Require one exact marked OpenBao cluster and VIP
+          ansible.builtin.assert:
+            that:
+              - openbao_keepalived_cluster_evidence | map(attribute='inventory_host') | list == groups['openbao'] | sort
+              - openbao_keepalived_cluster_evidence | map(attribute='cluster_id') | unique | length == 1
+              - openbao_keepalived_cluster_evidence | map(attribute='cluster_signature') | unique | length == 1
+              - openbao_keepalived_cluster_evidence | map(attribute='node_id') | unique | length == 3
+              - openbao_keepalived_vip_evidence | map(attribute='instances.0.vip') | unique | length == 1
+              - openbao_keepalived_vip_evidence | map(attribute='instances.0.name') | unique | length == 1
+              - openbao_keepalived_vip_evidence | map(attribute='instances.0.priority') | unique | length == 3
+              - openbao_keepalived_vip_evidence | map(attribute='cluster_members') | map('to_json', sort_keys=true) | unique | length == 1
+            fail_msg: OpenBao activation requires one exact marked cluster and consistent three-member VIP topology.
+          run_once: true # noqa run-once[task]
+
+        - name: Qualify strict direct OpenBao runtime state
+          ansible.builtin.include_role:
+            name: openbao_status
+          run_once: true # noqa run-once[task]
+
+        - name: Require runtime OpenBao cluster identity to match active markers
+          ansible.builtin.assert:
+            that:
+              - >-
+                openbao_status_health_results.results | map(attribute='json.cluster_id') | unique | list
+                == [openbao_keepalived_cluster_evidence[0].cluster_id]
+            fail_msg: OpenBao runtime cluster identity does not match activation markers.
+          run_once: true # noqa run-once[task]
+
+        - name: Build exact OpenBao Keepalived approval evidence
+          ansible.builtin.set_fact:
+            openbao_keepalived_activation_evidence:
+              cluster: "{{ openbao_keepalived_cluster_evidence }}"
+              haproxy: "{{ openbao_keepalived_haproxy_evidence }}"
+              keepalived: "{{ openbao_keepalived_vip_evidence }}"
+              raft: "{{ openbao_status_raft_observations }}"
+              vip: "{{ openbao_service_vip }}"
+              service_dns: "{{ openbao_service_dns }}"
+              client_port: "{{ openbao_client_port }}"
+          run_once: true # noqa run-once[task]
+
+    - name: Preserve the exact proposed OpenBao Keepalived activation
+      ansible.builtin.set_fact:
+        openbao_keepalived_approved_evidence: "{{ openbao_keepalived_activation_evidence }}"
+        openbao_keepalived_preferred_host: >-
+          {{ (openbao_keepalived_vip_evidence | sort(attribute='instances.0.priority') | last).inventory_host }}
+        openbao_keepalived_expected_approval: >-
+          activate-openbao-keepalived|{{ groups['openbao'] | sort | join(',') }}|{{
+          openbao_service_vip }}|{{ openbao_keepalived_cluster_evidence[0].cluster_id }}|{{
+          openbao_keepalived_activation_evidence | to_json(sort_keys=true) | hash('sha256') }}
+      run_once: true # noqa run-once[task]
+
+    - name: Show exact OpenBao Keepalived activation evidence
+      ansible.builtin.debug:
+        var: openbao_keepalived_approved_evidence
+      run_once: true # noqa run-once[task]
+
+    - name: Prompt for exact OpenBao Keepalived activation approval
+      ansible.builtin.pause:
+        prompt: "Type exactly {{ openbao_keepalived_expected_approval }}"
+      register: openbao_keepalived_approval
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - name: Require exact OpenBao Keepalived activation approval
+      ansible.builtin.assert:
+        that:
+          - openbao_keepalived_approval.user_input == openbao_keepalived_expected_approval
+        fail_msg: Exact OpenBao Keepalived activation approval did not match.
+      run_once: true # noqa run-once[task]
+      no_log: true
+
+    - *openbao_keepalived_preflight
+
+    - name: Reject changed OpenBao Keepalived activation evidence
+      ansible.builtin.assert:
+        that:
+          - openbao_keepalived_activation_evidence == openbao_keepalived_approved_evidence
+        fail_msg: OpenBao Keepalived activation evidence changed after approval.
+      run_once: true # noqa run-once[task]
+
+    - name: Initialize all OpenBao Keepalived transaction results
+      ansible.builtin.set_fact:
+        openbao_keepalived_started: false
+        openbao_keepalived_qualified: false
+        keepalived_vip_activation_rollback_confirmed: false
+
+    - name: Activate and qualify OpenBao Keepalived with cluster-wide recovery
+      any_errors_fatal: false
+      ignore_unreachable: true
+      block:
+        - name: Activate backup-priority OpenBao Keepalived members first
+          when: inventory_hostname != openbao_keepalived_preferred_host
+          block:
+            - name: Start only the approved backup Keepalived service
+              ansible.builtin.systemd_service:
+                name: "{{ keepalived_vip_service_name | default('keepalived.service') }}"
+                enabled: true
+                state: started
+              register: openbao_keepalived_backup_start
+              ignore_unreachable: true
+
+            - name: Require reachable backup Keepalived activation
+              ansible.builtin.assert:
+                that:
+                  - not openbao_keepalived_backup_start.unreachable | default(false)
+                  - openbao_keepalived_backup_start is succeeded
+
+            - name: Record successful backup Keepalived activation
+              ansible.builtin.set_fact:
+                openbao_keepalived_started: true
+          rescue:
+            - name: Record failed backup Keepalived activation
+              ansible.builtin.set_fact:
+                openbao_keepalived_started: false
+
+        - name: Activate the preferred OpenBao Keepalived member after both backups
+          when:
+            - inventory_hostname == openbao_keepalived_preferred_host
+            - >-
+              groups['openbao'] | reject('equalto', openbao_keepalived_preferred_host)
+              | map('extract', hostvars, 'openbao_keepalived_started') | select('equalto', true) | length == 2
+          block:
+            - name: Start only the approved preferred Keepalived service
+              ansible.builtin.systemd_service:
+                name: "{{ keepalived_vip_service_name | default('keepalived.service') }}"
+                enabled: true
+                state: started
+              register: openbao_keepalived_preferred_start
+              ignore_unreachable: true
+
+            - name: Require reachable preferred Keepalived activation
+              ansible.builtin.assert:
+                that:
+                  - not openbao_keepalived_preferred_start.unreachable | default(false)
+                  - openbao_keepalived_preferred_start is succeeded
+
+            - name: Record successful preferred Keepalived activation
+              ansible.builtin.set_fact:
+                openbao_keepalived_started: true
+          rescue:
+            - name: Record failed preferred Keepalived activation
+              ansible.builtin.set_fact:
+                openbao_keepalived_started: false
+
+        - name: Qualify the activated OpenBao VIP on all three hosts
+          when: >-
+            groups['openbao'] | map('extract', hostvars, 'openbao_keepalived_started')
+            | select('equalto', true) | length == 3
+          block:
+            - name: Allow the initial hard-fault script and VRRP election to settle
+              ansible.builtin.pause:
+                seconds: >-
+                  {{ 4 * (keepalived_vip_advert_interval | default(1) | int)
+                     + ((keepalived_vip_script_rise | default(2) | int) + 1)
+                     * (keepalived_vip_script_interval | default(1) | int) + 2 }}
+
+            # Keep all hosts scheduled; the helper rejects unreachable probe results.
+            - name: Require stable unique VIP ownership and strict service-DNS TLS
+              ansible.builtin.include_tasks:
+                file: ../tasks/openbao-vip-status.yml
+                apply:
+                  ignore_unreachable: true
+
+            - name: Requalify strict direct OpenBao state after VIP activation
+              ansible.builtin.include_role:
+                name: openbao_status
+
+            - name: Require unchanged runtime OpenBao cluster after VIP activation
+              ansible.builtin.assert:
+                that:
+                  - >-
+                    openbao_status_health_results.results | map(attribute='json.cluster_id') | unique | list
+                    == [openbao_keepalived_approved_evidence.cluster[0].cluster_id]
+
+            - name: Record fully qualified OpenBao VIP activation
+              ansible.builtin.set_fact:
+                openbao_keepalived_qualified: true
+          rescue:
+            - name: Record failed OpenBao VIP qualification
+              ansible.builtin.set_fact:
+                openbao_keepalived_qualified: false
+
+    - name: Clear host errors before the independent all-host recovery play
+      ansible.builtin.meta: clear_host_errors
+
+- name: Recover or confirm OpenBao Keepalived activation on every selected host
+  hosts: openbao
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: false
+  tasks:
+    - name: Roll back every reachable Keepalived service after any failure
+      when: >-
+        groups['openbao'] | map('extract', hostvars, 'openbao_keepalived_qualified')
+        | select('equalto', true) | length != 3
+      block:
+        - name: Stop and disable Keepalived with verified VIP withdrawal
+          ansible.builtin.include_role:
+            name: keepalived_vip
+            tasks_from: activation_rollback.yml
+            apply:
+              ignore_unreachable: true
+      rescue:
+        - name: Preserve an unverified OpenBao Keepalived rollback
+          ansible.builtin.set_fact:
+            keepalived_vip_activation_rollback_confirmed: false
+
+    - name: Initialize unverified OpenBao Keepalived rollback report
+      ansible.builtin.set_fact:
+        openbao_keepalived_unverified_hosts: []
+      run_once: true # noqa run-once[task]
+
+    - name: Collect every unverified OpenBao Keepalived rollback
+      ansible.builtin.set_fact:
+        openbao_keepalived_unverified_hosts: "{{ openbao_keepalived_unverified_hosts + [item] }}"
+      loop: "{{ groups['openbao'] | sort }}"
+      when:
+        - >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_keepalived_qualified')
+          | select('equalto', true) | length != 3
+        - not hostvars[item].keepalived_vip_activation_rollback_confirmed | default(false)
+      run_once: true # noqa run-once[task]
+
+    - name: Require fully qualified OpenBao Keepalived activation
+      ansible.builtin.assert:
+        that:
+          - >-
+            groups['openbao'] | map('extract', hostvars, 'openbao_keepalived_qualified')
+            | select('equalto', true) | length == 3
+        fail_msg: >-
+          OpenBao Keepalived activation or postqualification failed.
+          Unverified rollback hosts: {{ openbao_keepalived_unverified_hosts
+          | join(', ') | default('none', true) }}. OpenBao and HAProxy were not mutated.
+      run_once: true # noqa run-once[task]

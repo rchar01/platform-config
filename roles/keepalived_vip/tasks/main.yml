@@ -1,9 +1,27 @@
 ---
+- name: Validate shared Keepalived VIP lifecycle even for disabled callers
+  ansible.builtin.include_tasks: validate_lifecycle.yml
+
 - name: Configure shared Keepalived VIP foundation
   when: keepalived_vip_enabled | bool
   block:
     - name: Validate shared Keepalived VIP inputs
       ansible.builtin.include_tasks: validate.yml
+
+    - name: Require running managed firewalld before active Keepalived convergence
+      ansible.builtin.command:
+        argv: [systemctl, is-active, firewalld.service]
+      register: keepalived_vip_active_firewalld
+      changed_when: false
+      check_mode: false
+      failed_when: keepalived_vip_active_firewalld.rc != 0 or keepalived_vip_active_firewalld.stdout != 'active'
+      when:
+        - keepalived_vip_service_state == 'started'
+        - keepalived_vip_firewalld_manage
+
+    - name: Validate Rocky repository policy before package convergence
+      ansible.builtin.include_role:
+        name: rocky_repository_policy
 
     - name: Install exact Keepalived package
       ansible.builtin.dnf:
@@ -299,6 +317,13 @@
       when:
         - keepalived_vip_firewalld_manage | bool
         - firewalld_dependencies_ready | default(true)
+
+    - name: Recheck runtime firewall immediately before Keepalived service management
+      ansible.builtin.include_tasks: runtime_firewall_guard.yml
+      when:
+        - keepalived_vip_dependencies_ready
+        - keepalived_vip_service_state == 'started'
+        - keepalived_vip_firewalld_manage
 
     - name: Manage shared Keepalived VIP service
       ansible.builtin.systemd_service:

@@ -1,0 +1,25 @@
+---
+- name: Count mocked strict runtime qualifications
+  ansible.builtin.set_fact:
+    test_status_count: "{{ test_status_count | default(0) | int + 1 }}"
+
+- name: Require mocked strict three-voter health
+  ansible.builtin.assert:
+    that:
+      - test_status_count != test_status_failure_pass | default(0)
+    fail_msg: Mocked strict status failed.
+
+- name: Record mocked strict runtime observations
+  ansible.builtin.set_fact:
+    openbao_status_health_results:
+      results:
+        - json:
+            cluster_id: >-
+              {{ 'wrong-cluster' if test_status_count == test_cluster_mismatch_pass | default(0) else 'test-cluster' }}
+    openbao_status_raft_observations:
+      - node_ids: [bao-1, bao-2, bao-3]
+        leader_node_id: bao-1
+        index: "{{ 2 if test_drift | default('') == 'raft' and test_status_count > 1 else 1 }}"
+      - node_ids: [bao-1, bao-2, bao-3]
+        leader_node_id: bao-1
+        index: "{{ 2 if test_drift | default('') == 'raft' and test_status_count > 1 else 1 }}"

@@ -1,0 +1,72 @@
+---
+- name: Default Keepalived activation rollback to unconfirmed
+  ansible.builtin.set_fact:
+    keepalived_vip_activation_rollback_confirmed: false
+
+- name: Stop and disable Keepalived and prove VIP withdrawal
+  ignore_errors: false
+  block:
+    - name: Reject simulated Keepalived activation rollback
+      ansible.builtin.assert:
+        that: not ansible_check_mode
+        fail_msg: Keepalived rollback cannot be confirmed in check mode.
+
+    - name: Stop and disable failed Keepalived activation
+      ansible.builtin.systemd_service:
+        name: "{{ keepalived_vip_service_name }}"
+        enabled: false
+        state: stopped
+      register: keepalived_vip_activation_rollback_stop
+
+    - name: Require successful reachable Keepalived stop and disable
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_activation_rollback_stop is succeeded
+          - keepalived_vip_activation_rollback_stop is not unreachable
+          - keepalived_vip_activation_rollback_stop is not skipped
+
+    - name: Observe Keepalived rollback service states
+      ansible.builtin.command:
+        argv: [systemctl, "{{ item.operation }}", "{{ keepalived_vip_service_name }}"]
+      register: keepalived_vip_activation_rollback_services
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        keepalived_vip_activation_rollback_services.rc != item.rc
+        or keepalived_vip_activation_rollback_services.stdout != item.expected
+      loop:
+        - operation: is-active
+          expected: inactive
+          rc: 3
+        - operation: is-enabled
+          expected: disabled
+          rc: 1
+
+    - name: Require complete reachable Keepalived rollback service observations
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_activation_rollback_services is succeeded
+          - keepalived_vip_activation_rollback_services is not unreachable
+          - keepalived_vip_activation_rollback_services is not skipped
+          - keepalived_vip_activation_rollback_services.results | length == 2
+
+    - name: Require each exact Keepalived rollback service observation
+      ansible.builtin.assert:
+        that:
+          - item is succeeded
+          - item is not unreachable
+          - item is not skipped
+          - item.rc == item.item.rc
+          - item.stdout == item.item.expected
+      loop: "{{ keepalived_vip_activation_rollback_services.results }}"
+
+    - name: Prove Keepalived rollback withdrew every local VIP
+      ansible.builtin.include_tasks: activation_vip_absence.yml
+
+    - name: Confirm observed Keepalived activation rollback
+      ansible.builtin.set_fact:
+        keepalived_vip_activation_rollback_confirmed: true
+  rescue:
+    - name: Preserve unconfirmed Keepalived activation rollback
+      ansible.builtin.set_fact:
+        keepalived_vip_activation_rollback_confirmed: false

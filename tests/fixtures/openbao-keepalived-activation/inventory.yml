@@ -1,0 +1,29 @@
+---
+all:
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    openbao_keepalived_activation_ready: true
+    openbao_haproxy_service_enabled: true
+    openbao_haproxy_service_state: started
+    openbao_haproxy_service_name: haproxy.service
+    keepalived_vip_service_enabled: false
+    keepalived_vip_service_state: stopped
+    keepalived_vip_service_name: keepalived.service
+    keepalived_vip_track_service: haproxy.service
+    keepalived_vip_track_ports: [8200]
+    openbao_service_vip: 192.0.2.200
+    openbao_service_dns: bao.example.invalid
+    openbao_client_port: 8200
+  children:
+    openbao:
+      hosts:
+        bao-1:
+          test_priority: 130
+        bao-2:
+          test_priority: 150
+        bao-3:
+          test_priority: 140
+    unrelated:
+      hosts:
+        other:

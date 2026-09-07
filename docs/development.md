@@ -74,6 +74,35 @@ playbooks, which require the complete OpenBao cluster. The PKI activation source
 contract also requires inactive masked staging, temporary unmasking only around
 the fixed role route, and unconditional stop/remask restoration.
 
+Focused offline OpenBao Keepalived activation and VIP smoke checks use the
+sanitized test profile, without private configuration, secrets, or managed hosts:
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_keepalived_activation.py \
+  tests/python/test_openbao_vip_smoke.py \
+  tests/python/test_keepalived_vip_render.py
+```
+
+These checks cover the approval-bound activation and rollback orchestration,
+Keepalived rendering and preflight contracts, and the separate VIP smoke path.
+`smoke-openbao` remains strict direct-node plus all-three-HAProxy smoke only for
+the pre-VIP phase. `smoke-openbao-vip` imports it and adds active desired
+Keepalived validation, actual active/enabled service state on all three hosts,
+repeated exact single-owner checks on the configured interface, strict forced-VIP
+service-DNS TLS and actual DNS-path checks, and matching cluster identity.
+Controlled fixtures do not establish live VRRP, target firewall or anti-spoofing
+readiness, duplicate-address detection, real DNS/TLS, failover, or recovery.
+
+Standalone dev acceptance does not depend on monitoring; production monitoring
+is still required. Offline checks do not authorize activation or normal
+onboarding. Each live activation needs separate approval and acceptance-only
+traffic until named administrator access, local audit rotation, and recovery
+gates pass. After success, private Keepalived desired state must be
+enabled/started and `openbao_keepalived_activation_ready` reset to false. Never
+use ordinary `playbooks/openbao.yml` staging on an active or initialized cluster.
+See [OpenBao VIP Acceptance](operator-runbook.md#openbao-vip-acceptance).
+
 Focused synthetic storage acceptance checks run inside the development
 container and do not contact hosts or mutate disks:
 

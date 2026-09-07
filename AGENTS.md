@@ -24,6 +24,30 @@
 - Do not copy runtime scripts from `platform-k8s-bastion` into Ansible roles; install them from the submodule via `k8s_bastion_runtime_src`.
 - Real bastion access policies and CA files are private files referenced by vars such as `k8s_bastion_policy_src` and `k8s_bastion_ca_src`; real admin kubeconfigs referenced by `k8s_bastion_admin_kubeconfig_src` belong under `~/.config/platform-infrastructure/config/` or another outside-Git secret store.
 
+## OpenBao Activation Boundary
+
+- Standalone dev OpenBao acceptance has no monitoring-stack or observer
+  dependency; production monitoring remains required. Allow acceptance traffic
+  only until named administrator access, local audit rotation, and recovery gates
+  pass and normal onboarding is separately authorized. Do not equate offline
+  tests or merged orchestration with live qualification.
+- `playbooks/openbao.yml` is pristine inactive staging only and is forbidden for
+  active or initialized clusters. Do not use ordinary staging after activation.
+- Keep `smoke-openbao` direct-node plus all-three-HAProxy only for the pre-VIP
+  phase. `smoke-openbao-vip` imports that smoke and adds active desired Keepalived
+  validation, actual active/enabled state on all three hosts, repeated exact
+  single-owner checks on the configured interface, strict forced-VIP service-DNS
+  TLS and actual DNS-path checks, and cluster identity agreement.
+- `activate-openbao-keepalived` requires an explicit full-cluster limit, private
+  `openbao_keepalived_activation_ready: true`, and fresh exact approval for each
+  activation after network, peer VRRP, anti-spoofing, and duplicate-address
+  detection prerequisites. Start backup-priority members before the preferred
+  member. Roll back only Keepalived on all reachable hosts; require VIP absence
+  on all local interfaces and report unknown/unreachable hosts as unverified.
+- After successful activation, record `keepalived_vip_service_enabled: true` and
+  `keepalived_vip_service_state: started` in private desired state and reset
+  `openbao_keepalived_activation_ready: false`; then use VIP smoke, not staging.
+
 ## Setup And Checks
 
 - Use the Podman dev container for Ansible and lint tooling; do not install project Python packages on the host. Build it with `make deps` or run commands through `./scripts/in-container`.
@@ -31,6 +55,12 @@
 - Bastion smoke checks after apply: `make smoke-k8s-bastion ENV=dev LIMIT=k8s-bastion-01`.
 - Lint checks: `make lint` and `make yamllint`.
 - Default tests: `make test` runs the authoritative serial pytest suite.
+- Focused offline OpenBao VIP checks use `PLATFORM_CONFIG_CONTAINER_PROFILE=test
+  ./scripts/in-container python -m pytest -n 0` with
+  `tests/python/test_openbao_keepalived_activation.py`,
+  `tests/python/test_openbao_vip_smoke.py`, and
+  `tests/python/test_keepalived_vip_render.py`. They do not qualify live networking
+  or authorize activation.
 - Supplemental parallel tests: `make test-parallel`; override worker count with
   `TEST_WORKERS=<count>`.
 - Supplemental fast verification: `make verify-parallel`; use serial

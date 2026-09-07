@@ -98,6 +98,28 @@ make storage-test-preflight ENV=config-test LIMIT=storage-volume-test-01
 Most Make targets accept `ENV`, `PLAYBOOK`, `LIMIT`, and `EXTRA_ARGS`. Real
 runs require the matching private environment file and inventory.
 
+### OpenBao Acceptance
+
+Standalone dev OpenBao acceptance does not depend on the monitoring stack or
+OpenBao-hosted observers. Production monitoring is still required. Keep traffic
+limited to acceptance checks until named administrator access, local audit
+rotation, and recovery gates have been completed and normal onboarding has been
+separately authorized. These workflows are not evidence of live qualification.
+
+`make smoke-openbao ENV=dev LIMIT=openbao` checks strict direct-node status and
+all three HAProxy paths only, for the pre-VIP phase. The separately approved
+`make activate-openbao-keepalived ENV=dev LIMIT=openbao` activates the staged VIP;
+`make smoke-openbao-vip ENV=dev LIMIT=openbao` adds active Keepalived desired and
+actual state, repeated exact single-owner checks on the configured interface,
+strict service-DNS TLS through the forced VIP and actual DNS path, and cluster
+identity checks. Both smoke targets require the complete three-host cluster.
+
+Follow the [OpenBao VIP acceptance procedure](docs/operator-runbook.md#openbao-vip-acceptance)
+for network prerequisites, per-activation approval, backup-priority-first startup,
+Keepalived-only rollback, and the post-success private desired-state update.
+Never run the ordinary `playbooks/openbao.yml` staging playbook against an active
+or initialized cluster, including as a second apply after activation.
+
 ## Platform Project
 
 | Repository | Purpose |

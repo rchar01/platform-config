@@ -1,0 +1,11 @@
+---
+- name: Require canonical native Keepalived activation paths
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_package_name == 'keepalived'
+      - keepalived_vip_service_name == 'keepalived.service'
+      - keepalived_vip_binary_path == '/usr/sbin/keepalived'
+      - keepalived_vip_config_path == '/etc/keepalived/keepalived.conf'
+      - keepalived_vip_service_drop_in_dir == '/etc/systemd/system/keepalived.service.d'
+      - keepalived_vip_service_drop_in_path == '/etc/systemd/system/keepalived.service.d/platform.conf'
+    fail_msg: Keepalived activation requires the canonical native service, binary, config, and drop-in paths.

@@ -1,0 +1,70 @@
+---
+- name: Space fresh OpenBao VIP observations
+  ansible.builtin.pause:
+    seconds: "{{ [keepalived_vip_advert_interval | default(1) | int, 2] | max }}"
+  when: openbao_vip_sample > 1
+
+- name: Observe actual Keepalived active and boot-enabled state
+  ansible.builtin.command:
+    argv: [systemctl, "{{ item }}", "{{ keepalived_vip_service_name | default('keepalived.service') }}"]
+  loop: [is-active, is-enabled]
+  register: openbao_vip_services
+  changed_when: false
+  check_mode: false
+
+- name: Require reachable active and enabled Keepalived on every host
+  ansible.builtin.assert:
+    that:
+      - not openbao_vip_services.unreachable | default(false)
+      - openbao_vip_services.results | length == 2
+      - not item.unreachable | default(false)
+      - item.rc | default(-1) == 0
+      - item.stdout == ('active' if item.item == 'is-active' else 'enabled')
+    fail_msg: OpenBao VIP qualification requires verified active/enabled Keepalived on all three hosts.
+  loop: "{{ openbao_vip_services.results | default([]) }}"
+
+- name: Inspect all local IPv4 addresses for exact VIP ownership
+  ansible.builtin.command:
+    argv: [ip, -j, -4, address, show]
+  register: openbao_vip_addresses
+  changed_when: false
+  check_mode: false
+
+- name: Require reachable fresh address evidence
+  ansible.builtin.assert:
+    that:
+      - not openbao_vip_addresses.unreachable | default(false)
+      - openbao_vip_addresses.rc | default(-1) == 0
+      - openbao_vip_addresses.stdout | from_json is sequence
+    fail_msg: Unknown host address state cannot prove unique OpenBao VIP ownership.
+
+- name: Derive exact local VIP counts on all and configured interfaces
+  ansible.builtin.set_fact:
+    openbao_vip_local_count: >-
+      {{ openbao_vip_addresses.stdout | from_json | map(attribute='addr_info') | flatten
+         | selectattr('local', 'equalto', openbao_service_vip) | list | length }}
+    openbao_vip_interface_count: >-
+      {{ openbao_vip_addresses.stdout | from_json
+         | selectattr('ifname', 'equalto', keepalived_vip_instances[0].interface)
+         | map(attribute='addr_info') | flatten
+         | selectattr('local', 'equalto', openbao_service_vip) | list | length }}
+
+- name: Require exactly one OpenBao VIP owner on its configured interface
+  ansible.builtin.assert:
+    that:
+      - groups['openbao'] | map('extract', hostvars, 'openbao_vip_local_count') | sum == 1
+      - groups['openbao'] | map('extract', hostvars, 'openbao_vip_interface_count') | sum == 1
+    fail_msg: OpenBao VIP must have exactly one owner on the configured interface; zero or duplicate owners fail.
+
+- name: Record the current OpenBao VIP owner
+  ansible.builtin.set_fact:
+    openbao_vip_owner_samples: >-
+      {{ openbao_vip_owner_samples + [groups['openbao'] | map('extract', hostvars)
+         | selectattr('openbao_vip_local_count', 'equalto', 1)
+         | map(attribute='inventory_hostname') | first] }}
+
+- name: Require stable exact single ownership across OpenBao VIP samples
+  ansible.builtin.assert:
+    that:
+      - openbao_vip_owner_samples | unique | length == 1
+    fail_msg: OpenBao VIP ownership changed during repeated qualification.

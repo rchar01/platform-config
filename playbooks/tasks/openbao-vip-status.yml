@@ -1,0 +1,84 @@
+---
+# Shared by active smoke and the activation transaction before desired-state handoff.
+- name: Require one canonical OpenBao VIP topology
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | sort == groups.get('openbao', []) | sort
+      - groups.get('openbao', []) | length == 3
+      - keepalived_vip_instances | length == 1
+      - keepalived_vip_instances[0].vip.split('/')[0] == openbao_service_vip
+      - keepalived_vip_cluster_members | map(attribute='name') | sort == groups['openbao'] | sort
+      - keepalived_vip_track_service == openbao_haproxy_service_name | default('haproxy.service')
+      - openbao_client_port in keepalived_vip_track_ports
+      - openbao_service_vip == hostvars[groups['openbao'][0]].openbao_service_vip
+      - openbao_service_dns == hostvars[groups['openbao'][0]].openbao_service_dns
+      - openbao_client_port == hostvars[groups['openbao'][0]].openbao_client_port
+    fail_msg: OpenBao VIP qualification requires the same single VIP and client endpoint on all three hosts.
+
+- name: Reset OpenBao VIP owner observations
+  ansible.builtin.set_fact:
+    openbao_vip_owner_samples: []
+
+- name: Observe repeated exact OpenBao VIP ownership and service state
+  ansible.builtin.include_tasks: openbao-vip-sample.yml
+  loop: [1, 2, 3]
+  loop_control:
+    loop_var: openbao_vip_sample
+
+- name: Resolve the actual OpenBao service DNS path
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ openbao_service_dns }}"]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  register: openbao_vip_dns
+
+- name: Require service DNS to resolve only to the configured OpenBao VIP
+  ansible.builtin.assert:
+    that:
+      - not openbao_vip_dns.unreachable | default(false)
+      - openbao_vip_dns.rc | default(-1) == 0
+      - >-
+        openbao_vip_dns.stdout_lines | map('split') | map('first') | unique | list
+        == [openbao_service_vip]
+    fail_msg: OpenBao service DNS must resolve to the configured VIP, not a direct node or unrelated endpoint.
+
+- name: Query forced-VIP and actual DNS OpenBao client paths with strict TLS
+  ansible.builtin.command:
+    argv: >-
+      {{ ['curl', '--disable', '--silent', '--show-error', '--noproxy', '*',
+          '--connect-timeout', openbao_status_request_timeout | default(5) | string,
+          '--max-time', openbao_status_request_timeout | default(5) | string,
+          '--cacert', openbao_tls_ca_src]
+         + item
+         + ['--write-out', '\n%{http_code} %{remote_ip}',
+            'https://' ~ openbao_service_dns ~ ':' ~ (openbao_client_port | string) ~ '/v1/sys/health'] }}
+  loop:
+    - [--resolve, "{{ openbao_service_dns }}:{{ openbao_client_port }}:{{ openbao_service_vip }}"]
+    - []
+  loop_control:
+    label: "{{ 'forced-vip' if item | length else 'service-dns' }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  register: openbao_vip_health
+
+- name: Require both VIP paths to reach the marked active OpenBao cluster
+  ansible.builtin.assert:
+    that:
+      - not item.unreachable | default(false)
+      - item.rc | default(-1) == 0
+      - item.stdout_lines | length >= 2
+      - item.stdout_lines[-1] == '200 ' ~ openbao_service_vip
+      - (item.stdout_lines[:-1] | join('\n') | from_json).initialized is sameas true
+      - (item.stdout_lines[:-1] | join('\n') | from_json).sealed is sameas false
+      - (item.stdout_lines[:-1] | join('\n') | from_json).standby is sameas false
+      - >-
+        (item.stdout_lines[:-1] | join('\n') | from_json).cluster_id
+        == openbao_active_observation.cluster_id
+    fail_msg: OpenBao VIP health must be active, unsealed, strict-TLS verified, and match the marked cluster.
+  loop: "{{ openbao_vip_health.results }}"
+  loop_control:
+    label: "{{ 'forced-vip' if item.item | length else 'service-dns' }}"

@@ -1,4 +1,7 @@
 ---
+- name: Validate shared Keepalived VIP lifecycle
+  ansible.builtin.include_tasks: validate_lifecycle.yml
+
 - name: Assert shared Keepalived VIP inputs are configured
   ansible.builtin.assert:
     that:

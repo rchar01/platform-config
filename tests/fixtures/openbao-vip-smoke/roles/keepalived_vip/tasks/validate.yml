@@ -1,0 +1,5 @@
+---
+# Full topology validation is covered by the Keepalived role suite. Preserve the
+# real lifecycle validator here; otherwise string booleans could slip through.
+- name: Validate real lifecycle in the offline role boundary
+  ansible.builtin.include_tasks: validate_lifecycle.yml

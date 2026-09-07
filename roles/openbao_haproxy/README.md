@@ -51,15 +51,19 @@ openbao_haproxy_service_state: stopped
 Real package transactions, addresses, DNS names, and CIDRs belong in private
 inventory. Keep HAProxy stopped until direct OpenBao TLS and health behavior are
 qualified. Keep Keepalived disabled until HAProxy listeners, backend selection,
-firewall, observer, and canary gates pass. This role never initializes or
-unseals OpenBao and never activates a VIP.
+network, and firewall gates pass and its separate activation is approved.
+Standalone development OpenBao acceptance does not depend on observers;
+production monitoring remains required. This role never initializes or unseals
+OpenBao and never activates a VIP.
 
 The guarded activation play checks and records each node's exact installed
 package, validated configuration checksum, backend CA checksum, and managed
 firewalld manifest checksum before approval, then requires unchanged evidence
-immediately before enabling the service. Rollback is confirmed per host only
-after systemd reports HAProxy both inactive and disabled; failed or unreachable
-checks remain explicitly unverified.
+immediately before enabling the service. Each preflight also checks that the
+target Ansible Python can import firewalld bindings and records fresh dependency
+readiness without installing packages or running firewall convergence. Rollback
+is confirmed per host only after systemd reports HAProxy both inactive and
+disabled; failed or unreachable checks remain explicitly unverified.
 
 `openbao_haproxy_enabled: false` means the role does not own HAProxy state; it
 does not stop a potentially unrelated HAProxy service. Deactivate this role by

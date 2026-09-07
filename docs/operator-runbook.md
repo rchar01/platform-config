@@ -18,12 +18,15 @@ Public examples in this document use RFC 5737 documentation IPs such as `192.0.2
 ## Current Coverage vs Future Phases
 
 This runbook is complete for the currently implemented homelab and unaffected dev
-services. The rebuilt OpenBao service role foundation is staged and its strict
-read-only direct-node status gate is available. OpenBao-hosted monitoring
-observers now have a separate guarded stage/activate/smoke workflow, but their
-real endpoints remain unavailable until monitoring is deployed. OpenBao service
-activation, initialization, and HA smoke remain blocked. Monitoring etcd now has
-separate inactive staging, read-only preflight, and confirmation-gated initial
+services. OpenBao has separate pristine staging, guarded bootstrap and edge
+activation, strict read-only status, and pre-VIP/VIP smoke entry points.
+Standalone dev acceptance has no monitoring-stack or observer dependency;
+production monitoring remains required. OpenBao-hosted monitoring observers
+have a separate guarded stage/activate/smoke workflow, but their real endpoints
+remain unavailable until monitoring is deployed. None of these workflows or
+offline checks establishes live qualification or authorizes normal onboarding.
+Monitoring etcd now has separate inactive staging, read-only preflight, and
+confirmation-gated initial
 bootstrap workflows, but none run merely by merging this repository. The
 remaining monitoring services and active HA handoff are still blocked. Do not
 use `site.yml` to bypass the phased handoff.
@@ -37,7 +40,7 @@ use `site.yml` to bypass the phased handoff.
 | Podman host foundation | homelab, dev | implemented | full bring-up and smoke commands |
 | GitLab CE | homelab | implemented | full bring-up, smoke, and root password handling |
 | Zot registry | dev | implemented | full bring-up and smoke commands |
-| OpenBao HA | dev | service foundation, read-only status, and observer orchestration staged | immutable image, direct-node role and status, inventory, bounded storage, and guarded monitoring observers; no active OpenBao service apply or HA smoke command |
+| OpenBao HA | dev | guarded standalone acceptance workflows; live qualification separate | pristine staging, bootstrap, direct status, HAProxy and Keepalived activation, pre-VIP/VIP smoke; observers independent |
 | GitLab runners | dev | implemented | full bring-up and smoke commands |
 | Monitoring HA | dev | etcd staging and bootstrap implemented; replacement otherwise blocked | guarded stopped etcd formation only; Patroni, Garage, Loki, Mimir, Grafana, active ingress, and collectors remain unavailable |
 | RKE2 and bundled Traefik | dev | implemented | full bring-up and smoke commands for the base cluster and default ingress controller |
@@ -103,6 +106,10 @@ Examples of pinned software include container image tags, downloaded external to
 OS package installation is different: roles expose package lists as variables, and private inventory may use exact package specs where appropriate, but reproducible RPM versions are only reliable when the enabled repositories are pinned, snapshotted, or protected with versionlock. Do not treat a bare package name from a moving OS repo as a reproducible version pin.
 
 Controlled update flow:
+
+This generic pattern does not apply to active OpenBao. Its ordinary
+`playbooks/openbao.yml` is pristine inactive staging only; use separately approved
+active maintenance and the phase-appropriate smoke path instead.
 
 ```bash
 make check ENV=dev PLAYBOOK=playbooks/<service>.yml
@@ -812,26 +819,27 @@ activation. If a host was unreachable or the transition left partial state,
 reconcile that state through a separately reviewed recovery procedure before any
 retry.
 
-The OpenBao playbook can stage its complete three-node foundation, but only after inventory,
-strict SSH trust, generic baseline, approved storage initialization, PKI, package,
+The OpenBao playbook can stage its pristine inactive three-node foundation, but
+only after inventory, strict SSH trust, generic baseline, approved storage initialization, PKI, package,
 network, and source-policy inputs pass their gates. Set
 `openbao_orchestration_ready: true` only with all three component roles enabled
 and all OpenBao, HAProxy, and Keepalived services disabled and stopped. Then use:
 
 ```bash
-make check ENV=dev PLAYBOOK=playbooks/openbao.yml
-make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
-# Run a second apply to confirm idempotency.
-make apply ENV=dev PLAYBOOK=playbooks/openbao.yml
+make check ENV=dev PLAYBOOK=playbooks/openbao.yml LIMIT=openbao
+make apply ENV=dev PLAYBOOK=playbooks/openbao.yml LIMIT=openbao
+# Confirm idempotency only while the cluster remains pristine and inactive.
+make apply ENV=dev PLAYBOOK=playbooks/openbao.yml LIMIT=openbao
 ```
 
 This stages configuration and permanent offline firewall policy; it does not
 initialize or unseal OpenBao, start a service, run observers, or assign the VIP.
-On apply, all-host component input validation completes before the playbook
-disables and stops any existing Keepalived, HAProxy, and OpenBao services, then
-temporarily masks OpenBao and starts role convergence. A failed staging run
-leaves OpenBao masked; successful convergence unblocks the newly disabled unit.
-Do not use `site.yml` while monitoring remains blocked.
+On apply, all-host component input and pristine lifecycle validation completes
+before service mutation and role convergence. The playbook leaves the staged
+OpenBao unit stopped and masked. Ordinary staging is forbidden for any active or
+initialized cluster, including after HAProxy or Keepalived activation. Never use
+it to reconcile active desired state or recover a partial activation. Do not use
+`site.yml` while monitoring remains blocked.
 
 The external monitoring probes and the one native Alloy process on each OpenBao
 host have a separate fresh-start workflow. It is not an OpenBao service
@@ -872,7 +880,8 @@ read-only PostgreSQL primary result, and one successful unambiguous Garage
 PUT/GET/digest/DELETE canary on every observer. The public OpenBao-host example
 does not claim node-local ownership of the monitoring VIP because that VIP is
 owned by monitoring nodes. Observer smoke does not replace strict OpenBao status
-or OpenBao HA smoke. The existing `smoke-openbao` target remains blocked.
+or OpenBao HA smoke and is not a standalone dev acceptance prerequisite. Use
+`smoke-openbao` before VIP activation and `smoke-openbao-vip` after it.
 
 Before configuring dev GitLab runners, confirm homelab GitLab is reachable from the runner hosts:
 
@@ -1377,8 +1386,17 @@ the original guarded start. After success, set the normal private service
 contract to `openbao_service_enabled: true` and
 `openbao_service_state: started`, and close both bootstrap readiness gates.
 
-To enable the client edge while Keepalived remains stopped, start firewalld, set
-`openbao_haproxy_activation_ready: true`, and run:
+Before enabling the client edge, separately qualify and authorize firewalld
+enforcement using [Firewalld Readiness And Enablement](firewalld.md). Preserve
+management access and all required OpenBao backend, cluster, and peer VRRP flows;
+permanent rules alone do not enforce policy while firewalld is stopped. Record
+`firewalld_service_enabled: true` and `firewalld_service_state: started` in private
+desired state only after the approved firewall transition succeeds. Do not rerun
+ordinary OpenBao staging to enable the firewall on an active cluster.
+
+With firewalld active and Keepalived still stopped, set
+`openbao_haproxy_activation_ready: true` for the separately approved client-edge
+activation and run:
 
 ```bash
 make activate-openbao-haproxy ENV=dev LIMIT=openbao
@@ -1392,8 +1410,10 @@ run `sudo systemctl disable --now haproxy.service` there, verify it is inactive
 and disabled, and rerun the guarded activation from the stopped contract.
 
 After success, set the normal private HAProxy service contract to enabled and
-started, close its activation gate, and keep Keepalived disabled until monitoring
-observer and canary acceptance is available.
+started, close its activation gate, and keep Keepalived disabled until the
+separate [OpenBao VIP acceptance](#openbao-vip-acceptance) prerequisites and
+per-activation approval are satisfied. Monitoring observers do not block
+standalone dev acceptance; production monitoring remains required.
 
 Run the read-only direct-node and Raft gate with:
 
@@ -1406,11 +1426,16 @@ two standbys, exactly three expected voters, one matching leader, stable repeate
 Raft observations, and both audit devices. It does not initialize, unseal,
 restart, or reconfigure OpenBao.
 
-After HAProxy activation, check both direct and node-local proxy paths with:
+After HAProxy activation and before VIP activation, check direct-node status and
+all three node-local HAProxy paths with:
 
 ```bash
 make smoke-openbao ENV=dev LIMIT=openbao
 ```
+
+This pre-VIP smoke deliberately does not check Keepalived or VIP ownership. After
+VIP activation, use `smoke-openbao-vip`, which imports these existing checks and
+adds the VIP contract described below.
 
 After the cluster has been initialized and live qualification explicitly allows
 a configuration change that may restart voters, use the maintenance-only path:
@@ -1437,6 +1462,82 @@ Create in GitLab, store outside Git, and rotate from GitLab when exposed or no l
 
 Grafana credentials for the replacement platform remain outside Git and are not
 consumed until the HA role and named-account bootstrap workflow exist.
+
+### OpenBao VIP Acceptance
+
+Standalone dev OpenBao acceptance has no monitoring-stack or observer
+dependency. Production monitoring is still required. Keep client traffic limited
+to acceptance checks until named administrator access, local audit rotation,
+and recovery gates pass and normal onboarding is separately authorized. Merged
+orchestration, offline tests, and a successful smoke run alone do not establish
+full live qualification or authorize normal traffic.
+
+Before each Keepalived activation:
+
+1. Require accepted active OpenBao lifecycle markers and strict three-voter
+   status, active/enabled HAProxy on all three nodes, and passing pre-VIP smoke.
+2. Review the real network and configured interface, source addresses, routes,
+   peer-only VRRP protocol `112` policy, and bidirectional peer reachability.
+   Confirm hypervisor/switch anti-spoofing permits the VIP and complete
+   duplicate-address detection (DAD) on the target network. Local VIP absence
+   alone is not proof that another machine does not own the address.
+3. Require the exact staged Keepalived package, configuration, tracking script,
+   firewall policy, and inactive/disabled service state on every member. Resolve
+   any unknown or partial state through separately reviewed recovery first.
+4. Set `openbao_keepalived_activation_ready: true` only in private inventory for
+   this activation. Keep the pre-activation desired service state
+   `keepalived_vip_service_enabled: false` and
+   `keepalived_vip_service_state: stopped`. The readiness gate is not a substitute
+   for fresh exact interactive approval.
+
+Run with an explicit limit selecting exactly all three OpenBao hosts and no
+unrelated hosts:
+
+```bash
+make activate-openbao-keepalived ENV=dev LIMIT=openbao
+```
+
+The playbook binds approval to the selected hosts, VIP, active cluster identity,
+and exact observed evidence digest, then repeats the read-only gates and rejects
+drift before startup. Backup-priority members start before the preferred member.
+Any activation or postqualification failure triggers Keepalived-only rollback
+on all reachable members, not just the failed node; OpenBao and HAProxy remain
+untouched. Recovery requires observed inactive/disabled Keepalived and VIP
+absence on every local interface. Unknown or unreachable hosts must be reported
+as unverified, never as successfully rolled back. Recover access and verify
+those hosts through a separately reviewed recovery procedure before any retry;
+do not delete VIP addresses manually or rerun ordinary staging.
+
+After successful activation, record the active contract in private desired state
+and close the one-activation gate:
+
+```yaml
+keepalived_vip_service_enabled: true
+keepalived_vip_service_state: started
+openbao_keepalived_activation_ready: false
+```
+
+Then run the separate read-only VIP smoke:
+
+```bash
+make smoke-openbao-vip ENV=dev LIMIT=openbao
+```
+
+`playbooks/openbao-vip-smoke.yml` imports `playbooks/openbao-smoke.yml` before
+validating the active desired Keepalived contract, actual active/enabled state
+on all three hosts, and repeated exact single-owner observations on the
+configured interface. It checks strict CA and service-DNS TLS identity both with
+the connection forced to the VIP and through the actual DNS path, and requires
+cluster identity agreement with direct-node and active-marker evidence. Zero
+owners, multiple owners, wrong-interface ownership, unknown hosts, TLS failure,
+or cluster mismatch must fail rather than count as successful acceptance.
+
+This is not an activation or repair command. Do not rerun
+`playbooks/openbao.yml` on this active cluster, even as an idempotency check.
+Use separately approved active maintenance and VIP smoke. Keep live network,
+failover, audit rotation, named-administrator, and recovery evidence in the
+private operational record; the focused offline checks in
+[Development](development.md) do not replace those gates.
 
 ### Backups
 
@@ -1491,9 +1592,9 @@ checking globally.
 ## Full Site Runs
 
 Use phase playbooks for first bring-up and for risky changes. Dev `site.yml` is
-currently blocked because it imports the fail-closed OpenBao and monitoring
-transition playbooks. Use it only after every imported playbook has accepted
-inputs and the replacement service roles exist.
+currently blocked by the monitoring transition and imports pristine-only OpenBao
+staging. It is not an active OpenBao convergence path, even after monitoring
+becomes available. Use the separate active maintenance entry points instead.
 
 ```bash
 make check ENV=homelab
@@ -1516,5 +1617,8 @@ git diff --check
 
 For implemented service changes, also run the matching smoke playbook against
 the environment that owns the service. OpenBao-hosted observer smoke is
-available separately; OpenBao HA and monitoring HA smoke targets remain
-intentionally blocked.
+available separately and is not a standalone dev acceptance dependency. Use
+`smoke-openbao` for direct-node and all-three-HAProxy checks before VIP activation,
+then `smoke-openbao-vip` for the active VIP contract. Monitoring HA smoke remains
+intentionally blocked. These live checks require separate operator authorization;
+offline verification does not authorize activation or normal onboarding.

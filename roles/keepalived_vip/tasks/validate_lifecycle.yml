@@ -1,0 +1,21 @@
+---
+- name: Assert shared Keepalived VIP lifecycle is coherent
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_enabled is boolean
+      - keepalived_vip_service_enabled is boolean
+      - keepalived_vip_firewalld_manage is boolean
+      - keepalived_vip_service_state in ['stopped', 'started']
+      - keepalived_vip_service_enabled == (keepalived_vip_service_state == 'started')
+      - keepalived_vip_enabled or not keepalived_vip_service_enabled
+      - >-
+        keepalived_vip_service_state != 'started'
+        or not keepalived_vip_firewalld_manage
+        or (
+          firewalld_service_enabled | default(false) is sameas true
+          and firewalld_service_state | default('stopped') == 'started'
+        )
+    fail_msg: >-
+      Keepalived VIP requires strict lifecycle booleans, stopped or started state,
+      boot enablement iff started, no activation by disabled callers, and active
+      enabled firewalld when managing firewall policy for an active service.

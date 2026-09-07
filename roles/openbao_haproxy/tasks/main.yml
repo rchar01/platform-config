@@ -56,6 +56,10 @@
           OpenBao HAProxy metrics bind address
           {{ openbao_haproxy_stats_bind_address }} is not local.
 
+    - name: Validate Rocky repository policy before package convergence
+      ansible.builtin.include_role:
+        name: rocky_repository_policy
+
     - name: Install exact OpenBao HAProxy package
       ansible.builtin.dnf:
         name: "{{ openbao_haproxy_package_nevra }}"

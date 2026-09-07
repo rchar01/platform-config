@@ -1,0 +1,26 @@
+---
+- name: Qualify direct OpenBao and all three HAProxy paths
+  ansible.builtin.import_playbook: openbao-smoke.yml
+
+- name: Qualify the active desired OpenBao VIP endpoint
+  hosts: openbao
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: true
+  tasks:
+    - name: Validate the active desired Keepalived contract without convergence
+      ansible.builtin.include_role:
+        name: keepalived_vip
+        tasks_from: validate.yml
+
+    - name: Require active desired OpenBao VIP lifecycle on every host
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_enabled
+          - keepalived_vip_service_enabled
+          - keepalived_vip_service_state == 'started'
+        fail_msg: VIP smoke requires active desired Keepalived state on every host.
+
+    - name: Observe the OpenBao VIP without changing services or addresses
+      ansible.builtin.include_tasks: tasks/openbao-vip-status.yml

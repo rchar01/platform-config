@@ -1,0 +1,9 @@
+---
+- name: Recheck runtime firewall immediately before Keepalived reload
+  ansible.builtin.include_tasks: runtime_firewall_guard.yml
+  when: keepalived_vip_firewalld_manage
+
+- name: Reload guarded shared Keepalived VIP service
+  ansible.builtin.systemd_service:
+    name: "{{ keepalived_vip_service_name }}"
+    state: reloaded

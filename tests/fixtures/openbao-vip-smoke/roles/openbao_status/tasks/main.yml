@@ -1,0 +1,7 @@
+---
+- name: Supply offline direct-node and Raft status
+  ansible.builtin.set_fact:
+    openbao_status_health_results:
+      results:
+        - json:
+            cluster_id: "{{ vip_test_direct_cluster | default('test-cluster') }}"

@@ -1,0 +1,56 @@
+---
+# Observed in keepalived-0:2.2.8-9.el10.x86_64 with systemd 257.
+- name: Read native Keepalived environment options without executing them
+  ansible.builtin.slurp:
+    src: /etc/sysconfig/keepalived
+  register: keepalived_vip_activation_sysconfig
+
+- name: Reject alternate config selection or lifecycle options in Keepalived sysconfig
+  ansible.builtin.assert:
+    that:
+      - >-
+        (keepalived_vip_activation_sysconfig.content | b64decode).splitlines()
+        | reject('match', '^\s*(#|$)') | list == ['KEEPALIVED_OPTIONS="-D"']
+    fail_msg: Keepalived activation requires only the native KEEPALIVED_OPTIONS="-D" assignment in sysconfig.
+
+- name: Inspect loaded Keepalived unit configuration
+  ansible.builtin.command:
+    argv: [systemctl, show, keepalived.service, "--property={{ item.property }}", --value]
+  register: keepalived_vip_activation_systemd_properties
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    keepalived_vip_activation_systemd_properties.rc != 0
+    or keepalived_vip_activation_systemd_properties.stdout != item.expected
+  loop:
+    - property: FragmentPath
+      expected: /usr/lib/systemd/system/keepalived.service
+    - property: DropInPaths
+      expected: /etc/systemd/system/keepalived.service.d/platform.conf
+    - property: NeedDaemonReload
+      expected: 'no'
+    - property: EnvironmentFiles
+      expected: /etc/sysconfig/keepalived (ignore_errors=yes)
+    - property: Environment
+      expected: ''
+    - property: PassEnvironment
+      expected: ''
+    - property: UnsetEnvironment
+      expected: ''
+
+- name: Inspect loaded Keepalived start command
+  ansible.builtin.command:
+    argv: [systemctl, show, keepalived.service, --property=ExecStart, --value]
+  register: keepalived_vip_activation_exec_start
+  changed_when: false
+  check_mode: false
+
+- name: Require the native Keepalived executable and option expansion
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_activation_exec_start.stdout.count('{') == 1
+      - >-
+        keepalived_vip_activation_exec_start.stdout.startswith(
+          '{ path=/usr/sbin/keepalived ; argv[]=/usr/sbin/keepalived --dont-fork $KEEPALIVED_OPTIONS ; ignore_errors=no ; '
+        )
+    fail_msg: Keepalived activation requires the inspected native ExecStart using only the verified sysconfig options.

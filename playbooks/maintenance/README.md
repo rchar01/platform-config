@@ -76,6 +76,18 @@ Available maintenance playbooks:
   to TTY approval, requires inactive Keepalived and active firewalld, and checks
   routing through every node-local HAProxy. Failure rolls back only reachable
   HAProxy services and reports unreachable hosts as unverified.
+- `openbao-keepalived-activate.yml`: requires the explicit complete three-host
+  limit, `openbao_keepalived_activation_ready: true`, strict active OpenBao,
+  active/enabled HAProxy, and exact staged inactive/disabled Keepalived evidence.
+  Each activation requires fresh exact interactive approval bound to the hosts,
+  VIP, cluster identity, and evidence digest after network, peer VRRP,
+  anti-spoofing, and duplicate-address detection prerequisites. It repeats the
+  read-only evidence gates after approval without ordinary role convergence,
+  starts backup-priority members before the preferred member, and qualifies
+  repeated single-owner VIP state and strict service-DNS TLS. Any activation or
+  qualification failure rolls back only Keepalived on every reachable member,
+  verifies inactive/disabled state and VIP absence on all local interfaces, and
+  reports unknown or unreachable hosts as unverified, never recovered.
 - `openbao-status.yml`: performs strict controller-side direct-node TLS health
   and authenticated Raft and audit checks for the three-node OpenBao cluster,
   including exact agreement between all active markers and runtime cluster ID.
@@ -138,3 +150,30 @@ Available maintenance playbooks:
 - `monitoring-etcd-status.yml`: strictly checks active marker, bundle, Quadlet,
   service, container, membership, leadership, and endpoint health state. It is
   read-only and does not require activation authorization.
+
+## OpenBao VIP Handoff
+
+Use `make activate-openbao-keepalived ENV=dev LIMIT=openbao` only after the
+separately approved HAProxy activation and passing
+`make smoke-openbao ENV=dev LIMIT=openbao`. The latter remains direct-node plus
+all-three-HAProxy smoke only, suitable before VIP activation.
+
+After successful Keepalived activation, update private desired state to
+`keepalived_vip_service_enabled: true`, `keepalived_vip_service_state: started`,
+and `openbao_keepalived_activation_ready: false`. Then run
+`make smoke-openbao-vip ENV=dev LIMIT=openbao`. Its `playbooks/openbao-vip-smoke.yml`
+imports the existing smoke, validates the active desired Keepalived contract and
+actual active/enabled state on all three hosts, requires repeated exact
+single-owner observations on the configured interface, and checks strict TLS
+using service DNS both forced to the VIP and through actual DNS resolution, with
+cluster identity agreement. It does not activate or repair services.
+
+Do not run ordinary `playbooks/openbao.yml` staging against an active or
+initialized cluster. A failed activation with any unverified rollback host needs
+separately reviewed recovery, not a blind retry or manual VIP deletion.
+
+Standalone dev acceptance has no monitoring dependency; production monitoring
+remains required. Traffic is acceptance-only until named administrator access,
+local audit rotation, and recovery gates pass and normal onboarding is separately
+authorized. Neither these entry points nor offline tests establish live
+qualification. See the [operator procedure](../../docs/operator-runbook.md#openbao-vip-acceptance).

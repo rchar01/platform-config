@@ -1,0 +1,15 @@
+---
+- name: Record mocked staged Keepalived evidence
+  ansible.builtin.set_fact:
+    keepalived_vip_activation_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      config_checksum: >-
+        {{ 'drift' if test_drift | default('') == 'keepalived' and test_preflight_count > 1 else 'keepalived' }}
+      instances:
+        - name: OPENBAO
+          vip: "{{ openbao_service_vip }}/24"
+          priority: "{{ test_priority }}"
+      cluster_members:
+        - name: bao-1
+        - name: bao-2
+        - name: bao-3

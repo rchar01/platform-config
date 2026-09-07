@@ -1,0 +1,27 @@
+---
+- name: Default mocked rollback to unconfirmed
+  ansible.builtin.set_fact:
+    keepalived_vip_activation_rollback_confirmed: false
+
+- name: Exercise the shared rollback rescue contract
+  block:
+    - name: Attempt mocked rollback on every member
+      ansible.legacy.systemd_service:
+        name: keepalived.service
+        enabled: false
+        state: stopped
+      register: test_rollback_result
+
+    - name: Require a reachable successful mocked rollback
+      ansible.builtin.assert:
+        that:
+          - not test_rollback_result.unreachable | default(false)
+          - test_rollback_result is succeeded
+
+    - name: Record strictly confirmed mocked rollback
+      ansible.builtin.set_fact:
+        keepalived_vip_activation_rollback_confirmed: true
+  rescue:
+    - name: Preserve unconfirmed mocked rollback
+      ansible.builtin.set_fact:
+        keepalived_vip_activation_rollback_confirmed: false

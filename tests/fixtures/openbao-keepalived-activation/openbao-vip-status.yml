@@ -1,0 +1,20 @@
+---
+- name: Probe mocked endpoint from every OpenBao member
+  activation_probe:
+  register: test_endpoint_result
+
+- name: Exercise a failed global endpoint assertion
+  ansible.builtin.assert:
+    that: not test_global_endpoint_failure | default(false)
+    fail_msg: Mocked global endpoint qualification failed.
+  run_once: true
+
+- name: Reject failed or unreachable endpoint observations
+  ansible.builtin.assert:
+    that:
+      - not test_endpoint_result.unreachable | default(false)
+      - test_endpoint_result is succeeded
+      - test_owner_count | default(1) == 1
+      - test_stable_owner | default(true)
+      - test_strict_tls | default(true)
+    fail_msg: Mocked endpoint qualification failed.

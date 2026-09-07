@@ -1,0 +1,23 @@
+---
+- name: Require current managed Keepalived runtime firewall protection
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Require active firewalld at the Keepalived service boundary
+      ansible.builtin.command:
+        argv: [systemctl, is-active, firewalld.service]
+      register: keepalived_vip_runtime_firewall_active
+      changed_when: false
+      check_mode: false
+      failed_when: keepalived_vip_runtime_firewall_active.rc != 0 or keepalived_vip_runtime_firewall_active.stdout != 'active'
+
+    - name: Require every current Keepalived peer rule in runtime firewalld
+      ansible.builtin.command:
+        argv:
+          - firewall-cmd
+          - '--query-rich-rule=rule family="ipv4" source address="{{ item }}/32" protocol value="112" accept'
+      register: keepalived_vip_runtime_firewall_rule
+      changed_when: false
+      check_mode: false
+      failed_when: keepalived_vip_runtime_firewall_rule.rc != 0 or keepalived_vip_runtime_firewall_rule.stdout != 'yes'
+      loop: "{{ keepalived_vip_instances | map(attribute='peers') | flatten | unique | sort }}"

@@ -1,0 +1,7 @@
+---
+- name: Observe staged Keepalived without suppressing errors or unreachable reads
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Run complete read-only Keepalived activation preflight
+      ansible.builtin.include_tasks: activation_preflight_checks.yml

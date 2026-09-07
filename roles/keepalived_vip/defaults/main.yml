@@ -10,6 +10,7 @@ keepalived_vip_config_validate_command: "{{ keepalived_vip_binary_path }} -t -f 
 keepalived_vip_service_name: keepalived.service
 keepalived_vip_service_enabled: false
 keepalived_vip_service_state: stopped
+keepalived_vip_activation_rollback_confirmed: false
 keepalived_vip_service_drop_in_dir: /etc/systemd/system/keepalived.service.d
 keepalived_vip_service_drop_in_path: "{{ keepalived_vip_service_drop_in_dir }}/platform.conf"
 

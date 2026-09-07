@@ -1,0 +1,20 @@
+---
+- name: Count mocked active lifecycle inspections
+  ansible.builtin.set_fact:
+    test_preflight_count: "{{ test_preflight_count | default(0) | int + 1 }}"
+
+- name: Reject mocked invalid active marker
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname not in test_invalid_marker_hosts | default([])
+    fail_msg: Mocked active marker is invalid.
+
+- name: Record mocked active lifecycle evidence
+  ansible.builtin.set_fact:
+    openbao_active_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      node_id: "{{ inventory_hostname }}"
+      cluster_id: "{{ test_marker_cluster | default('test-cluster') }}"
+      cluster_signature: "{{ 'a' * 64 }}"
+      ca_checksum: >-
+        {{ 'drift' if test_drift | default('') == 'cluster' and test_preflight_count > 1 else 'ca' }}

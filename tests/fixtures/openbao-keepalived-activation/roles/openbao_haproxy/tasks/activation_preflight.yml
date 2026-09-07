@@ -1,0 +1,7 @@
+---
+- name: Record mocked staged HAProxy evidence
+  ansible.builtin.set_fact:
+    openbao_haproxy_activation_observation:
+      inventory_host: "{{ inventory_hostname }}"
+      config_checksum: >-
+        {{ 'drift' if test_drift | default('') == 'haproxy' and test_preflight_count > 1 else 'haproxy' }}

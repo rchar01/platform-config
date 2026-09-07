@@ -70,8 +70,11 @@ keepalived_vip_instances:
 
 Leave `keepalived_vip_service_enabled: false` and
 `keepalived_vip_service_state: stopped` until the owning service plan has passed
-direct-backend, HAProxy, network, firewall, and observer gates. The role does not
-perform runtime failback, failure injection, or VIP activation testing.
+direct-backend, HAProxy, network, and firewall gates. Standalone development
+OpenBao acceptance does not depend on observers; production monitoring remains
+required. The owning activation playbook, not normal role convergence, performs
+VIP qualification. Failure injection and runtime failback qualification remain
+separately authorized operations.
 
 The default 300-second `preempt_delay` requires a recovered preferred node to
 remain eligible while observing a lower-priority owner before it can reclaim the
@@ -81,6 +84,119 @@ the delay and then fails again.
 
 Callers must run the repository's `firewalld` role first so its package and
 Python dependencies exist before this role stages peer-scoped VRRP rules.
+Lifecycle selectors are strict booleans, even when this role is disabled.
+`keepalived_vip_service_state` accepts only `stopped` or `started`, and boot
+enablement must be true exactly when the state is `started`. Disabled callers
+cannot request activation. Active convergence with managed firewall policy
+requires enabled/started firewalld inventory settings and an actually active
+firewalld service before any convergence. Repository-policy validation runs only
+in the normal enabled convergence path, not as an implicit role dependency.
+The explicit `firewalld_service_enabled` and `firewalld_service_state` values
+are authoritative; the legacy `firewalld_enabled` default-source flag is not an
+additional activation gate.
+Immediately before active service management and again inside the reload handler,
+the shared read-only `runtime_firewall_guard.yml` requires running firewalld and
+every current peer's exact runtime rich rule. It queries the default zone, matching
+the role's existing firewall management. Loss of connectivity, firewalld, or a
+required rule prevents the service operation; an earlier passing guard is not
+reused as evidence.
+
+## Activation Entry Points
+
+The owning activation playbook must run this read-only entry point on every
+candidate before approval and again immediately after approval, without normal
+role convergence between those observations:
+
+```yaml
+- name: Observe staged Keepalived activation candidates
+  ansible.builtin.include_role:
+    name: keepalived_vip
+    tasks_from: activation_preflight.yml
+```
+
+Run with target privileges sufficient to inspect root-owned configuration, query
+RPM and firewalld, and execute `runuser`. Configuration must be enabled and track
+`haproxy.service`; Keepalived must actually be inactive and boot-disabled while
+HAProxy must actually be active and boot-enabled. This entry point never installs
+packages, writes templates, reloads systemd, starts services, or repairs firewall
+policy. The preflight wrapper explicitly disables inherited `ignore_errors` and
+`ignore_unreachable` for its entire task chain. Callers must use that wrapper,
+not its internal task files, and must not override or bypass these protections.
+
+Preflight verifies the exact installed NEVRA, package ownership of the selected
+binary, SHA-256 RPM header identity, and non-configuration package files using
+`rpm -V --noscripts --noconfig`. Configuration, script, and drop-in must be regular
+root:root files with the role's exact modes and SHA-256 equality to freshly
+rendered current inventory. It also checks native configuration and Bash syntax,
+executes readiness as the configured script user/group, and requires up
+interfaces, exact source addresses, VIP routes through the configured interfaces,
+and VIP absence across **all** local IPv4 interfaces, not just the VRRP interface.
+Managed firewall mode additionally requires a valid current manifest, active
+firewalld, and every expected peer rule in both runtime and permanent policy.
+
+Activation supports the native service contract observed directly from
+`keepalived-0:2.2.8-9.el10.x86_64`: `keepalived.service`, executable
+`/usr/sbin/keepalived`, default config `/etc/keepalived/keepalived.conf`, packaged
+fragment `/usr/lib/systemd/system/keepalived.service`, and only the role-owned
+`/etc/systemd/system/keepalived.service.d/platform.conf` drop-in. Noncanonical
+service paths are rejected, even if their files happen to match the templates.
+The fragment must belong to the exact verified RPM. The loaded manager's
+`FragmentPath`, `DropInPaths`, and `NeedDaemonReload` must match those files with
+no additional drop-ins or pending reload. Its `ExecStart` must be the single
+native `/usr/sbin/keepalived --dont-fork $KEEPALIVED_OPTIONS` command.
+
+The only allowed environment file is `/etc/sysconfig/keepalived`, and its only
+non-comment, nonempty line must be exactly `KEEPALIVED_OPTIONS="-D"`. This rejects
+alternate config files, network namespaces, and options that retain VIPs on stop
+without evaluating environment content as a shell script. The loaded unit must
+have empty `Environment`, `PassEnvironment`, and `UnsetEnvironment` properties.
+The unit and sysconfig must be regular root:root files with mode `0644`; both
+checksums are bound into approval evidence. This deliberately narrow contract
+rejects unreviewed vendor-unit or local option changes instead of guessing their
+semantics. Unit and property formats were checked in a disposable container using
+the exact Keepalived RPM and systemd `257-23.el10_2.2.rocky.0.1`; that does not
+qualify a completely pinned Rocky 10.1 environment or managed-host networking.
+
+Successful preflight publishes `keepalived_vip_activation_observation` containing
+`inventory_host`, `instances`, `cluster_members`, `service_name`, artifact paths,
+`package_nevra`, `package_checksum`, `binary_checksum`, `config_checksum`,
+`script_checksum`, `drop_in_checksum`, `unit_checksum`, `sysconfig_checksum`,
+`systemd_properties`, `firewalld_manage`, and
+`firewalld_manifest_checksum` (`unmanaged` when not managed). `package_checksum`
+is the installed RPM header SHA-256, not the digest of a downloaded RPM file or
+independent provenance evidence. All artifact checksums are SHA-256. A new pass
+clears the previous observation before validation and only publishes the complete
+observation on success. The caller must preserve the first complete observation,
+bind approval to it, and require equality with the second observation on every
+host before starting any service. These are point-in-time checks, not a lock
+against concurrent changes or a substitute for cluster-wide ownership checks.
+
+For recovery, use `tasks_from: activation_rollback.yml`. It resets
+`keepalived_vip_activation_rollback_confirmed` to false, stops and boot-disables
+Keepalived, requires observed inactive/disabled service states, and proves every
+configured VIP absent on all local interfaces. Only then does it set the fact to
+true. Ordinary failures are rescued with confirmation false; unreachable hosts
+must also be treated as unconfirmed by the caller. Check mode cannot confirm
+rollback. The service observation loop and every individual result must succeed,
+be reachable and unskipped, and contain the exact expected return code and state.
+A later successful observation cannot erase an earlier unreachable result.
+The owning playbook must aggregate confirmations across the entire
+candidate set and fail/report recovery as incomplete if any fact is false or
+missing, or any host is unreachable. Rollback does not delete addresses manually,
+alter other services, or claim successful cluster-wide recovery itself.
+
+Focused synthetic checks (no managed hosts or private configuration):
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -q tests/python/test_keepalived_vip_render.py
+```
+
+These execute the Ansible task chains with real template rendering, file metadata,
+checksums, and Bash syntax checks in an isolated user namespace. RPM, systemd,
+network, native Keepalived validation, and script-identity execution use controlled
+doubles. Integration fixtures relocate canonical paths only in scratch role
+copies; separate tests exercise the unchanged canonical-path guards. These checks
+do not establish live service, native package, or network readiness.
 
 Node-local ownership metrics and the shared external observer integration remain
 owned by the planned `platform_external_probe` slice. They must be detect-only
