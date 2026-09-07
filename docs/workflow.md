@@ -15,6 +15,9 @@ The handoff from `platform-infra` to `platform-config` is inventory-shaped data:
 
 ## Managed-Host SSH Handoff
 
+See [Ansible Host Bootstrap](ansible-host-bootstrap.md) for the end-to-end command
+sequence with fictional hosts, documentation addresses, and bundle input JSON.
+
 Ansible can configure a new VM only after the VM already provides a working SSH
 and Python boundary. `playbooks/bootstrap.yml` is repeatable desired-state
 automation; it is not a replacement for initial account and access preparation.

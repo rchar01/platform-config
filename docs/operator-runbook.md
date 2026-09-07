@@ -250,7 +250,8 @@ bundle generator does not create keys, authenticate host keys, contact GitLab,
 or upload variables.
 
 See [Platform Workflow](workflow.md#managed-host-ssh-handoff) for the complete
-repository and custody sequence.
+repository and custody sequence, and [Ansible Host Bootstrap](ansible-host-bootstrap.md)
+for sanitized key-generation, target preparation, and bundle command examples.
 
 ## Outside-Git Secret Store
 

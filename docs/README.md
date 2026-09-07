@@ -13,6 +13,8 @@ and other secrets belong outside Git.
 
 - [Operator Runbook](operator-runbook.md): End-to-end prerequisites, environment
   bring-up order, service application, smoke tests, and day-2 operations.
+- [Ansible Host Bootstrap](ansible-host-bootstrap.md): Sanitized commands for
+  per-VM keys, target-local preparation, host trust, and GitLab SSH bundles.
 - [Platform Workflow](workflow.md): Repository responsibilities, managed-host SSH
   handoff, and the boundary between desired state, migrations, maintenance, and
   rebuilds.
