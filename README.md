@@ -107,8 +107,26 @@ rotation, and recovery gates have been completed and normal onboarding has been
 separately authorized. These workflows are not evidence of live qualification.
 
 `make smoke-openbao ENV=dev LIMIT=openbao` checks strict direct-node status and
-all three HAProxy paths only, for the pre-VIP phase. The separately approved
-`make activate-openbao-keepalived ENV=dev LIMIT=openbao` activates the staged VIP;
+all three HAProxy paths only, for the pre-VIP phase. The `platform-tools` facade
+`platform-openbao-edge` provides `haproxy-plan`, `haproxy-activate`,
+`keepalived-plan`, `keepalived-activate`, `smoke`, and `vip-smoke` through the same
+fixed core. The four plan/activation commands require `--plan` alongside
+`--source`, `--inventory`, and `--controller-vars`. Operator activation uses exact
+TTY approval; CI uses the matching same-pipeline protected manual job without a
+TTY. Existing direct interactive Make activation targets remain available.
+
+Plans expire after 1800 seconds and bind clean committed source, private
+inventory, environment, lane, and live evidence, plus CI image/project/pipeline
+and plan-job identity. Commit approved readiness as exactly true on all hosts
+before planning an activation; setting it after a read-only readiness-false plan
+invalidates that plan. Operator plans stay outside Git in an existing owner-only
+`0700` directory, published as new non-overwritten `0600` files; CI uses a fixed
+restricted artifact. Target guards consume plans before final preflight and
+exclude only supported HAProxy/Keepalived activations, not other lifecycle work.
+Do not run other lifecycle operations concurrently. Retained guards require
+reviewed recovery; never delete consumed records or reuse a consumed plan.
+
+The separately approved Keepalived activation starts the staged VIP;
 `make smoke-openbao-vip ENV=dev LIMIT=openbao` adds active Keepalived desired and
 actual state, repeated exact single-owner checks on the configured interface,
 strict service-DNS TLS through the forced VIP and actual DNS path, and cluster
@@ -116,7 +134,11 @@ identity checks. Both smoke targets require the complete three-host cluster.
 
 Follow the [OpenBao VIP acceptance procedure](docs/operator-runbook.md#openbao-vip-acceptance)
 for network prerequisites, per-activation approval, backup-priority-first startup,
-Keepalived-only rollback, and the post-success private desired-state update.
+Keepalived-only rollback, and the post-success reviewed private desired-state
+commit. Neither operator nor CI activation automatically mutates or pushes private
+source; CI qualification, rollback, and reporting remain in CI. See
+[OpenBao Edge Plans](docs/operator-runbook.md#openbao-edge-plans) for the two lanes
+and [Guard Recovery](docs/operator-runbook.md#openbao-edge-guard-recovery).
 Never run the ordinary `playbooks/openbao.yml` staging playbook against an active
 or initialized cluster, including as a second apply after activation.
 

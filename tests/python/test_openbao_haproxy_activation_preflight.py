@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -162,15 +163,74 @@ def test_activation_preflight_command_and_caller_contract(repo_root: Path) -> No
     assert defaults["openbao_haproxy_firewalld_manage"] is True
     assert "firewalld_dependencies_ready" not in defaults
     assert yaml.safe_load((repo_root / ROLE / "meta/main.yml").read_text())["dependencies"] == []
-    plays = yaml.safe_load((repo_root / "playbooks/maintenance/openbao-haproxy-activate.yml").read_text())
+    caller = repo_root / "playbooks/maintenance/openbao-haproxy-activate.yml"
+    plays = yaml.safe_load(caller.read_text())
+    preflights = []
     for play in plays[:2]:
-        assert play["gather_facts"] is True
-        includes = [task["ansible.builtin.include_role"] for task in play["tasks"]
+        expanded = []
+        for task in play["tasks"]:
+            if "ansible.builtin.include_tasks" in task:
+                if task["ansible.builtin.include_tasks"] == "tasks/openbao-haproxy-preflight.yml":
+                    assert "when" not in task
+                    assert "run_once" not in task
+                expanded.extend(yaml.safe_load(
+                    (caller.parent / task["ansible.builtin.include_tasks"]).read_text(),
+                ))
+            else:
+                expanded.append(task)
+        includes = [task["ansible.builtin.include_role"] for task in expanded
                     if "ansible.builtin.include_role" in task]
         assert {"name": "openbao_haproxy", "tasks_from": PREFLIGHT} in includes
         assert not any(include["name"] == "firewalld" for include in includes)
-    first = plays[0]["tasks"]
+        setup = next(i for i, task in enumerate(expanded) if "ansible.builtin.setup" in task)
+        assert not {"when", "run_once", "delegate_to"} & expanded[setup].keys()
+        # The role's real import command above must have fresh target Python facts
+        # on both the initial preflight and the immediate pre-activation recheck.
+        for i, task in enumerate(expanded):
+            if task.get("ansible.builtin.include_role") == {
+                "name": "openbao_haproxy", "tasks_from": PREFLIGHT,
+            }:
+                assert setup < i
+        preflights.append(expanded)
+    first = preflights[0]
     preflight = next(i for i, task in enumerate(first) if task.get("ansible.builtin.include_role") ==
                      {"name": "openbao_haproxy", "tasks_from": PREFLIGHT})
     approval = next(i for i, task in enumerate(first) if "ansible.builtin.pause" in task)
     assert preflight < approval
+
+
+def test_postactivation_boot_enablement_without_service_name(
+    repo_root: Path, tmp_path: Path, command_runner: CommandRunner,
+) -> None:
+    plays = yaml.safe_load((repo_root / "playbooks/maintenance/openbao-haproxy-activate.yml").read_text())
+    task = next(
+        task for play in plays for block in play["tasks"] for task in block.get("block", [])
+        if task.get("name") == "Inspect local OpenBao HAProxy boot enablement"
+    )
+    assert task["ansible.builtin.command"]["argv"][0] == "systemctl"
+    argv_log = tmp_path / "systemctl-argv"
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(
+        '#!/bin/sh\n'
+        'printf "%s\\n" "$@" > "$HAPROXY_TEST_ARGV"\n'
+        'printf "enabled\\n"\n',
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    # Execute only the real postactivation command, without loading role defaults
+    # or calling a real service manager. PATH contains only the fixture executable.
+    playbook = tmp_path / "boot-enablement.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "localhost", "gather_facts": False,
+        "vars": {
+            "ansible_python_interpreter": sys.executable,
+            "openbao_haproxy_service_name": "{{ undef('Role defaults are not public') }}",
+        },
+        "environment": {"PATH": str(tmp_path), "HAPROXY_TEST_ARGV": str(argv_log)},
+        "tasks": [task],
+    }]), encoding="utf-8")
+    result = command_runner.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook)],
+    ).assert_success()
+    assert argv_log.read_text().splitlines() == ["is-enabled", "haproxy.service"]
+    assert "changed=0" in result.stdout, result.diagnostics()

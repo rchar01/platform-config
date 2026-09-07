@@ -214,6 +214,16 @@ hostname, the actual controller source address and resolved hostname, the VM
 destination address and SSH port, and an absolute root-controlled public-key
 path. `apply` additionally requires `--confirm <hostname>:rocky`.
 
+Use `check` before preparation as well as afterward. It collects independent
+prerequisite failures instead of stopping at the first one, reports an absent
+`rocky` account as `NEEDS PREPARATION`, and marks dependent checks `SKIPPED`.
+Missing tools are counted once; checks requiring them are skipped.
+Account checks stop at the first account conflict; unrelated prerequisite
+checks still run. The final summary counts failed and skipped check groups,
+and any failure or skip returns nonzero with `Result: NOT READY`. Invalid
+arguments and non-root execution still stop immediately. `apply`, including
+its final verification, remains fail-fast and does not bypass prerequisites.
+
 `check` and the successful final verification in `apply` print one normalized,
 copy-ready SSH host-key line bound to `--server-address` and `--server-port`, as
 well as its SHA-256 fingerprint. The same VM host public key remains available
@@ -1395,23 +1405,27 @@ desired state only after the approved firewall transition succeeds. Do not rerun
 ordinary OpenBao staging to enable the firewall on an active cluster.
 
 With firewalld active and Keepalived still stopped, set
-`openbao_haproxy_activation_ready: true` for the separately approved client-edge
-activation and run:
+`openbao_haproxy_activation_ready: true` on all three hosts in reviewed, committed
+private inventory for the separately approved client-edge activation. Use the
+[planned edge workflow](#openbao-edge-plans) below, or the retained direct
+interactive entry point:
 
 ```bash
 make activate-openbao-haproxy ENV=dev LIMIT=openbao
 ```
 
 The approval binds the active OpenBao identity to each node's staged HAProxy
-package, configuration, backend CA, and managed firewalld manifest. A failed
-activation or routing check stops and disables every reachable HAProxy service.
-If any host is unreachable, treat its HAProxy state as unknown: recover access,
-run `sudo systemctl disable --now haproxy.service` there, verify it is inactive
-and disabled, and rerun the guarded activation from the stopped contract.
+package, configuration, backend CA, and managed firewalld manifest, together with
+the source-bound plan digest. A failed activation or routing check stops and
+disables every reachable HAProxy service. Unreachable or unverified hosts retain
+their edge guards and require [reviewed recovery](#openbao-edge-guard-recovery),
+not a blind retry. A consumed plan cannot be reused even after verified rollback.
 
-After success, set the normal private HAProxy service contract to enabled and
-started, close its activation gate, and keep Keepalived disabled until the
-separate [OpenBao VIP acceptance](#openbao-vip-acceptance) prerequisites and
+After success, review and commit `openbao_haproxy_service_enabled: true`,
+`openbao_haproxy_service_state: started`, and
+`openbao_haproxy_activation_ready: false` in private desired state. Neither the
+operator command nor CI mutates or pushes that source. Keep Keepalived disabled
+until the separate [OpenBao VIP acceptance](#openbao-vip-acceptance) prerequisites and
 per-activation approval are satisfied. Monitoring observers do not block
 standalone dev acceptance; production monitoring remains required.
 
@@ -1463,6 +1477,147 @@ Create in GitLab, store outside Git, and rotate from GitLab when exposed or no l
 Grafana credentials for the replacement platform remain outside Git and are not
 consumed until the HA role and named-account bootstrap workflow exist.
 
+### OpenBao Edge Plans
+
+The `platform-tools` command `platform-openbao-edge` is the human and CI facade
+for the fixed core launcher. It does not add orchestration, inject approval, or
+accept arbitrary Ansible arguments. Every subcommand takes absolute `--source`
+(the reviewed `platform-config` checkout), `--inventory`, and `--controller-vars`
+paths. Keep controller vars owner-private and secrets outside Git.
+
+| Subcommand | Plan File |
+| --- | --- |
+| `haproxy-plan` | Required `--plan` output path |
+| `haproxy-activate` | Required `--plan` input path |
+| `keepalived-plan` | Required `--plan` output path |
+| `keepalived-activate` | Required `--plan` input path |
+| `smoke` | No `--plan`; direct-node and all-three-HAProxy pre-VIP checks |
+| `vip-smoke` | No `--plan`; active desired-state and VIP checks |
+
+Plan mode performs live read-only preflight, not Ansible `--check`; it does not
+acquire target guards or start services. It accepts a boolean readiness gate of
+false for inspection. **That is not an activation-ready plan source.** Activation
+requires the corresponding `openbao_haproxy_activation_ready` or
+`openbao_keepalived_activation_ready` to be exactly boolean true on every host.
+For an approved activation, arm that declaration through a reviewed private commit
+**before** generating the plan, leaving the service being activated desired
+disabled/stopped. Changing readiness after planning changes the private Git SHA
+and invalidates the plan. A read-only plan made with readiness false must be
+replaced after the approved readiness commit, not reused or edited.
+
+Both source and private inventory checkouts must be clean and committed, and the
+inventory must be tracked. The shared action/plugin contract uses schema `1`, a
+unique plan ID, a SHA-256 digest, and a fixed 1800-second (30-minute) lifetime. It
+binds the operation, exact three hosts, live evidence, source commit, private
+inventory commit and relative path, environment, and execution lane. The GitLab
+lane additionally binds the digest-pinned image, project, pipeline, and matching
+plan-job identity. An operator plan is not a CI artifact or vice versa. Expiry,
+source or evidence drift, or a lane mismatch requires a fresh plan.
+
+Operator plan files must remain **outside every Git repository**, including
+private and planning repositories. Choose a new absolute filename in an already
+existing, current-owner directory with exact mode `0700` and no symlink path
+components. Core creates the file exclusively with mode `0600`; it never
+overwrites a prior plan. Plans contain operational evidence and are not public
+documentation. The CI exception is the fixed restricted artifact path supplied
+by the reviewed job, not an operator-selected artifact location.
+
+For example, after prerequisite approval and the private readiness commit, use
+explicit sanitized paths in the prepared outside-Git directory:
+
+```bash
+platform-openbao-edge haproxy-plan \
+  --source /absolute/path/platform-config \
+  --inventory /absolute/private/config/dev/hosts.yml \
+  --controller-vars /absolute/secrets/dev-controller-vars.yml \
+  --plan /absolute/outside-git/openbao-edge/haproxy-activation.json
+```
+
+Review the plan, then within its lifetime run:
+
+```bash
+platform-openbao-edge haproxy-activate \
+  --source /absolute/path/platform-config \
+  --inventory /absolute/private/config/dev/hosts.yml \
+  --controller-vars /absolute/secrets/dev-controller-vars.yml \
+  --plan /absolute/outside-git/openbao-edge/haproxy-activation.json
+```
+
+Interactive activation requires a real TTY and the exact displayed
+`activate-openbao-<operation>|<sorted-hosts>|<plan-digest>` approval, not a generic
+yes. For Keepalived use `keepalived-plan` and `keepalived-activate` with a separate
+new plan after its prerequisites and readiness commit. The existing
+`make activate-openbao-haproxy ENV=dev LIMIT=openbao` and
+`make activate-openbao-keepalived ENV=dev LIMIT=openbao` remain direct interactive
+entry points: they prepare an in-memory plan and require the same exact approval
+and target guard. They do not require a new Make workflow.
+
+In CI, use the reviewed protected default-branch web pipeline with immutable
+source and image identities. Review the fixed restricted plan artifact and
+manually start the matching activation job in the **same pipeline** before
+expiry. CI uses no TTY or terminal continuation; planning, manual job start,
+activation, qualification, failure rollback when applicable, and reporting all
+stay in that lane. A manual job does not bypass readiness, plan validation, final
+preflight, or the target guard. CI may use the facade or the same fixed internal
+`openbao-*` launcher routes with `--plan`; see
+[Fixed Operations](rke2-operations.md#openbao-edge-lanes). Do not transfer a failed
+CI activation to a terminal retry.
+
+The operation report must distinguish qualification from verified or unknown
+rollback and present the lifecycle keys for the reviewed private desired-state
+handoff. Successful activation does not automatically edit, commit, or push
+inventory. Review and commit the service's enabled/started contract and reset
+its readiness gate to false before subsequent smoke or the next edge plan.
+For CI, consume that reviewed revision in the corresponding fixed smoke job;
+do not switch to a terminal to finish qualification. The immutable activation
+source remains the pre-activation disabled/stopped declaration; activation's
+own qualification runs before this source handoff. The separate firewall
+enablement prerequisite remains mandatory and is not part of either edge route.
+
+### OpenBao Edge Guard Recovery
+
+`roles/openbao/files/platform-openbao-edge-guard` runs as target root through the
+fixed orchestration. Its state root is
+`/var/lib/platform-config/openbao-edge-guard`, with no path override. The root,
+`active/`, and `consumed/` directories are root-owned mode `0700`; records and the
+`mutex` file are root-owned mode `0600`. The mutex serializes short filesystem
+updates; `active/` provides persistent exclusion. `active/owner.json`
+records the operation, plan ID, and invocation nonce. `consumed/<plan_id>` uses
+the plan UUID's 32-character lowercase hex form and permanently records the same
+ownership tuple.
+
+Activation acquires guards on all three hosts in sorted order and consumes the
+plan **before final preflight**, not merely before service startup. A final
+preflight rejection can therefore leave a consumed plan and retained guards
+without having started a service. Guard ownership survives process exit and
+reboot. There is no stale timeout, same-owner reacquisition, automatic unlock,
+or consumed-record deletion.
+
+This coordinates only the supported HAProxy and Keepalived activation routes.
+It does not exclude root, out-of-band commands, ordinary role convergence, or
+rolling maintenance. **Do not run any other lifecycle operation concurrently**,
+including firewall, PKI, restart, convergence, or recovery operations. The guard
+is not a general cluster lock or a substitute for that operational exclusion.
+
+After successful cluster qualification, the owning invocation releases its
+guards. After failure, a host's guard is released only after its independently
+verified service-specific rollback. Other hosts' unknown or unreachable state
+remains unverified and their records remain retained; one released host is not
+proof of cluster recovery. Partial acquisition, interruption, final-preflight
+failure, or an unverified release requires separately reviewed operator recovery.
+
+Recovery must establish that no original operation is still running, restore
+access to every member, inspect retained ownership and consumed records, and
+reconcile actual service state against the failed operation. Verify HAProxy
+inactive/disabled for HAProxy rollback; for Keepalived rollback also verify VIP
+absence on **all** local interfaces without manual address deletion. Preserve
+the incident evidence outside this public repository. Release retained active
+ownership only through the separately approved recovery procedure after its
+state and ownership checks; there is no generic unlock command. Never delete
+`consumed/` records or reuse the plan. Even success or verified rollback leaves
+the plan consumed; any retry requires a fresh plan and fresh authorization after
+recovery is complete.
+
 ### OpenBao VIP Acceptance
 
 Standalone dev OpenBao acceptance has no monitoring-stack or observer
@@ -1485,12 +1640,15 @@ Before each Keepalived activation:
    firewall policy, and inactive/disabled service state on every member. Resolve
    any unknown or partial state through separately reviewed recovery first.
 4. Set `openbao_keepalived_activation_ready: true` only in private inventory for
-   this activation. Keep the pre-activation desired service state
+   this activation on every host, and commit the reviewed declaration before
+   generating its activation plan. Keep the pre-activation desired service state
    `keepalived_vip_service_enabled: false` and
    `keepalived_vip_service_state: stopped`. The readiness gate is not a substitute
-   for fresh exact interactive approval.
+   for fresh exact TTY approval or the matching same-pipeline manual CI job.
 
-Run with an explicit limit selecting exactly all three OpenBao hosts and no
+Use `keepalived-plan` and `keepalived-activate` as described in
+[OpenBao Edge Plans](#openbao-edge-plans), or run the direct interactive entry
+point with an explicit limit selecting exactly all three OpenBao hosts and no
 unrelated hosts:
 
 ```bash
@@ -1498,18 +1656,21 @@ make activate-openbao-keepalived ENV=dev LIMIT=openbao
 ```
 
 The playbook binds approval to the selected hosts, VIP, active cluster identity,
-and exact observed evidence digest, then repeats the read-only gates and rejects
-drift before startup. Backup-priority members start before the preferred member.
+and source-bound evidence digest, then acquires the target guards, consumes the
+plan, repeats the read-only gates, and rejects drift before startup.
+Backup-priority members start before the preferred member.
 Any activation or postqualification failure triggers Keepalived-only rollback
 on all reachable members, not just the failed node; OpenBao and HAProxy remain
 untouched. Recovery requires observed inactive/disabled Keepalived and VIP
 absence on every local interface. Unknown or unreachable hosts must be reported
 as unverified, never as successfully rolled back. Recover access and verify
-those hosts through a separately reviewed recovery procedure before any retry;
-do not delete VIP addresses manually or rerun ordinary staging.
+those hosts and retained guards through the separately reviewed
+[recovery procedure](#openbao-edge-guard-recovery) before preparing a fresh plan;
+do not delete VIP addresses or consumed records manually or rerun ordinary staging.
 
-After successful activation, record the active contract in private desired state
-and close the one-activation gate:
+After successful activation, review and commit the active contract in private
+desired state and close the one-activation gate. Neither lane edits or pushes
+private source automatically:
 
 ```yaml
 keepalived_vip_service_enabled: true
@@ -1517,7 +1678,8 @@ keepalived_vip_service_state: started
 openbao_keepalived_activation_ready: false
 ```
 
-Then run the separate read-only VIP smoke:
+Then run the separate read-only VIP smoke in the same operational lane, using
+the reviewed active desired-state revision. For direct interactive operations:
 
 ```bash
 make smoke-openbao-vip ENV=dev LIMIT=openbao

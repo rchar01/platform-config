@@ -33,6 +33,35 @@
   tests or merged orchestration with live qualification.
 - `playbooks/openbao.yml` is pristine inactive staging only and is forbidden for
   active or initialized clusters. Do not use ordinary staging after activation.
+- `platform-tools` owns the `platform-openbao-edge` human/CI facade; keep its six
+  fixed routes in `scripts/platform-config-operation`, not a generic wrapper.
+  Both HAProxy and Keepalived use the shared schema-1 plan/action contract with
+  TTL 1800 seconds, clean committed source/private inventory identity, exact
+  environment/hosts/evidence/lane binding, and CI image/project/pipeline/plan-job
+  identity. The four facade plan/activation commands require `--plan`; existing
+  Make activation targets remain direct interactive entry points.
+- Plan mode is read-only and may inspect readiness false. Activation requires
+  exactly boolean true on all hosts: commit the reviewed readiness declaration
+  before planning an approved activation. Changing readiness after planning
+  invalidates the private inventory SHA. Operator approval is exact and TTY-bound;
+  CI is a matching same-pipeline protected manual job with no TTY continuation.
+- Operator activation plans stay outside every Git repository, not in the working
+  plan repo. Publish only a new `0600` file in an existing current-owner `0700`
+  non-symlink directory; never overwrite. CI uses only its fixed restricted
+  artifact. Do not expose plan evidence in public docs or reports.
+- The target-root guard at `/var/lib/platform-config/openbao-edge-guard` uses
+  `active/owner.json` and permanent `consumed/<plan_id>` records. Acquire across
+  all hosts and consume before final preflight. It coordinates only supported
+  HAProxy/Keepalived activation, not root, out-of-band, or rolling operations;
+  prohibit concurrent other lifecycle work. Partial acquisition, interruption,
+  unknown rollback, or unverified release retains affected records for reviewed
+  operator recovery. No automatic unlock or consumed-record deletion. Success or
+  per-host verified rollback releases owned guards, never plan consumption;
+  retries require fresh plans after recovery.
+- Keep CI planning, manual start, qualification, rollback, and reporting in CI.
+  Reports must show lifecycle handoff keys, but neither lane may automatically
+  mutate or push private desired state. Require reviewed private commits and keep
+  firewall readiness/enablement a separate prerequisite.
 - Keep `smoke-openbao` direct-node plus all-three-HAProxy only for the pre-VIP
   phase. `smoke-openbao-vip` imports that smoke and adds active desired Keepalived
   validation, actual active/enabled state on all three hosts, repeated exact
@@ -40,8 +69,8 @@
   TLS and actual DNS-path checks, and cluster identity agreement.
 - `activate-openbao-keepalived` requires an explicit full-cluster limit, private
   `openbao_keepalived_activation_ready: true`, and fresh exact approval for each
-  activation after network, peer VRRP, anti-spoofing, and duplicate-address
-  detection prerequisites. Start backup-priority members before the preferred
+  activation in its operator or CI lane after network, peer VRRP, anti-spoofing,
+  and duplicate-address detection prerequisites. Start backup-priority members before the preferred
   member. Roll back only Keepalived on all reachable hosts; require VIP absence
   on all local interfaces and report unknown/unreachable hosts as unverified.
 - After successful activation, record `keepalived_vip_service_enabled: true` and

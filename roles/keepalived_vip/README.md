@@ -103,6 +103,36 @@ reused as evidence.
 
 ## Activation Entry Points
 
+OpenBao uses `playbooks/maintenance/openbao-keepalived-activate.yml`, shared with
+the HAProxy schema-1 plan/action contract (TTL 1800 seconds). The
+`platform-tools` facade exposes `keepalived-plan` and `keepalived-activate` with
+required `--source`, `--inventory`, `--controller-vars`, and `--plan`; the existing
+Make activation target remains direct interactive. Plan mode is read-only and
+allows readiness false. Activation requires
+`openbao_keepalived_activation_ready: true` as an exact boolean on every host.
+Commit that reviewed declaration before planning an approved activation; a later
+readiness change invalidates the plan's private inventory SHA.
+
+Plans bind clean committed source/private inventory identity, environment,
+hosts, evidence, and lane, plus CI image/project/pipeline/plan-job identity.
+Operator approval is exact and TTY-bound; CI uses a matching same-pipeline
+protected manual job with no terminal continuation. Operator plans stay outside
+Git, published as new `0600` files in an existing current-owner `0700`
+non-symlink directory without overwrite. CI uses only its fixed restricted
+artifact. Plan files and evidence must not enter public documentation.
+
+The owning playbook acquires the shared target-root guard at
+`/var/lib/platform-config/openbao-edge-guard` on every host and consumes the plan
+before final preflight. Its `active/owner.json` and permanent
+`consumed/<plan_id>` records coordinate only supported HAProxy/Keepalived
+activations, not root, out-of-band changes, or rolling maintenance. Prohibit
+concurrent other lifecycle work. Partial acquisition, interruption, unknown
+rollback, or unverified release retains affected records for reviewed recovery.
+Success or per-host verified rollback releases only owned active guards; no
+automatic unlock, consumed-record deletion, or consumed-plan retry is permitted.
+Use a fresh plan after recovery. See
+[Guard Recovery](../../docs/operator-runbook.md#openbao-edge-guard-recovery).
+
 The owning activation playbook must run this read-only entry point on every
 candidate before approval and again immediately after approval, without normal
 role convergence between those observations:
@@ -184,6 +214,14 @@ The owning playbook must aggregate confirmations across the entire
 candidate set and fail/report recovery as incomplete if any fact is false or
 missing, or any host is unreachable. Rollback does not delete addresses manually,
 alter other services, or claim successful cluster-wide recovery itself.
+
+After successful OpenBao VIP activation, review and commit
+`keepalived_vip_service_enabled: true`, `keepalived_vip_service_state: started`,
+and `openbao_keepalived_activation_ready: false` in private desired state before
+VIP smoke. Neither operator nor CI automatically mutates or pushes that source.
+CI qualification, rollback, and reporting remain in CI, and reports must show
+these lifecycle handoff keys. Firewall readiness/enablement remains a separate
+prerequisite. Do not rerun pristine OpenBao staging on an active cluster.
 
 Focused synthetic checks (no managed hosts or private configuration):
 

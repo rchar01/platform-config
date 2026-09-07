@@ -1,0 +1,23 @@
+---
+# Call only after cluster qualification or this host's independently verified rollback.
+- name: Release the owned OpenBao edge guard after verified completion
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/openbao/files/platform-openbao-edge-guard') }}"
+      - release
+      - "{{ openbao_edge_prepared.plan.operation }}"
+      - "{{ openbao_edge_prepared.plan.plan_id }}"
+      - "{{ openbao_edge_nonce }}"
+  become: true
+  register: openbao_edge_release
+  changed_when: true
+  ignore_unreachable: true
+
+- name: Require verified OpenBao edge guard release
+  ansible.builtin.assert:
+    that:
+      - not openbao_edge_release.unreachable | default(false)
+      - openbao_edge_release.rc | default(1) == 0
+    fail_msg: OpenBao edge guard release is unverified; retain the guard for explicit reviewed recovery.

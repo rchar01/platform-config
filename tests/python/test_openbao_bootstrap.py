@@ -17,6 +17,7 @@ import yaml
 
 from ansible_test_helpers import assert_failed_with, run_playbook
 from conftest import CommandRunner
+from test_openbao_edge_guard import shadow_edge_tasks
 
 
 FIXTURE = "tests/fixtures/openbao-bootstrap/inventory.yml"
@@ -59,6 +60,10 @@ def _run_tty_playbook(
 ) -> tuple[int, str]:
     extra_vars: dict[str, object] = {"openbao_test_root": str(root)}
     extra_vars.update(variables or {})
+    environment = _environment(repo_root, path_prefix)
+    if playbook == HAPROXY_PLAYBOOK:
+        playbook = str(shadow_edge_tasks(repo_root, root, 'haproxy'))
+        environment['ANSIBLE_ACTION_PLUGINS'] = str(root / 'action_plugins')
     command = [
         "ansible-playbook",
         "-i",
@@ -78,7 +83,7 @@ def _run_tty_playbook(
     process = subprocess.Popen(
         command,
         cwd=repo_root,
-        env=_environment(repo_root, path_prefix),
+        env=environment,
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -102,10 +107,10 @@ def _run_tty_playbook(
             except OSError:
                 break
             rendered = output.decode(errors="replace")
-            match = re.search(approval_pattern, rendered)
+            match = re.search(r"Type exactly (" + approval_pattern + r")", rendered)
             if match and not approval_sent:
                 time.sleep(0.2)
-                os.write(master_fd, ((approval or match.group(0)) + "\r").encode())
+                os.write(master_fd, ((approval or match.group(1)) + "\r").encode())
                 approval_sent = True
     finally:
         os.close(master_fd)
@@ -190,11 +195,7 @@ def _complete_pattern() -> str:
 
 
 def _haproxy_pattern() -> str:
-    return (
-        r"activate-openbao-haproxy\|"
-        r"bao-bootstrap-1,bao-bootstrap-2,bao-bootstrap-3\|"
-        r"test-cluster\|[a-f0-9]{64}"
-    )
+    return r"activate-openbao-haproxy\|[a-f0-9]{32}\|[a-f0-9]{64}"
 
 
 def test_openbao_bootstrap_source_keeps_custody_outside_ansible(
@@ -206,6 +207,10 @@ def test_openbao_bootstrap_source_keeps_custody_outside_ansible(
             START_PLAYBOOK,
             COMPLETE_PLAYBOOK,
             HAPROXY_PLAYBOOK,
+            "playbooks/maintenance/tasks/openbao-haproxy-preflight.yml",
+            "playbooks/maintenance/tasks/openbao-edge-prepare.yml",
+            "playbooks/maintenance/tasks/openbao-edge-acquire.yml",
+            "playbooks/maintenance/tasks/openbao-edge-release.yml",
             "roles/openbao/tasks/bootstrap_pending_preflight.yml",
         )
     )
@@ -667,6 +672,8 @@ def test_openbao_bootstrap_completion_and_haproxy_activation(
         path_prefix=fake_bin,
     )
     assert haproxy_code == 0, haproxy_output
+    assert not list(isolated_test_dir.glob('*-edge-lock'))
+    assert len(list(isolated_test_dir.glob('*-consumed-*'))) == 3
 
 
 def test_openbao_completion_recovers_missing_pending_marker(
@@ -812,7 +819,7 @@ def test_openbao_completion_rejects_final_cluster_identity_drift(
     assert "cluster identity changed during persistent activation" in complete_output
 
 
-def test_openbao_haproxy_rejects_running_keepalived_after_approval(
+def test_openbao_haproxy_rejects_running_keepalived_before_approval(
     repo_root: Path, isolated_test_dir: Path
 ) -> None:
     start_code, start_output = _run_start_playbook(repo_root, isolated_test_dir)
@@ -830,7 +837,9 @@ def test_openbao_haproxy_rejects_running_keepalived_after_approval(
         variables={"openbao_haproxy_test_keepalived_running": True},
     )
     assert haproxy_code != 0
-    assert "safety gates changed after approval" in haproxy_output
+    assert "inactive edge services and ready firewall safety gates" in haproxy_output
+    assert 'Type exactly' not in haproxy_output
+    assert not list(isolated_test_dir.glob('*-edge-lock'))
 
 
 def test_openbao_haproxy_rejects_staged_config_drift_after_approval(
@@ -851,7 +860,8 @@ def test_openbao_haproxy_rejects_staged_config_drift_after_approval(
         variables={"openbao_haproxy_test_config_drift": True},
     )
     assert haproxy_code != 0
-    assert "staged evidence changed after approval" in haproxy_output
+    assert "Verify the same OpenBao HAProxy activation plan before mutation" in haproxy_output
+    assert not list(isolated_test_dir.glob('*-haproxy-rollback'))
 
 
 def test_openbao_status_rejects_active_marker_cluster_drift(
@@ -934,6 +944,7 @@ def test_openbao_haproxy_path_failure_rolls_back_every_host(
     )
     assert haproxy_code != 0
     assert "path qualification failed" in haproxy_output
+    assert not list(isolated_test_dir.glob('*-edge-lock'))
     for host in ("bao-bootstrap-1", "bao-bootstrap-2", "bao-bootstrap-3"):
         assert (
             isolated_test_dir / f"{host}-haproxy-rollback"
@@ -972,3 +983,4 @@ def test_openbao_haproxy_reports_unverified_path_rollback(
     assert (isolated_test_dir / "bao-bootstrap-1-haproxy-rollback").exists()
     assert not (isolated_test_dir / "bao-bootstrap-2-haproxy-rollback").exists()
     assert (isolated_test_dir / "bao-bootstrap-3-haproxy-rollback").exists()
+    assert sorted(path.name for path in isolated_test_dir.glob('*-edge-lock')) == ['bao-bootstrap-2-edge-lock']

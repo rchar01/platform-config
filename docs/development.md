@@ -103,6 +103,43 @@ enabled/started and `openbao_keepalived_activation_ready` reset to false. Never
 use ordinary `playbooks/openbao.yml` staging on an active or initialized cluster.
 See [OpenBao VIP Acceptance](operator-runbook.md#openbao-vip-acceptance).
 
+OpenBao edge orchestration is shared by the operator and GitLab lanes.
+`plugins/action/openbao_activation_plan.py` delegates schema `1`, 1800-second
+TTL, exclusive plan publication, and clean committed source/private inventory
+identity checks to `plugins/module_utils/platform_openbao_activation_plan.py`.
+Plans bind environment, exact hosts, evidence, and lane; CI additionally binds
+image/project/pipeline/plan-job identity. Read-only plan mode may inspect
+readiness false, but activation requires exactly boolean true on every host.
+Commit the approved readiness declaration before planning: a later private
+readiness commit invalidates the plan's inventory SHA.
+
+`platform-tools` owns the six-command `platform-openbao-edge` facade; this repo
+owns only its fixed `openbao-*` routes in `scripts/platform-config-operation`
+and Ansible orchestration. The four plan/activation routes require `--plan`.
+Exact TTY approval belongs to the operator lane; the matching same-pipeline
+protected manual job authorizes CI without a TTY. Existing direct interactive
+Make activation targets remain available. Operator plans stay outside every Git
+repository in an existing current-owner `0700` non-symlink directory, with a new
+`0600` file and no overwrite; CI uses only its fixed restricted artifact.
+
+`roles/openbao/files/platform-openbao-edge-guard` is the target-root exclusion
+and consumption boundary, not a controller lock. It writes `active/owner.json`
+and permanent `consumed/<plan_id>` records under the fixed
+`/var/lib/platform-config/openbao-edge-guard` root before final preflight.
+Only supported HAProxy/Keepalived activations participate; prohibit concurrent
+other lifecycle work. Partial acquisition, interruption, unknown rollback, and
+unverified release retain affected records for reviewed recovery. There is no
+automatic unlock or consumed-record deletion. Qualification or per-host verified
+rollback permits owned guard release, never plan reuse.
+
+Keep CI planning, manual start, qualification, rollback, and reporting in CI.
+Reports must present lifecycle handoff keys without exposing plan evidence.
+Neither lane edits or pushes private desired state: the active service contract
+and reset readiness gate require reviewed private commits. Firewall enablement
+remains a separate prerequisite. These are implementation contracts, not proof
+of live acceptance; see [OpenBao Edge Plans](operator-runbook.md#openbao-edge-plans)
+for the operational sequence and recovery boundary.
+
 Focused synthetic storage acceptance checks run inside the development
 container and do not contact hosts or mutate disks:
 

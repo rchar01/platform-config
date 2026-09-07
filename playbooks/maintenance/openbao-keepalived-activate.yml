@@ -6,180 +6,39 @@
   strategy: linear
   any_errors_fatal: true
   tasks:
-    # Repeat the same read-only gates after approval, without role reconvergence.
-    - &openbao_keepalived_preflight
-      name: Qualify exact OpenBao Keepalived activation candidates
-      block:
-        - name: Require exact explicit OpenBao Keepalived activation selection
-          ansible.builtin.assert:
-            that:
-              - groups.get('openbao', []) | length == 3
-              - ansible_limit is defined
-              - ansible_limit | default('') | length > 0
-              - >-
-                query('ansible.builtin.inventory_hostnames', ansible_limit) | sort
-                == groups.get('openbao', []) | sort
-              - ansible_play_hosts_all | sort == groups.get('openbao', []) | sort
-              - not ansible_check_mode
-              - openbao_keepalived_activation_ready | default(false) is boolean
-              - openbao_keepalived_activation_ready | default(false)
-              - openbao_haproxy_service_enabled | default(false) is boolean
-              - openbao_haproxy_service_enabled | default(false)
-              - openbao_haproxy_service_state | default('stopped') == 'started'
-              - keepalived_vip_service_enabled | default(false) is boolean
-              - not keepalived_vip_service_enabled | default(false)
-              - keepalived_vip_service_state | default('stopped') == 'stopped'
-            fail_msg: >-
-              OpenBao Keepalived activation requires explicit boolean readiness,
-              normal apply, exactly all three hosts, desired enabled/started
-              HAProxy, and desired disabled/stopped Keepalived on every host.
+    - name: Qualify exact OpenBao Keepalived activation candidates
+      ansible.builtin.include_tasks: tasks/openbao-keepalived-preflight.yml
 
-        - name: Gather current OpenBao activation host facts
-          ansible.builtin.setup:
+    - name: Prepare and approve the OpenBao Keepalived activation plan
+      ansible.builtin.include_tasks: tasks/openbao-edge-prepare.yml
+      vars:
+        openbao_edge_operation: keepalived
+        openbao_edge_evidence: "{{ openbao_keepalived_activation_evidence }}"
 
-        - name: Inspect exact active OpenBao lifecycle
-          ansible.builtin.include_role:
-            name: openbao
-            tasks_from: active_preflight.yml
+    - name: Acquire all OpenBao edge guards before final preflight
+      ansible.builtin.include_tasks: tasks/openbao-edge-acquire.yml
 
-        - name: Inspect exact staged OpenBao HAProxy evidence
-          ansible.builtin.include_role:
-            name: openbao_haproxy
-            tasks_from: activation_preflight.yml
+    - name: Requalify exact OpenBao Keepalived activation candidates
+      ansible.builtin.include_tasks: tasks/openbao-keepalived-preflight.yml
 
-        - name: Inspect exact staged Keepalived activation evidence
-          ansible.builtin.include_role:
-            name: keepalived_vip
-            tasks_from: activation_preflight.yml
+    - name: Verify the same OpenBao Keepalived activation plan before mutation
+      openbao_activation_plan:
+        action: verify
+        operation: keepalived
+        mode: "{{ openbao_activation_mode | default('interactive') }}"
+        path: "{{ openbao_activation_plan_path | default('') }}"
+        evidence: "{{ openbao_keepalived_activation_evidence }}"
+        plan: "{{ openbao_edge_prepared.plan }}"
+      run_once: true # noqa run-once[task]
+      no_log: true
 
-        - name: Inspect current OpenBao edge services
-          ansible.builtin.service_facts:
-
-        - name: Require actual active HAProxy and inactive Keepalived
-          ansible.builtin.assert:
-            that:
-              - >-
-                ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('state', '')
-                == 'running'
-              - >-
-                ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', '')
-                == 'enabled'
-              - >-
-                ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', '')
-                == 'stopped'
-              - >-
-                ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('status', '')
-                == 'disabled'
-            fail_msg: Activation requires actual enabled/running HAProxy and disabled/stopped Keepalived.
-
-        - name: Bind the single OpenBao VIP to each approved Keepalived instance
-          ansible.builtin.assert:
-            that:
-              - keepalived_vip_activation_observation.inventory_host == inventory_hostname
-              - openbao_haproxy_activation_observation.inventory_host == inventory_hostname
-              - keepalived_vip_activation_observation.instances | length == 1
-              - keepalived_vip_activation_observation.instances[0].vip.split('/')[0] == openbao_service_vip
-              - openbao_service_dns == hostvars[ansible_play_hosts_all[0]].openbao_service_dns
-              - openbao_client_port == hostvars[ansible_play_hosts_all[0]].openbao_client_port
-              - >-
-                keepalived_vip_activation_observation.cluster_members | map(attribute='name') | sort
-                == groups['openbao'] | sort
-              - keepalived_vip_track_service == openbao_haproxy_service_name | default('haproxy.service')
-              - openbao_client_port in keepalived_vip_track_ports
-            fail_msg: OpenBao activation requires one canonical VIP and its HAProxy tracking contract.
-
-        - name: Collect sorted OpenBao activation evidence
-          ansible.builtin.set_fact:
-            openbao_keepalived_cluster_evidence: >-
-              {{ groups['openbao'] | map('extract', hostvars, 'openbao_active_observation')
-                 | sort(attribute='inventory_host') | list }}
-            openbao_keepalived_haproxy_evidence: >-
-              {{ groups['openbao'] | map('extract', hostvars, 'openbao_haproxy_activation_observation')
-                 | sort(attribute='inventory_host') | list }}
-            openbao_keepalived_vip_evidence: >-
-              {{ groups['openbao'] | map('extract', hostvars, 'keepalived_vip_activation_observation')
-                 | sort(attribute='inventory_host') | list }}
-          run_once: true # noqa run-once[task]
-
-        - name: Require one exact marked OpenBao cluster and VIP
-          ansible.builtin.assert:
-            that:
-              - openbao_keepalived_cluster_evidence | map(attribute='inventory_host') | list == groups['openbao'] | sort
-              - openbao_keepalived_cluster_evidence | map(attribute='cluster_id') | unique | length == 1
-              - openbao_keepalived_cluster_evidence | map(attribute='cluster_signature') | unique | length == 1
-              - openbao_keepalived_cluster_evidence | map(attribute='node_id') | unique | length == 3
-              - openbao_keepalived_vip_evidence | map(attribute='instances.0.vip') | unique | length == 1
-              - openbao_keepalived_vip_evidence | map(attribute='instances.0.name') | unique | length == 1
-              - openbao_keepalived_vip_evidence | map(attribute='instances.0.priority') | unique | length == 3
-              - openbao_keepalived_vip_evidence | map(attribute='cluster_members') | map('to_json', sort_keys=true) | unique | length == 1
-            fail_msg: OpenBao activation requires one exact marked cluster and consistent three-member VIP topology.
-          run_once: true # noqa run-once[task]
-
-        - name: Qualify strict direct OpenBao runtime state
-          ansible.builtin.include_role:
-            name: openbao_status
-          run_once: true # noqa run-once[task]
-
-        - name: Require runtime OpenBao cluster identity to match active markers
-          ansible.builtin.assert:
-            that:
-              - >-
-                openbao_status_health_results.results | map(attribute='json.cluster_id') | unique | list
-                == [openbao_keepalived_cluster_evidence[0].cluster_id]
-            fail_msg: OpenBao runtime cluster identity does not match activation markers.
-          run_once: true # noqa run-once[task]
-
-        - name: Build exact OpenBao Keepalived approval evidence
-          ansible.builtin.set_fact:
-            openbao_keepalived_activation_evidence:
-              cluster: "{{ openbao_keepalived_cluster_evidence }}"
-              haproxy: "{{ openbao_keepalived_haproxy_evidence }}"
-              keepalived: "{{ openbao_keepalived_vip_evidence }}"
-              raft: "{{ openbao_status_raft_observations }}"
-              vip: "{{ openbao_service_vip }}"
-              service_dns: "{{ openbao_service_dns }}"
-              client_port: "{{ openbao_client_port }}"
-          run_once: true # noqa run-once[task]
-
-    - name: Preserve the exact proposed OpenBao Keepalived activation
+    - name: Preserve the exact approved OpenBao Keepalived activation
       ansible.builtin.set_fact:
-        openbao_keepalived_approved_evidence: "{{ openbao_keepalived_activation_evidence }}"
+        openbao_keepalived_approved_evidence: "{{ openbao_edge_prepared.plan.evidence }}"
         openbao_keepalived_preferred_host: >-
           {{ (openbao_keepalived_vip_evidence | sort(attribute='instances.0.priority') | last).inventory_host }}
-        openbao_keepalived_expected_approval: >-
-          activate-openbao-keepalived|{{ groups['openbao'] | sort | join(',') }}|{{
-          openbao_service_vip }}|{{ openbao_keepalived_cluster_evidence[0].cluster_id }}|{{
-          openbao_keepalived_activation_evidence | to_json(sort_keys=true) | hash('sha256') }}
-      run_once: true # noqa run-once[task]
-
-    - name: Show exact OpenBao Keepalived activation evidence
-      ansible.builtin.debug:
-        var: openbao_keepalived_approved_evidence
-      run_once: true # noqa run-once[task]
-
-    - name: Prompt for exact OpenBao Keepalived activation approval
-      ansible.builtin.pause:
-        prompt: "Type exactly {{ openbao_keepalived_expected_approval }}"
-      register: openbao_keepalived_approval
       run_once: true # noqa run-once[task]
       no_log: true
-
-    - name: Require exact OpenBao Keepalived activation approval
-      ansible.builtin.assert:
-        that:
-          - openbao_keepalived_approval.user_input == openbao_keepalived_expected_approval
-        fail_msg: Exact OpenBao Keepalived activation approval did not match.
-      run_once: true # noqa run-once[task]
-      no_log: true
-
-    - *openbao_keepalived_preflight
-
-    - name: Reject changed OpenBao Keepalived activation evidence
-      ansible.builtin.assert:
-        that:
-          - openbao_keepalived_activation_evidence == openbao_keepalived_approved_evidence
-        fail_msg: OpenBao Keepalived activation evidence changed after approval.
-      run_once: true # noqa run-once[task]
 
     - name: Initialize all OpenBao Keepalived transaction results
       ansible.builtin.set_fact:
@@ -293,6 +152,10 @@
   strategy: linear
   any_errors_fatal: false
   tasks:
+    - name: End OpenBao Keepalived recovery in plan mode
+      ansible.builtin.meta: end_play
+      when: openbao_activation_mode | default('interactive') == 'plan'
+
     - name: Roll back every reachable Keepalived service after any failure
       when: >-
         groups['openbao'] | map('extract', hostvars, 'openbao_keepalived_qualified')
@@ -324,6 +187,13 @@
           | select('equalto', true) | length != 3
         - not hostvars[item].keepalived_vip_activation_rollback_confirmed | default(false)
       run_once: true # noqa run-once[task]
+
+    - name: Release only verified OpenBao edge guards
+      ansible.builtin.include_tasks: tasks/openbao-edge-release.yml
+      when: >-
+        (groups['openbao'] | map('extract', hostvars, 'openbao_keepalived_qualified')
+         | select('equalto', true) | length == 3)
+        or keepalived_vip_activation_rollback_confirmed | default(false)
 
     - name: Require fully qualified OpenBao Keepalived activation
       ansible.builtin.assert:

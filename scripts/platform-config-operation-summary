@@ -56,6 +56,12 @@ OPERATIONS = {
         "rke2-gitlab-runner-post-check",
     ),
     "openbao-status": ("inventory", "connectivity", "openbao-status"),
+    "openbao-haproxy-plan": ("inventory", "edge-plan"),
+    "openbao-haproxy-activate": ("inventory", "edge-activate"),
+    "openbao-keepalived-plan": ("inventory", "edge-plan"),
+    "openbao-keepalived-activate": ("inventory", "edge-activate"),
+    "openbao-smoke": ("inventory", "openbao-smoke"),
+    "openbao-vip-smoke": ("inventory", "openbao-vip-smoke"),
     "openbao-restart-plan": (
         "inventory",
         "connectivity",
@@ -86,15 +92,7 @@ OPERATIONS = {
     ),
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
-OPENBAO_OPERATIONS = frozenset(
-    {
-        "openbao-status",
-        "openbao-restart-plan",
-        "openbao-converge-plan",
-        "openbao-restart",
-        "openbao-deploy",
-    }
-)
+OPENBAO_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-"))
 UNCHANGED_PHASES = frozenset(
     {
         "rke2-post-check",
@@ -477,8 +475,19 @@ def command_render(args: argparse.Namespace) -> int:
     )
     print("=== PLATFORM CONFIG OPERATION SUMMARY ===")
     print(f"Operation: {operation}")
-    print("Execution context: GitLab Runner")
+    print("Execution context: " + ("GitLab Runner" if os.environ.get("CI") == "true" else "Operator controller"))
     print(f"Overall: {'PASS' if complete else 'FAIL'}")
+    if operation in {"openbao-haproxy-activate", "openbao-keepalived-activate"}:
+        print("Private desired-state handoff: " + ("review and commit after success" if complete else "blocked; review recovery"))
+        if operation == "openbao-haproxy-activate":
+            print("  openbao_haproxy_service_enabled: true")
+            print("  openbao_haproxy_service_state: started")
+            print("  openbao_haproxy_activation_ready: false")
+        else:
+            print("  keepalived_vip_service_enabled: true")
+            print("  keepalived_vip_service_state: started")
+            print("  openbao_keepalived_activation_ready: false")
+        print("  No private desired-state files were changed or pushed.")
     if hosts:
         print()
         print_table(

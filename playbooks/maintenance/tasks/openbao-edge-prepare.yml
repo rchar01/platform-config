@@ -1,0 +1,52 @@
+---
+- name: Require one OpenBao edge activation lane on every host
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_activation_mode | default('interactive')
+        == hostvars[ansible_play_hosts_all[0]].openbao_activation_mode | default('interactive')
+      - >-
+        openbao_activation_plan_path | default('')
+        == hostvars[ansible_play_hosts_all[0]].openbao_activation_plan_path | default('')
+    fail_msg: Every selected host must use the same activation mode and plan path.
+
+- name: Prepare the exact OpenBao edge activation plan
+  openbao_activation_plan:
+    action: prepare
+    operation: "{{ openbao_edge_operation }}"
+    mode: "{{ openbao_activation_mode | default('interactive') }}"
+    path: "{{ openbao_activation_plan_path | default('') }}"
+    evidence: "{{ openbao_edge_evidence }}"
+  register: openbao_edge_prepared
+  run_once: true # noqa run-once[task]
+  no_log: true
+
+- name: Show sanitized OpenBao edge activation summary
+  ansible.builtin.debug:
+    msg:
+      operation: "{{ openbao_edge_prepared.plan.operation }}"
+      plan_id: "{{ openbao_edge_prepared.plan.plan_id }}"
+      hosts: "{{ groups['openbao'] | sort }}"
+      approval: "{{ openbao_edge_prepared.approval }}"
+  run_once: true # noqa run-once[task]
+
+- name: End OpenBao edge preparation without locks or service mutation in plan mode
+  ansible.builtin.meta: end_play
+  when: openbao_activation_mode | default('interactive') == 'plan'
+
+- name: Prompt for exact OpenBao edge activation approval
+  ansible.builtin.pause:
+    prompt: "Type exactly {{ openbao_edge_prepared.approval }}"
+  register: openbao_edge_approval
+  when: openbao_activation_mode | default('interactive') == 'interactive'
+  run_once: true # noqa run-once[task]
+  no_log: true
+
+- name: Require exact OpenBao edge activation approval
+  ansible.builtin.assert:
+    that:
+      - openbao_edge_approval.user_input | default('') == openbao_edge_prepared.approval
+    fail_msg: Exact OpenBao edge activation approval did not match.
+  when: openbao_activation_mode | default('interactive') == 'interactive'
+  run_once: true # noqa run-once[task]
+  no_log: true

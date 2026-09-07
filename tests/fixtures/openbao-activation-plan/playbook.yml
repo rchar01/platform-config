@@ -1,0 +1,79 @@
+---
+- name: Exercise the real activation planner using only local synthetic evidence
+  hosts: openbao
+  gather_facts: false
+  vars:
+    platform_environment: fixture
+  tasks:
+    - name: Collect controlled command evidence on each local alias
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - 'import json, sys; print(json.dumps({"host": sys.argv[1], "state": sys.argv[2]}))'
+          - "{{ inventory_hostname }}"
+          - "{{ fixture_state | default('staged') }}"
+      register: fixture_probe
+      changed_when: false
+      check_mode: false
+
+    - name: Record evidence through a controlled role
+      ansible.builtin.include_role:
+        name: fixture_evidence
+
+    - name: Collect all three role results
+      ansible.builtin.set_fact:
+        fixture_evidence: >-
+          {{ dict(groups.openbao | sort | zip(groups.openbao | sort |
+             map('extract', hostvars, 'fixture_host_evidence'))) }}
+      run_once: true
+
+    - name: Prepare using the real action plugin
+      openbao_activation_plan:
+        action: prepare
+        operation: "{{ fixture_operation }}"
+        mode: "{{ fixture_mode }}"
+        path: "{{ fixture_plan_path }}"
+        evidence: "{{ fixture_evidence }}"
+      register: fixture_prepared
+      run_once: true
+
+    - name: Request exact interactive approval
+      ansible.builtin.pause:
+        prompt: "Type exactly {{ fixture_prepared.approval }}"
+      register: fixture_approval
+      when: fixture_mode == 'interactive'
+      run_once: true
+
+    - name: Enforce the returned approval phrase in the caller
+      ansible.builtin.assert:
+        that: fixture_approval.user_input == fixture_prepared.approval
+        fail_msg: Fixture exact approval did not match
+      when: fixture_mode == 'interactive'
+      run_once: true
+
+    - name: Verify again immediately before the synthetic apply boundary
+      openbao_activation_plan:
+        action: verify
+        operation: "{{ fixture_operation }}"
+        mode: "{{ fixture_mode }}"
+        evidence: "{{ fixture_evidence if not (fixture_drift | default(false)) else {'drift': true} }}"
+        plan: "{{ fixture_prepared.plan }}"
+      register: fixture_verified
+      run_once: true
+
+    - name: Require unchanged plugin results and stable approval
+      ansible.builtin.assert:
+        that:
+          - not fixture_prepared.changed
+          - not fixture_verified.changed
+          - fixture_prepared.plan == fixture_verified.plan
+          - fixture_prepared.approval == fixture_verified.approval
+      run_once: true
+
+    - name: Publish synthetic result outside both source checkouts
+      ansible.builtin.copy:
+        content: "{{ fixture_verified | to_json }}"
+        dest: "{{ fixture_result_path }}"
+        mode: "0600"
+      run_once: true

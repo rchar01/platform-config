@@ -65,6 +65,45 @@ readiness without installing packages or running firewall convergence. Rollback
 is confirmed per host only after systemd reports HAProxy both inactive and
 disabled; failed or unreachable checks remain explicitly unverified.
 
+The activation playbook shares the schema-1 plan/action contract with Keepalived:
+TTL 1800 seconds, clean committed source/private inventory identity, and exact
+environment, hosts, evidence, and lane binding, plus CI
+image/project/pipeline/plan-job identity. `platform-tools` owns the
+`platform-openbao-edge haproxy-plan` and `haproxy-activate` facade commands; both
+require `--source`, `--inventory`, `--controller-vars`, and `--plan`. The existing
+Make activation target remains direct interactive. Operator activation requires
+exact TTY approval; CI uses the matching same-pipeline protected manual job with
+no terminal continuation.
+
+Read-only plan mode allows readiness false. Activation requires
+`openbao_haproxy_activation_ready: true` as an exact boolean on every host;
+commit the reviewed declaration before planning the approved activation. A
+later readiness change invalidates the private SHA. Leave HAProxy and Keepalived
+desired disabled/stopped for HAProxy activation. Operator plans stay outside
+every Git repository in new `0600` files under an existing current-owner `0700`
+non-symlink directory, with no overwrite; CI uses only its fixed restricted
+artifact.
+
+The owning playbook acquires target-root guards at
+`/var/lib/platform-config/openbao-edge-guard` on every host and consumes the plan
+before final preflight. `active/owner.json` and permanent `consumed/<plan_id>`
+records coordinate only supported HAProxy/Keepalived activation, not root,
+out-of-band changes, or rolling maintenance. Prohibit concurrent other lifecycle
+work. Partial acquisition, interruption, unknown rollback, or unverified release
+retains affected records for reviewed recovery. Success or per-host verified
+rollback releases only owned active guards. There is no automatic unlock or
+consumed-record deletion; retries require fresh plans after recovery. See
+[Guard Recovery](../../docs/operator-runbook.md#openbao-edge-guard-recovery).
+
+After success, review and commit `openbao_haproxy_service_enabled: true`,
+`openbao_haproxy_service_state: started`, and
+`openbao_haproxy_activation_ready: false` in private desired state. Neither lane
+automatically mutates or pushes those values. CI qualification, rollback, and
+reporting remain in CI, with lifecycle handoff keys in reports. Firewall
+readiness and enablement remain separate prerequisites. Do not rerun pristine
+OpenBao staging on an active cluster; use pre-VIP smoke before the separately
+approved Keepalived plan and activation.
+
 `openbao_haproxy_enabled: false` means the role does not own HAProxy state; it
 does not stop a potentially unrelated HAProxy service. Deactivate this role by
 first converging `openbao_haproxy_service_enabled: false` and

@@ -3,7 +3,8 @@
 `platform-config` provides a fixed launcher for reviewed RKE2 bootstrap and
 convergence plus OpenBao status, restart, and convergence jobs. The launcher is
 not a generic Ansible wrapper: it accepts one operation, one absolute inventory
-path, and one absolute controller-variable file.
+path, and one absolute controller-variable file. Its fixed OpenBao edge plan and
+activation routes additionally require an absolute `--plan` path.
 
 ## Fixed Operations
 
@@ -20,6 +21,12 @@ path, and one absolute controller-variable file.
 | `openbao-converge-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Reviewed same-version configuration changes are valid plan output. |
 | `openbao-restart` | The OpenBao preflight, one rolling convergence with fixed restart confirmation and forced restart, strict final status, then an unchanged active check with diff. |
 | `openbao-deploy` | The OpenBao preflight, one rolling convergence with fixed restart confirmation and no forced restart, strict final status, then an unchanged active check with diff. |
+| `openbao-haproxy-plan` | Exact three-host read-only HAProxy activation preflight, then exclusive publication of a source-bound plan; no target guard acquisition or service mutation. |
+| `openbao-haproxy-activate` | Validate the reviewed plan, authorize in its operator or CI lane, acquire all edge guards and consume the plan, repeat final preflight, activate HAProxy, qualify every node-local path, and roll back HAProxy on failure. |
+| `openbao-keepalived-plan` | Exact three-host read-only Keepalived activation preflight, then exclusive publication of a source-bound plan; no target guard acquisition or service mutation. |
+| `openbao-keepalived-activate` | Validate and authorize the plan, acquire all edge guards and consume the plan, repeat final preflight, start backup-priority members before the preferred member, qualify VIP state, and roll back only Keepalived on failure. |
+| `openbao-smoke` | Strict direct-node and all-three-HAProxy smoke for the pre-VIP phase. |
+| `openbao-vip-smoke` | The existing smoke plus active desired and actual Keepalived state, repeated exact single-owner VIP checks, strict forced-VIP service-DNS TLS and actual DNS-path checks, and cluster identity agreement. |
 
 The launcher does not accept limits, tags, playbook paths, modules, extra vars,
 or arbitrary Ansible arguments. CI generates the controller-variable file for
@@ -59,8 +66,9 @@ inventory output is reduced to host and role records in an invocation-private
 directory and deleted immediately. The callback event file is mode `0600`, the
 directory is mode `0700`, no summary artifact or cache is published, and the
 launcher removes temporary summary state after success, failure, or a handled
-signal. Matching ASCII start and end delimiters separate the summary from
-surrounding CI output. Failure before inventory resolution still prints
+signal. The separate restricted edge plan artifact is not summary scratch and
+must remain available for its matching activation job. Matching ASCII start and
+end delimiters separate the summary from surrounding CI output. Failure before inventory resolution still prints
 `Overall: FAIL` without fabricating a VM row.
 
 By default, the launcher writes that terminal summary to standard output. A
@@ -131,6 +139,69 @@ The launcher translates `HUP`, `INT`, and `TERM` into `TERM` for its active
 Ansible child, waits for that child, and returns the conventional launcher
 status of 129, 130, or 143. Cancellation stops later fixed commands, but it
 cannot roll back changes already completed by Ansible or a managed host.
+
+## OpenBao Edge Lanes
+
+`platform-tools` owns the `platform-openbao-edge` facade. Its `haproxy-plan`,
+`haproxy-activate`, `keepalived-plan`, `keepalived-activate`, `smoke`, and
+`vip-smoke` subcommands map only to the six corresponding `openbao-*` routes
+above. All take `--source`, `--inventory`, and `--controller-vars`; the first
+four require `--plan`, which smoke commands reject. The launcher itself runs
+from the selected source checkout and does not take `--source`. CI can invoke
+it directly without adding the facade to its image. Neither boundary accepts
+arbitrary playbooks, limits, approval overrides, or generic command passthrough.
+
+The action plugin and shared module utility own schema `1` plans with a fixed
+1800-second TTL. Plans bind clean committed configuration and private inventory
+Git identities, inventory path, environment, exact hosts and evidence, and lane.
+GitLab plans additionally bind the digest-pinned image, project, pipeline, and
+matching plan-job identity. CI requires a protected default-branch web pipeline
+and a matching same-pipeline manual activation job; it does not use a TTY or
+continue in a terminal. Operator activation requires exact TTY approval of the
+displayed host/operation/plan-digest string. Existing Make activation targets
+remain direct interactive entry points using an in-memory plan.
+
+Read-only plan mode allows readiness false and is not Ansible check mode.
+Activation requires the corresponding private readiness gate to be exactly
+boolean true on every host. Review and commit that declaration before planning
+an approved activation; changing it after planning invalidates the private SHA.
+Retain the pre-activation disabled/stopped desired state for the selected service.
+Source, lane, evidence drift, or expiry requires a new plan, not an edited plan.
+
+Operator output must be a new absolute filename outside every Git repository
+in an existing current-owner `0700` non-symlink directory. Core publishes it as
+`0600` without overwrite. CI uses only the fixed restricted plan artifact from
+its matching plan job. Do not publish plan evidence in public logs or reports.
+Keep plan review, manual job start, activation, qualification, failure rollback,
+and reporting within CI for that lane; there is no terminal completion step.
+
+The target-root guard at `/var/lib/platform-config/openbao-edge-guard` records
+`active/owner.json` and permanent `consumed/<plan_id>` entries. It is acquired on
+all hosts and consumes the plan before final preflight. It coordinates only
+supported HAProxy/Keepalived activation, not root, out-of-band changes, or rolling
+operations. Prohibit concurrent other lifecycle operations. Partial acquisition,
+interruption, unknown rollback, or unverified release retains affected records
+for reviewed recovery; no automatic unlock or consumed-record deletion is
+permitted. Success or independently verified per-host rollback releases only
+owned active guards. Every retry needs a fresh plan after recovery. See
+[Guard Recovery](operator-runbook.md#openbao-edge-guard-recovery).
+
+The operation report must show qualification and rollback outcomes and the
+lifecycle keys required for the private source handoff:
+
+| Successful Activation | Reviewed Private Desired-State Commit |
+| --- | --- |
+| HAProxy | `openbao_haproxy_service_enabled: true`, `openbao_haproxy_service_state: started`, `openbao_haproxy_activation_ready: false` |
+| Keepalived | `keepalived_vip_service_enabled: true`, `keepalived_vip_service_state: started`, `openbao_keepalived_activation_ready: false` |
+
+Neither lane automatically mutates or pushes those values. Activation qualifies
+runtime state against its immutable pre-activation source; subsequent smoke or
+the next edge plan consumes the reviewed private handoff commit. In CI, use the
+corresponding fixed smoke job with that revision, not a terminal continuation.
+Firewalld readiness and enablement remain a separately approved prerequisite.
+These routes do not establish live qualification or authorize normal traffic.
+See [OpenBao Edge Plans](operator-runbook.md#openbao-edge-plans) and
+[VIP Acceptance](operator-runbook.md#openbao-vip-acceptance).
 
 ## Operational Image
 

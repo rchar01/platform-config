@@ -1286,6 +1286,7 @@ def test_operation_launcher_uses_fixed_commands(
     environment = {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "PLATFORM_CONFIG_OPERATION_LOG": str(log),
+        "CI": "true",
     }
     result = command_runner.run(
         [

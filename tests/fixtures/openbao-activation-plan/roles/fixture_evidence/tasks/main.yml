@@ -1,0 +1,4 @@
+---
+- name: Preserve parsed local command evidence
+  ansible.builtin.set_fact:
+    fixture_host_evidence: "{{ fixture_probe.stdout | from_json }}"

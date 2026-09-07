@@ -1,0 +1,24 @@
+---
+- name: Generate a fresh OpenBao edge invocation nonce
+  ansible.builtin.set_fact:
+    openbao_edge_nonce: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['0123456789abcdef'], length=32) }}"
+  run_once: true # noqa run-once[task]
+  no_log: true
+
+# A partial acquisition is deliberately retained for explicit reviewed recovery.
+# These guards coordinate only the supported HAProxy and Keepalived edge routes.
+- name: Acquire and consume the OpenBao edge plan on all hosts in sorted order
+  ansible.builtin.command:
+    argv:
+      - "{{ hostvars[item].ansible_facts.python.executable }}"
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/openbao/files/platform-openbao-edge-guard') }}"
+      - acquire
+      - "{{ openbao_edge_prepared.plan.operation }}"
+      - "{{ openbao_edge_prepared.plan.plan_id }}"
+      - "{{ openbao_edge_nonce }}"
+  loop: "{{ groups['openbao'] | sort }}"
+  delegate_to: "{{ item }}"
+  become: true
+  run_once: true # noqa run-once[task]
+  changed_when: true

@@ -10,15 +10,13 @@ import yaml
 
 import test_openbao_bootstrap as bootstrap
 from ansible_test_helpers import assert_failed_with, run_playbook
+from test_openbao_edge_guard import shadow_edge_tasks
 
 
 PLAYBOOK = "playbooks/maintenance/openbao-keepalived-activate.yml"
 FIXTURE = "tests/fixtures/openbao-keepalived-activation"
 HOSTS = ["bao-1", "bao-2", "bao-3"]
-APPROVAL = (
-    r"activate-openbao-keepalived\|bao-1,bao-2,bao-3\|"
-    r"192\.0\.2\.200\|test-cluster\|[a-f0-9]{64}"
-)
+APPROVAL = r"activate-openbao-keepalived\|[a-f0-9]{32}\|[a-f0-9]{64}"
 
 
 @pytest.fixture
@@ -30,14 +28,7 @@ def activation(repo_root, isolated_test_dir, monkeypatch):
     plugins.mkdir()
     for name in ("setup", "service_facts", "systemd_service", "activation_probe", "election_pause"):
         shutil.copyfile(fixture / "action.py", plugins / f"{name}.py")
-    playbook = root / "playbooks/maintenance/activate.yml"
-    playbook.parent.mkdir(parents=True)
-    source = (repo_root / PLAYBOOK).read_text()
-    for name in ("setup", "service_facts", "systemd_service"):
-        source = source.replace(f"ansible.builtin.{name}:", f"ansible.legacy.{name}:")
-    source = source.replace("ansible.builtin.pause:\n                seconds:",
-                            "ansible.legacy.election_pause:\n                seconds:")
-    playbook.write_text(source)
+    playbook = shadow_edge_tasks(repo_root, root, 'keepalived')
     tasks = root / "playbooks/tasks"
     tasks.mkdir()
     shutil.copyfile(fixture / "openbao-vip-status.yml", tasks / "openbao-vip-status.yml")
@@ -80,6 +71,11 @@ def test_keepalived_activation_starts_backups_before_preferred_and_qualifies_all
     assert sorted(event["host"] for event in events if event["phase"] == "qualification") == HOSTS
     assert not any(event["phase"] == "rollback" for event in events)
     assert output.count("Record mocked strict runtime observations") == 3
+    guards = [json.loads(line) for line in (activation[0] / 'guard-events.jsonl').read_text().splitlines()]
+    assert [event['host'] for event in guards if event['phase'] == 'acquire'] == HOSTS
+    assert sorted(event['host'] for event in guards if event['phase'] == 'release') == HOSTS
+    assert not list(activation[0].glob('*-edge-lock'))
+    assert len(list(activation[0].glob('*-consumed-*'))) == 3
 
 
 @pytest.mark.parametrize("limit", [None, "bao-1", "openbao,other"])
@@ -179,7 +175,8 @@ def test_keepalived_activation_rejects_unqualified_or_changed_evidence(
     assert code != 0, output
     assert not _events(activation[0])
     if "test_drift" in variables:
-        assert "evidence changed after approval" in output
+        assert "Verify the same OpenBao Keepalived activation plan before mutation" in output
+        assert len(list(activation[0].glob('*-edge-lock'))) == 3
     if variables.get("test_cluster_mismatch_pass") == 1 or variables.get("test_status_failure_pass") == 1:
         assert "Type exactly" not in output
 
@@ -225,6 +222,7 @@ def test_keepalived_activation_rolls_back_all_hosts_on_any_failure(
     assert "Unverified rollback hosts: none" in output, output
     events = _events(activation[0])
     assert sorted(event["host"] for event in events if event["phase"] == "rollback") == HOSTS
+    assert not list(activation[0].glob('*-edge-lock'))
     backup_failures = variables.get("test_start_failure", []) + variables.get("test_start_unreachable", [])
     if set(backup_failures) & {"bao-1", "bao-3"}:
         assert {"phase": "start", "host": "bao-2"} not in events
@@ -242,6 +240,66 @@ def test_keepalived_activation_reports_every_unverified_rollback(
     assert code != 0, output
     assert f"Unverified rollback hosts: {', '.join(hosts)}" in output
     assert sorted(event["host"] for event in _events(activation[0]) if event["phase"] == "rollback") == HOSTS
+    assert sorted(path.name.removesuffix('-edge-lock') for path in activation[0].glob('*-edge-lock')) == hosts
+
+
+def test_keepalived_plan_allows_closed_readiness_without_locks_or_prompt(activation, command_runner):
+    root, playbook, inventory, environment = activation
+    plan = root / 'activation-plan.json'
+    result = run_playbook(
+        command_runner, playbook, inventory=inventory, limit='openbao', environment=environment,
+        extra_vars=({'openbao_test_root': str(root), 'openbao_activation_mode': 'plan',
+                     'openbao_activation_plan_path': str(plan), 'openbao_keepalived_activation_ready': False},),
+    )
+    result.assert_success()
+    assert plan.exists()
+    assert 'Type exactly' not in result.stdout
+    assert not _events(root)
+    assert not list(root.glob('*-edge-lock'))
+    assert not list(root.glob('*-consumed-*'))
+
+
+def test_keepalived_guard_conflict_aborts_before_start_and_retains_partial_guards(repo_root, activation):
+    code, output = _run(repo_root, activation, {'test_guard_conflict': ['bao-2']})
+    assert code != 0, output
+    assert not _events(activation[0])
+    assert (activation[0] / 'bao-1-edge-lock').exists()
+    assert not (activation[0] / 'bao-2-edge-lock').exists()
+
+
+def test_keepalived_ci_lane_uses_prepared_plan_without_terminal(activation, command_runner):
+    root, playbook, inventory, environment = activation
+    plan = root / 'activation-plan.json'
+    variables = {'openbao_test_root': str(root), 'openbao_activation_plan_path': str(plan)}
+    for mode in ('plan', 'ci'):
+        result = run_playbook(
+            command_runner, playbook, inventory=inventory, limit='openbao', environment=environment,
+            extra_vars=({**variables, 'openbao_activation_mode': mode},),
+        )
+        result.assert_success()
+        assert 'Type exactly' not in result.stdout
+    plan_id = json.loads(plan.read_text())['plan_id']
+    assert len(list(root.glob(f'*-consumed-{plan_id}'))) == 3
+    assert not list(root.glob('*-edge-lock'))
+    # Even a mocked valid plan/provenance cannot reuse a consumed target plan.
+    replay = run_playbook(
+        command_runner, playbook, inventory=inventory, limit='openbao', environment=environment,
+        extra_vars=({**variables, 'openbao_activation_mode': 'ci'},),
+    )
+    replay.assert_failure()
+    assert len([event for event in _events(root) if event['phase'] == 'start']) == 3
+
+
+def test_keepalived_ci_lane_without_plan_fails_before_guard_or_prompt(activation, command_runner):
+    root, playbook, inventory, environment = activation
+    result = run_playbook(
+        command_runner, playbook, inventory=inventory, limit='openbao', environment=environment,
+        extra_vars=({'openbao_test_root': str(root), 'openbao_activation_mode': 'ci'},),
+    )
+    result.assert_failure()
+    assert 'Type exactly' not in result.stdout
+    assert not _events(root)
+    assert not list(root.glob('*-edge-lock'))
 
 
 def test_keepalived_activation_never_reconverges_approved_candidates(repo_root):
@@ -253,7 +311,9 @@ def test_keepalived_activation_never_reconverges_approved_candidates(repo_root):
             for key in ("block", "rescue", "always"):
                 yield from walk(task.get(key, []))
 
-    roles = [task["ansible.builtin.include_role"] for play in plays for task in walk(play["tasks"])
+    task_lists = [play['tasks'] for play in plays]
+    task_lists.append(yaml.safe_load((repo_root / 'playbooks/maintenance/tasks/openbao-keepalived-preflight.yml').read_text()))
+    roles = [task["ansible.builtin.include_role"] for tasks in task_lists for task in walk(tasks)
              if "ansible.builtin.include_role" in task]
     assert all(role.get("tasks_from") in {"activation_preflight.yml", "activation_rollback.yml"}
                for role in roles if role["name"] in {"keepalived_vip", "openbao_haproxy"})
