@@ -65,6 +65,12 @@ readiness without installing packages or running firewall convergence. Rollback
 is confirmed per host only after systemd reports HAProxy both inactive and
 disabled; failed or unreachable checks remain explicitly unverified.
 
+The activation playbook accepts `service_facts` state `stopped` or `inactive`
+for disabled edge services: systemd units absent from `list-units` can report
+the raw `inactive` state. Failed, unknown, or missing facts still fail closed.
+Failure diagnostics show the observed edge state/status and firewalld state;
+this does not relax the separate running-firewall prerequisite.
+
 The activation playbook shares the schema-1 plan/action contract with Keepalived:
 TTL 1800 seconds, clean committed source/private inventory identity, and exact
 environment, hosts, evidence, and lane binding, plus CI

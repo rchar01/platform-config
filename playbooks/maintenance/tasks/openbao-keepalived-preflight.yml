@@ -45,6 +45,7 @@
 - name: Inspect current OpenBao edge services
   ansible.builtin.service_facts:
 
+# service_facts retains raw ActiveState for systemd units absent from list-units.
 - name: Require actual active HAProxy and inactive Keepalived
   ansible.builtin.assert:
     that:
@@ -56,11 +57,21 @@
         == 'enabled'
       - >-
         ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', '')
-        == 'stopped'
+        in ['stopped', 'inactive']
       - >-
         ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('status', '')
         == 'disabled'
-    fail_msg: Activation requires actual enabled/running HAProxy and disabled/stopped Keepalived.
+    fail_msg: >-
+      Activation requires actual enabled/running HAProxy and disabled/stopped Keepalived
+      (service facts may report stopped or inactive).
+      Observed HAProxy state={{
+      ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('state', 'missing')
+      }} status={{
+      ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', 'missing')
+      }}; Keepalived state={{
+      ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', 'missing')
+      }} status={{
+      ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('status', 'missing') }}.
 
 - name: Bind the single OpenBao VIP to each approved Keepalived instance
   ansible.builtin.assert:

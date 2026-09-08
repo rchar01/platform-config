@@ -39,25 +39,37 @@
 - name: Inspect current OpenBao edge services
   ansible.builtin.service_facts:
 
+# service_facts retains raw ActiveState for systemd units absent from list-units.
 - name: Require actual inactive OpenBao edge services
   ansible.builtin.assert:
     that:
       - >-
         ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', '')
-        == 'stopped'
+        in ['stopped', 'inactive']
       - >-
         ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('status', '')
         == 'disabled'
       - >-
         ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('state', '')
-        == 'stopped'
+        in ['stopped', 'inactive']
       - >-
         ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', '')
         == 'disabled'
       - >-
         not openbao_haproxy_firewalld_manage | default(true) | bool
         or ansible_facts.services.get('firewalld.service', {}).get('state', '') == 'running'
-    fail_msg: OpenBao HAProxy activation requires actual inactive edge services and ready firewall safety gates.
+    fail_msg: >-
+      OpenBao HAProxy activation requires actual inactive edge services and ready firewall safety gates.
+      Expected edge state stopped/inactive and status disabled; managed firewalld must be running.
+      Observed Keepalived state={{
+      ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', 'missing')
+      }} status={{
+      ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('status', 'missing')
+      }}; HAProxy state={{
+      ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('state', 'missing')
+      }} status={{
+      ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', 'missing')
+      }}; firewalld state={{ ansible_facts.services.get('firewalld.service', {}).get('state', 'missing') }}.
 
 - name: Collect sorted OpenBao HAProxy activation evidence
   ansible.builtin.set_fact:
