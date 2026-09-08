@@ -6,6 +6,9 @@
 - name: Validate staged OpenBao HAProxy activation inputs
   ansible.builtin.include_tasks: validate.yml
 
+- name: Verify staged OpenBao HAProxy SELinux evidence
+  ansible.builtin.include_tasks: selinux_guard.yml
+
 - name: Verify OpenBao HAProxy activation firewalld Python bindings
   ansible.builtin.command:
     argv:
@@ -80,6 +83,7 @@
   ansible.builtin.set_fact:
     openbao_haproxy_activation_observation:
       inventory_host: "{{ inventory_hostname }}"
+      selinux: "{{ openbao_haproxy_selinux_observation }}"
       firewalld: "{{ openbao_haproxy_firewall_observation }}"
       package_nevra: "{{ openbao_haproxy_activation_installed_nevra.stdout }}"
       config_checksum: >-

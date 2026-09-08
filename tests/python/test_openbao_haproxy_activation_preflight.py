@@ -80,6 +80,7 @@ def activation_fixture(repo_root: Path, tmp_path: Path, command_runner: CommandR
         "vars": {
             **firewall_vars,
             "openbao_haproxy_enabled": True,
+            "openbao_haproxy_selinux_manage": False,
             "openbao_haproxy_package_nevra": "haproxy-0:3.0.5-6.el10_2.1.x86_64",
             "openbao_haproxy_backend_health_host": "bao.example.invalid",
             "openbao_haproxy_client_allowed_sources": ["198.51.100.0/24"],

@@ -1535,6 +1535,16 @@ inventory or changes the firewall service lifecycle to satisfy a preflight.
 A firewall mode or policy change requires separate review and a fresh plan, not
 an override or reuse of earlier evidence.
 
+HAProxy activation never reruns ordinary staging. It verifies the staged SELinux
+listener labels and firewall policy, then enables and starts the existing
+service using built-in Ansible modules. With SELinux management enabled, native
+`getenforce` and read-only target `seobject` queries verify both exact TCP port
+records in enforcing or permissive mode. Missing or incorrect labels fail before
+approval or startup; activation does not repair them. Mode and type/MLS changes
+invalidate preflight evidence. Staging keeps its normal collection requirements;
+do not install collections during an operation or disable SELinux to bypass a
+failed gate.
+
 Operator plan files must remain **outside every Git repository**, including
 private and planning repositories. Choose a new absolute filename in an already
 existing, current-owner directory with exact mode `0700` and no symlink path

@@ -94,6 +94,20 @@ service-DNS TLS and actual DNS-path checks, and matching cluster identity.
 Controlled fixtures do not establish live VRRP, target firewall or anti-spoofing
 readiness, duplicate-address detection, real DNS/TLS, failover, or recovery.
 
+Focused HAProxy activation checks (each bounded independently):
+
+```bash
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_haproxy_activation_enable.py
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_haproxy_activation_preflight.py
+```
+
+The activation-entry test resolves the real role with external collections
+hidden, shadowing only target I/O and service management. Native SELinux probes
+use read-only binding doubles to check exact labels and reject missing/wrong
+records before startup. These are not live SELinux or endpoint qualification.
+
 Standalone dev acceptance does not depend on monitoring; production monitoring
 is still required. Offline checks do not authorize activation or normal
 onboarding. Each live activation needs separate approval and acceptance-only

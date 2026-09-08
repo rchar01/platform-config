@@ -33,6 +33,9 @@
   tests or merged orchestration with live qualification.
 - `playbooks/openbao.yml` is pristine inactive staging only and is forbidden for
   active or initialized clusters. Do not use ordinary staging after activation.
+- HAProxy activation must select its built-in-only `activation_enable.yml`, not
+  ordinary role convergence. Verify staged SELinux listener labels and firewall
+  policy without changing them; bind SELinux observations into plan evidence.
 - `platform-tools` owns the `platform-openbao-edge` human/CI facade; keep its six
   fixed routes in `scripts/platform-config-operation`, not a generic wrapper.
   Both HAProxy and Keepalived use the shared schema-1 plan/action contract with

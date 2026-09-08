@@ -60,9 +60,10 @@
 
     - name: Activate local OpenBao HAProxy
       block:
-        - name: Converge active local OpenBao HAProxy
+        - name: Enable verified staged local OpenBao HAProxy
           ansible.builtin.include_role:
             name: openbao_haproxy
+            tasks_from: activation_enable.yml
           vars:
             openbao_haproxy_service_enabled: true
             openbao_haproxy_service_state: started

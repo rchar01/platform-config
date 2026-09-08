@@ -72,11 +72,13 @@ Available maintenance playbooks:
   qualification and skips all publication. It never prompts, initializes, or
   unseals OpenBao.
 - `openbao-haproxy-activate.yml`: requires exact active OpenBao markers and
-  strict status, binds exact staged package/configuration/CA/firewall evidence
+  strict status, binds exact staged package/configuration/CA/SELinux/firewall evidence
   to the shared source-bound plan and lane authorization, requires inactive
   Keepalived and the reviewed firewalld lifecycle/policy, and checks routing
   through every node-local HAProxy. Failure rolls back only reachable HAProxy
-  services and reports unreachable hosts as unverified.
+  services and reports unreachable hosts as unverified. Activation uses a
+  built-in-only entry point to verify SELinux labels and firewall policy and
+  start the approved staged service, without ordinary role convergence.
 - `openbao-keepalived-activate.yml`: requires the explicit complete three-host
   limit, `openbao_keepalived_activation_ready: true`, strict active OpenBao,
   active/enabled HAProxy, and exact staged inactive/disabled Keepalived evidence.

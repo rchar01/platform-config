@@ -1,0 +1,56 @@
+---
+- name: Reset OpenBao HAProxy SELinux observation
+  ansible.builtin.set_fact:
+    openbao_haproxy_selinux_observation:
+      managed: false
+  ignore_errors: false
+  ignore_unreachable: false
+
+- name: Verify staged OpenBao HAProxy SELinux listener labels
+  when: openbao_haproxy_selinux_manage | bool
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Read native OpenBao HAProxy SELinux policy without changing it
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts.python.executable }}"
+          - -c
+          - |
+            import json
+            import subprocess
+            import sys
+
+            mode = subprocess.check_output(["getenforce"], text=True).strip()
+            if mode not in ("Enforcing", "Permissive", "Disabled"):
+                raise SystemExit("Unrecognized SELinux mode")
+            ports = {}
+            if mode != "Disabled":
+                import seobject
+
+                records = seobject.portRecords().get_all()
+                for port in sorted({int(value) for value in sys.argv[2:]}):
+                    # Staging manages each listener as an exact TCP port record.
+                    record = records.get((port, port, "tcp"))
+                    if record is None or record[0] != sys.argv[1]:
+                        raise SystemExit("Missing or incorrect staged SELinux TCP label for " + str(port))
+                    ports[str(port)] = list(record)
+            print(json.dumps({"managed": True, "mode": mode, "ports": ports}, sort_keys=True))
+          - "{{ openbao_haproxy_selinux_port_type }}"
+          - "{{ openbao_haproxy_client_port | string }}"
+          - "{{ openbao_haproxy_stats_port | string }}"
+      register: openbao_haproxy_selinux_probe
+      changed_when: false
+      check_mode: false
+
+    - name: Require a complete reachable OpenBao HAProxy SELinux observation
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_selinux_probe is not unreachable
+          - openbao_haproxy_selinux_probe is not skipped
+          - openbao_haproxy_selinux_probe.rc | default(-1) == 0
+        fail_msg: OpenBao HAProxy activation requires verified staged SELinux listener labels.
+
+    - name: Record verified OpenBao HAProxy SELinux observation
+      ansible.builtin.set_fact:
+        openbao_haproxy_selinux_observation: "{{ openbao_haproxy_selinux_probe.stdout | from_json }}"

@@ -11,6 +11,7 @@
       - ansible_play_hosts_all | sort == groups.get('openbao', []) | sort
       - not ansible_check_mode
       - openbao_activation_mode | default('interactive') in ['plan', 'interactive', 'ci']
+      - openbao_haproxy_enabled | default(false) is sameas true
       - openbao_haproxy_activation_ready | default(false) is boolean
       - openbao_activation_mode | default('interactive') == 'plan' or openbao_haproxy_activation_ready | default(false)
       - openbao_haproxy_service_enabled | default(false) is boolean
@@ -21,7 +22,8 @@
       - keepalived_vip_service_state | default('stopped') == 'stopped'
     fail_msg: >-
       OpenBao HAProxy activation requires explicit boolean readiness, normal apply,
-      exactly all three hosts, and desired disabled/stopped HAProxy and Keepalived.
+      exactly all three hosts, enabled HAProxy ownership, and desired
+      disabled/stopped HAProxy and Keepalived.
 
 - name: Gather current OpenBao activation host facts
   ansible.builtin.setup:

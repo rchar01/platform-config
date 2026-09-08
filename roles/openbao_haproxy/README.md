@@ -77,6 +77,20 @@ changed mode or evidence invalidates approval. Unmanaged observations are reset.
 Rollback is confirmed per host only after systemd reports HAProxy both inactive and
 disabled; failed or unreachable checks remain explicitly unverified.
 
+Activation selects `activation_enable.yml`, not ordinary role convergence. It
+does not install packages, render configuration, change SELinux policy, or
+reconcile firewall rules after approval. This path uses only built-in Ansible
+modules; staging still requires the collections in `requirements.yml`.
+When SELinux management is enabled, preflight and the service boundary query
+`getenforce` and, in enforcing or permissive mode, read exact TCP listener records
+through the target's existing `seobject` bindings. Both listeners must already
+have the configured type; a covering range is not an exact staged record.
+Missing tools, bindings, or labels fail closed without policy changes. Disabled
+SELinux needs no port-policy query. Mode and type/MLS observations are bound into
+the activation plan, and unmanaged observations are reset rather than reused.
+The final SELinux observation must exactly match the approved preflight before
+firewall verification or service startup, including mode and MLS values.
+
 During Ansible `--check` convergence only, the main-path guard is deferred when
 firewall dependencies are unavailable or rule/manifest writes are predicted.
 Those changes have not reached the target yet. Unchanged managed policy is still

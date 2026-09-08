@@ -1,0 +1,19 @@
+---
+- name: Verify staged SELinux labels before OpenBao HAProxy activation
+  ansible.builtin.include_tasks: selinux_guard.yml
+
+- name: Require unchanged approved OpenBao HAProxy SELinux evidence
+  ansible.builtin.assert:
+    that:
+      - openbao_haproxy_selinux_observation == openbao_haproxy_activation_observation.selinux
+    fail_msg: OpenBao HAProxy SELinux state changed after approved preflight; prepare a fresh plan after review.
+  ignore_errors: false
+
+- name: Verify firewall immediately before OpenBao HAProxy activation
+  ansible.builtin.include_tasks: firewall_guard.yml
+
+- name: Enable and start verified staged OpenBao HAProxy
+  ansible.builtin.systemd_service:
+    name: haproxy.service
+    enabled: true
+    state: started

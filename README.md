@@ -127,6 +127,11 @@ fixed core. The four plan/activation commands require `--plan` alongside
 TTY approval; CI uses the matching same-pipeline protected manual job without a
 TTY. Existing direct interactive Make activation targets remain available.
 
+HAProxy activation starts the verified staged service without package,
+configuration, SELinux, or firewall reconvergence. Its built-in-only activation
+entry point rechecks staged SELinux listener labels and firewall policy before
+startup; ordinary staging retains its declared collection dependencies.
+
 Plans expire after 1800 seconds and bind clean committed source, private
 inventory, environment, lane, and live evidence, plus CI image/project/pipeline
 and plan-job identity. Commit approved readiness as exactly true on all hosts
