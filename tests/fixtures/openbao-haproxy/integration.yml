@@ -4,7 +4,8 @@
   connection: local
   gather_facts: true
   vars:
-    firewalld_enabled: false
+    firewalld_service_enabled: false
+    firewalld_service_state: stopped
     openbao_haproxy_test_active: false
     openbao_haproxy_test_rollback: false
     openbao_haproxy_enabled: true

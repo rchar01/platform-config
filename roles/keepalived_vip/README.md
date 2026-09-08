@@ -19,9 +19,9 @@ The role enforces these initial IPv4 VRRP invariants:
   VRRP interfaces, never application leadership or backend health;
 - configuration is validated with the selected Keepalived binary before atomic
   replacement; and
-- VRRP protocol `112` is accepted only from configured peers when firewalld
-  management is enabled, with obsolete role-owned peer rules removed on later
-  convergence.
+- managed VRRP protocol `112` rules allow configured peers, with obsolete
+  role-owned peer rules removed on later convergence. These rules provide no
+  firewalld enforcement while the daemon is disabled.
 
 The caller must provide an exact package NEVRA from the accepted target
 repository transaction. A disposable Rocky Linux 10.1 check on 2026-07-31
@@ -32,6 +32,9 @@ Example inputs:
 
 ```yaml
 keepalived_vip_enabled: true
+keepalived_vip_firewalld_manage: true
+firewalld_service_enabled: true
+firewalld_service_state: started
 keepalived_vip_package_nevra: keepalived-0:2.2.8-9.el10.x86_64
 keepalived_vip_preempt_delay: 300
 keepalived_vip_cluster_members:
@@ -87,19 +90,45 @@ Python dependencies exist before this role stages peer-scoped VRRP rules.
 Lifecycle selectors are strict booleans, even when this role is disabled.
 `keepalived_vip_service_state` accepts only `stopped` or `started`, and boot
 enablement must be true exactly when the state is `started`. Disabled callers
-cannot request activation. Active convergence with managed firewall policy
-requires enabled/started firewalld inventory settings and an actually active
-firewalld service before any convergence. Repository-policy validation runs only
+cannot request activation. Whenever this role is enabled with managed policy,
+declare `firewalld_service_enabled` as an explicit boolean and
+`firewalld_service_state` as exactly `started` or `stopped`, with enablement true
+iff started. Missing values, strings in place of booleans, and mixed pairs fail
+before commands. Actual daemon and boot-enablement states must match before any
+convergence; peer-rule checks wait until after policy has been written.
+Repository-policy validation runs only
 in the normal enabled convergence path, not as an implicit role dependency.
 The explicit `firewalld_service_enabled` and `firewalld_service_state` values
 are authoritative; the legacy `firewalld_enabled` default-source flag is not an
 additional activation gate.
-Immediately before active service management and again inside the reload handler,
-the shared read-only `runtime_firewall_guard.yml` requires running firewalld and
-every current peer's exact runtime rich rule. It queries the default zone, matching
-the role's existing firewall management. Loss of connectivity, firewalld, or a
-required rule prevents the service operation; an earlier passing guard is not
-reused as evidence.
+After managed policy convergence (including stopped-service staging), immediately
+before service management, inside the reload handler, and in
+activation preflight, the shared read-only `runtime_firewall_guard.yml` checks
+the declared mode without suppressing errors or unreachable reads:
+
+- `true`/`started` requires actual `active` (rc 0) and `enabled` (rc 0), plus every
+  current peer's exact runtime and permanent rich rule through `firewall-cmd`.
+- `false`/`stopped` requires actual `inactive` (rc 3) and `disabled` (rc 1), a
+  successful `firewall-offline-cmd --check-config`, and every expected peer rule
+  queried through `firewall-offline-cmd`. It never invokes `firewall-cmd`.
+
+Both modes query the default zone, matching the role's firewall management, and
+require query rc 0 with exact `yes` output. Keep
+`keepalived_vip_firewalld_manage: true` in disabled mode: this is not a policy
+bypass. Disabled firewalld provides no host-firewall enforcement from firewalld;
+its configured allowlists are not operative or equivalent security, and these
+checks do not establish production qualification. Enabling enforcement needs
+separate approval. The guard observes only; it never changes the firewall service
+or inventory to satisfy a gate. An earlier passing guard is not reused as evidence.
+Each registered read must be successful, reachable, and unskipped; service and
+rule loops require both a complete aggregate and exact individual results. A
+later successful read cannot erase an earlier unreachable result, even if that
+connection failure was ignored by a caller.
+
+In check mode only, the post-convergence guard is deferred when firewall
+dependencies or peer-rule writes are predicted but have not been applied. With
+unchanged available policy it still performs real read-only validation. Actual
+applies always validate managed policy, even while Keepalived remains stopped.
 
 ## Activation Entry Points
 
@@ -161,8 +190,8 @@ rendered current inventory. It also checks native configuration and Bash syntax,
 executes readiness as the configured script user/group, and requires up
 interfaces, exact source addresses, VIP routes through the configured interfaces,
 and VIP absence across **all** local IPv4 interfaces, not just the VRRP interface.
-Managed firewall mode additionally requires a valid current manifest, active
-firewalld, and every expected peer rule in both runtime and permanent policy.
+Managed firewall mode additionally requires protected current manifest metadata
+and exact equality to current inventory, plus the declared-mode guard above.
 
 Activation supports the native service contract observed directly from
 `keepalived-0:2.2.8-9.el10.x86_64`: `keepalived.service`, executable
@@ -191,10 +220,16 @@ Successful preflight publishes `keepalived_vip_activation_observation` containin
 `inventory_host`, `instances`, `cluster_members`, `service_name`, artifact paths,
 `package_nevra`, `package_checksum`, `binary_checksum`, `config_checksum`,
 `script_checksum`, `drop_in_checksum`, `unit_checksum`, `sysconfig_checksum`,
-`systemd_properties`, `firewalld_manage`, and
+`systemd_properties`, `firewalld_manage`, `firewalld`, and
 `firewalld_manifest_checksum` (`unmanaged` when not managed). `package_checksum`
 is the installed RPM header SHA-256, not the digest of a downloaded RPM file or
-independent provenance evidence. All artifact checksums are SHA-256. A new pass
+independent provenance evidence. `firewalld` contains the verified `managed`,
+`service_enabled`, `service_state`, and `rules` observation; unmanaged policy
+resets it to `{managed: false}` rather than retaining stale evidence. The shared
+guard also exposes this as `keepalived_vip_firewall_observation` for immediate
+service-boundary callers using `include_role` with
+`tasks_from: runtime_firewall_guard.yml` and role defaults available.
+All artifact checksums are SHA-256. A new pass
 clears the previous observation before validation and only publishes the complete
 observation on success. The caller must preserve the first complete observation,
 bind approval to it, and require equality with the second observation on every

@@ -198,40 +198,7 @@
           )
 
     - name: Build current OpenBao HAProxy firewalld policy
-      ansible.builtin.set_fact:
-        openbao_haproxy_current_firewalld_rules: []
-      when: openbao_haproxy_firewalld_manage | bool
-
-    - name: Add OpenBao HAProxy client firewalld policy
-      ansible.builtin.set_fact:
-        openbao_haproxy_current_firewalld_rules: >-
-          {{
-            openbao_haproxy_current_firewalld_rules
-            + [
-              'rule family="ipv4" source address="'
-              ~ item
-              ~ '" port port="'
-              ~ (openbao_haproxy_client_port | string)
-              ~ '" protocol="tcp" accept'
-            ]
-          }}
-      loop: "{{ openbao_haproxy_client_allowed_sources | sort }}"
-      when: openbao_haproxy_firewalld_manage | bool
-
-    - name: Add OpenBao HAProxy metrics firewalld policy
-      ansible.builtin.set_fact:
-        openbao_haproxy_current_firewalld_rules: >-
-          {{
-            openbao_haproxy_current_firewalld_rules
-            + [
-              'rule family="ipv4" source address="'
-              ~ item
-              ~ '" port port="'
-              ~ (openbao_haproxy_stats_port | string)
-              ~ '" protocol="tcp" accept'
-            ]
-          }}
-      loop: "{{ openbao_haproxy_stats_allowed_sources | sort }}"
+      ansible.builtin.include_tasks: firewall_rules.yml
       when: openbao_haproxy_firewalld_manage | bool
 
     - name: Check previous OpenBao HAProxy firewalld manifest
@@ -266,9 +233,10 @@
       ansible.posix.firewalld:
         rich_rule: "{{ item }}"
         permanent: true
-        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        immediate: "{{ firewalld_service_state == 'started' }}"
         offline: true
         state: enabled
+      register: openbao_haproxy_firewalld_enable_result
       loop: "{{ openbao_haproxy_current_firewalld_rules | unique | sort }}"
       when:
         - openbao_haproxy_firewalld_manage | bool
@@ -278,9 +246,10 @@
       ansible.posix.firewalld:
         rich_rule: "{{ item }}"
         permanent: true
-        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        immediate: "{{ firewalld_service_state == 'started' }}"
         offline: true
         state: disabled
+      register: openbao_haproxy_firewalld_disable_result
       loop: >-
         {{
           openbao_haproxy_previous_firewalld_rules
@@ -302,6 +271,7 @@
               'rich_rules': openbao_haproxy_current_firewalld_rules | unique | sort
             } | to_nice_yaml
           }}
+      register: openbao_haproxy_firewalld_manifest_result
       when:
         - openbao_haproxy_firewalld_manage | bool
         - firewalld_dependencies_ready | default(true)
@@ -310,15 +280,24 @@
       ansible.builtin.assert:
         that:
           - firewalld_dependencies_ready | default(false) | bool
-          - >-
-            firewalld_service_state | default('stopped')
-            in ['started', 'restarted', 'reloaded']
         fail_msg: >-
-          Active OpenBao HAProxy requires firewalld dependencies and active
-          enforcement before its wildcard listener can start.
+          Active OpenBao HAProxy requires firewalld Python dependencies for
+          managed rule convergence before its wildcard listener can start.
       when:
         - openbao_haproxy_service_state == 'started'
         - openbao_haproxy_firewalld_manage | bool
+
+    - name: Verify firewall immediately before OpenBao HAProxy service management
+      ansible.builtin.include_tasks: firewall_guard.yml
+      when: >-
+        not ansible_check_mode
+        or not openbao_haproxy_firewalld_manage | bool
+        or (
+          firewalld_dependencies_ready | default(false) | bool
+          and openbao_haproxy_firewalld_enable_result is not changed
+          and openbao_haproxy_firewalld_disable_result is not changed
+          and openbao_haproxy_firewalld_manifest_result is not changed
+        )
 
     - name: Manage staged OpenBao HAProxy service
       ansible.builtin.systemd_service:

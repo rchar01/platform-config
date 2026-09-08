@@ -66,45 +66,26 @@ def _cases(phase):
         del services[service]
         add(f"missing-{service}", services, False)
 
+    # The role preflight validates firewall lifecycle and policy; this assertion
+    # must not reintroduce a runtime-only firewall gate after it succeeds.
     for state in ("stopped", "inactive"):
         services = copy.deepcopy(baseline)
         for service in inactive_services:
             services[service]["state"] = state
-        services["firewalld.service"]["state"] = "inactive"
-        add(f"{state}-edges-inactive-managed-firewall", services, phase == "keepalived")
-        add(f"{state}-edges-inactive-unmanaged-firewall", services, True,
-            {"openbao_haproxy_firewalld_manage": False})
-    for state in ("failed", "unknown", True, False, None):
-        services = copy.deepcopy(baseline)
-        services["firewalld.service"]["state"] = state
-        add(f"managed-firewall-state={state!r}", services, phase == "keepalived")
-    for missing in ("service", "state"):
-        services = copy.deepcopy(baseline)
-        if missing == "service":
-            del services["firewalld.service"]
-        else:
-            del services["firewalld.service"]["state"]
-        add(f"managed-firewall-missing-{missing}", services, phase == "keepalived")
-
-    services = copy.deepcopy(baseline)
-    services["firewalld.service"]["status"] = "disabled"
-    add("running-firewall-status-is-not-an-enable-gate", services, True)
+        services["firewalld.service"] = {"state": "inactive", "status": "disabled"}
+        add(f"{state}-edges-after-disabled-firewall-validation", services, True)
 
     services = copy.deepcopy(baseline)
     services["keepalived.service"] = {"state": "failed", "status": "unknown"}
     services["haproxy.service"] = {"state": "running", "status": "enabled"}
     services["firewalld.service"]["state"] = "inactive"
     diagnostic = ["keepalived", "haproxy", "failed", "unknown", "running", "enabled"]
-    if phase == "haproxy":
-        diagnostic += ["firewalld", "inactive"]
     add("observed-service-diagnostics", services, False, diagnostic=diagnostic)
 
     services = copy.deepcopy(baseline)
     services["haproxy.service"] = {"state": "unknown", "status": "masked"}
     services["firewalld.service"]["state"] = "failed"
     diagnostic = ["keepalived", "stopped", "disabled", "haproxy", "unknown", "masked"]
-    if phase == "haproxy":
-        diagnostic += ["firewalld", "failed"]
     add("observed-haproxy-and-firewall-diagnostics", services, False, diagnostic=diagnostic)
 
     services = copy.deepcopy(baseline)

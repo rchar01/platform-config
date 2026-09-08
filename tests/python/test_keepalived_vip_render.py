@@ -357,6 +357,17 @@ if name == "systemctl":
     if service == "keepalived.service":
         active = case == "keepalived-active"
         enabled = case == "keepalived-enabled"
+    elif service == "firewalld.service":
+        active = os.environ.get("KEEPALIVED_FIREWALL_ENABLED", "True") == "True"
+        enabled = active
+        if case == "firewall-inactive":
+            active = not active
+        if case == "firewall-disabled":
+            enabled = not enabled
+        if case == "firewall-state-text":
+            result("activating" if operation == "is-active" else "masked")
+        if case == "firewall-state-rc":
+            result("active" if active else "inactive", 1)
     else:
         active = case != ("haproxy-inactive" if service == "haproxy.service" else "firewall-inactive")
         enabled = case != "haproxy-disabled"
@@ -364,9 +375,18 @@ if name == "systemctl":
         result("active" if active else "inactive", 0 if active else 3)
     assert operation == "is-enabled"
     result("enabled" if enabled else "disabled", 0 if enabled else 1)
-if name == "firewall-cmd":
+if name in ("firewall-cmd", "firewall-offline-cmd"):
+    if name == "firewall-cmd":
+        assert os.environ.get("KEEPALIVED_FIREWALL_ENABLED", "True") == "True"
+    if args == ["--check-config"]:
+        assert name == "firewall-offline-cmd"
+        result("invalid config" if case == "firewall-config" else "", 1 if case == "firewall-config" else 0)
     assert any(arg.startswith("--query-rich-rule=") for arg in args)
-    result("no" if case == "firewall-rule" else "yes", 1 if case == "firewall-rule" else 0)
+    missing = case == "firewall-rule" or (case == "firewall-permanent-rule" and "--permanent" in args)
+    # Fail only the second peer so the harness also detects incomplete queries.
+    missing = missing and any("192.0.2.12/32" in arg for arg in args)
+    result("malformed" if case == "firewall-rule-text" else "no" if missing else "yes",
+           1 if missing or case == "firewall-rule-rc" else 0)
 if name == "ip":
     assert args[:2] == ["-j", "-4"]
     if "route" in args:
@@ -395,7 +415,13 @@ class ActionModule(ActionBase):
         if (self._task.name == task_vars.get("unreachable_task")
                 and (not task_vars.get("unreachable_operation")
                      or args["argv"][1] == task_vars["unreachable_operation"])):
-            return {"unreachable": True, "msg": "Injected transient connection loss"}
+            result = {"unreachable": True, "msg": "Injected transient connection loss"}
+            if task_vars.get("unreachable_with_output"):
+                result.update(rc=0, stdout="yes")
+                if args["argv"][0] == "systemctl":
+                    enabled = task_vars["firewalld_service_enabled"]
+                    result.update(rc=0 if enabled else 3, stdout="active" if enabled else "inactive")
+            return result
         return self._execute_module(module_name="ansible.builtin.command", module_args=args, task_vars=task_vars)
 '''
 
@@ -407,7 +433,7 @@ def activation_fixture(
     root = isolated_test_dir
     binaries = root / "bin"
     binaries.mkdir()
-    for name in ("rpm", "keepalived", "runuser", "systemctl", "ip", "firewall-cmd"):
+    for name in ("rpm", "keepalived", "runuser", "systemctl", "ip", "firewall-cmd", "firewall-offline-cmd"):
         path = binaries / name
         path.write_text(f"#!{sys.executable}\n" + _ACTIVATION_COMMAND, encoding="utf-8")
         path.chmod(0o755)
@@ -446,6 +472,8 @@ def activation_fixture(
         "keepalived_vip_role_dir": str(role),
         "keepalived_vip_test_role": str(role),
         "keepalived_vip_test_output_dir": str(output),
+        "firewalld_service_enabled": True,
+        "firewalld_service_state": "started",
     })
     # Load defaults and canonical fixture inputs, then render exactly as staging does.
     fixture["tasks"] = fixture["tasks"][1:]
@@ -474,6 +502,7 @@ def activation_fixture(
         "KEEPALIVED_UNIT": str(output / "keepalived.service"),
         "KEEPALIVED_DROP_IN": str(output / "platform.conf"),
         "KEEPALIVED_SYSCONFIG": str(output / "sysconfig"),
+        "KEEPALIVED_FIREWALL_ENABLED": "{{ firewalld_service_enabled | default(true) }}",
     }
     return root, fixture
 
@@ -484,14 +513,269 @@ def _activation_include(entry: str = "activation_preflight.yml") -> dict[str, An
     }}
 
 
-@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("enabled,case", [
+    (enabled, case) for enabled in (False, True) for case in (
+        "ready", "firewall-inactive", "firewall-disabled", "firewall-state-text", "firewall-state-rc",
+        "firewall-rule", "firewall-rule-text", "firewall-rule-rc", "unreachable", "unreachable-rule",
+    )
+] + [(False, "firewall-config"), (False, "unreachable-config"), (True, "firewall-permanent-rule")])
+def test_keepalived_firewall_guard_modes(
+    enabled: bool, case: str, activation_fixture: tuple[Path, dict[str, Any]],
+    command_runner: CommandRunner,
+) -> None:
+    root, play = activation_fixture
+    rules = [
+        f'rule family="ipv4" source address="192.0.2.{peer}/32" protocol value="112" accept'
+        for peer in (11, 12)
+    ]
+    play["vars"].update({
+        "keepalived_vip_enabled": True,
+        "keepalived_vip_instances": [{"peers": ["192.0.2.12", "192.0.2.11", "192.0.2.11"]}],
+        "firewalld_service_enabled": enabled,
+        "firewalld_service_state": "started" if enabled else "stopped",
+        "test_case": case,
+    })
+    if case.startswith("unreachable"):
+        play["vars"]["unreachable_task"] = {
+            "unreachable": "Require actual declared firewalld service states",
+            "unreachable-rule": "Require every current Keepalived peer rule in declared firewall policy",
+            "unreachable-config": "Validate offline permanent firewalld configuration",
+        }[case]
+    play["ignore_errors"] = True
+    play["ignore_unreachable"] = True
+    guard = _activation_include("runtime_firewall_guard.yml")
+    guard["ansible.builtin.include_role"]["apply"] = {"ignore_errors": True, "ignore_unreachable": True}
+    play["tasks"] = [
+        {"ansible.builtin.set_fact": {"keepalived_vip_firewall_observation": {"stale": True}}},
+        guard,
+        {"ansible.builtin.assert": {"that": "keepalived_vip_firewall_observation == expected",},
+         "vars": {"expected": {"managed": True, "service_enabled": enabled,
+                               "service_state": "started" if enabled else "stopped", "rules": rules}},
+         "ignore_errors": False},
+        {"ansible.builtin.set_fact": {"keepalived_vip_firewalld_manage": False}},
+        _activation_include("runtime_firewall_guard.yml"),
+        {"ansible.builtin.assert": {"that": "keepalived_vip_firewall_observation == {'managed': false}"},
+         "ignore_errors": False},
+    ]
+    playbook = root / "firewall-guard.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    result = run_playbook(command_runner, playbook)
+    log = root / "commands.jsonl"
+    commands = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    if not enabled:
+        assert not any(command[0] == "firewall-cmd" for command in commands)
+    if case != "ready":
+        expected_task = (
+            "Require actual declared firewalld service states" if case in {
+                "firewall-inactive", "firewall-disabled", "firewall-state-text", "firewall-state-rc",
+            } else "Validate offline permanent firewalld configuration" if case == "firewall-config"
+            else "Require every current Keepalived peer rule in declared firewall policy"
+        )
+        assert_failed_with(result, "Injected transient connection loss" if case.startswith("unreachable") else expected_task)
+        assert "Publish verified Keepalived firewall observation]" not in result.stdout
+        return
+    result.assert_success()
+    assert commands[:2] == [
+        ["systemctl", "is-active", "firewalld.service"],
+        ["systemctl", "is-enabled", "firewalld.service"],
+    ]
+    expected = (
+        [["firewall-cmd", *mode, "--query-rich-rule=" + rule]
+         for rule in rules for mode in ([], ["--permanent"])]
+        if enabled else [["firewall-offline-cmd", "--check-config"], *[
+            ["firewall-offline-cmd", "--query-rich-rule=" + rule] for rule in rules
+        ]]
+    )
+    assert commands[2:] == expected
+
+
+@pytest.mark.parametrize("entry", ["main.yml", "activation_preflight.yml", "runtime_firewall_guard.yml"])
+@pytest.mark.parametrize("pair", [
+    {}, {"firewalld_service_enabled": False}, {"firewalld_service_state": "stopped"},
+    {"firewalld_service_enabled": "false", "firewalld_service_state": "stopped"},
+    {"firewalld_service_enabled": "true", "firewalld_service_state": "started"},
+    {"firewalld_service_enabled": True, "firewalld_service_state": "stopped"},
+    {"firewalld_service_enabled": False, "firewalld_service_state": "started"},
+    {"firewalld_service_enabled": True, "firewalld_service_state": "restarted"},
+])
+def test_keepalived_firewall_guard_rejects_pair_before_commands(
+    entry: str, pair: dict[str, Any], activation_fixture: tuple[Path, dict[str, Any]], command_runner: CommandRunner,
+) -> None:
+    root, play = activation_fixture
+    for key in ("firewalld_service_enabled", "firewalld_service_state"):
+        play["vars"].pop(key)
+    play["vars"].update({"keepalived_vip_enabled": True, **pair})
+    play["tasks"] = [_activation_include(entry)]
+    playbook = root / "firewall-pair.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    assert_failed_with(run_playbook(command_runner, playbook), "Keepalived VIP requires strict lifecycle booleans")
+    assert not (root / "commands.jsonl").exists()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_keepalived_early_firewall_guard_checks_states_not_unwritten_rules(
+    enabled: bool, activation_fixture: tuple[Path, dict[str, Any]], command_runner: CommandRunner,
+) -> None:
+    root, play = activation_fixture
+    role = root / "roles/keepalived_vip"
+    main = yaml.safe_load((role / "tasks/main.yml").read_text())[1]["block"]
+    early = next(task for task in main if task["name"].startswith("Require declared firewalld states"))
+    (role / "tasks/test_early.yml").write_text(yaml.safe_dump([early]), encoding="utf-8")
+    play["vars"].update({
+        "keepalived_vip_enabled": True,
+        "firewalld_service_enabled": enabled,
+        "firewalld_service_state": "started" if enabled else "stopped",
+        "test_case": "firewall-rule",
+    })
+    play["tasks"] = [_activation_include("test_early.yml")]
+    playbook = root / "early-firewall.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    run_playbook(command_runner, playbook).assert_success()
+    assert [json.loads(line) for line in (root / "commands.jsonl").read_text().splitlines()] == [
+        ["systemctl", "is-active", "firewalld.service"],
+        ["systemctl", "is-enabled", "firewalld.service"],
+    ]
+
+
+def test_keepalived_unmanaged_firewall_guard_needs_no_pair_and_resets_observation(
+    activation_fixture: tuple[Path, dict[str, Any]], command_runner: CommandRunner,
+) -> None:
+    root, play = activation_fixture
+    for key in ("firewalld_service_enabled", "firewalld_service_state"):
+        play["vars"].pop(key)
+    play["vars"].update({"keepalived_vip_enabled": True, "keepalived_vip_firewalld_manage": False})
+    play["tasks"] = [
+        {"ansible.builtin.set_fact": {"keepalived_vip_firewall_observation": {"stale": True}}},
+        _activation_include("runtime_firewall_guard.yml"),
+        {"ansible.builtin.assert": {"that": "keepalived_vip_firewall_observation == {'managed': false}"}},
+    ]
+    playbook = root / "unmanaged-firewall.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    run_playbook(command_runner, playbook).assert_success()
+    assert not (root / "commands.jsonl").exists()
+
+
+@pytest.mark.parametrize("ignored_read", [False, True])
+@pytest.mark.parametrize("enabled,probe", [
+    (True, "service"), (False, "service"), (False, "config"), (False, "rule"), (True, "rule"),
+])
+def test_keepalived_firewall_guard_rejects_transient_unreachable_evidence(
+    enabled: bool, probe: str, ignored_read: bool,
+    activation_fixture: tuple[Path, dict[str, Any]], command_runner: CommandRunner,
+) -> None:
+    root, play = activation_fixture
+    task_name, operation = {
+        "service": ("Require actual declared firewalld service states", "is-active"),
+        "config": ("Validate offline permanent firewalld configuration", "--check-config"),
+        "rule": ("Require every current Keepalived peer rule in declared firewall policy",
+                 '--query-rich-rule=rule family="ipv4" source address="192.0.2.11/32" protocol value="112" accept'),
+    }[probe]
+    if ignored_read:
+        # Force continuation of only the selected read in the scratch role. This
+        # verifies evidence validation independently of Ansible's ignore inheritance.
+        for filename in ("runtime_firewall_guard.yml", "firewall_service_guard.yml"):
+            path = root / "roles/keepalived_vip/tasks" / filename
+            tasks = yaml.safe_load(path.read_text())
+            for block in tasks:
+                for task in block["block"]:
+                    if task["name"] == task_name:
+                        task["ignore_unreachable"] = True
+            path.write_text(yaml.safe_dump(tasks), encoding="utf-8")
+    play["vars"].update({
+        "keepalived_vip_enabled": True,
+        "keepalived_vip_instances": [{"peers": ["192.0.2.11", "192.0.2.12"]}],
+        "firewalld_service_enabled": enabled,
+        "firewalld_service_state": "started" if enabled else "stopped",
+        "unreachable_task": task_name,
+        "unreachable_operation": operation,
+        "unreachable_with_output": True,
+    })
+    play["tasks"] = [
+        {"ansible.builtin.set_fact": {"keepalived_vip_firewall_observation": {"stale": True}}},
+        {"block": [_activation_include("runtime_firewall_guard.yml")],
+         "ignore_unreachable": True,
+         "rescue": [
+             {"ansible.builtin.assert": {"that": "keepalived_vip_firewall_observation == {}"}},
+             {"ansible.builtin.copy": {"dest": str(root / "rejected-observation"),
+                                       "content": "{{ keepalived_vip_firewall_observation | to_json }}", "mode": "0600"}},
+             {"ansible.builtin.fail": {"msg": "Rejected unreachable firewall evidence without fresh observation"}},
+         ]},
+        {"ansible.builtin.fail": {"msg": "Unexpected service boundary continuation"}},
+    ]
+    playbook = root / "transient-firewall.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    result = run_playbook(command_runner, playbook)
+    assert_failed_with(result, "Rejected unreachable firewall evidence without fresh observation"
+                       if ignored_read else "Injected transient connection loss")
+    assert "Publish verified Keepalived firewall observation]" not in result.stdout
+    assert "Unexpected service boundary continuation" not in result.stdout
+    if ignored_read:
+        assert json.loads((root / "rejected-observation").read_text()) == {}
+    if probe in {"service", "rule"}:
+        commands = [json.loads(line) for line in (root / "commands.jsonl").read_text().splitlines()]
+        assert any(command[1] == "is-enabled" for command in commands)
+        if probe == "rule":
+            assert any("192.0.2.12/32" in argument for command in commands for argument in command)
+
+
+@pytest.mark.parametrize("check,added,removed,dependencies", [
+    (False, True, True, True), (False, False, False, False),
+    (True, False, False, True), (True, True, False, True),
+    (True, False, True, True), (True, False, False, False),
+])
+def test_keepalived_staging_firewall_guard_defers_only_predicted_policy_writes(
+    check: bool, added: bool, removed: bool, dependencies: bool,
+    activation_fixture: tuple[Path, dict[str, Any]], command_runner: CommandRunner,
+) -> None:
+    root, play = activation_fixture
+    role = root / "roles/keepalived_vip"
+    main = yaml.safe_load((role / "tasks/main.yml").read_text())[1]["block"]
+    writes = [task for task in main if "ansible.posix.firewalld" in task]
+    for task in writes:
+        task["keepalived_test_firewalld"] = task.pop("ansible.posix.firewalld")
+    (root / "action_plugins/keepalived_test_firewalld.py").write_text('''
+from ansible.plugins.action import ActionBase
+class ActionModule(ActionBase):
+    def run(self, tmp=None, task_vars=None):
+        args = self._templar.template(self._task.args)
+        assert args["permanent"] and args["offline"] and not args["immediate"]
+        return {"changed": task_vars["predicted_" + args["state"]]}
+''', encoding="utf-8")
+    (role / "tasks/test_policy_guard.yml").write_text(yaml.safe_dump([*writes, main[-2]]), encoding="utf-8")
+    play["vars"].update({
+        "keepalived_vip_enabled": True,
+        "keepalived_vip_instances": [{"peers": ["192.0.2.11", "192.0.2.12"]}],
+        "keepalived_vip_current_firewalld_rules": ["current-rule"],
+        "keepalived_vip_previous_firewalld_rules": ["stale-rule"],
+        "firewalld_service_enabled": False, "firewalld_service_state": "stopped",
+        "firewalld_dependencies_ready": dependencies,
+        "predicted_enabled": added, "predicted_disabled": removed,
+        "test_case": "firewall-rule",
+    })
+    play["tasks"] = [_activation_include("test_policy_guard.yml")]
+    playbook = root / "predicted-policy.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    result = command_runner.run(["ansible-playbook", playbook, *(["--check"] if check else [])], timeout=60)
+    if check and (added or removed or not dependencies):
+        result.assert_success()
+        assert not (root / "commands.jsonl").exists()
+    else:
+        assert_failed_with(result, "Require every current Keepalived peer rule in declared firewall policy")
+        assert "Publish verified Keepalived firewall observation]" not in result.stdout
+
+
+@pytest.mark.parametrize("managed,enabled", [(False, True), (True, True), (True, False)])
 def test_keepalived_activation_preflight_is_repeatable_and_read_only(
-    managed: bool,
+    managed: bool, enabled: bool,
     activation_fixture: tuple[Path, dict[str, Any]], namespace_root_runner: NamespaceRootRunner,
 ) -> None:
     root, play = activation_fixture
     # Invalid repository-policy inputs must not run a dependency or stage helpers.
     play["vars"]["rocky_repository_policy_enabled"] = True
+    play["vars"].update({
+        "firewalld_service_enabled": enabled,
+        "firewalld_service_state": "started" if enabled else "stopped",
+    })
     play["tasks"] += [
         {"ansible.builtin.set_fact": {"keepalived_vip_firewalld_manage": managed}},
         _activation_include(),
@@ -505,6 +789,13 @@ def test_keepalived_activation_preflight_is_repeatable_and_read_only(
             "keepalived_vip_activation_observation.package_checksum == 'a' * 64",
             "keepalived_vip_activation_observation.binary_checksum | length == 64",
             "(keepalived_vip_activation_observation.firewalld_manifest_checksum != 'unmanaged') == keepalived_vip_firewalld_manage",
+            "keepalived_vip_activation_observation.firewalld == keepalived_vip_firewall_observation",
+            "keepalived_vip_activation_observation.firewalld.managed == keepalived_vip_firewalld_manage",
+            *([
+                "keepalived_vip_activation_observation.firewalld.service_enabled == firewalld_service_enabled",
+                "keepalived_vip_activation_observation.firewalld.service_state == firewalld_service_state",
+                "keepalived_vip_activation_observation.firewalld.rules == keepalived_vip_activation_firewall_rules",
+            ] if managed else []),
         ]}},
     ]
     playbook = root / "preflight.yml"
@@ -517,16 +808,18 @@ def test_keepalived_activation_preflight_is_repeatable_and_read_only(
     assert commands.count(["ip", "-j", "-4", "address", "show"]) == 2
     assert ["systemctl", "is-enabled", "haproxy.service"] in commands
     assert any(command[0] == "runuser" for command in commands)
-    assert any(command[0] == "firewall-cmd" for command in commands) is managed
+    assert any(command[0] == "firewall-cmd" for command in commands) is (managed and enabled)
+    assert any(command[0] == "firewall-offline-cmd" for command in commands) is (managed and not enabled)
 
 
 @pytest.mark.parametrize("case", [
     "package", "package-digest", "package-files", "native", "script-unready",
     "haproxy-inactive", "haproxy-disabled", "keepalived-active", "keepalived-enabled",
-    "firewall-inactive", "firewall-rule", "link-down", "source", "route",
+    "firewall-inactive", "firewall-rule", "firewall-rule-text", "link-down", "source", "route",
     "vip-other-interface", "address-error", "address-malformed",
     "config-drift", "script-drift", "drop-in-drift", "metadata", "symlink", "inventory-drift",
     "manifest-drift", "manifest-mode", "missing-config",
+    "offline-manifest-drift", "offline-manifest-mode",
     "systemd-FragmentPath", "systemd-DropInPaths", "systemd-NeedDaemonReload",
     "systemd-EnvironmentFiles", "systemd-Environment", "systemd-PassEnvironment",
     "systemd-UnsetEnvironment", "systemd-ExecStart", "systemd-extra-drop-in", "systemd-alternate-config",
@@ -536,6 +829,9 @@ def test_keepalived_activation_preflight_rejects_unready_or_stale_state(
     case: str, activation_fixture: tuple[Path, dict[str, Any]], namespace_root_runner: NamespaceRootRunner,
 ) -> None:
     root, play = activation_fixture
+    if case.startswith("offline-"):
+        play["vars"].update({"firewalld_service_enabled": False, "firewalld_service_state": "stopped"})
+        case = case.removeprefix("offline-")
     paths = {"config-drift": "keepalived.conf", "script-drift": "check-service", "drop-in-drift": "platform.conf"}
     if case in paths:
         play["tasks"].append({"ansible.builtin.lineinfile": {
@@ -596,7 +892,7 @@ def test_keepalived_activation_preflight_rejects_unready_or_stale_state(
     "Check staged Keepalived readiness as the configured script identity",
     "Inspect loaded Keepalived unit configuration",
     "Observe Keepalived activation service states",
-    "Verify staged Keepalived peer rules in runtime and permanent firewall policy",
+    "Require every current Keepalived peer rule in declared firewall policy",
 ])
 def test_keepalived_preflight_cannot_inherit_ignored_unreachable_reads(
     unreachable_task: str, activation_fixture: tuple[Path, dict[str, Any]],
@@ -633,22 +929,27 @@ def test_keepalived_active_convergence_requires_actual_managed_firewall(
     result = namespace_root_runner.run([
         "ansible-playbook", playbook, "-e", json.dumps({"test_case": "firewall-inactive"}),
     ], timeout=120)
-    assert_failed_with(result, "Require running managed firewalld before active Keepalived convergence")
+    assert_failed_with(result, "Require actual declared firewalld service states")
     assert "Install exact Keepalived package" not in result.stdout
 
 
-@pytest.mark.parametrize("boundary", ["management", "reload"])
+@pytest.mark.parametrize("boundary", ["management", "staging", "reload"])
 @pytest.mark.parametrize("loss", ["ready", "firewall-inactive", "firewall-rule", "unreachable"])
+@pytest.mark.parametrize("enabled", [False, True])
 def test_keepalived_rechecks_firewall_at_each_service_boundary(
-    boundary: str, loss: str, activation_fixture: tuple[Path, dict[str, Any]],
+    enabled: bool, boundary: str, loss: str, activation_fixture: tuple[Path, dict[str, Any]],
     namespace_root_runner: NamespaceRootRunner,
 ) -> None:
     root, play = activation_fixture
+    play["vars"].update({
+        "firewalld_service_enabled": enabled,
+        "firewalld_service_state": "started" if enabled else "stopped",
+    })
     role = root / "roles/keepalived_vip"
     main = yaml.safe_load((role / "tasks/main.yml").read_text())[1]["block"]
     assert main[-2]["ansible.builtin.include_tasks"] == "runtime_firewall_guard.yml"
     assert "ansible.builtin.systemd_service" in main[-1]
-    early_guard = next(task for task in main if task["name"].startswith("Require running managed firewalld"))
+    early_guard = next(task for task in main if task["name"].startswith("Require declared firewalld states"))
     transitions = root / "service-transitions"
     (root / "action_plugins/keepalived_test_systemd.py").write_text('''
 from pathlib import Path
@@ -661,7 +962,7 @@ class ActionModule(ActionBase):
         return {"changed": False}
 ''', encoding="utf-8")
     transition_tasks = [early_guard, {"ansible.builtin.set_fact": {"test_case": loss}}]
-    if boundary == "management":
+    if boundary in {"management", "staging"}:
         main[-1]["keepalived_test_systemd"] = main[-1].pop("ansible.builtin.systemd_service")
         transition_tasks += main[-2:]
     else:
@@ -676,11 +977,12 @@ class ActionModule(ActionBase):
     (role / "tasks/test_transition.yml").write_text(yaml.safe_dump(transition_tasks), encoding="utf-8")
     play["vars"]["test_transitions"] = str(transitions)
     if loss == "unreachable":
-        play["vars"]["unreachable_task"] = "Require active firewalld at the Keepalived service boundary"
+        play["vars"]["unreachable_task"] = "Require every current Keepalived peer rule in declared firewall policy"
     play["ignore_unreachable"] = True
     play["tasks"] += [
         {"ansible.builtin.set_fact": {
-            "keepalived_vip_service_enabled": True, "keepalived_vip_service_state": "started",
+            "keepalived_vip_service_enabled": boundary != "staging",
+            "keepalived_vip_service_state": "stopped" if boundary == "staging" else "started",
             "keepalived_vip_dependencies_ready": True,
         }},
         _activation_include("test_transition.yml"),
@@ -690,11 +992,18 @@ class ActionModule(ActionBase):
     result = namespace_root_runner.run(["ansible-playbook", playbook], timeout=120)
     if loss == "ready":
         result.assert_success()
-        assert transitions.read_text() == ("started" if boundary == "management" else "reloaded")
+        assert transitions.read_text() == {"management": "started", "staging": "stopped", "reload": "reloaded"}[boundary]
     else:
-        result.assert_failure()
+        assert_failed_with(result, {
+            "firewall-inactive": "Require actual declared firewalld service states",
+            "firewall-rule": "Require every current Keepalived peer rule in declared firewall policy",
+            "unreachable": "Injected transient connection loss",
+        }[loss])
         assert not transitions.exists(), result.diagnostics()
-    assert "Require running managed firewalld before active Keepalived convergence]" in result.stdout
+    assert "Require declared firewalld states before Keepalived convergence]" in result.stdout
+    if not enabled:
+        assert not any(json.loads(line)[0] == "firewall-cmd"
+                       for line in (root / "commands.jsonl").read_text().splitlines())
 
 
 @pytest.mark.parametrize("case,confirmed", [

@@ -3,6 +3,7 @@
 - name: Invalidate previous Keepalived activation observation
   ansible.builtin.set_fact:
     keepalived_vip_activation_observation: {}
+    keepalived_vip_firewall_observation: {}
 
 - name: Validate staged Keepalived activation inputs
   ansible.builtin.include_tasks: validate.yml
@@ -190,16 +191,10 @@
       {'service': 'haproxy.service', 'operation': 'is-enabled', 'expected': 'enabled', 'rc': 0},
       {'service': keepalived_vip_service_name, 'operation': 'is-active', 'expected': 'inactive', 'rc': 3},
       {'service': keepalived_vip_service_name, 'operation': 'is-enabled', 'expected': 'disabled', 'rc': 1}
-    ] + ([{'service': 'firewalld.service', 'operation': 'is-active', 'expected': 'active', 'rc': 0}]
-         if keepalived_vip_firewalld_manage else []) }}
+    ] }}
 
-- name: Verify staged Keepalived peer rules in runtime and permanent firewall policy
-  ansible.builtin.command:
-    argv: "{{ ['firewall-cmd'] + item.1 + ['--query-rich-rule=' ~ item.0] }}"
-  loop: "{{ keepalived_vip_activation_firewall_rules | product([[], ['--permanent']]) | list }}"
-  changed_when: false
-  check_mode: false
-  when: keepalived_vip_firewalld_manage
+- name: Verify current declared Keepalived firewall policy
+  ansible.builtin.include_tasks: runtime_firewall_guard.yml
 
 - name: Observe Keepalived interface state and source addresses
   ansible.builtin.command:
@@ -267,4 +262,5 @@
       sysconfig_checksum: "{{ keepalived_vip_activation_artifacts.results[5].stat.checksum }}"
       systemd_properties: "{{ keepalived_vip_activation_systemd_properties.results | map(attribute='stdout') | list }}"
       firewalld_manage: "{{ keepalived_vip_firewalld_manage }}"
+      firewalld: "{{ keepalived_vip_firewall_observation }}"
       firewalld_manifest_checksum: "{{ keepalived_vip_activation_firewall_stat.stat.checksum | default('unmanaged') }}"

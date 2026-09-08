@@ -4,7 +4,8 @@
   connection: local
   gather_facts: true
   vars:
-    firewalld_enabled: false
+    firewalld_service_enabled: false
+    firewalld_service_state: stopped
     keepalived_vip_enabled: true
     keepalived_vip_package_nevra: "{{ keepalived_vip_test_package_nevra | default('keepalived-0:2.2.8-9.el10.x86_64') }}"
     keepalived_vip_cluster_members:

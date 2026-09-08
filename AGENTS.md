@@ -60,8 +60,23 @@
   retries require fresh plans after recovery.
 - Keep CI planning, manual start, qualification, rollback, and reporting in CI.
   Reports must show lifecycle handoff keys, but neither lane may automatically
-  mutate or push private desired state. Require reviewed private commits and keep
-  firewall readiness/enablement a separate prerequisite.
+  mutate or push private desired state. Require reviewed private commits and a
+  reviewed firewall lifecycle/policy prerequisite matching plan evidence. Neither
+  edge route automatically changes the firewall service lifecycle; enabling
+  enforcement, when chosen, requires separate approval, not universal enablement.
+- For enabled HAProxy/Keepalived roles with managed firewall policy, require an
+  explicit `firewalld_service_enabled` boolean and `firewalld_service_state` pair:
+  `false`/`stopped` requires actual inactive/boot-disabled firewalld and offline
+  permanent configuration/rule validation; `true`/`started` requires actual
+  active/boot-enabled firewalld and correct runtime and permanent rules. Reject
+  mixed pairs, string booleans, and missing lifecycle declarations. Keep
+  `*_firewalld_manage: true`; do not use legacy `firewalld_enabled`, new flags, or
+  a generic framework to select this mode. Disabled mode skips only daemon-running
+  and runtime-rule-enforcement checks, not policy or other activation gates.
+  Firewalld off provides no host-firewall enforcement from firewalld; its configured
+  allowlists are not operative. Do not claim equivalent security or production
+  qualification, or automatically edit source/private inventory or change the
+  firewall service to satisfy a gate.
 - Keep `smoke-openbao` direct-node plus all-three-HAProxy only for the pre-VIP
   phase. `smoke-openbao-vip` imports that smoke and adds active desired Keepalived
   validation, actual active/enabled state on all three hosts, repeated exact

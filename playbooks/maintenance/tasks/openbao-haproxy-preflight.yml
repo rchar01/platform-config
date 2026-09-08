@@ -55,12 +55,9 @@
       - >-
         ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', '')
         == 'disabled'
-      - >-
-        not openbao_haproxy_firewalld_manage | default(true) | bool
-        or ansible_facts.services.get('firewalld.service', {}).get('state', '') == 'running'
     fail_msg: >-
-      OpenBao HAProxy activation requires actual inactive edge services and ready firewall safety gates.
-      Expected edge state stopped/inactive and status disabled; managed firewalld must be running.
+      OpenBao HAProxy activation requires actual inactive and boot-disabled edge services.
+      Expected edge state stopped/inactive and status disabled.
       Observed Keepalived state={{
       ansible_facts.services.get(keepalived_vip_service_name | default('keepalived.service'), {}).get('state', 'missing')
       }} status={{
@@ -69,7 +66,7 @@
       ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('state', 'missing')
       }} status={{
       ansible_facts.services.get(openbao_haproxy_service_name | default('haproxy.service'), {}).get('status', 'missing')
-      }}; firewalld state={{ ansible_facts.services.get('firewalld.service', {}).get('state', 'missing') }}.
+      }}. Firewall lifecycle and policy are verified by the preceding role preflight.
 
 - name: Collect sorted OpenBao HAProxy activation evidence
   ansible.builtin.set_fact:

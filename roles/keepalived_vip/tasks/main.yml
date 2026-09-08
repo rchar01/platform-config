@@ -8,16 +8,8 @@
     - name: Validate shared Keepalived VIP inputs
       ansible.builtin.include_tasks: validate.yml
 
-    - name: Require running managed firewalld before active Keepalived convergence
-      ansible.builtin.command:
-        argv: [systemctl, is-active, firewalld.service]
-      register: keepalived_vip_active_firewalld
-      changed_when: false
-      check_mode: false
-      failed_when: keepalived_vip_active_firewalld.rc != 0 or keepalived_vip_active_firewalld.stdout != 'active'
-      when:
-        - keepalived_vip_service_state == 'started'
-        - keepalived_vip_firewalld_manage
+    - name: Require declared firewalld states before Keepalived convergence
+      ansible.builtin.include_tasks: firewall_service_guard.yml
 
     - name: Validate Rocky repository policy before package convergence
       ansible.builtin.include_role:
@@ -278,9 +270,10 @@
       ansible.posix.firewalld:
         rich_rule: "{{ item }}"
         permanent: true
-        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        immediate: "{{ firewalld_service_enabled }}"
         offline: true
         state: enabled
+      register: keepalived_vip_firewalld_rules_enabled
       loop: "{{ keepalived_vip_current_firewalld_rules }}"
       when:
         - keepalived_vip_firewalld_manage | bool
@@ -290,9 +283,10 @@
       ansible.posix.firewalld:
         rich_rule: "{{ item }}"
         permanent: true
-        immediate: "{{ (firewalld_service_state | default('stopped')) in ['started', 'restarted', 'reloaded'] }}"
+        immediate: "{{ firewalld_service_enabled }}"
         offline: true
         state: disabled
+      register: keepalived_vip_firewalld_rules_disabled
       loop: >-
         {{
           keepalived_vip_previous_firewalld_rules
@@ -318,12 +312,16 @@
         - keepalived_vip_firewalld_manage | bool
         - firewalld_dependencies_ready | default(true)
 
-    - name: Recheck runtime firewall immediately before Keepalived service management
+    - name: Recheck firewall immediately before Keepalived service management
       ansible.builtin.include_tasks: runtime_firewall_guard.yml
       when:
-        - keepalived_vip_dependencies_ready
-        - keepalived_vip_service_state == 'started'
         - keepalived_vip_firewalld_manage
+        - >-
+          not ansible_check_mode or (
+            firewalld_dependencies_ready | default(true)
+            and keepalived_vip_firewalld_rules_enabled is not changed
+            and keepalived_vip_firewalld_rules_disabled is not changed
+          )
 
     - name: Manage shared Keepalived VIP service
       ansible.builtin.systemd_service:

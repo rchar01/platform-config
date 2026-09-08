@@ -26,7 +26,7 @@ def activation(repo_root, isolated_test_dir, monkeypatch):
     root = isolated_test_dir
     plugins = root / "action_plugins"
     plugins.mkdir()
-    for name in ("setup", "service_facts", "systemd_service", "activation_probe", "election_pause"):
+    for name in ("setup", "service_facts", "systemd_service", "activation_probe", "election_pause", "firewall_probe"):
         shutil.copyfile(fixture / "action.py", plugins / f"{name}.py")
     playbook = shadow_edge_tasks(repo_root, root, 'keepalived')
     tasks = root / "playbooks/tasks"
@@ -70,12 +70,32 @@ def test_keepalived_activation_starts_backups_before_preferred_and_qualifies_all
     assert any(event["phase"] == "election" for event in events)
     assert sorted(event["host"] for event in events if event["phase"] == "qualification") == HOSTS
     assert not any(event["phase"] == "rollback" for event in events)
+    for host in HOSTS:
+        phases = [event["phase"] for event in events if event["host"] == host]
+        assert phases.index("firewall") < phases.index("start")
     assert output.count("Record mocked strict runtime observations") == 3
     guards = [json.loads(line) for line in (activation[0] / 'guard-events.jsonl').read_text().splitlines()]
     assert [event['host'] for event in guards if event['phase'] == 'acquire'] == HOSTS
     assert sorted(event['host'] for event in guards if event['phase'] == 'release') == HOSTS
     assert not list(activation[0].glob('*-edge-lock'))
     assert len(list(activation[0].glob('*-consumed-*'))) == 3
+
+
+@pytest.mark.parametrize("host", ["bao-1", "bao-2"])
+@pytest.mark.parametrize("failure", ["failure", "unreachable"])
+def test_keepalived_firewall_boundary_failure_rolls_back_all(
+    repo_root, activation, host, failure,
+):
+    code, output = _run(repo_root, activation, {f"test_firewall_{failure}": [host]})
+    assert code != 0, output
+    assert f"Mocked firewall {failure} on {host}" in output, output
+    if failure == "unreachable":
+        assert "assertion: test_firewall_result is not unreachable" in output, output
+    events = _events(activation[0])
+    assert not any(event["phase"] == "start" and event["host"] == host for event in events), output
+    if host != "bao-2":
+        assert not any(event["phase"] == "start" and event["host"] == "bao-2" for event in events), output
+    assert sorted(event["host"] for event in events if event["phase"] == "rollback") == HOSTS, output
 
 
 @pytest.mark.parametrize("limit", [None, "bao-1", "openbao,other"])
@@ -315,5 +335,5 @@ def test_keepalived_activation_never_reconverges_approved_candidates(repo_root):
     task_lists.append(yaml.safe_load((repo_root / 'playbooks/maintenance/tasks/openbao-keepalived-preflight.yml').read_text()))
     roles = [task["ansible.builtin.include_role"] for tasks in task_lists for task in walk(tasks)
              if "ansible.builtin.include_role" in task]
-    assert all(role.get("tasks_from") in {"activation_preflight.yml", "activation_rollback.yml"}
+    assert all(role.get("tasks_from") in {"activation_preflight.yml", "activation_rollback.yml", "runtime_firewall_guard.yml"}
                for role in roles if role["name"] in {"keepalived_vip", "openbao_haproxy"})

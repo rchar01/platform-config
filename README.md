@@ -106,6 +106,18 @@ limited to acceptance checks until named administrator access, local audit
 rotation, and recovery gates have been completed and normal onboarding has been
 separately authorized. These workflows are not evidence of live qualification.
 
+HAProxy and Keepalived require a reviewed firewall lifecycle and policy, not
+universal firewalld enablement. Explicit `firewalld_service_enabled: false` with
+`firewalld_service_state: stopped` requires actual inactive/boot-disabled state
+and offline permanent configuration/rule validation; `true` with `started`
+requires actual active/boot-enabled state and correct runtime and permanent rules.
+Keep `*_firewalld_manage: true` in either mode. With firewalld off, there is no
+host-firewall enforcement from firewalld and its configured allowlists are not
+operative; this is not equivalent security or production qualification. The mode
+must match reviewed private commits and plan evidence. Enabling enforcement, if
+chosen, needs separate approval. See the
+[firewall contract](docs/firewalld.md#haproxy-and-keepalived-lifecycle).
+
 `make smoke-openbao ENV=dev LIMIT=openbao` checks strict direct-node status and
 all three HAProxy paths only, for the pre-VIP phase. The `platform-tools` facade
 `platform-openbao-edge` provides `haproxy-plan`, `haproxy-activate`,

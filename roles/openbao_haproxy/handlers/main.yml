@@ -1,8 +1,6 @@
 ---
 - name: Reload OpenBao HAProxy
-  ansible.builtin.systemd_service:
-    name: "{{ openbao_haproxy_service_name }}"
-    state: reloaded
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/reload.yml"
   when:
     - openbao_haproxy_service_enabled | bool
     - openbao_haproxy_service_state == 'started'

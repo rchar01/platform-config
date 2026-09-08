@@ -1,23 +1,82 @@
 ---
-- name: Require current managed Keepalived runtime firewall protection
+- name: Require current managed Keepalived firewall policy
   ignore_errors: false
   ignore_unreachable: false
   block:
-    - name: Require active firewalld at the Keepalived service boundary
-      ansible.builtin.command:
-        argv: [systemctl, is-active, firewalld.service]
-      register: keepalived_vip_runtime_firewall_active
-      changed_when: false
-      check_mode: false
-      failed_when: keepalived_vip_runtime_firewall_active.rc != 0 or keepalived_vip_runtime_firewall_active.stdout != 'active'
+    - name: Invalidate previous Keepalived firewall observation
+      ansible.builtin.set_fact:
+        keepalived_vip_firewall_observation: {}
 
-    - name: Require every current Keepalived peer rule in runtime firewalld
+    - name: Require current declared firewalld service lifecycle
+      ansible.builtin.include_tasks: firewall_service_guard.yml
+
+    - name: Reset unmanaged Keepalived firewall observation
+      ansible.builtin.set_fact:
+        keepalived_vip_firewall_observation:
+          managed: false
+      when: not keepalived_vip_enabled or not keepalived_vip_firewalld_manage
+
+- name: Verify managed Keepalived firewall evidence
+  ignore_errors: false
+  ignore_unreachable: false
+  when: keepalived_vip_enabled and keepalived_vip_firewalld_manage
+  block:
+    - name: Derive current Keepalived peer firewall rules
+      ansible.builtin.set_fact:
+        keepalived_vip_firewall_rules: >-
+          {{ keepalived_vip_instances | map(attribute='peers') | flatten | unique | sort
+             | map('regex_replace', '^(.*)$', 'rule family="ipv4" source address="\1/32" protocol value="112" accept') | list }}
+
+    - name: Validate offline permanent firewalld configuration
       ansible.builtin.command:
-        argv:
-          - firewall-cmd
-          - '--query-rich-rule=rule family="ipv4" source address="{{ item }}/32" protocol value="112" accept'
-      register: keepalived_vip_runtime_firewall_rule
+        argv: [firewall-offline-cmd, --check-config]
+      register: keepalived_vip_firewall_config
       changed_when: false
       check_mode: false
-      failed_when: keepalived_vip_runtime_firewall_rule.rc != 0 or keepalived_vip_runtime_firewall_rule.stdout != 'yes'
-      loop: "{{ keepalived_vip_instances | map(attribute='peers') | flatten | unique | sort }}"
+      when: not firewalld_service_enabled
+
+    - name: Require successful reachable offline firewalld configuration evidence
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_firewall_config is succeeded
+          - keepalived_vip_firewall_config is not unreachable
+          - keepalived_vip_firewall_config is not skipped
+          - keepalived_vip_firewall_config.rc == 0
+      when: not firewalld_service_enabled
+
+    - name: Require every current Keepalived peer rule in declared firewall policy
+      ansible.builtin.command:
+        argv: >-
+          {{ (['firewall-cmd'] if firewalld_service_enabled else ['firewall-offline-cmd'])
+             + item.1 + ['--query-rich-rule=' ~ item.0] }}
+      register: keepalived_vip_firewall_rule
+      changed_when: false
+      check_mode: false
+      failed_when: keepalived_vip_firewall_rule.rc != 0 or keepalived_vip_firewall_rule.stdout != 'yes'
+      loop: "{{ keepalived_vip_firewall_rules | product([[], ['--permanent']] if firewalld_service_enabled else [[]]) | list }}"
+
+    - name: Require complete reachable Keepalived firewall rule evidence
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_firewall_rule is succeeded
+          - keepalived_vip_firewall_rule is not unreachable
+          - keepalived_vip_firewall_rule is not skipped
+          - keepalived_vip_firewall_rule.results | length == (keepalived_vip_firewall_rules | length) * (2 if firewalld_service_enabled else 1)
+
+    - name: Require each Keepalived firewall rule observation to be reachable and exact
+      ansible.builtin.assert:
+        that:
+          - item is succeeded
+          - item is not unreachable
+          - item is not skipped
+          - item.rc == 0
+          - item.stdout == 'yes'
+      loop: "{{ keepalived_vip_firewall_rule.results }}"
+
+    - name: Publish verified Keepalived firewall observation
+      ansible.builtin.set_fact:
+        keepalived_vip_firewall_observation:
+          managed: true
+          service_enabled: "{{ firewalld_service_enabled }}"
+          service_state: "{{ firewalld_service_state }}"
+          rules: "{{ keepalived_vip_firewall_rules }}"

@@ -23,6 +23,9 @@
       {{ openbao_haproxy_activation_firewall_import.rc | default(1) == 0 }}
   when: openbao_haproxy_firewalld_manage | bool
 
+- name: Verify staged OpenBao HAProxy firewall evidence
+  ansible.builtin.include_tasks: firewall_guard.yml
+
 - name: Inspect staged OpenBao HAProxy activation artifacts
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -77,6 +80,7 @@
   ansible.builtin.set_fact:
     openbao_haproxy_activation_observation:
       inventory_host: "{{ inventory_hostname }}"
+      firewalld: "{{ openbao_haproxy_firewall_observation }}"
       package_nevra: "{{ openbao_haproxy_activation_installed_nevra.stdout }}"
       config_checksum: >-
         {{ openbao_haproxy_activation_artifact_stats.results[0].stat.checksum }}

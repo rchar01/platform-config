@@ -79,6 +79,16 @@
       coherent lifecycle, three canonical direct backends, strict health and
       metrics policy, unique ports, and source-scoped firewall inputs.
 
+- name: Require explicit managed OpenBao HAProxy firewall lifecycle inputs
+  ansible.builtin.assert:
+    that:
+      - firewalld_service_enabled is defined
+      - firewalld_service_enabled is boolean
+      - firewalld_service_state | default('') in ['started', 'stopped']
+      - firewalld_service_enabled == (firewalld_service_state == 'started')
+    fail_msg: OpenBao HAProxy requires explicit boolean firewalld enablement and coherent started/stopped state.
+  when: openbao_haproxy_firewalld_manage | bool
+
 - name: Validate each OpenBao HAProxy backend
   ansible.builtin.include_tasks: validate_backend.yml
   loop: "{{ openbao_cluster_members }}"

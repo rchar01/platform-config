@@ -74,9 +74,9 @@ Available maintenance playbooks:
 - `openbao-haproxy-activate.yml`: requires exact active OpenBao markers and
   strict status, binds exact staged package/configuration/CA/firewall evidence
   to the shared source-bound plan and lane authorization, requires inactive
-  Keepalived and active firewalld, and checks routing through every node-local
-  HAProxy. Failure rolls back only reachable
-  HAProxy services and reports unreachable hosts as unverified.
+  Keepalived and the reviewed firewalld lifecycle/policy, and checks routing
+  through every node-local HAProxy. Failure rolls back only reachable HAProxy
+  services and reports unreachable hosts as unverified.
 - `openbao-keepalived-activate.yml`: requires the explicit complete three-host
   limit, `openbao_keepalived_activation_ready: true`, strict active OpenBao,
   active/enabled HAProxy, and exact staged inactive/disabled Keepalived evidence.
@@ -188,9 +188,28 @@ CI planning, manual start, qualification, rollback, and reporting stay in CI.
 Reports must show the lifecycle handoff keys; neither lane automatically mutates
 or pushes private source. After successful HAProxy activation, review and commit
 `openbao_haproxy_service_enabled: true`, `openbao_haproxy_service_state: started`,
-and `openbao_haproxy_activation_ready: false`. Firewall readiness and enablement
-remain separately approved prerequisites. See the
+and `openbao_haproxy_activation_ready: false`. The reviewed firewall lifecycle and
+policy remain prerequisites; enabling enforcement, when chosen, needs separate
+approval rather than being universally required. See the
 [plan and recovery procedure](../../docs/operator-runbook.md#openbao-edge-plans).
+
+Both edge routes require the firewall mode to match reviewed private commits and
+plan evidence. With enabled roles and `*_firewalld_manage: true`, explicit
+`firewalld_service_enabled: false` plus `firewalld_service_state: stopped` requires
+actual inactive/boot-disabled firewalld and offline permanent configuration/rule
+validation. Explicit `true` plus `started` requires actual active/boot-enabled
+firewalld and correct runtime and permanent rules. Mixed pairs, string booleans,
+and missing declarations fail closed. Keep firewall management enabled and do
+not use legacy `firewalld_enabled` or new bypass flags.
+
+Disabled mode skips only daemon-running and runtime-rule-enforcement checks.
+There is no host-firewall enforcement from stopped firewalld, and its configured
+allowlists are not operative; this is not equivalent security or production
+qualification. All cluster/quorum, approval, guard, VIP ownership, network, peer
+VRRP, anti-spoofing, and DAD gates remain mandatory. Neither route automatically
+changes source/private inventory or the firewall service lifecycle to satisfy
+these checks. See the
+[firewall contract](../../docs/firewalld.md#haproxy-and-keepalived-lifecycle).
 
 ## OpenBao VIP Handoff
 

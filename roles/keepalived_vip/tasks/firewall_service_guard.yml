@@ -1,0 +1,48 @@
+---
+# State-only checks can run before first convergence has installed new peer rules.
+- name: Require declared managed firewalld lifecycle without suppressing failures
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Validate shared Keepalived and firewalld lifecycle
+      ansible.builtin.include_tasks: validate_lifecycle.yml
+
+    - name: Require actual declared firewalld service states
+      ansible.builtin.command:
+        argv: [systemctl, "{{ item.operation }}", firewalld.service]
+      register: keepalived_vip_firewall_service
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        keepalived_vip_firewall_service.rc != item.rc
+        or keepalived_vip_firewall_service.stdout != item.expected
+      loop:
+        - operation: is-active
+          expected: "{{ 'active' if firewalld_service_enabled else 'inactive' }}"
+          rc: "{{ 0 if firewalld_service_enabled else 3 }}"
+        - operation: is-enabled
+          expected: "{{ 'enabled' if firewalld_service_enabled else 'disabled' }}"
+          rc: "{{ 0 if firewalld_service_enabled else 1 }}"
+      when:
+        - keepalived_vip_enabled
+        - keepalived_vip_firewalld_manage
+
+    - name: Require complete reachable firewalld service evidence
+      ansible.builtin.assert:
+        that:
+          - keepalived_vip_firewall_service is succeeded
+          - keepalived_vip_firewall_service is not unreachable
+          - keepalived_vip_firewall_service is not skipped
+          - keepalived_vip_firewall_service.results | length == 2
+      when: keepalived_vip_enabled and keepalived_vip_firewalld_manage
+
+    - name: Require each firewalld service observation to be reachable and exact
+      ansible.builtin.assert:
+        that:
+          - item is succeeded
+          - item is not unreachable
+          - item is not skipped
+          - item.rc == item.item.rc
+          - item.stdout == item.item.expected
+      loop: "{{ keepalived_vip_firewall_service.results }}"
+      when: keepalived_vip_enabled and keepalived_vip_firewalld_manage

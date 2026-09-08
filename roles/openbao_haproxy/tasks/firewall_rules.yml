@@ -1,0 +1,34 @@
+---
+- name: Build current OpenBao HAProxy firewalld policy
+  ansible.builtin.set_fact:
+    openbao_haproxy_current_firewalld_rules: []
+
+- name: Add OpenBao HAProxy client firewalld policy
+  ansible.builtin.set_fact:
+    openbao_haproxy_current_firewalld_rules: >-
+      {{
+        openbao_haproxy_current_firewalld_rules
+        + [
+          'rule family="ipv4" source address="'
+          ~ item
+          ~ '" port port="'
+          ~ (openbao_haproxy_client_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: "{{ openbao_haproxy_client_allowed_sources | sort }}"
+
+- name: Add OpenBao HAProxy metrics firewalld policy
+  ansible.builtin.set_fact:
+    openbao_haproxy_current_firewalld_rules: >-
+      {{
+        openbao_haproxy_current_firewalld_rules
+        + [
+          'rule family="ipv4" source address="'
+          ~ item
+          ~ '" port port="'
+          ~ (openbao_haproxy_stats_port | string)
+          ~ '" protocol="tcp" accept'
+        ]
+      }}
+  loop: "{{ openbao_haproxy_stats_allowed_sources | sort }}"

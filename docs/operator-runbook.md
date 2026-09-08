@@ -1397,15 +1397,28 @@ the original guarded start. After success, set the normal private service
 contract to `openbao_service_enabled: true` and
 `openbao_service_state: started`, and close both bootstrap readiness gates.
 
-Before enabling the client edge, separately qualify and authorize firewalld
-enforcement using [Firewalld Readiness And Enablement](firewalld.md). Preserve
-management access and all required OpenBao backend, cluster, and peer VRRP flows;
-permanent rules alone do not enforce policy while firewalld is stopped. Record
-`firewalld_service_enabled: true` and `firewalld_service_state: started` in private
-desired state only after the approved firewall transition succeeds. Do not rerun
-ordinary OpenBao staging to enable the firewall on an active cluster.
+Before enabling the client edge, review the firewall lifecycle and policy using
+[Firewalld Readiness And Enablement](firewalld.md#haproxy-and-keepalived-lifecycle).
+Explicit `firewalld_service_enabled: false` with `firewalld_service_state: stopped`
+requires actual inactive/boot-disabled firewalld and offline validation of
+permanent configuration and rules. Explicit `true` with `started` requires actual
+active/boot-enabled firewalld and correct runtime and permanent rules. Enabled
+roles with managed firewall policy reject mixed pairs, string booleans, and
+missing declarations. Keep `*_firewalld_manage: true`; do not use the legacy
+`firewalld_enabled` shorthand or bypass rule management.
 
-With firewalld active and Keepalived still stopped, set
+Disabled mode skips only daemon-running and runtime-rule-enforcement checks.
+With firewalld off there is no host-firewall enforcement from firewalld, and its
+configured allowlists are not operative. This is not equivalent security or
+production qualification. Preserve management access and all required OpenBao
+backend, cluster, and peer VRRP flows in the reviewed policy; all other activation
+gates remain mandatory. Match the selected mode to reviewed private commits and
+plan evidence. Enabling enforcement, when chosen, requires a separate approved
+transition, not an automatic edge action or a universal activation prerequisite.
+Do not rerun ordinary OpenBao staging to change the firewall on an active cluster.
+
+With the reviewed firewall lifecycle/policy validated and Keepalived still
+stopped, set
 `openbao_haproxy_activation_ready: true` on all three hosts in reviewed, committed
 private inventory for the separately approved client-edge activation. Use the
 [planned edge workflow](#openbao-edge-plans) below, or the retained direct
@@ -1416,9 +1429,10 @@ make activate-openbao-haproxy ENV=dev LIMIT=openbao
 ```
 
 The approval binds the active OpenBao identity to each node's staged HAProxy
-package, configuration, backend CA, and managed firewalld manifest, together with
-the source-bound plan digest. A failed activation or routing check stops and
-disables every reachable HAProxy service. Unreachable or unverified hosts retain
+package, configuration, backend CA, firewall lifecycle, and managed firewalld
+policy/manifest evidence, together with the source-bound plan digest. A failed
+activation or routing check stops and disables every reachable HAProxy service.
+Unreachable or unverified hosts retain
 their edge guards and require [reviewed recovery](#openbao-edge-guard-recovery),
 not a blind retry. A consumed plan cannot be reused even after verified rollback.
 
@@ -1515,6 +1529,12 @@ lane additionally binds the digest-pinned image, project, pipeline, and matching
 plan-job identity. An operator plan is not a CI artifact or vice versa. Expiry,
 source or evidence drift, or a lane mismatch requires a fresh plan.
 
+The firewall mode and policy must match the reviewed private commit and observed
+plan evidence in both lanes. Neither route edits or pushes source/private
+inventory or changes the firewall service lifecycle to satisfy a preflight.
+A firewall mode or policy change requires separate review and a fresh plan, not
+an override or reuse of earlier evidence.
+
 Operator plan files must remain **outside every Git repository**, including
 private and planning repositories. Choose a new absolute filename in an already
 existing, current-owner directory with exact mode `0700` and no symlink path
@@ -1572,8 +1592,9 @@ its readiness gate to false before subsequent smoke or the next edge plan.
 For CI, consume that reviewed revision in the corresponding fixed smoke job;
 do not switch to a terminal to finish qualification. The immutable activation
 source remains the pre-activation disabled/stopped declaration; activation's
-own qualification runs before this source handoff. The separate firewall
-enablement prerequisite remains mandatory and is not part of either edge route.
+own qualification runs before this source handoff. The reviewed firewall
+lifecycle/policy prerequisite remains mandatory. Enabling firewall enforcement,
+if chosen, needs separate approval and is not part of either edge route.
 
 ### OpenBao Edge Guard Recovery
 
@@ -1638,7 +1659,10 @@ Before each Keepalived activation:
    duplicate-address detection (DAD) on the target network. Local VIP absence
    alone is not proof that another machine does not own the address.
 3. Require the exact staged Keepalived package, configuration, tracking script,
-   firewall policy, and inactive/disabled service state on every member. Resolve
+   reviewed firewall lifecycle/policy, and inactive/disabled Keepalived service
+   state on every member. Validate the selected firewalld mode against actual
+   state and permanent rules, plus runtime rules when enabled/started; disabled
+   firewalld does not enforce the configured peer allowlist. Resolve
    any unknown or partial state through separately reviewed recovery first.
 4. Set `openbao_keepalived_activation_ready: true` only in private inventory for
    this activation on every host, and commit the reviewed declaration before

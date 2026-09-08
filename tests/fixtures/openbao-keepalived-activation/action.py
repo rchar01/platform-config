@@ -36,6 +36,10 @@ class ActionModule(ActionBase):
             assert self._task.args["enabled"] == (phase == "start")
         elif action == "activation_probe":
             phase = "qualification"
+        elif action == "firewall_probe":
+            assert self._task.ignore_errors is False
+            assert self._task.ignore_unreachable is False
+            phase = "firewall"
         elif action == "election_pause":
             assert set(self._task.args) == {"seconds"}
             assert int(self._task.args["seconds"]) >= 9

@@ -135,10 +135,29 @@ rollback permits owned guard release, never plan reuse.
 Keep CI planning, manual start, qualification, rollback, and reporting in CI.
 Reports must present lifecycle handoff keys without exposing plan evidence.
 Neither lane edits or pushes private desired state: the active service contract
-and reset readiness gate require reviewed private commits. Firewall enablement
-remains a separate prerequisite. These are implementation contracts, not proof
-of live acceptance; see [OpenBao Edge Plans](operator-runbook.md#openbao-edge-plans)
+and reset readiness gate require reviewed private commits. The reviewed firewall
+lifecycle/policy must match private commits and plan evidence; neither edge route
+automatically changes the firewall service lifecycle. Enabling enforcement, when
+chosen, needs separate approval rather than being a universal prerequisite.
+These are implementation contracts, not proof of live acceptance; see
+[OpenBao Edge Plans](operator-runbook.md#openbao-edge-plans)
 for the operational sequence and recovery boundary.
+
+For enabled HAProxy/Keepalived roles with `*_firewalld_manage: true`, the firewall
+contract requires explicit `firewalld_service_enabled: false` with
+`firewalld_service_state: stopped`, or `true` with `started`. Mixed pairs, string
+booleans, and missing lifecycle declarations must fail closed; the legacy
+`firewalld_enabled` shorthand is not a mode selector. Disabled mode requires
+actual inactive/boot-disabled firewalld and offline permanent configuration/rule
+validation, skipping only daemon-running and runtime-rule-enforcement checks.
+Active mode requires actual active/boot-enabled firewalld and correct runtime
+and permanent rules. Do not disable rule management or add bypass flags.
+Firewalld off means no host-firewall enforcement from firewalld and no operative
+firewalld allowlists, not equivalent security or production qualification.
+Cluster/quorum, approval, guard, VIP ownership, network, peer VRRP, anti-spoofing,
+and DAD gates are unchanged. See the
+[firewall contract](firewalld.md#haproxy-and-keepalived-lifecycle); documenting it
+does not establish test coverage or live acceptance.
 
 Focused synthetic storage acceptance checks run inside the development
 container and do not contact hosts or mutate disks:

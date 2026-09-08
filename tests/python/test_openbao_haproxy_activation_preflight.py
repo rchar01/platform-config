@@ -8,20 +8,42 @@ import pytest
 import yaml
 
 from conftest import CommandRunner
+from test_openbao_haproxy_firewall_guard import stage_firewall_target
 
 
 ROLE = "roles/openbao_haproxy"
 PREFLIGHT = "activation_preflight.yml"
 
 
+def test_active_haproxy_accepts_explicit_disabled_firewall_dependencies(
+    repo_root: Path, tmp_path: Path, command_runner: CommandRunner,
+) -> None:
+    main = yaml.safe_load((repo_root / ROLE / "tasks/main.yml").read_text())
+    guard = next(task for task in main[0]["block"] if task["name"] ==
+                 "Assert managed firewall dependencies are ready before activation")
+    playbook = tmp_path / "dependencies.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "localhost", "gather_facts": False,
+        "vars": {"openbao_haproxy_service_state": "started",
+                 "openbao_haproxy_firewalld_manage": True,
+                 "firewalld_dependencies_ready": True,
+                 "firewalld_service_enabled": False, "firewalld_service_state": "stopped"},
+        "tasks": [guard],
+    }]), encoding="utf-8")
+    command_runner.run([
+        "ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook),
+    ]).assert_success()
+
+
 @pytest.fixture
-def activation_fixture(repo_root: Path, tmp_path: Path) -> tuple[dict, Path]:
+def activation_fixture(repo_root: Path, tmp_path: Path, command_runner: CommandRunner) -> tuple[dict, Path]:
     role = tmp_path / "roles/openbao_haproxy"
     shutil.copytree(repo_root / ROLE, role)
+    firewall_vars = stage_firewall_target(role, tmp_path, command_runner)
     path = role / "tasks" / PREFLIGHT
     tasks = yaml.safe_load(path.read_text())
-    # Only unrelated target artifact reads are synthetic. Validation, the Python
-    # import command, fact publication, and the active role guard remain real.
+    # Alongside the firewall target I/O doubles, unrelated artifact reads are
+    # synthetic. Validation, Python imports, facts, and guard tasks remain real.
     for task in tasks:
         if "ansible.builtin.stat" in task:
             task.clear()
@@ -56,6 +78,7 @@ def activation_fixture(repo_root: Path, tmp_path: Path) -> tuple[dict, Path]:
     play = {
         "hosts": "localhost", "gather_facts": True,
         "vars": {
+            **firewall_vars,
             "openbao_haproxy_enabled": True,
             "openbao_haproxy_package_nevra": "haproxy-0:3.0.5-6.el10_2.1.x86_64",
             "openbao_haproxy_backend_health_host": "bao.example.invalid",
@@ -85,7 +108,10 @@ def test_activation_firewall_readiness(
     if not managed:
         play["vars"]["openbao_haproxy_firewalld_manage"] = False
     if case.startswith("stale-"):
-        play["tasks"].append({"ansible.builtin.set_fact": {"firewalld_dependencies_ready": True}})
+        play["tasks"].append({"ansible.builtin.set_fact": {
+            "firewalld_dependencies_ready": True,
+            "openbao_haproxy_firewall_observation": {"managed": True},
+        }})
     else:
         play["tasks"].append({"ansible.builtin.assert": {
             "that": "firewalld_dependencies_ready is undefined",
@@ -113,8 +139,12 @@ def test_activation_firewall_readiness(
             ],
         })
     else:
-        play["tasks"] += [include, include, {"ansible.builtin.assert": {
-            "that": f"firewalld_dependencies_ready is sameas {str(managed).lower()}",
+        play["tasks"] += [include, {"ansible.builtin.set_fact": {
+            "first_observation": "{{ openbao_haproxy_activation_observation }}",
+        }}, include, {"ansible.builtin.assert": {
+            "that": [f"firewalld_dependencies_ready is sameas {str(managed).lower()}",
+                     "first_observation == openbao_haproxy_activation_observation",
+                     f"openbao_haproxy_activation_observation.firewalld.managed is sameas {str(managed).lower()}"],
         }}]
         if managed:
             main = yaml.safe_load((repo_root / ROLE / "tasks/main.yml").read_text())
@@ -197,6 +227,32 @@ def test_activation_preflight_command_and_caller_contract(repo_root: Path) -> No
                      {"name": "openbao_haproxy", "tasks_from": PREFLIGHT})
     approval = next(i for i, task in enumerate(first) if "ansible.builtin.pause" in task)
     assert preflight < approval
+
+
+@pytest.mark.parametrize("change", ["mode", "manifest"])
+def test_activation_observation_binds_firewall_evidence(
+    change: str, activation_fixture: tuple[dict, Path], tmp_path: Path,
+    command_runner: CommandRunner,
+) -> None:
+    play, role = activation_fixture
+    include = {"ansible.builtin.include_role": {"name": str(role), "tasks_from": PREFLIGHT}}
+    updates = ({"firewalld_service_enabled": True, "firewalld_service_state": "started",
+                "fixture_active": True} if change == "mode" else
+               {"fixture_stat": {"checksum": "c" * 64}})
+    play["tasks"] = [include, {"ansible.builtin.set_fact": {
+        "first_observation": "{{ openbao_haproxy_activation_observation }}",
+    }}, {"ansible.builtin.set_fact": updates}, include, {"ansible.builtin.assert": {"that": [
+        "first_observation != openbao_haproxy_activation_observation",
+        "first_observation.firewalld != openbao_haproxy_activation_observation.firewalld",
+        "first_observation.config_checksum == openbao_haproxy_activation_observation.config_checksum",
+        "first_observation.ca_checksum == openbao_haproxy_activation_observation.ca_checksum",
+    ]}}]
+    playbook = tmp_path / "evidence.yml"
+    playbook.write_text(yaml.safe_dump([play]), encoding="utf-8")
+    result = command_runner.run([
+        "ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook),
+    ], timeout=60).assert_success()
+    assert "changed=0" in result.stdout
 
 
 def test_postactivation_boot_enablement_without_service_name(

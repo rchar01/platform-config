@@ -1,8 +1,8 @@
 # Firewalld Readiness And Enablement
 
 This guide describes how `platform-config` prepares firewalld rules while the
-daemon is disabled, how to add rules, and how to enable enforcement safely in a
-future environment rollout.
+daemon is intentionally disabled, the reviewed HAProxy/Keepalived firewall
+lifecycle contract, and how to enable enforcement safely when separately approved.
 
 This repository contains reusable public Ansible code and safe examples only.
 Real hostnames, addresses, network ranges, access policy, and environment
@@ -40,15 +40,16 @@ firewalld_service_enabled: false
 firewalld_service_state: stopped
 ```
 
-For future active enforcement, set both values:
+For separately approved active enforcement, set both values:
 
 ```yaml
 firewalld_service_enabled: true
 firewalld_service_state: started
 ```
 
-`firewalld_enabled` remains a compatibility shorthand that derives both
-values, but the explicit variables make the boot and runtime policy clear.
+Do not use the legacy `firewalld_enabled` shorthand to select the
+HAProxy/Keepalived firewall mode. Both explicit lifecycle variables are required
+for an enabled role with managed firewall policy.
 
 The baseline role also exposes:
 
@@ -73,6 +74,45 @@ The baseline role does not manage its generic rule lists by default while the
 daemon is stopped. Do not force `firewalld_manage_rules: true` solely to stage
 generic rules without first testing that workflow. Service-specific roles are
 the supported offline staging path in the current inactive baseline.
+
+## HAProxy And Keepalived Lifecycle
+
+The managed firewall contract for enabled `openbao_haproxy` and `keepalived_vip`
+roles accepts only these explicit inventory pairs:
+
+| Declaration | Required Actual State And Validation |
+|---|---|
+| `firewalld_service_enabled: false` and `firewalld_service_state: stopped` | Firewalld is actually inactive and boot-disabled; validate permanent configuration with `firewall-offline-cmd --check-config` and validate expected permanent rules offline. |
+| `firewalld_service_enabled: true` and `firewalld_service_state: started` | Firewalld is actually active and boot-enabled; validate both permanent configuration/rules and runtime rule enforcement. |
+
+Mixed pairs, string booleans such as `"false"` or `"true"`, and missing lifecycle
+declarations fail closed when the role is enabled and firewall management is
+enabled. Keep `openbao_haproxy_firewalld_manage: true` and
+`keepalived_vip_firewalld_manage: true`, and retain other applicable
+`*_firewalld_manage` settings as true. Disabling rule management is not the
+intentional stopped-firewalld mode. No new mode flag or generic framework is
+needed.
+
+Disabled mode skips **only** daemon-running and runtime-rule-enforcement checks.
+It still requires actual inactive/boot-disabled state, dependencies, valid
+permanent configuration, exact managed policy/rules and manifest evidence.
+All cluster, quorum, approval, guard, VIP ownership, network, peer VRRP,
+anti-spoofing, and duplicate-address detection gates remain in force.
+
+**With firewalld stopped, there is no host-firewall enforcement from firewalld.**
+Its configured source allowlists, including peer-scoped VRRP rules, are not
+operative. Any independently enforced HAProxy ACLs do not replace host-firewall
+coverage. Offline validation proves neither equivalent security nor production
+qualification. Standalone dev acceptance has no monitoring dependency;
+production monitoring remains mandatory.
+
+Review the selected firewall lifecycle and policy in private commits and require
+actual state and plan evidence to match them. Plan and activation checks do not
+repair mismatches, edit or push source/private inventory, or automatically change
+the firewall service lifecycle. Mode or policy changes invalidate prior evidence
+and require a fresh plan against reviewed committed state. Enabling enforcement
+is a separately approved transition when chosen, not a universal prerequisite
+for HAProxy or Keepalived activation.
 
 ## Service Rule Ownership
 
@@ -104,6 +144,8 @@ zot_registry_firewalld_allowed_sources:
 Apply the service's focused playbook after changing its firewall variables.
 The focused playbooks establish the firewalld package and Python prerequisites
 before service roles manage rules.
+For an active or initialized OpenBao cluster, use separately approved active
+maintenance instead; ordinary `playbooks/openbao.yml` staging is forbidden.
 
 ## Readiness Checklist
 
@@ -139,7 +181,9 @@ firewalld_service_enabled: false
 firewalld_service_state: stopped
 ```
 
-For each affected service, run a check, apply, smoke test, and second apply.
+For services that permit ordinary convergence, run a check, apply, smoke test,
+and second apply. This pattern is forbidden for active or initialized OpenBao;
+use approved active maintenance and phase-appropriate smoke instead.
 The following uses public example names; substitute a real private environment
 and playbook:
 
@@ -201,8 +245,9 @@ baseline role supports generic offline staging directly.
 ## Enable A Canary
 
 Select one non-production or otherwise low-risk host with console recovery.
+This is a separately approved firewall transition, not an edge activation step.
 Do not continue unless the permanent management-access query in the previous
-section succeeds. Override the canary's private host variables:
+section succeeds. Review and commit the canary's private host variables:
 
 ```yaml
 firewalld_service_enabled: true

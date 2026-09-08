@@ -1,0 +1,155 @@
+---
+- name: Reset OpenBao HAProxy firewall observation
+  ansible.builtin.set_fact:
+    openbao_haproxy_firewall_observation:
+      managed: false
+  ignore_errors: false
+  ignore_unreachable: false
+
+- name: Verify OpenBao HAProxy managed firewall evidence
+  when: openbao_haproxy_firewalld_manage | bool
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Require explicit coherent OpenBao HAProxy firewall lifecycle
+      ansible.builtin.assert:
+        that:
+          - firewalld_service_enabled is defined
+          - firewalld_service_enabled is boolean
+          - firewalld_service_state | default('') in ['started', 'stopped']
+          - firewalld_service_enabled == (firewalld_service_state == 'started')
+        fail_msg: OpenBao HAProxy requires explicit boolean firewalld enablement and coherent started/stopped state.
+
+    - name: Build expected OpenBao HAProxy firewall rules
+      ansible.builtin.include_tasks: firewall_rules.yml
+
+    - name: Inspect OpenBao HAProxy firewall manifest
+      ansible.builtin.stat:
+        path: "{{ openbao_haproxy_firewalld_manifest_path }}"
+        follow: false
+        checksum_algorithm: sha256
+      register: openbao_haproxy_firewall_manifest_stat
+      check_mode: false
+
+    - name: Require safe OpenBao HAProxy firewall manifest metadata
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_firewall_manifest_stat is not unreachable
+          - openbao_haproxy_firewall_manifest_stat.stat.exists
+          - openbao_haproxy_firewall_manifest_stat.stat.isreg | default(false)
+          - not openbao_haproxy_firewall_manifest_stat.stat.islnk | default(true)
+          - openbao_haproxy_firewall_manifest_stat.stat.uid | default(-1) == 0
+          - openbao_haproxy_firewall_manifest_stat.stat.gid | default(-1) == 0
+          - openbao_haproxy_firewall_manifest_stat.stat.mode | default('') == '0644'
+
+    - name: Read OpenBao HAProxy firewall manifest
+      ansible.builtin.slurp:
+        path: "{{ openbao_haproxy_firewalld_manifest_path }}"
+      register: openbao_haproxy_firewall_manifest
+      check_mode: false
+
+    - name: Require current OpenBao HAProxy firewall manifest content
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_firewall_manifest is not unreachable
+          - >-
+            (openbao_haproxy_firewall_manifest.content | b64decode | from_yaml)
+            == {'rich_rules': openbao_haproxy_current_firewalld_rules | unique | sort}
+
+    - name: Inspect actual OpenBao HAProxy firewall activity
+      ansible.builtin.command:
+        argv: [systemctl, is-active, firewalld.service]
+      register: openbao_haproxy_firewall_active
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        openbao_haproxy_firewall_active.rc != (0 if firewalld_service_enabled else 3)
+        or openbao_haproxy_firewall_active.stdout != ('active' if firewalld_service_enabled else 'inactive')
+
+    - name: Inspect actual OpenBao HAProxy firewall boot enablement
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, firewalld.service]
+      register: openbao_haproxy_firewall_enabled
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        openbao_haproxy_firewall_enabled.rc != (0 if firewalld_service_enabled else 1)
+        or openbao_haproxy_firewall_enabled.stdout != ('enabled' if firewalld_service_enabled else 'disabled')
+
+    - name: Require reachable OpenBao HAProxy firewall lifecycle observations
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_firewall_active is not unreachable
+          - openbao_haproxy_firewall_enabled is not unreachable
+
+    - name: Check disabled OpenBao HAProxy firewall permanent configuration
+      ansible.builtin.command:
+        argv: [firewall-offline-cmd, --check-config]
+      register: openbao_haproxy_firewall_config
+      changed_when: false
+      check_mode: false
+      when: not firewalld_service_enabled
+
+    - name: Require verified disabled OpenBao HAProxy firewall configuration
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_firewall_config is not unreachable
+          - openbao_haproxy_firewall_config.rc | default(-1) == 0
+      when: not firewalld_service_enabled
+
+    - name: Query permanent OpenBao HAProxy firewall rules
+      ansible.builtin.command:
+        argv: >-
+          {{
+            (['firewall-cmd', '--permanent'] if firewalld_service_enabled else ['firewall-offline-cmd'])
+            + ['--query-rich-rule=' ~ item]
+          }}
+      loop: "{{ openbao_haproxy_current_firewalld_rules | unique | sort }}"
+      register: openbao_haproxy_firewall_permanent
+      changed_when: false
+      check_mode: false
+      failed_when: openbao_haproxy_firewall_permanent.rc != 0 or openbao_haproxy_firewall_permanent.stdout != 'yes'
+
+    - name: Query runtime OpenBao HAProxy firewall rules
+      ansible.builtin.command:
+        argv: [firewall-cmd, "--query-rich-rule={{ item }}"]
+      loop: "{{ openbao_haproxy_current_firewalld_rules | unique | sort }}"
+      register: openbao_haproxy_firewall_runtime
+      changed_when: false
+      check_mode: false
+      failed_when: openbao_haproxy_firewall_runtime.rc != 0 or openbao_haproxy_firewall_runtime.stdout != 'yes'
+      when: firewalld_service_enabled
+
+    # A later successful query must not hide unreachable or absent loop results.
+    - name: Require complete reachable OpenBao HAProxy firewall rule observations
+      ansible.builtin.assert:
+        that:
+          - item is not unreachable
+          - item.results is defined
+          - item.results | length == openbao_haproxy_current_firewalld_rules | unique | length
+          - >-
+            item.results | reject('unreachable') | reject('skipped')
+            | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0)
+            | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 'yes')
+            | map(attribute='item') | list
+            == openbao_haproxy_current_firewalld_rules | unique | sort
+      loop: >-
+        {{ [openbao_haproxy_firewall_permanent] + ([openbao_haproxy_firewall_runtime] if firewalld_service_enabled else []) }}
+      loop_control:
+        label: OpenBao HAProxy firewall rule observations
+
+    - name: Record verified OpenBao HAProxy firewall observation
+      ansible.builtin.set_fact:
+        openbao_haproxy_firewall_observation:
+          managed: true
+          service_enabled: "{{ firewalld_service_enabled }}"
+          service_state: "{{ firewalld_service_state }}"
+          rules: "{{ openbao_haproxy_current_firewalld_rules | unique | sort }}"
+          manifest_checksum: "{{ openbao_haproxy_firewall_manifest_stat.stat.checksum }}"
+          active: "{{ openbao_haproxy_firewall_active.stdout }}"
+          active_rc: "{{ openbao_haproxy_firewall_active.rc }}"
+          enabled: "{{ openbao_haproxy_firewall_enabled.stdout }}"
+          enabled_rc: "{{ openbao_haproxy_firewall_enabled.rc }}"
+          permanent: "{{ openbao_haproxy_firewall_permanent.results | map(attribute='stdout') | list }}"
+          runtime: >-
+            {{ openbao_haproxy_firewall_runtime.results | map(attribute='stdout') | list if firewalld_service_enabled else [] }}

@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   vars:
+    firewalld_service_enabled: false
+    firewalld_service_state: stopped
     openbao_haproxy_role_dir: "{{ playbook_dir }}/../../../roles/openbao_haproxy"
     openbao_haproxy_test_package_nevra: haproxy-0:3.0.5-6.el10_2.1.x86_64
     openbao_haproxy_test_service_enabled: false

@@ -1,0 +1,16 @@
+---
+- name: Require mocked firewall evidence at the service boundary
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Inspect mocked firewall at the service boundary
+      ansible.legacy.firewall_probe:
+      register: test_firewall_result
+
+    # clear_host_errors can resume here; match the real guard's result validation.
+    - name: Require successful reachable mocked firewall evidence
+      ansible.builtin.assert:
+        that:
+          - test_firewall_result is succeeded
+          - test_firewall_result is not unreachable
+          - test_firewall_result is not skipped
