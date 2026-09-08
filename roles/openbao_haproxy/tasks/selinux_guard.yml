@@ -27,14 +27,30 @@
             ports = {}
             if mode != "Disabled":
                 import seobject
+                import semanage
 
-                records = seobject.portRecords().get_all()
+                policy = seobject.portRecords()
                 for port in sorted({int(value) for value in sys.argv[2:]}):
-                    # Staging manages each listener as an exact TCP port record.
-                    record = records.get((port, port, "tcp"))
-                    if record is None or record[0] != sys.argv[1]:
-                        raise SystemExit("Missing or incorrect staged SELinux TCP label for " + str(port))
-                    ports[str(port)] = list(record)
+                    key = record = None
+                    try:
+                        # Exact native queries preserve first-match ordering of duplicate records.
+                        rc, key = semanage.semanage_port_key_create(
+                            policy.sh, port, port, semanage.SEMANAGE_PROTO_TCP)
+                        if rc < 0 or key is None:
+                            raise SystemExit("Unable to create SELinux TCP port key for " + str(port))
+                        rc, record = semanage.semanage_port_query(policy.sh, key)
+                        if rc < 0 or record is None:
+                            raise SystemExit("Missing staged SELinux TCP label for " + str(port))
+                        context = semanage.semanage_port_get_con(record)
+                        port_type = semanage.semanage_context_get_type(context)
+                        if port_type != sys.argv[1]:
+                            raise SystemExit("Incorrect staged SELinux TCP label for " + str(port))
+                        ports[str(port)] = [port_type, semanage.semanage_context_get_mls(context)]
+                    finally:
+                        if record is not None:
+                            semanage.semanage_port_free(record)
+                        if key is not None:
+                            semanage.semanage_port_key_free(key)
             print(json.dumps({"managed": True, "mode": mode, "ports": ports}, sort_keys=True))
           - "{{ openbao_haproxy_selinux_port_type }}"
           - "{{ openbao_haproxy_client_port | string }}"

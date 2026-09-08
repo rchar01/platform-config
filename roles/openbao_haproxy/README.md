@@ -83,8 +83,9 @@ reconcile firewall rules after approval. This path uses only built-in Ansible
 modules; staging still requires the collections in `requirements.yml`.
 When SELinux management is enabled, preflight and the service boundary query
 `getenforce` and, in enforcing or permissive mode, read exact TCP listener records
-through the target's existing `seobject` bindings. Both listeners must already
-have the configured type; a covering range is not an exact staged record.
+through the target's existing `seobject` handle and native `semanage` queries,
+preserving first-match ordering for duplicate exact records. Both listeners must
+already have the configured type; a covering range is not an exact staged record.
 Missing tools, bindings, or labels fail closed without policy changes. Disabled
 SELinux needs no port-policy query. Mode and type/MLS observations are bound into
 the activation plan, and unmanaged observations are reset rather than reused.

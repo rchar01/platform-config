@@ -116,6 +116,11 @@ def stage_selinux_target(tmp_path, case):
         elif case == f"range-{name}":
             del records[(port, port, "tcp")]
             records[(port - 1, port + 1, "tcp")] = ("http_port_t", "s0")
+    records = list(records.items())
+    if case == "duplicate-client":
+        records += [((8200, 8200, "tcp"), ("trivnet1_port_t", "s0")),
+                    ((1024, 65535, "tcp"), ("unreserved_port_t", "s0"))]
+        assert dict(records)[(8200, 8200, "tcp")][0] == "trivnet1_port_t"
     log = tmp_path / "selinux-events"
     getenforce = tmp_path / "getenforce"
     getenforce.write_text(
@@ -138,11 +143,52 @@ def stage_selinux_target(tmp_path, case):
         "    stream.write('import seobject\\n')\n"
         + ("raise ModuleNotFoundError('fixture missing seobject bindings')\n"
            if case in {"disabled", "missing-bindings"} else "")
-        + "class portRecords:\n"
+        + f"records = {records!r}\n"
+        "SH = object()\n"
+        "class portRecords:\n"
+        "    sh = SH\n"
         "    def get_all(self):\n"
         "        with log.open('a') as stream:\n"
         "            stream.write('get_all\\n')\n"
-        f"        return {records!r}\n",
+        "        return dict(records)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "semanage.py").write_text(
+        "from seobject import SH, log, records\n"
+        f"case = {case!r}\n"
+        "def event(name):\n"
+        "    with log.open('a') as stream:\n"
+        "        stream.write(name + '\\n')\n"
+        "event('import semanage')\n"
+        "SEMANAGE_PROTO_TCP = 6\n"
+        "def semanage_port_key_create(sh, low, high, protocol):\n"
+        "    assert sh is SH\n"
+        "    assert low == high and protocol == SEMANAGE_PROTO_TCP\n"
+        "    event('key_create')\n"
+        "    if case == 'key-none':\n"
+        "        return 1, None\n"
+        "    return (-1 if case == 'key-fail' else 0 if case == 'zero-success' else 1), (low, high, 'tcp')\n"
+        "def semanage_port_query(sh, key):\n"
+        "    assert sh is SH\n"
+        "    event('query')\n"
+        "    if case == 'query-none':\n"
+        "        return 1, None\n"
+        "    for record in records:\n"
+        "        if record[0] == key:\n"
+        "            return (-1 if case == 'query-fail' else 0 if case == 'zero-success' else 1), record\n"
+        "    return -1, None\n"
+        "def semanage_port_get_con(record):\n"
+        "    return record[1]\n"
+        "def semanage_context_get_type(context):\n"
+        "    return context[0]\n"
+        "def semanage_context_get_mls(context):\n"
+        "    return context[1]\n"
+        "def semanage_port_free(record):\n"
+        "    assert record is not None\n"
+        "    event('port_free')\n"
+        "def semanage_port_key_free(key):\n"
+        "    assert key is not None\n"
+        "    event('key_free')\n",
         encoding="utf-8",
     )
     return mode, log
@@ -151,7 +197,8 @@ def stage_selinux_target(tmp_path, case):
 @pytest.mark.parametrize("case", [
     "enforcing", "permissive", "disabled", "missing-client", "missing-stats",
     "wrong-client", "wrong-stats", "range-client", "range-stats",
-    "command-fail", "missing-bindings", "invalid-mode",
+    "command-fail", "missing-bindings", "invalid-mode", "duplicate-client",
+    "zero-success", "key-fail", "key-none", "query-fail", "query-none",
 ])
 def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
     guard = yaml.safe_load((repo_root / ROLE / "tasks/selinux_guard.yml").read_text())
@@ -164,7 +211,7 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
         sys.executable, "-c", code, "http_port_t", "8200", "8404",
     ], environment={"PATH": f"{tmp_path}:{command_runner.environment['PATH']}",
                     "PYTHONPATH": str(tmp_path)})
-    if case in {"enforcing", "permissive", "disabled"}:
+    if case in {"enforcing", "permissive", "disabled", "duplicate-client", "zero-success"}:
         result.assert_success()
         assert json.loads(result.stdout) == {
             "managed": True, "mode": mode,
@@ -179,7 +226,21 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
     if case not in {"disabled", "command-fail", "invalid-mode"}:
         expected.append("import seobject")
         if case != "missing-bindings":
-            expected.append("get_all")
+            expected.append("import semanage")
+            for name in ("client", "stats"):
+                expected.append("key_create")
+                if case == "key-none":
+                    break
+                if case == "key-fail":
+                    expected.append("key_free")
+                    break
+                expected.append("query")
+                missing = case in {f"missing-{name}", f"range-{name}", "query-none"}
+                if not missing:
+                    expected.append("port_free")
+                expected.append("key_free")
+                if missing or case in {f"wrong-{name}", "query-fail"}:
+                    break
     assert log.read_text().splitlines() == expected
 
 
@@ -212,7 +273,9 @@ def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, co
     result, events = run_activation(activation_target, tmp_path, command_runner)
     assert log.exists(), result.diagnostics()
     assert log.read_text().splitlines() == (
-        ["getenforce"] if case == "mode-drift" else ["getenforce", "import seobject", "get_all"]
+        ["getenforce"] if case == "mode-drift" else
+        ["getenforce", "import seobject", "import semanage"] +
+        ["key_create", "query", "port_free", "key_free"] * 2
     )
     if case == "enforcing":
         result.assert_success()
