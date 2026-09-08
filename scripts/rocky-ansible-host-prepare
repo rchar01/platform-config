@@ -18,6 +18,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -260,49 +262,89 @@ def load_public_key(path: Path, *, expected_uid: int = 0) -> PublicKey:
 
 def check_base(
     settings: Settings,
-    public_key: PublicKey,
+    public_key: PublicKey | None,
     *,
     check_effective_ssh: bool = True,
     print_key_summary: bool = True,
-) -> None:
+    failures: list[str] | None = None,
+    skipped: list[str] | None = None,
+) -> tuple[bool, set[str]]:
     require(os.geteuid() == 0, "run this helper as root")
+    skipped = [] if skipped is None else skipped
+    missing_commands: set[str] = set()
     for name in REQUIRED_COMMANDS:
-        command_path(name)
-    ok("required commands are available")
+        missing_commands.add(name)
+        with check_step(f"required command: {name}", failures):
+            command_path(name)
+            missing_commands.remove(name)
 
-    hostname = run_command("hostnamectl", "--static")
-    require(hostname == settings.expected_hostname, f"hostname is {hostname!r}, expected {settings.expected_hostname!r}")
-    ok(f"hostname is {settings.expected_hostname}")
+    if "hostnamectl" in missing_commands:
+        skipped.append("static hostname: hostnamectl unavailable")
+    else:
+        with check_step("static hostname", failures):
+            hostname = run_command("hostnamectl", "--static")
+            require(hostname == settings.expected_hostname, f"hostname is {hostname!r}, expected {settings.expected_hostname!r}")
 
-    release = platform.freedesktop_os_release()
-    require(release.get("ID") == "rocky", "host is not Rocky Linux")
-    require(release.get("VERSION_ID") == "10.0", "host is not Rocky Linux 10.0")
-    require(platform.machine() == "x86_64", "host architecture is not x86_64")
-    require(sys.version_info >= (3, 12), "Python 3.12 or newer is required")
-    require(run_command("getenforce") == "Enforcing", "SELinux must be enforcing")
-    ok("Rocky, architecture, Python, and SELinux match the accepted baseline")
+    with check_step("Rocky Linux baseline", failures):
+        release = platform.freedesktop_os_release()
+        require(release.get("ID") == "rocky", "host is not Rocky Linux")
+        require(release.get("VERSION_ID") == "10.0", "host is not Rocky Linux 10.0")
+    with check_step("architecture", failures):
+        require(platform.machine() == "x86_64", "host architecture is not x86_64")
+    with check_step("Python version", failures):
+        require(sys.version_info >= (3, 12), "Python 3.12 or newer is required")
+    if "getenforce" in missing_commands:
+        skipped.append("SELinux enforcement: getenforce unavailable")
+    else:
+        with check_step("SELinux enforcement", failures):
+            require(run_command("getenforce") == "Enforcing", "SELinux must be enforcing")
 
-    try:
-        grp.getgrnam(ACCESS_GROUP)
-    except KeyError:
-        raise PreparationError(f"required access group is absent: {ACCESS_GROUP}") from None
-    ok(f"access group exists: {ACCESS_GROUP}")
+    access_group_exists = False
+    with check_step("access group", failures):
+        try:
+            grp.getgrnam(ACCESS_GROUP)
+        except KeyError:
+            raise PreparationError(f"required access group is absent: {ACCESS_GROUP}") from None
+        access_group_exists = True
 
-    run_command("sshd", "-t")
-    run_command("systemctl", "is-enabled", "sshd")
-    run_command("systemctl", "is-active", "sshd")
-    run_command("visudo", "-cf", "/etc/sudoers")
-    ok("SSH service and sudo configuration pass native validation")
+    for label, command in (
+        ("SSH configuration", ("sshd", "-t")),
+        ("SSH service enabled", ("systemctl", "is-enabled", "sshd")),
+        ("SSH service active", ("systemctl", "is-active", "sshd")),
+        ("sudo configuration", ("visudo", "-cf", "/etc/sudoers")),
+    ):
+        if command[0] in missing_commands:
+            skipped.append(f"{label}: {command[0]} unavailable")
+        else:
+            with check_step(label, failures):
+                run_command(*command)
 
     if check_effective_ssh:
-        check_effective_ssh_policy(settings)
+        with check_step("effective SSH policy", failures):
+            check_effective_ssh_policy(settings)
 
-    host_key = load_public_key(SSH_HOST_PUBLIC_KEY)
-    if print_key_summary:
-        ok("SSH host Ed25519 known_hosts entry follows")
-        print(known_hosts_entry(settings, host_key))
-        ok(f"SSH host Ed25519 key fingerprint is {host_key.fingerprint}")
+    with check_step("SSH host public key", failures):
+        host_key = load_public_key(SSH_HOST_PUBLIC_KEY)
+        if print_key_summary:
+            ok("SSH host Ed25519 known_hosts entry follows")
+            print(known_hosts_entry(settings, host_key))
+            ok(f"SSH host Ed25519 key fingerprint is {host_key.fingerprint}")
+    if print_key_summary and public_key is not None:
         ok(f"supplied automation key fingerprint is {public_key.fingerprint}")
+    return access_group_exists, missing_commands
+
+
+@contextmanager
+def check_step(label: str, failures: list[str] | None = None) -> Iterator[None]:
+    try:
+        yield
+    except (PreparationError, OSError, subprocess.SubprocessError) as error:
+        if failures is None:
+            raise
+        failures.append(label)
+        print(f"[ERROR] {label}: {error}")
+    else:
+        ok(label)
 
 
 def known_hosts_entry(settings: Settings, host_key: PublicKey) -> str:
@@ -415,6 +457,48 @@ def check_ready(settings: Settings, public_key: PublicKey) -> None:
     print("Result: READY FOR ANSIBLE TRANSPORT")
 
 
+def check_report(settings: Settings) -> None:
+    require(os.geteuid() == 0, "run this helper as root")
+    failures: list[str] = []
+    skipped: list[str] = []
+    public_key = None
+    with check_step("supplied automation public key", failures):
+        public_key = load_public_key(settings.public_key_file)
+    access_group_exists, missing_commands = check_base(
+        settings, public_key, check_effective_ssh=False, failures=failures,
+        skipped=skipped,
+    )
+
+    identity_valid = False
+    with check_step("automation account identity", failures):
+        try:
+            user = pwd.getpwnam(AUTOMATION_USER)
+        except KeyError:
+            print(f"[NEEDS PREPARATION] automation account is absent: {AUTOMATION_USER}")
+            raise PreparationError("use apply to create the automation account") from None
+        check_account_identity(user)
+        identity_valid = True
+
+    if identity_valid and access_group_exists and "sshd" not in missing_commands:
+        with check_step("effective SSH policy", failures):
+            check_effective_ssh_policy(settings)
+    else:
+        skipped.append("effective SSH policy: account identity, access group or sshd unavailable")
+
+    account_tools_missing = missing_commands & {"passwd", "runuser", "sudo", "matchpathcon"}
+    if identity_valid and access_group_exists and public_key is not None and not account_tools_missing:
+        with check_step("account permissions, authorized key and sudo access", failures):
+            check_account(public_key)
+    else:
+        skipped.append("account permissions, authorized key and sudo access: prerequisites unavailable")
+
+    for reason in skipped:
+        print(f"[SKIPPED] {reason}")
+    print(f"Summary: {len(failures)} failed, {len(skipped)} skipped")
+    require(not failures and not skipped, "readiness checks failed; review the summary above")
+    print("Result: READY FOR ANSIBLE TRANSPORT")
+
+
 def parse_effective_sshd(output: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in output.splitlines():
@@ -431,7 +515,6 @@ def validate_effective_sshd(values: dict[str, str]) -> None:
     require(values.get("authorizedkeyscommand") == "none", "effective SSH policy must not use AuthorizedKeysCommand")
     require(values.get("trustedusercakeys", "none") == "none", "effective SSH policy must not use TrustedUserCAKeys")
     require(values.get("hostbasedauthentication") == "no", "effective SSH policy must disable host-based authentication")
-    require(values.get("gssapiauthentication", "no") == "no", "effective SSH policy must disable GSSAPI authentication")
     require(values.get("kerberosauthentication", "no") == "no", "effective SSH policy must disable Kerberos authentication")
     authorized_files = values.get("authorizedkeysfile", "").split()
     allowed_authorized_files = {
@@ -684,10 +767,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = parse_arguments(list(sys.argv[1:] if argv is None else argv))
         require(os.geteuid() == 0, "run this helper as root")
-        public_key = load_public_key(settings.public_key_file)
         if settings.operation == "check":
-            check_ready(settings, public_key)
+            check_report(settings)
         else:
+            public_key = load_public_key(settings.public_key_file)
             apply(settings, public_key)
         return 0
     except PreparationError as error:

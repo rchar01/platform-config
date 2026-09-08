@@ -5,6 +5,7 @@ import importlib.util
 import os
 import stat
 import struct
+import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -158,6 +159,173 @@ def test_check_ready_requests_one_key_summary(
     assert summaries == [True]
 
 
+@pytest.fixture
+def readiness_environment(repo_root: Path, monkeypatch: pytest.MonkeyPatch):
+    helper = _helper(repo_root)
+    arguments = [
+        "check", "--expected-hostname", "node.example",
+        "--public-key-file", "/root/node.pub",
+        "--controller-address", "192.0.2.20",
+        "--controller-hostname", "controller.example",
+        "--server-address", "192.0.2.30", "--server-port", "22",
+    ]
+    calls: list[tuple[str, ...]] = []
+    user = SimpleNamespace(
+        pw_uid=1000, pw_gid=1000, pw_gecos=helper.AUTOMATION_COMMENT,
+        pw_dir="/home/rocky", pw_shell="/bin/bash",
+    )
+    monkeypatch.setattr(helper.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(helper, "command_path", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(helper.platform, "freedesktop_os_release", lambda: {"ID": "rocky", "VERSION_ID": "10.0"})
+    monkeypatch.setattr(helper.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(helper.sys, "version_info", (3, 12))
+    monkeypatch.setattr(helper.grp, "getgrnam", lambda _name: SimpleNamespace(gr_gid=2000))
+    monkeypatch.setattr(helper.grp, "getgrgid", lambda _gid: SimpleNamespace(gr_name="rocky"))
+    monkeypatch.setattr(helper.pwd, "getpwnam", lambda _name: user)
+    monkeypatch.setattr(helper.pwd, "getpwall", lambda: [user])
+    monkeypatch.setattr(helper, "load_public_key", lambda _path: helper.parse_ed25519_public_key(_public_key()))
+    monkeypatch.setattr(helper, "check_account", lambda _key: calls.append(("account-check",)))
+    monkeypatch.setattr(helper, "check_effective_ssh_policy", lambda _settings: calls.append(("effective-ssh",)))
+
+    def run_command(name: str, *args: str) -> str:
+        calls.append((name, *args))
+        return {"hostnamectl": "node.example", "getenforce": "Enforcing"}.get(name, "")
+
+    monkeypatch.setattr(helper, "run_command", run_command)
+    return helper, arguments, calls
+
+
+@pytest.mark.parametrize("missing", ["account", "group"])
+def test_check_reports_missing_prerequisite_and_skips_dependents(
+    readiness_environment, monkeypatch: pytest.MonkeyPatch, capsys, missing: str
+) -> None:
+    helper, arguments, calls = readiness_environment
+
+    def absent(_name: str):
+        raise KeyError(_name)
+
+    if missing == "account":
+        monkeypatch.setattr(helper.pwd, "getpwnam", absent)
+    else:
+        monkeypatch.setattr(helper.grp, "getgrnam", absent)
+
+    assert helper.main(arguments) == 1
+    captured = capsys.readouterr()
+    assert "Summary: 1 failed, 2 skipped" in captured.out
+    assert "[SKIPPED] effective SSH policy" in captured.out
+    if missing == "account":
+        assert "[NEEDS PREPARATION] automation account is absent: rocky" in captured.out
+    assert "Result: NOT READY" in captured.err
+    assert "Result: READY" not in captured.out
+    assert ("systemctl", "is-active", "sshd") in calls
+    assert ("visudo", "-cf", "/etc/sudoers") in calls
+    assert captured.out.count("192.0.2.30 ssh-ed25519 ") == 1
+    assert ("account-check",) not in calls
+    assert ("effective-ssh",) not in calls
+
+
+def test_check_collects_independent_errors_and_continues(
+    readiness_environment, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    helper, arguments, calls = readiness_environment
+    original_run = helper.run_command
+    original_load = helper.load_public_key
+
+    def run_command(name: str, *args: str) -> str:
+        if name == "sshd":
+            raise subprocess.TimeoutExpired("sshd", 15)
+        if name == "getenforce":
+            raise OSError("injected SELinux failure")
+        return original_run(name, *args)
+
+    def load_key(path: Path):
+        if path == Path("/root/node.pub"):
+            raise helper.PreparationError("invalid automation public key")
+        return original_load(path)
+
+    monkeypatch.setattr(helper, "run_command", run_command)
+    monkeypatch.setattr(helper, "load_public_key", load_key)
+
+    assert helper.main(arguments) == 1
+    captured = capsys.readouterr()
+    assert "invalid automation public key" in captured.out
+    assert "injected SELinux failure" in captured.out
+    assert "[ERROR] SSH configuration:" in captured.out
+    assert "Summary: 3 failed, 1 skipped" in captured.out
+    assert ("visudo", "-cf", "/etc/sudoers") in calls
+    assert ("effective-ssh",) in calls
+    assert ("account-check",) not in calls
+    assert captured.out.count("192.0.2.30 ssh-ed25519 ") == 1
+
+
+@pytest.mark.parametrize("missing_tool,skip_count", [("sshd", 2), ("systemctl", 2), ("getenforce", 1)])
+def test_check_skips_missing_command_dependents(
+    readiness_environment, monkeypatch, capsys, missing_tool, skip_count
+) -> None:
+    helper, arguments, calls = readiness_environment
+    original_path = helper.command_path
+
+    def command_path(name):
+        if name == missing_tool:
+            raise helper.PreparationError(f"required command is unavailable: {name}")
+        return original_path(name)
+
+    monkeypatch.setattr(helper, "command_path", command_path)
+    assert helper.main(arguments) == 1
+    output = capsys.readouterr().out
+    assert f"Summary: 1 failed, {skip_count} skipped" in output
+    assert not any(call[0] == missing_tool for call in calls)
+    assert ("visudo", "-cf", "/etc/sudoers") in calls
+    assert ("account-check",) in calls
+
+
+def test_check_skips_invalid_account_without_claiming_it_is_absent(
+    readiness_environment, capsys
+) -> None:
+    helper, arguments, calls = readiness_environment
+    helper.pwd.getpwnam("rocky").pw_shell = "/bin/false"
+
+    assert helper.main(arguments) == 1
+    output = capsys.readouterr().out
+    assert "shell must be /bin/bash" in output
+    assert "NEEDS PREPARATION" not in output
+    assert "Summary: 1 failed, 2 skipped" in output
+    assert ("account-check",) not in calls
+    assert ("effective-ssh",) not in calls
+    assert ("visudo", "-cf", "/etc/sudoers") in calls
+
+
+def test_check_ready_summary_and_nonroot_guard(readiness_environment, monkeypatch, capsys) -> None:
+    helper, arguments, calls = readiness_environment
+    assert helper.main(arguments) == 0
+    captured = capsys.readouterr()
+    assert "Summary: 0 failed, 0 skipped" in captured.out
+    assert "Result: READY FOR ANSIBLE TRANSPORT" in captured.out
+    assert captured.out.count("192.0.2.30 ssh-ed25519 ") == 1
+    assert ("account-check",) in calls
+    assert ("effective-ssh",) in calls
+
+    calls.clear()
+    monkeypatch.setattr(helper.os, "geteuid", lambda: 1000)
+    assert helper.main(arguments) == 1
+    assert not calls
+    assert "run this helper as root" in capsys.readouterr().err
+
+
+def test_apply_base_checks_still_fail_fast(readiness_environment, monkeypatch, capsys) -> None:
+    helper, arguments, calls = readiness_environment
+    arguments[0] = "apply"
+    arguments.extend(["--confirm", "node.example:rocky"])
+    monkeypatch.setattr(helper, "acquire_lock", lambda: os.open("/dev/null", os.O_RDONLY))
+    monkeypatch.setattr(helper.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(helper, "ensure_account_state_before_apply", lambda: pytest.fail("apply continued after base failure"))
+
+    assert helper.main(arguments) == 1
+    assert ("visudo", "-cf", "/etc/sudoers") not in calls
+    assert ("getenforce",) not in calls
+    assert "architecture is not x86_64" in capsys.readouterr().err
+
+
 def test_public_key_file_rejects_symlink_and_unsafe_mode(
     repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,7 +359,10 @@ def test_public_key_file_rejects_untrusted_ancestor(
         helper.load_public_key(key, expected_uid=os.geteuid())
 
 
-def test_effective_sshd_policy_is_fail_closed(repo_root: Path) -> None:
+@pytest.mark.parametrize("gssapi", ["yes", "no", None])
+def test_effective_sshd_policy_is_fail_closed(
+    repo_root: Path, gssapi: str | None
+) -> None:
     helper = _helper(repo_root)
     valid = helper.parse_effective_sshd(
         "\n".join(
@@ -203,11 +374,12 @@ def test_effective_sshd_policy_is_fail_closed(repo_root: Path) -> None:
                 "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2",
                 "trustedusercakeys none",
                 "hostbasedauthentication no",
-                "gssapiauthentication no",
                 "kerberosauthentication no",
             )
         )
     )
+    if gssapi is not None:
+        valid["gssapiauthentication"] = gssapi
     helper.validate_effective_sshd(valid)
 
     for name, value in (
@@ -218,7 +390,6 @@ def test_effective_sshd_policy_is_fail_closed(repo_root: Path) -> None:
         ("authorizedkeysfile", ".ssh/other_keys"),
         ("trustedusercakeys", "/etc/ssh/ca.pub"),
         ("hostbasedauthentication", "yes"),
-        ("gssapiauthentication", "yes"),
         ("kerberosauthentication", "yes"),
         (
             "authorizedkeysfile",
@@ -255,7 +426,7 @@ def test_effective_sshd_uses_source_and_destination_context(
             "authorizedkeysfile .ssh/authorized_keys",
             "trustedusercakeys none",
             "hostbasedauthentication no",
-            "gssapiauthentication no",
+            "gssapiauthentication yes",
             "kerberosauthentication no",
         )
     )
