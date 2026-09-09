@@ -26,6 +26,17 @@ ownership. Review an obsolete mapping separately before removing it. The role
 does not label OpenBao's direct backend port, which HAProxy connects to but does
 not bind.
 
+HAProxy does not read its backend CA from OpenBao's container-mounted tree.
+Staging copies the installed public CA from `openbao_haproxy_backend_ca_src`
+(by default `openbao_tls_ca_path`, or `/etc/openbao/tls/ca.crt`) to
+`openbao_haproxy_backend_ca_path` (default `/etc/haproxy/openbao-ca.crt`). The
+destination must be a separate file in `/etc/haproxy`, owned by root with mode
+`0644`. Staging validates the certificate before replacement and applies the
+destination's default SELinux context, never the source's private Podman label
+or MCS categories. The source and OpenBao's `:Z` mount remain untouched.
+Check mode defers the copy and candidate validation when directory changes have
+not yet reached the target.
+
 Do not use `standbyok=true`. Status `429` standbys, `501` uninitialized nodes,
 and `503` sealed nodes must remain ineligible for client routing. The `check-ssl`
 server option applies TLS only to HAProxy's health checks. The server lines do
@@ -76,6 +87,10 @@ lifecycle, actual systemctl states, manifest checksum, rules, and query results;
 changed mode or evidence invalidates approval. Unmanaged observations are reset.
 Rollback is confirmed per host only after systemd reports HAProxy both inactive and
 disabled; failed or unreachable checks remain explicitly unverified.
+After a successful stop/disable, rollback resets only HAProxy's failed-state
+latch, then checks the exact inactive/disabled state and command results.
+A failed, unreachable, or incomplete reset never authorizes guard release.
+Failure reports include every affected member, not only the last loop item.
 
 Activation selects `activation_enable.yml`, not ordinary role convergence. It
 does not install packages, render configuration, change SELinux policy, or
@@ -91,6 +106,22 @@ SELinux needs no port-policy query. Mode and type/MLS observations are bound int
 the activation plan, and unmanaged observations are reset rather than reused.
 The final SELinux observation must exactly match the approved preflight before
 firewall verification or service startup, including mode and MLS values.
+
+The dedicated CA guard verifies source/copy checksum identity, protected file
+metadata, and exact agreement between the staged configuration and the role
+template. On SELinux-enabled hosts it computes the prospective HAProxy domain
+from PID 1 and the executable context, then queries policy permissions for CA
+directory traversal and file open/read/getattr. It checks policy allow bits even
+in permissive mode; these queries do not change policy or start a process in the
+service domain. Full contexts and CA/configuration checksums are plan evidence
+and must still match at the service boundary. This is not a substitute for live
+service qualification.
+
+Existing active OpenBao installations that reference the shared CA path need a
+separately reviewed, HAProxy-only CA/configuration repair while HAProxy remains
+stopped. Do not rerun pristine OpenBao staging, relabel `/etc/openbao`, disable
+SELinux, or perform this repair implicitly during activation. A repaired
+configuration requires a fresh plan after any necessary guard recovery.
 
 During Ansible `--check` convergence only, the main-path guard is deferred when
 firewall dependencies are unavailable or rule/manifest writes are predicted.

@@ -5,13 +5,14 @@
     - name: Validate OpenBao HAProxy inputs
       ansible.builtin.include_tasks: validate.yml
 
-    - name: Check OpenBao HAProxy backend CA
+    - name: Check OpenBao HAProxy source backend CA
       ansible.builtin.stat:
-        path: "{{ openbao_haproxy_backend_ca_path }}"
+        path: "{{ openbao_haproxy_backend_ca_src }}"
+        follow: false
       register: openbao_haproxy_backend_ca_stat
       check_mode: false
 
-    - name: Assert OpenBao HAProxy backend CA exists
+    - name: Assert OpenBao HAProxy source backend CA exists
       ansible.builtin.assert:
         that:
           - >-
@@ -28,6 +29,7 @@
               and openbao_tls_ca_result is defined
               and openbao_tls_ca_result is changed
             )
+          - not openbao_haproxy_backend_ca_stat.stat.islnk | default(false)
         fail_msg: >-
           OpenBao HAProxy requires the installed backend CA before configuration
           can be staged.
@@ -166,6 +168,31 @@
         owner: root
         group: root
         mode: "0755"
+        seuser: _default
+        serole: _default
+        setype: _default
+        selevel: _default
+      register: openbao_haproxy_config_directory_result
+
+    # Do not inherit the source's private Podman label or MCS categories.
+    - name: Install a dedicated public backend CA for OpenBao HAProxy
+      ansible.builtin.copy:
+        src: "{{ openbao_haproxy_backend_ca_src }}"
+        dest: "{{ openbao_haproxy_backend_ca_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+        seuser: _default
+        serole: _default
+        setype: _default
+        selevel: _default
+        validate: /usr/bin/openssl x509 -in %s -noout
+      register: openbao_haproxy_backend_ca_result
+      notify: Reload OpenBao HAProxy
+      when:
+        - openbao_haproxy_backend_ca_stat.stat.exists
+        - not ansible_check_mode or openbao_haproxy_config_directory_result is not changed
 
     - name: Write validated OpenBao HAProxy configuration
       ansible.builtin.template:
@@ -175,7 +202,18 @@
         group: root
         mode: "0640"
         validate: >-
-          {{ openbao_haproxy_config_validate_command if openbao_haproxy_binary_ready | bool else omit }}
+          {{
+            openbao_haproxy_config_validate_command
+            if openbao_haproxy_binary_ready | bool
+            and not (
+              ansible_check_mode
+              and (
+                openbao_haproxy_backend_ca_result is changed
+                or openbao_haproxy_config_directory_result is changed
+              )
+            )
+            else omit
+          }}
       notify: Reload OpenBao HAProxy
 
     - name: Label OpenBao HAProxy listener ports for SELinux

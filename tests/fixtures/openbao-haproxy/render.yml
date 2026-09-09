@@ -44,7 +44,7 @@
         openbao_haproxy_backend_port: "{{ openbao_haproxy_test_backend_port }}"
         openbao_haproxy_cluster_port: "{{ openbao_haproxy_test_cluster_port }}"
         openbao_haproxy_stats_port: "{{ openbao_haproxy_test_stats_port }}"
-        openbao_haproxy_backend_ca_path: /etc/openbao/tls/ca.crt
+        openbao_haproxy_backend_ca_path: /etc/haproxy/openbao-ca.crt
         openbao_haproxy_backend_health_host: "{{ openbao_haproxy_test_health_host }}"
         openbao_haproxy_backend_health_path: "{{ openbao_haproxy_test_health_path }}"
         openbao_cluster_members:

@@ -101,11 +101,13 @@
     - name: Collect failed OpenBao HAProxy activation hosts
       ansible.builtin.set_fact:
         openbao_haproxy_failed_hosts: >-
-          {{ hostvars['localhost'].openbao_haproxy_failed_hosts + [item] }}
-      loop: "{{ groups.get('openbao', []) }}"
-      when: >-
-        not hostvars[item].openbao_haproxy_local_activation_complete
-        | default(false) | bool
+          {%- set report = namespace(hosts=[]) -%}
+          {%- for host in groups.get('openbao', []) -%}
+          {%- if not hostvars[host].openbao_haproxy_local_activation_complete | default(false) | bool -%}
+          {%- set report.hosts = report.hosts + [host] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ report.hosts }}
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true
@@ -128,13 +130,14 @@
     - name: Collect unverified OpenBao HAProxy activation rollbacks
       ansible.builtin.set_fact:
         openbao_haproxy_unverified_rollback_hosts: >-
-          {{ hostvars['localhost'].openbao_haproxy_unverified_rollback_hosts + [item] }}
-      loop: "{{ groups.get('openbao', []) }}"
-      when:
-        - hostvars['localhost'].openbao_haproxy_failed_hosts | length > 0
-        - >-
-          not hostvars[item].openbao_haproxy_activation_rollback_confirmed
-          | default(false) | bool
+          {%- set report = namespace(hosts=[]) -%}
+          {%- for host in groups.get('openbao', []) -%}
+          {%- if not hostvars[host].openbao_haproxy_activation_rollback_confirmed | default(false) | bool -%}
+          {%- set report.hosts = report.hosts + [host] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ report.hosts }}
+      when: hostvars['localhost'].openbao_haproxy_failed_hosts | length > 0
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true
@@ -234,9 +237,13 @@
     - name: Collect failed OpenBao HAProxy paths
       ansible.builtin.set_fact:
         openbao_haproxy_failed_path_hosts: >-
-          {{ hostvars['localhost'].openbao_haproxy_failed_path_hosts + [item] }}
-      loop: "{{ groups.get('openbao', []) }}"
-      when: not hostvars[item].openbao_haproxy_path_qualified | bool
+          {%- set report = namespace(hosts=[]) -%}
+          {%- for host in groups.get('openbao', []) -%}
+          {%- if not hostvars[host].openbao_haproxy_path_qualified | default(false) | bool -%}
+          {%- set report.hosts = report.hosts + [host] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ report.hosts }}
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true
@@ -244,16 +251,14 @@
     - name: Collect unverified OpenBao HAProxy path rollbacks
       ansible.builtin.set_fact:
         openbao_haproxy_unverified_path_rollback_hosts: >-
-          {{
-            hostvars['localhost'].openbao_haproxy_unverified_path_rollback_hosts
-            + [item]
-          }}
-      loop: "{{ groups.get('openbao', []) }}"
-      when:
-        - hostvars['localhost'].openbao_haproxy_failed_path_hosts | length > 0
-        - >-
-          not hostvars[item].openbao_haproxy_activation_rollback_confirmed
-          | default(false) | bool
+          {%- set report = namespace(hosts=[]) -%}
+          {%- for host in groups.get('openbao', []) -%}
+          {%- if not hostvars[host].openbao_haproxy_activation_rollback_confirmed | default(false) | bool -%}
+          {%- set report.hosts = report.hosts + [host] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ report.hosts }}
+      when: hostvars['localhost'].openbao_haproxy_failed_path_hosts | length > 0
       run_once: true # noqa run-once[task]
       delegate_to: localhost
       delegate_facts: true

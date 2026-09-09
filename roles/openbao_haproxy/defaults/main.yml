@@ -24,7 +24,8 @@ openbao_haproxy_client_bind: "*"
 openbao_haproxy_client_port: "{{ openbao_client_port | default(8200) }}"
 openbao_haproxy_backend_port: "{{ openbao_backend_port | default(18200) }}"
 openbao_haproxy_cluster_port: "{{ openbao_cluster_port | default(8201) }}"
-openbao_haproxy_backend_ca_path: "{{ openbao_tls_ca_path | default('/etc/openbao/tls/ca.crt') }}"
+openbao_haproxy_backend_ca_src: "{{ openbao_tls_ca_path | default('/etc/openbao/tls/ca.crt') }}"
+openbao_haproxy_backend_ca_path: /etc/haproxy/openbao-ca.crt
 openbao_haproxy_backend_health_host: "{{ openbao_service_dns | default('') }}"
 openbao_haproxy_backend_health_path: /v1/sys/health
 openbao_haproxy_check_interval: 1s

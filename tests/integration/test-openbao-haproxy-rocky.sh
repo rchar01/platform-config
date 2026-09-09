@@ -158,6 +158,9 @@ fi
 if podman exec "$CONTAINER" test -e /etc/haproxy/haproxy.cfg; then
   fail 'OpenBao HAProxy check mode wrote the configuration'
 fi
+if podman exec "$CONTAINER" test -e /etc/haproxy/openbao-ca.crt; then
+  fail 'OpenBao HAProxy check mode wrote the dedicated backend CA'
+fi
 
 run_playbook >/dev/null
 package_identity="$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' haproxy)"
@@ -165,6 +168,17 @@ package_identity="$(podman exec "$CONTAINER" rpm -q --qf '%{NAME}-%{EPOCHNUM}:%{
   || fail "OpenBao HAProxy package identity mismatch: ${package_identity}"
 podman exec "$CONTAINER" /usr/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg \
   || fail 'HAProxy rejected the staged OpenBao configuration'
+podman exec "$CONTAINER" cmp /etc/openbao/tls/ca.crt /etc/haproxy/openbao-ca.crt \
+  || fail 'OpenBao HAProxy dedicated backend CA differs from its source'
+[[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a:%F' /etc/haproxy/openbao-ca.crt)" == root:root:644:'regular file' ]] \
+  || fail 'OpenBao HAProxy dedicated backend CA has unsafe ownership, mode, or type'
+[[ "$(podman exec "$CONTAINER" stat -c '%U:%G:%a:%F' /etc/haproxy)" == root:root:755:directory ]] \
+  || fail 'OpenBao HAProxy CA directory has unsafe ownership, mode, or type'
+[[ "$(podman exec "$CONTAINER" grep -c ' ca-file /etc/haproxy/openbao-ca[.]crt ' /etc/haproxy/haproxy.cfg)" == 3 ]] \
+  || fail 'OpenBao HAProxy configuration does not use the dedicated CA for all backends'
+if podman exec "$CONTAINER" grep -q 'ca-file /etc/openbao/' /etc/haproxy/haproxy.cfg; then
+  fail 'OpenBao HAProxy configuration still references the OpenBao-owned CA path'
+fi
 if [[ "$(podman exec "$CONTAINER" systemctl is-enabled haproxy.service 2>/dev/null)" != disabled ]]; then
   fail 'OpenBao HAProxy service became enabled during staging'
 fi
@@ -197,6 +211,7 @@ if grep -q '198[.]51[.]100[.]0/24.*port="8200"' <<<"$updated_rules"; then
 fi
 
 config_hash_before="$(podman exec "$CONTAINER" sha256sum /etc/haproxy/haproxy.cfg)"
+ca_hash_before="$(podman exec "$CONTAINER" sha256sum /etc/haproxy/openbao-ca.crt)"
 podman exec "$CONTAINER" cp -a /etc/openbao/tls/ca.crt /tmp/openbao-haproxy-ca.crt
 printf '%s\n' 'not a certificate' \
   | podman exec --interactive "$CONTAINER" tee /etc/openbao/tls/ca.crt >/dev/null
@@ -210,6 +225,8 @@ podman exec "$CONTAINER" mv -f /tmp/openbao-haproxy-ca.crt /etc/openbao/tls/ca.c
 config_hash_after="$(podman exec "$CONTAINER" sha256sum /etc/haproxy/haproxy.cfg)"
 [[ "$config_hash_before" == "$config_hash_after" ]] \
   || fail 'Rejected OpenBao HAProxy candidate replaced the valid configuration'
+[[ "$ca_hash_before" == "$(podman exec "$CONTAINER" sha256sum /etc/haproxy/openbao-ca.crt)" ]] \
+  || fail 'Invalid OpenBao source certificate replaced the cached HAProxy CA'
 
 podman exec "$CONTAINER" rpmbuild -bb \
   --define '_topdir /tmp/rpmbuild' \

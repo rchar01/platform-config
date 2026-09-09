@@ -9,6 +9,7 @@ import yaml
 
 from conftest import CommandRunner
 from test_openbao_haproxy_firewall_guard import stage_firewall_target
+from test_openbao_haproxy_ca_guard import stage_ca_target
 
 
 ROLE = "roles/openbao_haproxy"
@@ -40,6 +41,7 @@ def activation_fixture(repo_root: Path, tmp_path: Path, command_runner: CommandR
     role = tmp_path / "roles/openbao_haproxy"
     shutil.copytree(repo_root / ROLE, role)
     firewall_vars = stage_firewall_target(role, tmp_path, command_runner)
+    ca_vars = stage_ca_target(role, tmp_path, command_runner, mock_policy=True)
     path = role / "tasks" / PREFLIGHT
     tasks = yaml.safe_load(path.read_text())
     # Alongside the firewall target I/O doubles, unrelated artifact reads are
@@ -51,7 +53,11 @@ def activation_fixture(repo_root: Path, tmp_path: Path, command_runner: CommandR
                 "openbao_haproxy_activation_artifact_stats": {"results": [
                     {"stat": {"exists": True, "isreg": True, "pw_name": "root",
                               "mode": "0640", "checksum": "a" * 64}},
-                ] * 3},
+                    {"stat": {"exists": True, "isreg": True, "pw_name": "root",
+                              "mode": "0644", "checksum": "b" * 64}},
+                    {"stat": {"exists": True, "isreg": True, "pw_name": "root",
+                              "mode": "0644", "checksum": "c" * 64}},
+                ]},
             }
         elif task.get("ansible.builtin.command", {}).get("argv", [None])[0] == "rpm":
             task.clear()
@@ -79,6 +85,7 @@ def activation_fixture(repo_root: Path, tmp_path: Path, command_runner: CommandR
         "hosts": "localhost", "gather_facts": True,
         "vars": {
             **firewall_vars,
+            **ca_vars,
             "openbao_haproxy_enabled": True,
             "openbao_haproxy_selinux_manage": False,
             "openbao_haproxy_package_nevra": "haproxy-0:3.0.5-6.el10_2.1.x86_64",

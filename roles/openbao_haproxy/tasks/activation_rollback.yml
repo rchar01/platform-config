@@ -10,6 +10,29 @@
         name: "{{ openbao_haproxy_service_name }}"
         enabled: false
         state: stopped
+      register: openbao_haproxy_activation_rollback_stop
+
+    - name: Require successful OpenBao HAProxy stop and disable before resetting failure
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_activation_rollback_stop is succeeded
+          - openbao_haproxy_activation_rollback_stop is not unreachable
+          - openbao_haproxy_activation_rollback_stop is not skipped
+
+    # Stopping a failed unit can leave its failed-state latch set.
+    - name: Reset stopped OpenBao HAProxy systemd failure state
+      ansible.builtin.command:
+        argv: [systemctl, reset-failed, "{{ openbao_haproxy_service_name }}"]
+      register: openbao_haproxy_activation_rollback_reset
+      changed_when: true
+
+    - name: Require verified OpenBao HAProxy failure reset
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_activation_rollback_reset is succeeded
+          - openbao_haproxy_activation_rollback_reset is not unreachable
+          - openbao_haproxy_activation_rollback_reset is not skipped
+          - openbao_haproxy_activation_rollback_reset.rc | default(1) == 0
 
     - name: Inspect failed OpenBao HAProxy runtime state
       ansible.builtin.command:
@@ -28,7 +51,13 @@
     - name: Require stopped and disabled OpenBao HAProxy rollback state
       ansible.builtin.assert:
         that:
+          - openbao_haproxy_activation_rollback_active is not unreachable
+          - openbao_haproxy_activation_rollback_active is not skipped
+          - openbao_haproxy_activation_rollback_active.rc | default(-1) == 3
           - openbao_haproxy_activation_rollback_active.stdout == 'inactive'
+          - openbao_haproxy_activation_rollback_enabled is not unreachable
+          - openbao_haproxy_activation_rollback_enabled is not skipped
+          - openbao_haproxy_activation_rollback_enabled.rc | default(-1) == 1
           - openbao_haproxy_activation_rollback_enabled.stdout == 'disabled'
         fail_msg: OpenBao HAProxy rollback did not prove stopped and disabled state.
 

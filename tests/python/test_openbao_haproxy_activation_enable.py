@@ -10,6 +10,7 @@ import yaml
 
 from test_openbao_haproxy_firewall_guard import ROLE, RULES, stage_firewall_target
 from test_openbao_haproxy_activation_preflight import activation_fixture
+from test_openbao_haproxy_ca_guard import stage_ca_target
 
 
 @pytest.fixture
@@ -17,6 +18,7 @@ def activation_target(repo_root, tmp_path, command_runner):
     role = tmp_path / ROLE
     shutil.copytree(repo_root / ROLE, role)
     variables = stage_firewall_target(role, tmp_path, command_runner)
+    variables.update(stage_ca_target(role, tmp_path, command_runner, mock_policy=True))
     plays = yaml.safe_load((repo_root / "playbooks/maintenance/openbao-haproxy-activate.yml").read_text())
     block = next(task["block"] for task in plays[2]["tasks"] if "block" in task)
     include = next(task for task in block if task.get("ansible.builtin.include_role", {}).get("name") ==
@@ -38,8 +40,17 @@ def activation_target(repo_root, tmp_path, command_runner):
         "openbao_haproxy_enabled": True,
         "openbao_haproxy_selinux_manage": False,
         "openbao_haproxy_selinux_observation": {"managed": True, "mode": "stale"},
-        "openbao_haproxy_activation_observation": {"selinux": {"managed": False}},
+        "openbao_haproxy_activation_observation": {
+            "selinux": {"managed": False},
+            "ca": {"source_checksum": "b" * 64, "ca_checksum": "b" * 64,
+                   "config_checksum": "a" * 64, "selinux": {"managed": False}},
+        },
         "openbao_haproxy_client_allowed_sources": ["198.51.100.0/24"],
+        "openbao_haproxy_backend_health_host": "bao.example.invalid",
+        "openbao_cluster_members": [
+            {"name": f"bao-{i}", "address": f"192.0.2.{i}", "dns": f"bao-{i}.example.invalid"}
+            for i in range(1, 4)
+        ],
         "ansible_python_interpreter": sys.executable,
         "ansible_facts": {"python": {"executable": sys.executable}},
     })
@@ -77,6 +88,19 @@ def test_activation_missing_firewall_rule_blocks_service(activation_target, tmp_
         "firewall-offline-cmd", f"--query-rich-rule={RULES[-1]}",
     ] for event in events), result.diagnostics()
     assert not any(event["kind"] == "systemd_service" for event in events)
+
+
+@pytest.mark.parametrize("change", ["trust", "configuration"])
+def test_activation_ca_drift_blocks_service(change, activation_target, tmp_path, command_runner):
+    checksums = activation_target["vars"]["fixture_ca_checksums"]
+    if change == "trust":
+        checksums["source"] = checksums["ca"] = "c" * 64
+    else:
+        checksums["config"] = "c" * 64
+    result, events = run_activation(activation_target, tmp_path, command_runner)
+    result.assert_failure()
+    assert "CA or access changed after approved preflight" in result.stdout
+    assert events == [], "CA evidence drift must block firewall I/O and service startup"
 
 
 @pytest.mark.parametrize("owned", [True, False, "true"])
@@ -248,11 +272,11 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
 def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, command_runner):
     _, log = stage_selinux_target(tmp_path, "disabled" if case == "mode-drift" else case)
     activation_target["vars"]["openbao_haproxy_selinux_manage"] = True
-    activation_target["vars"]["openbao_haproxy_activation_observation"] = {"selinux": {
+    activation_target["vars"]["openbao_haproxy_activation_observation"]["selinux"] = {
         "managed": True, "mode": "Enforcing", "ports": {
             "8200": ["http_port_t", "s0"], "8404": ["http_port_t", "s0:c0.c3"],
         },
-    }}
+    }
     activation_target["environment"] = {
         "PATH": f"{tmp_path}:{command_runner.environment['PATH']}", "PYTHONPATH": str(tmp_path),
     }
@@ -289,13 +313,17 @@ def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, co
 def test_activation_guard_and_evidence_contract(repo_root):
     tasks_dir = repo_root / ROLE / "tasks"
     enable = yaml.safe_load((tasks_dir / "activation_enable.yml").read_text())
-    assert len(enable) == 4
-    assert enable[0]["ansible.builtin.include_tasks"] == "selinux_guard.yml"
+    assert len(enable) == 6
+    assert enable[0]["ansible.builtin.include_tasks"] == "ca_guard.yml"
     assert enable[1]["ansible.builtin.assert"]["that"] == [
+        "openbao_haproxy_ca_observation == openbao_haproxy_activation_observation.ca",
+    ]
+    assert enable[2]["ansible.builtin.include_tasks"] == "selinux_guard.yml"
+    assert enable[3]["ansible.builtin.assert"]["that"] == [
         "openbao_haproxy_selinux_observation == openbao_haproxy_activation_observation.selinux",
     ]
-    assert enable[2]["ansible.builtin.include_tasks"] == "firewall_guard.yml"
-    assert enable[3]["ansible.builtin.systemd_service"] == {
+    assert enable[4]["ansible.builtin.include_tasks"] == "firewall_guard.yml"
+    assert enable[5]["ansible.builtin.systemd_service"] == {
         "name": "haproxy.service", "enabled": True, "state": "started",
     }
     guard = yaml.safe_load((tasks_dir / "selinux_guard.yml").read_text())

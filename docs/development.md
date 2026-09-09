@@ -101,12 +101,23 @@ timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container py
   tests/python/test_openbao_haproxy_activation_enable.py
 timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
   tests/python/test_openbao_haproxy_activation_preflight.py
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_haproxy_ca_guard.py
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_haproxy_ca_staging.py
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_haproxy_rollback.py
 ```
 
 The activation-entry test resolves the real role with external collections
 hidden, shadowing only target I/O and service management. Native SELinux probes
 use read-only binding doubles to check exact labels and reject missing/wrong
 records before startup. These are not live SELinux or endpoint qualification.
+CA tests also exercise byte-identical copy staging, native certificate validation,
+check mode, and prospective service-domain policy decisions, including denied
+access in permissive mode. Rollback tests cover failed-state reset, incomplete
+results, complete multi-host reports, and retained consumed records. Binding and
+service doubles do not prove live SELinux execution or host recovery.
 
 Standalone dev acceptance does not depend on monitoring; production monitoring
 is still required. Offline checks do not authorize activation or normal

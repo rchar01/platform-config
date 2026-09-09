@@ -29,6 +29,9 @@
 - name: Verify staged OpenBao HAProxy firewall evidence
   ansible.builtin.include_tasks: firewall_guard.yml
 
+- name: Verify staged OpenBao HAProxy dedicated CA and service-domain access
+  ansible.builtin.include_tasks: ca_guard.yml
+
 - name: Inspect staged OpenBao HAProxy activation artifacts
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -83,6 +86,7 @@
   ansible.builtin.set_fact:
     openbao_haproxy_activation_observation:
       inventory_host: "{{ inventory_hostname }}"
+      ca: "{{ openbao_haproxy_ca_observation }}"
       selinux: "{{ openbao_haproxy_selinux_observation }}"
       firewalld: "{{ openbao_haproxy_firewall_observation }}"
       package_nevra: "{{ openbao_haproxy_activation_installed_nevra.stdout }}"

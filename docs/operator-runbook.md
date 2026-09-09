@@ -1545,6 +1545,22 @@ invalidate preflight evidence. Staging keeps its normal collection requirements;
 do not install collections during an operation or disable SELinux to bypass a
 failed gate.
 
+The HAProxy backend CA must be a dedicated root-owned `0644` copy under
+`/etc/haproxy`, not a direct reference into OpenBao's private `:Z` mount.
+Staging copies the same reviewed public CA with destination-default SELinux
+labels; it never relabels the OpenBao source tree. Preflight verifies equal CA
+checksums, exact staged configuration, and SELinux policy permissions for the
+prospective HAProxy domain to traverse the CA path and read the file. These
+observations must match again immediately before startup. Existing installations
+using the shared path need a separately approved, HAProxy-only repair while
+stopped; do not run pristine OpenBao staging against an initialized cluster.
+
+After a failed start, supported HAProxy rollback stops and disables the service,
+resets only its failed-state latch, and still requires exact `inactive` and
+`disabled` observations. Any failed, unreachable, or incomplete step retains the
+affected guard for reviewed recovery. Every unverified host must appear in the
+report; neither a zero PID nor a shortened failure list authorizes release.
+
 Operator plan files must remain **outside every Git repository**, including
 private and planning repositories. Choose a new absolute filename in an already
 existing, current-owner directory with exact mode `0700` and no symlink path

@@ -1,4 +1,14 @@
 ---
+- name: Verify staged OpenBao HAProxy CA before activation
+  ansible.builtin.include_tasks: ca_guard.yml
+
+- name: Require unchanged approved OpenBao HAProxy CA evidence
+  ansible.builtin.assert:
+    that:
+      - openbao_haproxy_ca_observation == openbao_haproxy_activation_observation.ca
+    fail_msg: OpenBao HAProxy CA or access changed after approved preflight; prepare a fresh plan after review.
+  ignore_errors: false
+
 - name: Verify staged SELinux labels before OpenBao HAProxy activation
   ansible.builtin.include_tasks: selinux_guard.yml
 

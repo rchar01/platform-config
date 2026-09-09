@@ -17,7 +17,8 @@
     openbao_haproxy_backend_port: 18200
     openbao_haproxy_cluster_port: 8201
     openbao_haproxy_stats_port: 8404
-    openbao_haproxy_backend_ca_path: /etc/openbao/tls/ca.crt
+    openbao_haproxy_backend_ca_src: /etc/openbao/tls/ca.crt
+    openbao_haproxy_backend_ca_path: /etc/haproxy/openbao-ca.crt
     openbao_haproxy_backend_health_host: bao.example.invalid
     openbao_cluster_members:
       - name: openbao-test-01

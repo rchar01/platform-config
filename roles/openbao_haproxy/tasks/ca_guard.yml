@@ -1,0 +1,149 @@
+---
+- name: Verify staged OpenBao HAProxy CA access without changing target state
+  ignore_errors: false
+  ignore_unreachable: false
+  block:
+    - name: Reset OpenBao HAProxy CA observation
+      ansible.builtin.set_fact:
+        openbao_haproxy_ca_observation:
+          selinux:
+            managed: false
+
+    - name: Inspect OpenBao HAProxy configuration and dedicated CA artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+        checksum_algorithm: sha256
+      loop:
+        - "{{ openbao_haproxy_config_path }}"
+        - "{{ openbao_haproxy_backend_ca_src }}"
+        - "{{ openbao_haproxy_backend_ca_path }}"
+        - "{{ openbao_haproxy_backend_ca_path | dirname }}"
+      register: openbao_haproxy_ca_stats
+      check_mode: false
+
+    - name: Require complete reachable OpenBao HAProxy CA artifact observations
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_ca_stats is not failed
+          - openbao_haproxy_ca_stats is not unreachable
+          - openbao_haproxy_ca_stats is not skipped
+          - openbao_haproxy_ca_stats.results | length == 4
+
+    - name: Require safe OpenBao HAProxy CA artifact metadata
+      ansible.builtin.assert:
+        that:
+          - item is not failed
+          - item is not unreachable
+          - item is not skipped
+          - item.stat.exists
+          - item.stat.islnk is sameas false
+          - item.stat.uid == 0 and item.stat.gid == 0
+          - item.stat.mode == ('0755' if ca_index == 3 else '0640' if ca_index == 0 else '0644')
+          - item.stat.isdir if ca_index == 3 else item.stat.isreg
+          - ca_index == 3 or item.stat.nlink == 1
+          - ca_index == 3 or item.stat.checksum is match('^[a-f0-9]{64}$')
+        fail_msg: OpenBao HAProxy requires safe root-owned configuration, source CA, dedicated CA and parent directory.
+      loop: "{{ openbao_haproxy_ca_stats.results }}"
+      loop_control:
+        index_var: ca_index
+        label: "{{ item.item }}"
+
+    - name: Read staged OpenBao HAProxy configuration
+      ansible.builtin.slurp:
+        src: "{{ openbao_haproxy_config_path }}"
+      register: openbao_haproxy_ca_config
+      check_mode: false
+
+    - name: Require exact desired OpenBao HAProxy configuration and copied CA
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_ca_config is not failed
+          - openbao_haproxy_ca_config is not unreachable
+          - openbao_haproxy_ca_config is not skipped
+          - openbao_haproxy_ca_config.content | b64decode == lookup('ansible.builtin.template', 'haproxy.cfg.j2')
+          - openbao_haproxy_ca_stats.results[1].stat.checksum == openbao_haproxy_ca_stats.results[2].stat.checksum
+        fail_msg: OpenBao HAProxy requires its exact desired configuration and an unchanged dedicated copy of the source CA.
+
+    - name: Query native OpenBao HAProxy SELinux CA access decisions
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts.python.executable }}"
+          - -c
+          - |
+            import json
+            import os
+            from pathlib import Path
+            import subprocess
+            import sys
+
+            binary, ca = sys.argv[1:]
+            if os.path.realpath(ca) != ca:
+                raise SystemExit("CA path must not traverse symlinks or noncanonical ancestors")
+            mode = subprocess.check_output(["getenforce"], text=True).strip()
+            if mode not in ("Enforcing", "Permissive", "Disabled"):
+                raise SystemExit("Unrecognized SELinux mode")
+            observation = {"managed": True, "mode": mode}
+            if mode != "Disabled":
+                import selinux
+
+                rc, init_context = selinux.getpidcon(1)
+                if rc < 0 or not init_context:
+                    raise SystemExit("Missing systemd SELinux source context")
+                rc, exec_context = selinux.getfilecon(binary)
+                if rc < 0 or not exec_context or exec_context.split(":")[2:3] != ["haproxy_exec_t"]:
+                    raise SystemExit("Missing or incorrect HAProxy executable context")
+                process_class = selinux.string_to_security_class("process")
+                if process_class <= 0:
+                    raise SystemExit("Missing SELinux process class")
+                rc, domain = selinux.security_compute_create(init_context, exec_context, process_class)
+                if rc < 0 or not domain or domain.split(":")[2:3] != ["haproxy_t"]:
+                    raise SystemExit("Missing or incorrect prospective HAProxy domain")
+                paths = {}
+                for path in [*reversed(Path(ca).parents), Path(ca)]:
+                    path = str(path)
+                    rc, context = selinux.getfilecon(path)
+                    if rc < 0 or not context:
+                        raise SystemExit("Missing SELinux CA traversal context: " + path)
+                    kind, permissions = ("file", ["open", "read", "getattr"]) if path == ca else ("dir", ["search"])
+                    class_id = selinux.string_to_security_class(kind)
+                    if class_id <= 0:
+                        raise SystemExit("Missing SELinux object class: " + kind)
+                    mask = 0
+                    for permission in permissions:
+                        bit = selinux.string_to_av_perm(class_id, permission)
+                        if bit <= 0:
+                            raise SystemExit("Missing SELinux permission: " + permission)
+                        mask |= bit
+                    # Inspect policy bits even in permissive mode; do not use selinux_check_access.
+                    decision = selinux.av_decision()
+                    rc = selinux.security_compute_av(domain, context, class_id, mask, decision)
+                    if not isinstance(rc, int) or rc < 0 or decision.allowed & mask != mask:
+                        raise SystemExit("SELinux denies HAProxy CA access: " + path)
+                    paths[path] = {"context": context, "class": kind, "permissions": permissions}
+                observation.update(source_context=init_context, executable_context=exec_context,
+                                   prospective_domain=domain, paths=paths)
+            print(json.dumps(observation, sort_keys=True))
+          - "{{ openbao_haproxy_binary_path }}"
+          - "{{ openbao_haproxy_backend_ca_path }}"
+      register: openbao_haproxy_ca_probe
+      changed_when: false
+      check_mode: false
+      when: openbao_haproxy_selinux_manage | bool
+
+    - name: Require a complete reachable OpenBao HAProxy CA access decision
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_ca_probe is not failed
+          - openbao_haproxy_ca_probe is not unreachable
+          - openbao_haproxy_ca_probe is not skipped
+          - openbao_haproxy_ca_probe.rc | default(-1) == 0
+      when: openbao_haproxy_selinux_manage | bool
+
+    - name: Record verified OpenBao HAProxy CA observation
+      ansible.builtin.set_fact:
+        openbao_haproxy_ca_observation:
+          source_checksum: "{{ openbao_haproxy_ca_stats.results[1].stat.checksum }}"
+          ca_checksum: "{{ openbao_haproxy_ca_stats.results[2].stat.checksum }}"
+          config_checksum: "{{ openbao_haproxy_ca_stats.results[0].stat.checksum }}"
+          selinux: "{{ openbao_haproxy_ca_probe.stdout | from_json if openbao_haproxy_selinux_manage | bool else {'managed': false} }}"

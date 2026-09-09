@@ -49,15 +49,16 @@ def test_openbao_haproxy_rendered_client_and_backend_contract(
         r"^  option httpchk$",
         r"^  http-check send meth GET uri /v1/sys/health ver HTTP/1[.]1 hdr Host bao[.]example[.]invalid$",
         r"^  http-check expect status 200$",
-        r"^  server openbao-example-01 192[.]0[.]2[.]63:18200 check check-ssl check-sni bao-1[.]internal[.]invalid verify required ca-file /etc/openbao/tls/ca[.]crt verifyhost bao-1[.]internal[.]invalid$",
-        r"^  server openbao-example-02 192[.]0[.]2[.]64:18200 check check-ssl check-sni bao-2[.]internal[.]invalid verify required ca-file /etc/openbao/tls/ca[.]crt verifyhost bao-2[.]internal[.]invalid$",
-        r"^  server openbao-example-03 192[.]0[.]2[.]65:18200 check check-ssl check-sni bao-3[.]internal[.]invalid verify required ca-file /etc/openbao/tls/ca[.]crt verifyhost bao-3[.]internal[.]invalid$",
+        r"^  server openbao-example-01 192[.]0[.]2[.]63:18200 check check-ssl check-sni bao-1[.]internal[.]invalid verify required ca-file /etc/haproxy/openbao-ca[.]crt verifyhost bao-1[.]internal[.]invalid$",
+        r"^  server openbao-example-02 192[.]0[.]2[.]64:18200 check check-ssl check-sni bao-2[.]internal[.]invalid verify required ca-file /etc/haproxy/openbao-ca[.]crt verifyhost bao-2[.]internal[.]invalid$",
+        r"^  server openbao-example-03 192[.]0[.]2[.]65:18200 check check-ssl check-sni bao-3[.]internal[.]invalid verify required ca-file /etc/haproxy/openbao-ca[.]crt verifyhost bao-3[.]internal[.]invalid$",
     )
     for pattern in patterns:
         assert re.search(pattern, rendered_haproxy, re.MULTILINE), pattern
     assert not re.search(
         r"server .*:18200 ssl(?:\s|$)|standbyok|:8201 check", rendered_haproxy
     )
+    assert "ca-file /etc/openbao/" not in rendered_haproxy
 
 
 def test_openbao_haproxy_rendered_metrics_contract(rendered_haproxy: str) -> None:
@@ -90,6 +91,10 @@ def test_openbao_haproxy_rendered_metrics_contract(rendered_haproxy: str) -> Non
         ("standby-health", {"openbao_haproxy_test_health_path": "/v1/sys/health?standbyok=true"}),
         ("malformed-health-host", {"openbao_haproxy_test_health_host": ".bao.example.invalid"}),
         ("ownership-conflict", {"openbao_haproxy_test_workload_lb_enabled": True}),
+        ("shared-ca", {"openbao_haproxy_backend_ca_path": "/etc/openbao/tls/ca.crt"}),
+        ("ca-overwrites-config", {"openbao_haproxy_backend_ca_path": "/etc/haproxy/haproxy.cfg"}),
+        ("ca-parent-escape", {"openbao_haproxy_backend_ca_path": "/etc/haproxy/.."}),
+        ("ca-source-escape", {"openbao_haproxy_backend_ca_src": "/etc/openbao/../ca.crt"}),
     ],
     ids=lambda value: value if isinstance(value, str) else None,
 )
