@@ -205,6 +205,7 @@ platform-docs documents the design and operations across all repositories.
 - [RKE2 operations](docs/rke2-operations.md), including the
   [in-cluster Runner](roles/rke2_gitlab_runner/README.md) with a private
   HTTPS Helm repository override and unchanged upstream default
+  (an optional HTTPS clone origin preserves checkout through approved proxies)
 - [Development](docs/development.md)
 
 ## License

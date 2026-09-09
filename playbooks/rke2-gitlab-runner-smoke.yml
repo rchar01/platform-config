@@ -243,6 +243,11 @@
           - rke2_gitlab_runner_default_job_image in rke2_gitlab_runner_smoke_config
           - ('name = ' ~ (rke2_gitlab_runner_name | to_json)) in rke2_gitlab_runner_smoke_config
           - ('url = ' ~ (rke2_gitlab_runner_gitlab_url | to_json)) in rke2_gitlab_runner_smoke_config
+          - >-
+            (('clone_url = ' ~ (rke2_gitlab_runner_clone_url | default('') | to_json))
+              in rke2_gitlab_runner_smoke_config)
+            if (rke2_gitlab_runner_clone_url | default('') | length > 0)
+            else ('clone_url =' not in rke2_gitlab_runner_smoke_config)
           - ('service_account = ' ~ (rke2_gitlab_runner_smoke_job_service_account | to_json)) in rke2_gitlab_runner_smoke_config
           - "'automount_service_account_token = false' in rke2_gitlab_runner_smoke_config"
           - "'privileged = false' in rke2_gitlab_runner_smoke_config"

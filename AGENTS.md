@@ -30,6 +30,9 @@
   `rke2_gitlab_runner_chart_repo`. Preserve the public upstream default, indexed
   chart/version convention, and reviewed image pins. Keep rendering and smoke
   aligned; a repository override does not establish Helm-job CA trust.
+- Keep `rke2_gitlab_runner_clone_url` optional and empty by default. A private
+  HTTPS clone origin affects Runner checkout only, not the operational source
+  fetch or TLS verification; preserve those independent access checks.
 
 ## OpenBao Activation Boundary
 

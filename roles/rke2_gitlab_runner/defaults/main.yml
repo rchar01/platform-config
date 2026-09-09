@@ -1,6 +1,7 @@
 ---
 rke2_gitlab_runner_enabled: false
 rke2_gitlab_runner_gitlab_url: ""
+rke2_gitlab_runner_clone_url: ""
 rke2_gitlab_runner_token_src: ""
 rke2_gitlab_runner_tls_ca_cert_src: ""
 rke2_gitlab_runner_tls_ca_cert_sha256: ""

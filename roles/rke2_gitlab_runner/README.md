@@ -37,6 +37,15 @@ CA trust. The internal source must be accessible and trusted by the Helm
 Controller job; container-image registry trust alone is not sufficient. Do not
 put credentials in this URL or disable TLS verification.
 
+`rke2_gitlab_runner_clone_url` is an optional credential-free HTTPS origin for
+job repository checkout when GitLab advertises a different hostname. Its empty
+default omits `clone_url` and preserves existing behavior. A nonempty value may
+include a valid port and trailing slash, but no repository path, credentials,
+query or fragment. Smoke checks the configured override or its expected absence.
+Qualify DNS and certificate trust from the helper/job network. This does not
+rewrite platform-config's separate CI source fetch, artifact endpoints or LFS
+URLs, and does not add host aliases or disable certificate verification.
+
 The token source must be a regular non-symlink file with mode `0400` or `0600`
 and one `glrt-...` value without a trailing newline. The role reads it only on
 the controller under `no_log`.

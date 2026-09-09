@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from conftest import CommandRunner
 EXPECTED_DEFAULTS = {
     "rke2_gitlab_runner_enabled",
     "rke2_gitlab_runner_gitlab_url",
+    "rke2_gitlab_runner_clone_url",
     "rke2_gitlab_runner_token_src",
     "rke2_gitlab_runner_tls_ca_cert_src",
     "rke2_gitlab_runner_tls_ca_cert_sha256",
@@ -31,6 +33,7 @@ def test_rke2_gitlab_runner_public_contract_is_minimal(repo_root: Path) -> None:
 
     assert set(defaults) == EXPECTED_DEFAULTS
     assert defaults["rke2_gitlab_runner_enabled"] is False
+    assert defaults["rke2_gitlab_runner_clone_url"] == ""
     assert defaults["rke2_gitlab_runner_chart_repo"] == "https://charts.gitlab.io"
     assert defaults["rke2_gitlab_runner_chart_version"] == "0.88.3"
     for name in (
@@ -71,11 +74,13 @@ def test_rke2_gitlab_runner_disabled_role_skips_management(
     "chart_repo",
     [None, "https://charts.example.test:8443/repository/helm-gitlab/"],
 )
+@pytest.mark.parametrize("clone_url", [None, "https://gitlab-clone.example.test:8443/"])
 def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
     repo_root: Path,
     isolated_test_dir: Path,
     command_runner: CommandRunner,
     chart_repo: str | None,
+    clone_url: str | None,
 ) -> None:
     defaults_path = repo_root / "roles/rke2_gitlab_runner/defaults/main.yml"
     template_path = (
@@ -110,8 +115,14 @@ def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
     )
 
     command = ["ansible-playbook", "-i", "localhost,", playbook]
+    command += ["--extra-vars", json.dumps({
+        "rke2_gitlab_runner_gitlab_url": "https://gitlab.example.test",
+        "rke2_gitlab_runner_name": "test-rke2-runner",
+    })]
     if chart_repo is not None:
         command += ["--extra-vars", json.dumps({"rke2_gitlab_runner_chart_repo": chart_repo})]
+    if clone_url is not None:
+        command += ["--extra-vars", json.dumps({"rke2_gitlab_runner_clone_url": clone_url})]
     command_runner.run(command).assert_success()
 
     manifest_text = output.read_text(encoding="utf-8")
@@ -145,6 +156,10 @@ def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
     assert all("*" not in rule["resources"] for rule in rules)
     assert all("*" not in rule["verbs"] for rule in rules)
     config = values["runners"]["config"]
+    runner = tomllib.loads(config)["runners"][0]
+    assert runner["url"] == "https://gitlab.example.test"
+    assert runner["name"] == "test-rke2-runner"
+    assert runner.get("clone_url") == clone_url
     assert defaults["rke2_gitlab_runner_helper_image"] in config
     assert defaults["rke2_gitlab_runner_default_job_image"] in config
     assert 'automount_service_account_token = false' in config
@@ -154,33 +169,37 @@ def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
 
 
 @pytest.mark.parametrize(
-    ("chart_repo", "valid"),
+    ("endpoint", "valid_repo", "valid_clone"),
     [
-        ("https://charts.gitlab.io", True),
-        ("https://charts.example.test/repository/helm-gitlab", True),
-        ("https://charts.example.test:8443/repository/helm-gitlab/", True),
-        ("https://charts.example.test:65535/repository/helm-gitlab/", True),
-        ("", False),
-        (None, False),
-        (False, False),
-        ("http://charts.example.test/repository/helm-gitlab/", False),
-        ("https://user:password@charts.example.test/", False),
-        ("https://charts.example.test/repository/helm gitlab/", False),
-        ("https://charts.example.test/\n", False),
-        ("https://charts.example.test/\r\n", False),
-        ("https://charts.example.test/?token=value", False),
-        ("https://charts.example.test/#fragment", False),
-        ("https:///repository/helm-gitlab", False),
-        ("https://charts.example.test:0/", False),
-        ("https://charts.example.test:65536/", False),
+        ("https://charts.gitlab.io", True, True),
+        ("https://charts.example.test/repository/helm-gitlab", True, False),
+        ("https://charts.example.test:8443/repository/helm-gitlab/", True, False),
+        ("https://charts.example.test:65535/repository/helm-gitlab/", True, False),
+        ("https://gitlab-clone.example.test:65535/", True, True),
+        ("", False, True),
+        (None, False, False),
+        (False, False, False),
+        ("http://charts.example.test/repository/helm-gitlab/", False, False),
+        ("https://user:password@charts.example.test/", False, False),
+        ("https://charts.example.test/repository/helm gitlab/", False, False),
+        ("https://charts.example.test/\n", False, False),
+        ("https://charts.example.test/\r\n", False, False),
+        ("https://charts.example.test/?token=value", False, False),
+        ("https://charts.example.test/#fragment", False, False),
+        ("https:///repository/helm-gitlab", False, False),
+        ("https://charts.example.test:0/", False, False),
+        ("https://charts.example.test:65536/", False, False),
     ],
 )
-def test_rke2_gitlab_runner_chart_repo_validation(
+@pytest.mark.parametrize("setting", ["rke2_gitlab_runner_chart_repo", "rke2_gitlab_runner_clone_url"])
+def test_rke2_gitlab_runner_endpoint_validation(
     repo_root: Path,
     isolated_test_dir: Path,
     command_runner: CommandRunner,
-    chart_repo: object,
-    valid: bool,
+    endpoint: object,
+    valid_repo: bool,
+    valid_clone: bool,
+    setting: str,
 ) -> None:
     defaults = yaml.safe_load(
         (repo_root / "roles/rke2_gitlab_runner/defaults/main.yml").read_text()
@@ -190,7 +209,7 @@ def test_rke2_gitlab_runner_chart_repo_validation(
     )
     assertion = tasks[1]["block"][0]
     variables = defaults | {
-        "rke2_gitlab_runner_chart_repo": chart_repo,
+        setting: endpoint,
         "rke2_gitlab_runner_gitlab_url": "https://gitlab.example.test",
         "rke2_gitlab_runner_token_src": "/synthetic/runner-token",
         "rke2_gitlab_runner_tls_ca_cert_src": "/synthetic/ca.pem",
@@ -203,11 +222,12 @@ def test_rke2_gitlab_runner_chart_repo_validation(
         "vars": variables, "tasks": [assertion],
     }]), encoding="utf-8")
     result = command_runner.run(["ansible-playbook", "-i", "localhost,", playbook])
+    valid = valid_clone if setting.endswith("clone_url") else valid_repo
     if valid:
         result.assert_success()
     else:
         result.assert_failure()
-        assert "chart_repo" in result.stdout + result.stderr
+        assert setting in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("configured", [False, True])
@@ -236,6 +256,39 @@ def test_rke2_gitlab_runner_smoke_checks_effective_repository(
     if configured:
         variables["rke2_gitlab_runner_chart_repo"] = expected
     playbook = isolated_test_dir / "smoke-repository.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": variables, "tasks": [{"ansible.builtin.assert": {"that": assertions}}],
+    }]), encoding="utf-8")
+    result = command_runner.run(["ansible-playbook", "-i", "localhost,", playbook])
+    result.assert_success() if matching else result.assert_failure()
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("matching", [False, True])
+def test_rke2_gitlab_runner_smoke_checks_clone_override(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    configured: bool,
+    matching: bool,
+) -> None:
+    smoke = yaml.safe_load((repo_root / "playbooks/rke2-gitlab-runner-smoke.yml").read_text())
+    assertions = [
+        expression
+        for task in smoke[0]["tasks"]
+        for expression in task.get("ansible.builtin.assert", {}).get("that", [])
+        if "rke2_gitlab_runner_clone_url" in expression
+    ]
+    assert len(assertions) == 1
+    expected = "https://gitlab-clone.example.test"
+    config = "url = \"https://gitlab.example.test\"\n"
+    if configured or not matching:
+        config += "clone_url = " + json.dumps(expected if matching else "https://wrong.example.test")
+    variables = {"rke2_gitlab_runner_smoke_config": config}
+    if configured:
+        variables["rke2_gitlab_runner_clone_url"] = expected
+    playbook = isolated_test_dir / "smoke-clone-url.yml"
     playbook.write_text(yaml.safe_dump([{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": variables, "tasks": [{"ansible.builtin.assert": {"that": assertions}}],

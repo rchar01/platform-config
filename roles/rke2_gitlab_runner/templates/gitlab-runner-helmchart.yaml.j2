@@ -81,6 +81,9 @@ spec:
         [[runners]]
           name = {{ rke2_gitlab_runner_name | to_json }}
           url = {{ rke2_gitlab_runner_gitlab_url | to_json }}
+{% if rke2_gitlab_runner_clone_url | length > 0 %}
+          clone_url = {{ rke2_gitlab_runner_clone_url | to_json }}
+{% endif %}
           executor = "kubernetes"
           [runners.kubernetes]
             namespace = {{ rke2_gitlab_runner_namespace | to_json }}

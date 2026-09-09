@@ -30,6 +30,14 @@
               '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*'
               '(?::[1-9][0-9]{0,4})?/?$'
             )
+          - rke2_gitlab_runner_clone_url is string
+          - >-
+            rke2_gitlab_runner_clone_url == '' or rke2_gitlab_runner_clone_url is match(
+              '^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+              '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*'
+              '(?::[1-9][0-9]{0,4})?/?\Z'
+            )
+          - (rke2_gitlab_runner_clone_url | urlsplit('port') | default(443, true) | int) <= 65535
           - rke2_gitlab_runner_token_src is match('^/[^\r\n]+$')
           - rke2_gitlab_runner_tls_ca_cert_src is match('^/[^\r\n]+$')
           - rke2_gitlab_runner_tls_ca_cert_sha256 is match('^[0-9a-f]{64}$')
@@ -49,8 +57,8 @@
         fail_msg: >-
           RKE2 GitLab Runner requires an HTTPS GitLab URL, absolute token and CA
           source paths, the reviewed CA checksum, a safe Runner name, a
-          credential-free HTTPS Helm repository, chart 0.88.3, and digest-pinned
-          Runner 18.11.3 images.
+          credential-free HTTPS Helm repository, an empty or credential-free
+          HTTPS clone origin, chart 0.88.3, and digest-pinned Runner 18.11.3 images.
 
     - name: Derive fixed RKE2 GitLab Runner values
       ansible.builtin.set_fact:
