@@ -213,6 +213,9 @@ platform-docs documents the design and operations across all repositories.
   HTTPS Helm repository override and unchanged upstream default
   (an optional HTTPS clone origin preserves checkout through approved proxies)
 - [Read-only RKE2 storage checks](docs/storage-check.md)
+- [GitLab Runner offline preload](roles/gitlab_runner/README.md#temporary-offline-preload):
+  temporary dedicated trusted-runner `if-not-present` override; the default and
+  self-bootstrap remain `always`.
 - [Development](docs/development.md)
 
 ## License

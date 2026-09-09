@@ -56,7 +56,8 @@
       - gitlab_runner_docker_host == 'unix://' ~ gitlab_runner_podman_socket_container_path
       - gitlab_runner_docker_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
       - gitlab_runner_docker_helper_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
-      - gitlab_runner_docker_pull_policy == 'always'
+      - gitlab_runner_docker_pull_policy is string
+      - gitlab_runner_docker_pull_policy in ['always', 'if-not-present']
       - gitlab_runner_docker_network_per_build is boolean
       - gitlab_runner_docker_network_per_build
       - gitlab_runner_docker_extra_hosts is sequence
@@ -72,7 +73,8 @@
       - gitlab_runner_docker_volumes | length > 0
     fail_msg: >-
       Docker executor mode requires the manager-only Podman socket, its exact
-       unix endpoint, immutable sha256 job and helper images, always-pull policy,
+       unix endpoint, immutable sha256 job and helper images, a string pull policy
+       of always or if-not-present,
        per-build networking, unique static host mappings, and container-only
        volumes.
   when: gitlab_runner_executor == 'docker'

@@ -24,6 +24,17 @@
 - Do not copy runtime scripts from `platform-k8s-bastion` into Ansible roles; install them from the submodule via `k8s_bastion_runtime_src`.
 - Real bastion access policies and CA files are private files referenced by vars such as `k8s_bastion_policy_src` and `k8s_bastion_ca_src`; real admin kubeconfigs referenced by `k8s_bastion_admin_kubeconfig_src` belong under `~/.config/platform-infrastructure/config/` or another outside-Git secret store.
 
+## GitLab Runner Pull Policy
+
+- `gitlab_runner_docker_pull_policy` accepts exactly the strings `always` and
+  `if-not-present`; preserve the `always` default and registered-config drift
+  failure. The temporary override is for dedicated trusted runners with exact
+  digest images preloaded into the rootful Podman store; missing images still
+  pull. Existing runners use a reviewed in-place policy edit preserving the token,
+  without force registration when the full contract matches. No automatic
+  migration or re-registration; self-bootstrap remains `always`-only. See
+  [Temporary Offline Preload](roles/gitlab_runner/README.md#temporary-offline-preload).
+
 ## RKE2 Runner Boundary
 
 - `storage-check` is check-only and accepts one literal RKE2 storage host through

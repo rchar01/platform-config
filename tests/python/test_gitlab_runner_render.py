@@ -159,12 +159,57 @@ def test_gitlab_runner_executor_migration_fails_closed(repo_root: Path) -> None:
         ".docker.privileged == false",
         ".docker.helper_image == gitlab_runner_docker_helper_image",
         ".docker.services_privileged == false",
+        ".docker.pull_policy == gitlab_runner_docker_pull_policy",
+        ".docker.pull_policy == [gitlab_runner_docker_pull_policy]",
         ".docker.extra_hosts == gitlab_runner_docker_extra_hosts",
         ".docker.volumes == gitlab_runner_docker_volumes",
         ".network_per_build == true",
         "gitlab_runner_force_register=true",
     ):
         assert contract in tasks
+
+
+@pytest.mark.parametrize(
+    ("policy", "accepted"),
+    [
+        pytest.param("always", True, id="always"),
+        pytest.param("if-not-present", True, id="if-not-present"),
+        pytest.param("never", False, id="never"),
+        pytest.param("", False, id="empty"),
+        pytest.param("Always", False, id="case-mismatch"),
+        pytest.param("if-not-present ", False, id="whitespace"),
+        pytest.param(None, False, id="null"),
+        pytest.param(True, False, id="boolean"),
+        pytest.param(1, False, id="number"),
+        pytest.param(["always"], False, id="list-always"),
+        pytest.param(["if-not-present"], False, id="list-if-not-present"),
+        pytest.param({"if-not-present": True}, False, id="mapping"),
+    ],
+)
+def test_gitlab_runner_docker_pull_policy_validation(
+    policy: Any,
+    accepted: bool,
+    repo_root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    result = run_playbook(
+        command_runner,
+        repo_root / "tests/fixtures/gitlab-runner/render.yml",
+        extra_vars=(
+            {
+                "gitlab_runner_test_executor": "docker",
+                "gitlab_runner_test_socket_enabled": True,
+                "gitlab_runner_test_podman_socket_enabled": True,
+                "gitlab_runner_test_docker_image": ALPINE_IMAGE,
+                "gitlab_runner_test_docker_pull_policy": policy,
+            },
+        ),
+    )
+    if accepted:
+        result.assert_success()
+    else:
+        assert_failed_with(result, "Docker executor mode requires")
+        assert "gitlab_runner_docker_pull_policy" in result.stdout
 
 
 @pytest.mark.parametrize(

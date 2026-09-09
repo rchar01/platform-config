@@ -32,7 +32,7 @@ Docker mode also enforces:
 
 - a local Unix endpoint matching the manager-side socket path;
 - digest-pinned default and helper images;
-- `pull_policy = "always"`;
+- a string pull policy of `always` (default) or `if-not-present`;
 - `FF_NETWORK_PER_BUILD = true`;
 - `privileged = false`; and
 - container-only cache volumes with no host bind or socket mount.
@@ -67,6 +67,44 @@ provide that package, so service aliases are outside this feature until an
 approved package source is available. Use an `aardvark-dns` release newer than
 `1.10.0`.
 
+### Temporary Offline Preload
+
+For an approved temporary offline-preload workflow targeting Podman `5.4.0`, a
+dedicated protected runner serving only trusted projects may override private
+inventory with:
+
+```yaml
+gitlab_runner_docker_pull_policy: if-not-present
+```
+
+Keep `always` for shared runners. `if-not-present` reuses local images without a
+registry authorization check; restrict access to the runner and its image store.
+Preload the reviewed job, helper, and any service images into the **rootful Podman
+store used by the manager's API socket**, and verify local lookup of each exact
+`repository@sha256:...` reference used by the jobs/configuration (including any
+tag in the configured reference). A matching tag or an image in a controller's
+or rootless user's store is insufficient. Preserve the reviewed digests and TLS
+verification. A missing image still triggers a pull; this policy is not
+`never` and does not itself make the runner network-independent.
+
+For an existing runner, pause/drain jobs and take a root-only backup of
+`/etc/gitlab-runner/config.toml` outside Git. Make a reviewed **in-place** edit of
+the existing `[runners.docker]` pull policy to `"if-not-present"` (or the equivalent
+one-element array `["if-not-present"]`), preserving the registration token and
+all other settings. Match the private inventory declaration before convergence
+and ensure the manager has loaded the reviewed configuration before resuming
+jobs. If `allowed_pull_policies` is explicitly configured, review it to permit
+the selected policy too; the role does not manage that optional field.
+No force registration is needed when the complete managed contract already
+matches; keep `gitlab_runner_force_register: false`. Changing inventory alone
+still fails closed on registered-config drift. The role does not automatically
+edit or migrate the token-bearing configuration. Restore `always` in both places
+when the temporary exception ends.
+
+[Self-bootstrap](../../docs/gitlab-runner-self-bootstrap.md) remains
+`always`-only; its separate preflight rejects this override. This role validation
+does not qualify live Runner image lookup or job execution on Podman `5.4.0`.
+
 ## Registration
 
 The role registers only when `config.toml` is absent, unless
@@ -90,8 +128,10 @@ The role reads only the non-secret managed contract from an existing
 `config.toml`. It fails before changing the manager Quadlet when the file does
 not contain exactly the one declared executor identity or when Docker host,
 image, privilege, pull policy, extra hosts, volumes, or networking differ.
-Executor changes and extra-host updates therefore require explicit force
-registration. Tokens are neither returned nor logged by this preflight.
+The role does not reconcile this drift automatically; its re-registration path
+requires explicit force. A reviewed matching in-place policy edit is described
+under [Temporary Offline Preload](#temporary-offline-preload). Tokens are neither
+returned nor logged by this preflight.
 
 Runner tags are server-side GitLab settings for pre-created runner
 authentication tokens. `gitlab_runner_tags` documents intended tags but does not
@@ -117,7 +157,7 @@ static runner volume.
 | `gitlab_runner_docker_host` | manager socket Unix URL | Docker-compatible Podman endpoint |
 | `gitlab_runner_docker_image` | empty | Required immutable default image in Docker mode |
 | `gitlab_runner_docker_helper_image` | empty | Required immutable GitLab helper image in Docker mode |
-| `gitlab_runner_docker_pull_policy` | `always` | Required shared-runner pull policy |
+| `gitlab_runner_docker_pull_policy` | `always` | Exactly string `always` or `if-not-present`; the latter is a dedicated trusted-runner exception |
 | `gitlab_runner_docker_network_per_build` | `true` | Required Podman service networking mode |
 | `gitlab_runner_docker_extra_hosts` | `[]` | Static `hostname:IPv4` mappings for helper, build, and service containers |
 | `gitlab_runner_docker_volumes` | `[/cache]` | Container-only persistent volumes; host binds are rejected |
