@@ -5,6 +5,7 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import stat
 import sys
 from collections import defaultdict
@@ -13,6 +14,7 @@ from typing import Any
 
 
 OPERATIONS = {
+    "storage-check": ("inventory", "connectivity", "storage-check"),
     "rke2-bootstrap-plan": (
         "inventory",
         "connectivity",
@@ -234,7 +236,32 @@ def command_hosts(args: argparse.Namespace) -> None:
     if not isinstance(inventory, dict):
         raise SummaryError
     records = []
-    if operation in OPENBAO_OPERATIONS:
+    node = getattr(args, "node", None)
+    if operation == "storage-check":
+        if (
+            not isinstance(node, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", node) is None
+            or node in inventory
+            or node not in group_hosts(inventory, "rke2_cluster")
+            or node not in group_hosts(inventory, "storage_volume_hosts")
+        ):
+            raise SummaryError
+        safe_host(node)
+        servers = group_hosts(inventory, "rke2_servers")
+        agents = group_hosts(inventory, "rke2_agents")
+        metadata = inventory.get("_meta", {})
+        hostvars = metadata.get("hostvars", {}) if isinstance(metadata, dict) else {}
+        values = hostvars.get(node) if isinstance(hostvars, dict) else None
+        if (node in servers) == (node in agents) or not isinstance(values, dict):
+            raise SummaryError
+        volumes = values.get("storage_volumes")
+        if not isinstance(volumes, list) or not volumes or not isinstance(values.get("storage_volume_layouts", []), list):
+            raise SummaryError
+        records.append({"schema": 1, "kind": "host", "host": node,
+                        "role": "server" if node in servers else "agent"})
+    elif node is not None:
+        raise SummaryError
+    elif operation in OPENBAO_OPERATIONS:
         for host in sorted(group_hosts(inventory, "openbao")):
             records.append({"schema": 1, "kind": "host", "host": host, "role": "openbao"})
     else:
@@ -526,6 +553,7 @@ def parser() -> argparse.ArgumentParser:
     hosts.add_argument("--operation", required=True)
     hosts.add_argument("--inventory", required=True, type=Path)
     hosts.add_argument("--output", required=True, type=Path)
+    hosts.add_argument("--node")
     phase = subparsers.add_parser("phase", add_help=False)
     phase.add_argument("--output", required=True, type=Path)
     phase.add_argument("--phase", required=True)

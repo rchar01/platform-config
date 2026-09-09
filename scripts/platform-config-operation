@@ -3,8 +3,8 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH]' \
-    'Fixed operations: rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
+    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check only)]' \
+    'Fixed operations: storage-check, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
 }
 
 fail() {
@@ -81,6 +81,7 @@ truncate_summary_output() {
 operation=$1
 shift
 case "$operation" in
+  storage-check) ;;
   rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status | openbao-restart-plan | openbao-restart | openbao-converge-plan | openbao-deploy | openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate | openbao-smoke | openbao-vip-smoke) ;;
   *) fail "unsupported operation: $operation" ;;
 esac
@@ -186,6 +187,7 @@ export PLATFORM_CONFIG_OPERATION_SUMMARY_PATH="$summary_events"
 inventory=""
 controller_vars=""
 plan=""
+node=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --inventory)
@@ -203,12 +205,23 @@ while [[ $# -gt 0 ]]; do
       plan=$2
       shift 2
       ;;
+    --node)
+      [[ $# -ge 2 && -n $2 && -z $node ]] || fail "--node must be provided exactly once with a value"
+      node=$2
+      shift 2
+      ;;
     *) fail "unsupported argument: $1" ;;
   esac
 done
 
 [[ -n $inventory ]] || fail "--inventory is required"
 [[ -n $controller_vars ]] || fail "--controller-vars is required"
+if [[ $operation == storage-check ]]; then
+  [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$ && $node != all && $node != ungrouped ]] ||
+    fail "storage-check requires --node with one literal inventory hostname"
+else
+  [[ -z $node ]] || fail "--node is only accepted by storage-check"
+fi
 require_private_file inventory "$inventory"
 require_owner_private_file controller-vars "$controller_vars"
 
@@ -230,6 +243,10 @@ esac
 export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
 
 extra_vars=(--extra-vars "@$controller_vars")
+summary_host_args=()
+if [[ $operation == storage-check ]]; then
+  summary_host_args=(--node "$node")
+fi
 
 forward_signal() {
   local exit_status=$1
@@ -301,7 +318,7 @@ initialize_hosts() {
   fi
   if [[ $status -eq 0 ]]; then
     if "$summary_tool" hosts --operation "$operation" \
-      --inventory "$inventory_output" --output "$summary_events"; then
+      --inventory "$inventory_output" --output "$summary_events" "${summary_host_args[@]}"; then
       status=0
     else
       status=$?
@@ -387,6 +404,10 @@ case "$operation" in
 esac
 
 case "$operation" in
+  storage-check)
+    ping_group connectivity "$node"
+    run_playbook storage-check playbooks/storage-volumes.yml "$node" --check --diff
+    ;;
   rke2-bootstrap-plan)
     ping_group connectivity rke2_cluster
     run_playbook bootstrap-preflight playbooks/rke2-bootstrap-preflight.yml rke2_cluster
@@ -434,11 +455,11 @@ case "$operation" in
     edge=${operation#openbao-}
     edge=${edge%-*}
     mode=plan
-    phase=edge-plan
+      phase='edge-plan'
     if [[ $operation == *-activate ]]; then
       mode=interactive
       [[ ${CI:-} != true ]] || mode=ci
-      phase=edge-activate
+      phase='edge-activate'
     fi
     # Use JSON, not Ansible key=value parsing, for controller-owned path arguments.
     plan_vars=$(python3 -c 'import json,sys; print(json.dumps(dict(zip(("openbao_activation_mode", "openbao_activation_plan_path"), sys.argv[1:]))))' "$mode" "$plan")

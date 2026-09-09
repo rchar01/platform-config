@@ -26,6 +26,11 @@
 
 ## RKE2 Runner Boundary
 
+- `storage-check` is check-only and accepts one literal RKE2 storage host through
+  `--node`; it never accepts arbitrary playbooks or apply flags. Predicted
+  changes are plan output, not a failure. CI may repeat this route sequentially
+  across its reviewed scope and must retain failure status for any failed node.
+
 - In-cluster Runner Helm repository overrides belong in private inventory via
   `rke2_gitlab_runner_chart_repo`. Preserve the public upstream default, indexed
   chart/version convention, and reviewed image pins. Keep rendering and smoke
