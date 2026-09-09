@@ -30,6 +30,8 @@ all:
     openbao_haproxy_service_enabled: false
     openbao_haproxy_service_state: stopped
     openbao_haproxy_firewalld_manage: false
+    openbao_haproxy_client_allowed_sources:
+      - 198.51.100.0/24
     keepalived_vip_service_enabled: false
     keepalived_vip_service_state: stopped
     openbao_cluster_members:

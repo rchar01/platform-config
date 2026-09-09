@@ -285,4 +285,8 @@ def shadow_edge_tasks(repo_root, root, operation):
             source = source.replace('ansible.builtin.pause:\n                seconds:',
                                     'ansible.legacy.election_pause:\n                seconds:')
         (maintenance / path.relative_to(source_dir)).write_text(source)
+    if operation == 'haproxy':
+        from test_openbao_haproxy_caller_source import stage_caller_source
+
+        stage_caller_source(repo_root, tasks, plugin_dir)
     return maintenance / f'openbao-{operation}-activate.yml'

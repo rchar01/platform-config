@@ -45,6 +45,11 @@
   inactive/disabled state before releasing its guard. Path qualification allows
   ten strict TLS health attempts with one-second retry delays, requires HTTP 200,
   and rolls back all hosts after exhausted qualification.
+- HAProxy caller preflight reads target `SSH_CONNECTION` without become, rejects
+  missing or excluded IPv4 peers, and binds stable per-host peer/destination
+  observations into the plan. Recheck before enablement. This requires direct
+  SSH and stable controller egress; an SSH peer is not proof of HTTPS routing
+  through arbitrary proxies. Keep strict post-start client-path qualification.
 - `platform-tools` owns the `platform-openbao-edge` human/CI facade; keep its six
   fixed routes in `scripts/platform-config-operation`, not a generic wrapper.
   Both HAProxy and Keepalived use the shared schema-1 plan/action contract with

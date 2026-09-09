@@ -60,6 +60,19 @@
 
     - name: Activate local OpenBao HAProxy
       block:
+        - name: Recheck target-observed OpenBao HAProxy caller source before enablement
+          ansible.builtin.include_tasks: tasks/openbao-haproxy-caller-source.yml
+
+        - name: Require unchanged approved OpenBao HAProxy caller source
+          ansible.builtin.assert:
+            that:
+              - >-
+                openbao_edge_prepared.plan.evidence.caller_sources
+                | selectattr('inventory_host', 'equalto', inventory_hostname) | list
+                == [openbao_haproxy_caller_source_observation]
+            quiet: true
+            fail_msg: OpenBao HAProxy caller source changed after approval; prepare a fresh plan after review.
+
         - name: Enable verified staged local OpenBao HAProxy
           ansible.builtin.include_role:
             name: openbao_haproxy

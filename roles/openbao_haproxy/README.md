@@ -96,6 +96,16 @@ latch, then checks the exact inactive/disabled state and command results.
 A failed, unreachable, or incomplete reset never authorizes guard release.
 Failure reports include every affected member, not only the last loop item.
 
+The activation caller also reads each target's `SSH_CONNECTION` without become
+and requires that IPv4 peer to belong to `openbao_haproxy_client_allowed_sources`.
+Missing observations and local transports fail before planning or guard
+acquisition. Stable peer/destination observations are bound into the plan and
+rechecked before enablement; ephemeral source ports are excluded. Plan and
+activation jobs need stable egress. This is an early check for direct SSH, not
+proof of HTTPS source identity through ProxyJump or different routes. Confirm
+the actual job's target-facing HTTPS source when defining private client policy.
+HAProxy enforces its source ACL even with firewalld stopped.
+
 Activation selects `activation_enable.yml`, not ordinary role convergence. It
 does not install packages, render configuration, change SELinux policy, or
 reconcile firewall rules after approval. This path uses only built-in Ansible

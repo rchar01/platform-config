@@ -1436,6 +1436,17 @@ Unreachable or unverified hosts retain
 their edge guards and require [reviewed recovery](#openbao-edge-guard-recovery),
 not a blind retry. A consumed plan cannot be reused even after verified rollback.
 
+The caller's target-observed SSH peer must be in the HAProxy client allowlist.
+Preflight reads `SSH_CONNECTION` without become and binds stable per-host
+source/destination observations into the plan, with another check before start.
+Use direct SSH and stable egress between plan and activation. An SSH peer does
+not establish the HTTPS source through a jump host or a different network path;
+verify the actual CI job's target-facing source when reviewing private policy.
+A stopped firewalld does not disable HAProxy's own source ACL. If that policy
+needs correction on an active OpenBao cluster, repair only the stopped HAProxy
+configuration and matching managed firewall evidence under separate review, then
+prepare a fresh plan. Do not rerun pristine OpenBao staging.
+
 After success, review and commit `openbao_haproxy_service_enabled: true`,
 `openbao_haproxy_service_state: started`, and
 `openbao_haproxy_activation_ready: false` in private desired state. Neither the

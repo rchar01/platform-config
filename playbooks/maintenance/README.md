@@ -79,6 +79,9 @@ Available maintenance playbooks:
   services and reports unreachable hosts as unverified. Activation uses a
   built-in-only entry point to verify SELinux labels and firewall policy and
   start the approved staged service, without ordinary role convergence.
+  It also requires the target-observed SSH peer in the client allowlist and binds
+  stable per-host observations into the plan, rechecking before start. Direct SSH
+  and stable controller egress are required; the live HTTPS checks remain decisive.
 - `openbao-keepalived-activate.yml`: requires the explicit complete three-host
   limit, `openbao_keepalived_activation_ready: true`, strict active OpenBao,
   active/enabled HAProxy, and exact staged inactive/disabled Keepalived evidence.
