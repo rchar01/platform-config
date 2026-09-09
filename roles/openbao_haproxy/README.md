@@ -19,12 +19,16 @@ The role owns:
 - disabled/stopped service lifecycle controls; and
 - reconciled source-scoped client and metrics firewalld rules.
 
-On SELinux-enforcing hosts, the role labels only HAProxy's current client and
-metrics listener ports. It does not automatically remove old port labels because
-SELinux port mappings are global policy and the role cannot safely infer exclusive
-ownership. Review an obsolete mapping separately before removing it. The role
-does not label OpenBao's direct backend port, which HAProxy connects to but does
-not bind.
+When SELinux management is enabled on SELinux-enabled hosts, staging labels the
+declared client, metrics, and backend TCP ports with
+`openbao_haproxy_selinux_port_type` (default `http_port_t`). HAProxy needs
+`name_bind` for its listeners and `name_connect` for OpenBao's backend port;
+not binding the backend does not remove its SELinux port-type requirement.
+Use these scoped labels, not broad `haproxy_connect_any` access. The target policy
+must also permit OpenBao's existing container domain to bind the backend port.
+The role does not automatically remove old port labels because SELinux port
+mappings are global policy and it cannot safely infer exclusive ownership.
+Review an obsolete mapping separately before removing it.
 
 HAProxy does not read its backend CA from OpenBao's container-mounted tree.
 Staging copies the installed public CA from `openbao_haproxy_backend_ca_src`
@@ -97,10 +101,11 @@ does not install packages, render configuration, change SELinux policy, or
 reconcile firewall rules after approval. This path uses only built-in Ansible
 modules; staging still requires the collections in `requirements.yml`.
 When SELinux management is enabled, preflight and the service boundary query
-`getenforce` and, in enforcing or permissive mode, read exact TCP listener records
+`getenforce` and, in enforcing or permissive mode, read exact TCP port records
 through the target's existing `seobject` handle and native `semanage` queries,
-preserving first-match ordering for duplicate exact records. Both listeners must
-already have the configured type; a covering range is not an exact staged record.
+preserving first-match ordering for duplicate exact records. All three declared
+ports (client, metrics, and backend) must already have the configured type;
+a covering range is not an exact staged record.
 Missing tools, bindings, or labels fail closed without policy changes. Disabled
 SELinux needs no port-policy query. Mode and type/MLS observations are bound into
 the activation plan, and unmanaged observations are reset rather than reused.

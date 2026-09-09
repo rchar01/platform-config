@@ -129,10 +129,11 @@ def stage_selinux_target(tmp_path, case):
         case, "Enforcing",
     )
     records = {(8200, 8200, "tcp"): ("http_port_t", "s0"),
-               (8404, 8404, "tcp"): ("http_port_t", "s0:c0.c3")}
+               (8404, 8404, "tcp"): ("http_port_t", "s0:c0.c3"),
+               (18200, 18200, "tcp"): ("http_port_t", "s0")}
     if case == "mls-drift":
         records[(8404, 8404, "tcp")] = ("http_port_t", "s0")
-    for port, name in ((8200, "client"), (8404, "stats")):
+    for port, name in ((8200, "client"), (8404, "stats"), (18200, "backend")):
         if case == f"missing-{name}":
             del records[(port, port, "tcp")]
         elif case == f"wrong-{name}":
@@ -221,6 +222,7 @@ def stage_selinux_target(tmp_path, case):
 @pytest.mark.parametrize("case", [
     "enforcing", "permissive", "disabled", "missing-client", "missing-stats",
     "wrong-client", "wrong-stats", "range-client", "range-stats",
+    "missing-backend", "wrong-backend", "range-backend",
     "command-fail", "missing-bindings", "invalid-mode", "duplicate-client",
     "zero-success", "key-fail", "key-none", "query-fail", "query-none",
 ])
@@ -232,7 +234,7 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
     compile(code, "selinux_guard.yml", "exec")
     mode, log = stage_selinux_target(tmp_path, case)
     result = command_runner.run([
-        sys.executable, "-c", code, "http_port_t", "8200", "8404",
+        sys.executable, "-c", code, "http_port_t", "8200", "8404", "18200",
     ], environment={"PATH": f"{tmp_path}:{command_runner.environment['PATH']}",
                     "PYTHONPATH": str(tmp_path)})
     if case in {"enforcing", "permissive", "disabled", "duplicate-client", "zero-success"}:
@@ -241,6 +243,7 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
             "managed": True, "mode": mode,
             "ports": {} if case == "disabled" else {
                 "8200": ["http_port_t", "s0"], "8404": ["http_port_t", "s0:c0.c3"],
+                "18200": ["http_port_t", "s0"],
             },
         }
     else:
@@ -251,7 +254,7 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
         expected.append("import seobject")
         if case != "missing-bindings":
             expected.append("import semanage")
-            for name in ("client", "stats"):
+            for name in ("client", "stats", "backend"):
                 expected.append("key_create")
                 if case == "key-none":
                     break
@@ -268,13 +271,14 @@ def test_selinux_guard_native_probe(case, repo_root, tmp_path, command_runner):
     assert log.read_text().splitlines() == expected
 
 
-@pytest.mark.parametrize("case", ["enforcing", "wrong-stats", "mode-drift", "mls-drift"])
+@pytest.mark.parametrize("case", ["enforcing", "wrong-stats", "wrong-backend", "mode-drift", "mls-drift"])
 def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, command_runner):
     _, log = stage_selinux_target(tmp_path, "disabled" if case == "mode-drift" else case)
     activation_target["vars"]["openbao_haproxy_selinux_manage"] = True
     activation_target["vars"]["openbao_haproxy_activation_observation"]["selinux"] = {
         "managed": True, "mode": "Enforcing", "ports": {
             "8200": ["http_port_t", "s0"], "8404": ["http_port_t", "s0:c0.c3"],
+            "18200": ["http_port_t", "s0"],
         },
     }
     activation_target["environment"] = {
@@ -285,7 +289,8 @@ def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, co
             {"ansible.builtin.assert": {"that": [
                 "openbao_haproxy_selinux_observation == "
                 "{'managed': true, 'mode': 'Enforcing', 'ports': "
-                "{'8200': ['http_port_t', 's0'], '8404': ['http_port_t', 's0:c0.c3']}}",
+                "{'8200': ['http_port_t', 's0'], '8404': ['http_port_t', 's0:c0.c3'], "
+                "'18200': ['http_port_t', 's0']}}",
             ]}},
             {"ansible.builtin.set_fact": {"openbao_haproxy_selinux_manage": False}},
             {"ansible.builtin.include_role": {
@@ -299,7 +304,7 @@ def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, co
     assert log.read_text().splitlines() == (
         ["getenforce"] if case == "mode-drift" else
         ["getenforce", "import seobject", "import semanage"] +
-        ["key_create", "query", "port_free", "key_free"] * 2
+        ["key_create", "query", "port_free", "key_free"] * (2 if case == "wrong-stats" else 3)
     )
     if case == "enforcing":
         result.assert_success()
@@ -312,6 +317,13 @@ def test_selinux_guard_at_service_boundary(case, activation_target, tmp_path, co
 
 def test_activation_guard_and_evidence_contract(repo_root):
     tasks_dir = repo_root / ROLE / "tasks"
+    main = yaml.safe_load((tasks_dir / "main.yml").read_text())
+    seport = next(task for task in main[0]["block"] if "community.general.seport" in task)
+    assert seport["loop"] == [
+        "{{ openbao_haproxy_client_port }}",
+        "{{ openbao_haproxy_stats_port }}",
+        "{{ openbao_haproxy_backend_port }}",
+    ]
     enable = yaml.safe_load((tasks_dir / "activation_enable.yml").read_text())
     assert len(enable) == 6
     assert enable[0]["ansible.builtin.include_tasks"] == "ca_guard.yml"
@@ -335,7 +347,8 @@ def test_activation_guard_and_evidence_contract(repo_root):
     assert argv[:2] == ["{{ ansible_facts.python.executable }}", "-c"]
     assert argv[3:] == ["{{ openbao_haproxy_selinux_port_type }}",
                         "{{ openbao_haproxy_client_port | string }}",
-                        "{{ openbao_haproxy_stats_port | string }}"]
+                        "{{ openbao_haproxy_stats_port | string }}",
+                        "{{ openbao_haproxy_backend_port | string }}"]
     assert command["changed_when"] is False
     assert command["check_mode"] is False
     assert "delegate_to" not in command
@@ -374,6 +387,10 @@ def test_activation_observation_binds_selinux_mode(activation_fixture, tmp_path,
     }}, include, {"ansible.builtin.assert": {"that": [
         "first_observation != openbao_haproxy_activation_observation",
         "first_observation.selinux.mode == 'Enforcing'",
+        "first_observation.selinux.ports == "
+        "{'8200': ['http_port_t', 's0'], '8404': ['http_port_t', 's0:c0.c3'], "
+        "'18200': ['http_port_t', 's0']}",
+        "first_observation.selinux.ports == openbao_haproxy_activation_observation.selinux.ports",
         "openbao_haproxy_activation_observation.selinux.mode == 'Permissive'",
         "first_observation.firewalld == openbao_haproxy_activation_observation.firewalld",
         "first_observation.config_checksum == openbao_haproxy_activation_observation.config_checksum",

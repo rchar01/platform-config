@@ -216,7 +216,7 @@
           }}
       notify: Reload OpenBao HAProxy
 
-    - name: Label OpenBao HAProxy listener ports for SELinux
+    - name: Label OpenBao HAProxy listener and backend ports for SELinux
       community.general.seport:
         ports: "{{ item | string }}"
         proto: tcp
@@ -225,6 +225,7 @@
       loop:
         - "{{ openbao_haproxy_client_port }}"
         - "{{ openbao_haproxy_stats_port }}"
+        - "{{ openbao_haproxy_backend_port }}"
       notify: Reload OpenBao HAProxy
       when:
         - openbao_haproxy_selinux_manage | bool

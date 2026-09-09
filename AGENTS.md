@@ -34,8 +34,9 @@
 - `playbooks/openbao.yml` is pristine inactive staging only and is forbidden for
   active or initialized clusters. Do not use ordinary staging after activation.
 - HAProxy activation must select its built-in-only `activation_enable.yml`, not
-  ordinary role convergence. Verify staged SELinux listener labels and firewall
-  policy without changing them; bind SELinux observations into plan evidence.
+  ordinary role convergence. Verify staged SELinux client, metrics, and backend
+  port labels and firewall policy without changing them; bind SELinux observations
+  into plan evidence.
 - Stage HAProxy's public CA copy under `/etc/haproxy`, separate from OpenBao's
   private `:Z` tree. Bind CA identity, exact configuration, and prospective
   service-domain access into preflight; never repair CA paths during activation.

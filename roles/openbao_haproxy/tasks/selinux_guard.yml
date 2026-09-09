@@ -6,7 +6,7 @@
   ignore_errors: false
   ignore_unreachable: false
 
-- name: Verify staged OpenBao HAProxy SELinux listener labels
+- name: Verify staged OpenBao HAProxy SELinux listener and backend labels
   when: openbao_haproxy_selinux_manage | bool
   ignore_errors: false
   ignore_unreachable: false
@@ -55,6 +55,7 @@
           - "{{ openbao_haproxy_selinux_port_type }}"
           - "{{ openbao_haproxy_client_port | string }}"
           - "{{ openbao_haproxy_stats_port | string }}"
+          - "{{ openbao_haproxy_backend_port | string }}"
       register: openbao_haproxy_selinux_probe
       changed_when: false
       check_mode: false
@@ -65,7 +66,7 @@
           - openbao_haproxy_selinux_probe is not unreachable
           - openbao_haproxy_selinux_probe is not skipped
           - openbao_haproxy_selinux_probe.rc | default(-1) == 0
-        fail_msg: OpenBao HAProxy activation requires verified staged SELinux listener labels.
+        fail_msg: OpenBao HAProxy activation requires verified staged SELinux listener and backend labels.
 
     - name: Record verified OpenBao HAProxy SELinux observation
       ansible.builtin.set_fact:

@@ -129,8 +129,9 @@ TTY. Existing direct interactive Make activation targets remain available.
 
 HAProxy activation starts the verified staged service without package,
 configuration, SELinux, or firewall reconvergence. Its built-in-only activation
-entry point rechecks staged SELinux listener labels and firewall policy before
-startup; ordinary staging retains its declared collection dependencies.
+entry point rechecks staged SELinux client, metrics, and backend port labels and
+firewall policy before startup; ordinary staging retains its declared collection
+dependencies.
 Staging installs a separate public CA copy under `/etc/haproxy`; activation checks
 its identity, exact configuration, and SELinux service-domain access without
 relabeling OpenBao's private container tree. Failed-start rollback clears only
