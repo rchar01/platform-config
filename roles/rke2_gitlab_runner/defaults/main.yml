@@ -5,6 +5,7 @@ rke2_gitlab_runner_token_src: ""
 rke2_gitlab_runner_tls_ca_cert_src: ""
 rke2_gitlab_runner_tls_ca_cert_sha256: ""
 rke2_gitlab_runner_name: ""
+rke2_gitlab_runner_chart_repo: https://charts.gitlab.io
 rke2_gitlab_runner_chart_version: "0.88.3"
 rke2_gitlab_runner_manager_image: docker.io/gitlab/gitlab-runner:alpine-v18.11.3@sha256:904cc94dc8417152685f62c4c1a1add19ad2d82947ca7aead844895e16128f1e
 rke2_gitlab_runner_helper_image: docker.io/gitlab/gitlab-runner-helper:x86_64-v18.11.3@sha256:571952e633d345c74af6458eda2948da99cf5315ce9017e1cab22a4c2226887c

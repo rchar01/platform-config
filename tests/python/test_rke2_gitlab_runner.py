@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from conftest import CommandRunner
@@ -15,6 +16,7 @@ EXPECTED_DEFAULTS = {
     "rke2_gitlab_runner_tls_ca_cert_src",
     "rke2_gitlab_runner_tls_ca_cert_sha256",
     "rke2_gitlab_runner_name",
+    "rke2_gitlab_runner_chart_repo",
     "rke2_gitlab_runner_chart_version",
     "rke2_gitlab_runner_manager_image",
     "rke2_gitlab_runner_helper_image",
@@ -29,6 +31,7 @@ def test_rke2_gitlab_runner_public_contract_is_minimal(repo_root: Path) -> None:
 
     assert set(defaults) == EXPECTED_DEFAULTS
     assert defaults["rke2_gitlab_runner_enabled"] is False
+    assert defaults["rke2_gitlab_runner_chart_repo"] == "https://charts.gitlab.io"
     assert defaults["rke2_gitlab_runner_chart_version"] == "0.88.3"
     for name in (
         "rke2_gitlab_runner_manager_image",
@@ -64,10 +67,15 @@ def test_rke2_gitlab_runner_disabled_role_skips_management(
     assert "failed=0" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "chart_repo",
+    [None, "https://charts.example.test:8443/repository/helm-gitlab/"],
+)
 def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
     repo_root: Path,
     isolated_test_dir: Path,
     command_runner: CommandRunner,
+    chart_repo: str | None,
 ) -> None:
     defaults_path = repo_root / "roles/rke2_gitlab_runner/defaults/main.yml"
     template_path = (
@@ -101,9 +109,10 @@ def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
         encoding="utf-8",
     )
 
-    command_runner.run(
-        ["ansible-playbook", "-i", "localhost,", playbook]
-    ).assert_success()
+    command = ["ansible-playbook", "-i", "localhost,", playbook]
+    if chart_repo is not None:
+        command += ["--extra-vars", json.dumps({"rke2_gitlab_runner_chart_repo": chart_repo})]
+    command_runner.run(command).assert_success()
 
     manifest_text = output.read_text(encoding="utf-8")
     manifest = yaml.safe_load(manifest_text)
@@ -115,6 +124,8 @@ def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
         "namespace": "kube-system",
     }
     assert manifest["spec"]["targetNamespace"] == "gitlab-runner"
+    assert manifest["spec"]["chart"] == "gitlab-runner"
+    assert manifest["spec"]["repo"] == (chart_repo or "https://charts.gitlab.io")
     assert manifest["spec"]["version"] == "0.88.3"
     assert values["certsSecretName"] == "rke2-gitlab-runner-ca"
     assert values["concurrent"] == 1
@@ -140,6 +151,97 @@ def test_rke2_gitlab_runner_manifest_is_pinned_and_hardened(
     assert 'privileged = false' in config
     assert 'node-role.kubernetes.io/control-plane' in config
     assert "glrt-test-secret" not in manifest_text
+
+
+@pytest.mark.parametrize(
+    ("chart_repo", "valid"),
+    [
+        ("https://charts.gitlab.io", True),
+        ("https://charts.example.test/repository/helm-gitlab", True),
+        ("https://charts.example.test:8443/repository/helm-gitlab/", True),
+        ("https://charts.example.test:65535/repository/helm-gitlab/", True),
+        ("", False),
+        (None, False),
+        (False, False),
+        ("http://charts.example.test/repository/helm-gitlab/", False),
+        ("https://user:password@charts.example.test/", False),
+        ("https://charts.example.test/repository/helm gitlab/", False),
+        ("https://charts.example.test/\n", False),
+        ("https://charts.example.test/\r\n", False),
+        ("https://charts.example.test/?token=value", False),
+        ("https://charts.example.test/#fragment", False),
+        ("https:///repository/helm-gitlab", False),
+        ("https://charts.example.test:0/", False),
+        ("https://charts.example.test:65536/", False),
+    ],
+)
+def test_rke2_gitlab_runner_chart_repo_validation(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    chart_repo: object,
+    valid: bool,
+) -> None:
+    defaults = yaml.safe_load(
+        (repo_root / "roles/rke2_gitlab_runner/defaults/main.yml").read_text()
+    )
+    tasks = yaml.safe_load(
+        (repo_root / "roles/rke2_gitlab_runner/tasks/main.yml").read_text()
+    )
+    assertion = tasks[1]["block"][0]
+    variables = defaults | {
+        "rke2_gitlab_runner_chart_repo": chart_repo,
+        "rke2_gitlab_runner_gitlab_url": "https://gitlab.example.test",
+        "rke2_gitlab_runner_token_src": "/synthetic/runner-token",
+        "rke2_gitlab_runner_tls_ca_cert_src": "/synthetic/ca.pem",
+        "rke2_gitlab_runner_tls_ca_cert_sha256": "0" * 64,
+        "rke2_gitlab_runner_name": "test-runner",
+    }
+    playbook = isolated_test_dir / "validate-repository.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": variables, "tasks": [assertion],
+    }]), encoding="utf-8")
+    result = command_runner.run(["ansible-playbook", "-i", "localhost,", playbook])
+    if valid:
+        result.assert_success()
+    else:
+        result.assert_failure()
+        assert "chart_repo" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("matching", [False, True])
+def test_rke2_gitlab_runner_smoke_checks_effective_repository(
+    repo_root: Path,
+    isolated_test_dir: Path,
+    command_runner: CommandRunner,
+    configured: bool,
+    matching: bool,
+) -> None:
+    smoke = yaml.safe_load((repo_root / "playbooks/rke2-gitlab-runner-smoke.yml").read_text())
+    assertions = [
+        expression
+        for task in smoke[0]["tasks"]
+        for expression in task.get("ansible.builtin.assert", {}).get("that", [])
+        if "smoke_helmchart_object.spec.repo" in expression
+    ]
+    assert len(assertions) == 1
+    expected = "https://charts.example.test/repository/helm-gitlab/" if configured else "https://charts.gitlab.io"
+    variables: dict[str, object] = {
+        "rke2_gitlab_runner_smoke_helmchart_object": {
+            "spec": {"repo": expected if matching else "https://wrong.example.test"},
+        },
+    }
+    if configured:
+        variables["rke2_gitlab_runner_chart_repo"] = expected
+    playbook = isolated_test_dir / "smoke-repository.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": variables, "tasks": [{"ansible.builtin.assert": {"that": assertions}}],
+    }]), encoding="utf-8")
+    result = command_runner.run(["ansible-playbook", "-i", "localhost,", playbook])
+    result.assert_success() if matching else result.assert_failure()
 
 
 def test_rke2_gitlab_runner_role_keeps_secret_operations_redacted(

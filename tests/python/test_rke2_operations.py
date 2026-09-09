@@ -1098,6 +1098,7 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
         "rke2_kube_vip_chart_repo",
         "rke2_kube_vip_chart_version",
         "rke2_kube_vip_image_tag",
+        "rke2_gitlab_runner_chart_repo",
         "rke2_gitlab_runner_chart_version",
         "rke2_gitlab_runner_manager_image",
         "rke2_gitlab_runner_helper_image",

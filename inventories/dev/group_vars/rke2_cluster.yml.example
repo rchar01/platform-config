@@ -50,6 +50,8 @@ rke2_gitlab_runner_tls_ca_cert_src: >-
   {{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt
 rke2_gitlab_runner_tls_ca_cert_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 rke2_gitlab_runner_name: dev-rke2-runner-01
+# Override only in private inventory for an approved internal Helm repository.
+rke2_gitlab_runner_chart_repo: https://charts.gitlab.io
 
 rke2_registry_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
 rke2_registry_mirrors: "{{ {

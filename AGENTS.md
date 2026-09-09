@@ -24,6 +24,13 @@
 - Do not copy runtime scripts from `platform-k8s-bastion` into Ansible roles; install them from the submodule via `k8s_bastion_runtime_src`.
 - Real bastion access policies and CA files are private files referenced by vars such as `k8s_bastion_policy_src` and `k8s_bastion_ca_src`; real admin kubeconfigs referenced by `k8s_bastion_admin_kubeconfig_src` belong under `~/.config/platform-infrastructure/config/` or another outside-Git secret store.
 
+## RKE2 Runner Boundary
+
+- In-cluster Runner Helm repository overrides belong in private inventory via
+  `rke2_gitlab_runner_chart_repo`. Preserve the public upstream default, indexed
+  chart/version convention, and reviewed image pins. Keep rendering and smoke
+  aligned; a repository override does not establish Helm-job CA trust.
+
 ## OpenBao Activation Boundary
 
 - Standalone dev OpenBao acceptance has no monitoring-stack or observer

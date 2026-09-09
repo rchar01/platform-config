@@ -24,6 +24,19 @@ Set `rke2_gitlab_runner_enabled: true` and provide:
 - chart version `0.88.3`, which the role currently requires
 - reviewed image pins when they deliberately differ from the public defaults
 
+`rke2_gitlab_runner_chart_repo` defaults to `https://charts.gitlab.io`. Override
+it in private inventory for an internal Helm repository. It must be a
+credential-free HTTPS URL; ordinary repository paths, valid explicit ports and
+an optional trailing slash are supported. Chart `gitlab-runner` and version
+`0.88.3` remain fixed. Smoke compares the live repository with the same setting,
+using the upstream default when the variable is absent from inventory.
+
+Verify both `index.yaml` and the exact archive URL selected by its version entry.
+Changing the repository does not enforce a chart checksum or provide Helm-job
+CA trust. The internal source must be accessible and trusted by the Helm
+Controller job; container-image registry trust alone is not sufficient. Do not
+put credentials in this URL or disable TLS verification.
+
 The token source must be a regular non-symlink file with mode `0400` or `0600`
 and one `glrt-...` value without a trailing newline. The role reads it only on
 the controller under `no_log`.

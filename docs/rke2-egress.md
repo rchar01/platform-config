@@ -255,6 +255,18 @@ When enabled, the GitLab Runner role writes a local `HelmChart` manifest. The
 Helm Controller fetches the repository index and chart archive, and containerd
 pulls the manager, helper, and default job images.
 
+`rke2_gitlab_runner_chart_repo` selects the indexed Helm repository and defaults
+to `https://charts.gitlab.io`. An internal override belongs in private inventory.
+The chart name and version remain `gitlab-runner` and `0.88.3`. Qualify both the
+configured repository's `index.yaml` and the archive URL advertised by that
+entry: an internal index may still point at an external archive. The following
+table records the default upstream sources, not a mandatory public download path.
+
+The Helm Controller job must trust and reach the chosen repository and archive.
+Neither containerd registry TLS configuration nor a CA supplied only to the
+Ansible CI job establishes that trust. This setting provides no repository
+credentials, direct-archive mode, or TLS-verification bypass.
+
 | Artifact | Exact upstream source or identity |
 | --- | --- |
 | Helm index | `https://charts.gitlab.io/index.yaml` |

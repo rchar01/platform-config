@@ -34,14 +34,23 @@
           - rke2_gitlab_runner_tls_ca_cert_src is match('^/[^\r\n]+$')
           - rke2_gitlab_runner_tls_ca_cert_sha256 is match('^[0-9a-f]{64}$')
           - rke2_gitlab_runner_name is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+          - rke2_gitlab_runner_chart_repo is string
+          - >-
+            rke2_gitlab_runner_chart_repo is match(
+              '^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+              '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*'
+              '(?::[1-9][0-9]{0,4})?(?:/[A-Za-z0-9._~-]+)*/?\Z'
+            )
+          - (rke2_gitlab_runner_chart_repo | urlsplit('port') | default(443, true) | int) <= 65535
           - rke2_gitlab_runner_chart_version == '0.88.3'
           - rke2_gitlab_runner_manager_image is match('^docker\.io/gitlab/gitlab-runner:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
           - rke2_gitlab_runner_helper_image is match('^docker\.io/gitlab/gitlab-runner-helper:x86_64-[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
           - rke2_gitlab_runner_default_job_image is match('^docker\.io/library/alpine:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$')
         fail_msg: >-
           RKE2 GitLab Runner requires an HTTPS GitLab URL, absolute token and CA
-          source paths, the reviewed CA checksum, a safe Runner name, chart
-          0.88.3, and digest-pinned Runner 18.11.3 images.
+          source paths, the reviewed CA checksum, a safe Runner name, a
+          credential-free HTTPS Helm repository, chart 0.88.3, and digest-pinned
+          Runner 18.11.3 images.
 
     - name: Derive fixed RKE2 GitLab Runner values
       ansible.builtin.set_fact:
