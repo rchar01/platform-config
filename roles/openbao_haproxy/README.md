@@ -122,6 +122,15 @@ service domain. Full contexts and CA/configuration checksums are plan evidence
 and must still match at the service boundary. This is not a substitute for live
 service qualification.
 
+Activation qualifies each client path with at most ten strict TLS health
+requests, separated by one-second retry delays and bounded by the existing
+per-request timeout. Only curl success with HTTP 200 qualifies; exhaustion reports
+the curl exit code, HTTP status, and attempt limit, then rolls back every host.
+Rollback inspects the post-stop state and resets only an observed failed latch.
+An inactive unit needs no reset, even if systemd has unloaded it. Both paths still
+require exact inactive/disabled state before releasing the owned guard; unknown
+states and failed inspections or resets retain it.
+
 Existing active OpenBao installations that reference the shared CA path need a
 separately reviewed, HAProxy-only CA/configuration repair while HAProxy remains
 stopped. Do not rerun pristine OpenBao staging, relabel `/etc/openbao`, disable

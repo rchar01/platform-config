@@ -115,9 +115,10 @@ use read-only binding doubles to check exact labels and reject missing/wrong
 records before startup. These are not live SELinux or endpoint qualification.
 CA tests also exercise byte-identical copy staging, native certificate validation,
 check mode, and prospective service-domain policy decisions, including denied
-access in permissive mode. Rollback tests cover failed-state reset, incomplete
-results, complete multi-host reports, and retained consumed records. Binding and
-service doubles do not prove live SELinux execution or host recovery.
+access in permissive mode. Rollback tests cover conditional failed-state reset,
+clean shutdown without a latch, incomplete results, bounded path retries,
+complete multi-host reports, and retained consumed records. Binding and service
+doubles do not prove live SELinux execution or host recovery.
 
 Standalone dev acceptance does not depend on monitoring; production monitoring
 is still required. Offline checks do not authorize activation or normal

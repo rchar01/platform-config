@@ -134,8 +134,10 @@ firewall policy before startup; ordinary staging retains its declared collection
 dependencies.
 Staging installs a separate public CA copy under `/etc/haproxy`; activation checks
 its identity, exact configuration, and SELinux service-domain access without
-relabeling OpenBao's private container tree. Failed-start rollback clears only
-HAProxy's failed latch after stopping/disabling it, then verifies the exact state.
+relabeling OpenBao's private container tree. Path qualification allows ten bounded
+strict TLS health requests and requires HTTP 200. Rollback inspects HAProxy after
+stopping/disabling it, clears a failed latch only when present, then verifies exact
+inactive/disabled state before releasing its guard.
 
 Plans expire after 1800 seconds and bind clean committed source, private
 inventory, environment, lane, and live evidence, plus CI image/project/pipeline

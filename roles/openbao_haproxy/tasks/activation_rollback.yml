@@ -19,12 +19,29 @@
           - openbao_haproxy_activation_rollback_stop is not unreachable
           - openbao_haproxy_activation_rollback_stop is not skipped
 
-    # Stopping a failed unit can leave its failed-state latch set.
+    - name: Inspect stopped OpenBao HAProxy before resetting failure
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ openbao_haproxy_service_name }}"]
+      register: openbao_haproxy_activation_rollback_before_reset
+      changed_when: false
+      failed_when: false
+
+    - name: Require a known stopped OpenBao HAProxy state before resetting failure
+      ansible.builtin.assert:
+        that:
+          - openbao_haproxy_activation_rollback_before_reset is not unreachable
+          - openbao_haproxy_activation_rollback_before_reset is not skipped
+          - openbao_haproxy_activation_rollback_before_reset.rc | default(-1) == 3
+          - openbao_haproxy_activation_rollback_before_reset.stdout | default('') in ['inactive', 'failed']
+
+    # A cleanly stopped unit may be unloaded and need no reset. Failed units
+    # retain their latch until reset; reset errors must still fail closed.
     - name: Reset stopped OpenBao HAProxy systemd failure state
       ansible.builtin.command:
         argv: [systemctl, reset-failed, "{{ openbao_haproxy_service_name }}"]
       register: openbao_haproxy_activation_rollback_reset
       changed_when: true
+      when: openbao_haproxy_activation_rollback_before_reset.stdout == 'failed'
 
     - name: Require verified OpenBao HAProxy failure reset
       ansible.builtin.assert:
@@ -33,6 +50,7 @@
           - openbao_haproxy_activation_rollback_reset is not unreachable
           - openbao_haproxy_activation_rollback_reset is not skipped
           - openbao_haproxy_activation_rollback_reset.rc | default(1) == 0
+      when: openbao_haproxy_activation_rollback_before_reset.stdout == 'failed'
 
     - name: Inspect failed OpenBao HAProxy runtime state
       ansible.builtin.command:

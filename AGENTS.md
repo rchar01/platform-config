@@ -40,8 +40,11 @@
 - Stage HAProxy's public CA copy under `/etc/haproxy`, separate from OpenBao's
   private `:Z` tree. Bind CA identity, exact configuration, and prospective
   service-domain access into preflight; never repair CA paths during activation.
-  Rollback may reset only HAProxy's failed latch after successful stop/disable,
-  but must still prove exact inactive/disabled state before releasing its guard.
+  Rollback may reset only HAProxy's observed failed latch after successful
+  stop/disable; skip reset for verified inactive state. It must still prove exact
+  inactive/disabled state before releasing its guard. Path qualification allows
+  ten strict TLS health attempts with one-second retry delays, requires HTTP 200,
+  and rolls back all hosts after exhausted qualification.
 - `platform-tools` owns the `platform-openbao-edge` human/CI facade; keep its six
   fixed routes in `scripts/platform-config-operation`, not a generic wrapper.
   Both HAProxy and Keepalived use the shared schema-1 plan/action contract with

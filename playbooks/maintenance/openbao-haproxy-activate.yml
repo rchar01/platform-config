@@ -178,38 +178,57 @@
           }}
 
     - name: Query local OpenBao HAProxy client path
-      ansible.builtin.command:
-        argv:
-          - curl
-          - --silent
-          - --show-error
-          - --noproxy
-          - "*"
-          - --connect-timeout
-          - "{{ openbao_status_request_timeout | default(5) | string }}"
-          - --max-time
-          - "{{ openbao_status_request_timeout | default(5) | string }}"
-          - --cacert
-          - "{{ openbao_tls_ca_src }}"
-          - --resolve
-          - "{{ openbao_service_dns }}:{{ openbao_client_port }}:{{ openbao_haproxy_local_member.address }}"
-          - --output
-          - /dev/null
-          - --write-out
-          - "%{http_code}"
-          - "https://{{ openbao_service_dns }}:{{ openbao_client_port }}/v1/sys/health"
-      delegate_to: localhost
-      become: false
-      register: openbao_haproxy_activation_health
-      changed_when: false
-      failed_when: false
+      block:
+        - name: Wait for the strict OpenBao HAProxy health check
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --silent
+              - --show-error
+              - --noproxy
+              - "*"
+              - --connect-timeout
+              - "{{ openbao_status_request_timeout | default(5) | string }}"
+              - --max-time
+              - "{{ openbao_status_request_timeout | default(5) | string }}"
+              - --cacert
+              - "{{ openbao_tls_ca_src }}"
+              - --resolve
+              - "{{ openbao_service_dns }}:{{ openbao_client_port }}:{{ openbao_haproxy_local_member.address }}"
+              - --output
+              - /dev/null
+              - --write-out
+              - "%{http_code}"
+              - "https://{{ openbao_service_dns }}:{{ openbao_client_port }}/v1/sys/health"
+          delegate_to: localhost
+          become: false
+          register: openbao_haproxy_activation_health
+          changed_when: false
+          no_log: true
+          # One initial attempt plus nine retries lets backend checks settle.
+          retries: 9
+          delay: 1
+          until:
+            - openbao_haproxy_activation_health.rc | default(-1) == 0
+            - openbao_haproxy_activation_health.stdout | default('') == '200'
+      rescue:
+        - name: Report failed OpenBao HAProxy health check
+          ansible.builtin.debug:
+            msg:
+              host: "{{ inventory_hostname }}"
+              curl_rc: "{{ openbao_haproxy_activation_health.rc | default('unavailable') }}"
+              http_status: "{{ openbao_haproxy_activation_health.stdout | default('unavailable') }}"
+              attempt_limit: 10
 
     - name: Record local OpenBao HAProxy path qualification
       ansible.builtin.set_fact:
         openbao_haproxy_path_qualified: >-
           {{
-            openbao_haproxy_activation_health.rc == 0
-            and openbao_haproxy_activation_health.stdout == '200'
+            openbao_haproxy_activation_health is succeeded
+            and openbao_haproxy_activation_health is not unreachable
+            and openbao_haproxy_activation_health is not skipped
+            and openbao_haproxy_activation_health.rc | default(-1) == 0
+            and openbao_haproxy_activation_health.stdout | default('') == '200'
           }}
 
     - name: Roll back OpenBao HAProxy after failed path qualification
