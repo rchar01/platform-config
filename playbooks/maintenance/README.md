@@ -50,9 +50,10 @@ Do not import maintenance playbooks from `playbooks/site.yml`.
 Available maintenance playbooks:
 
 - `openbao-bootstrap-start.yml`: requires exact pristine staged state, a
-  private readiness gate, full-cluster limit, canonical member DNS resolution,
-  and unchanged two-pass evidence before starting three uninitialized sealed
-  processes without boot enablement. It writes only non-secret pending markers;
+  private readiness gate, full-cluster limit, canonical member name resolution
+  (DNS or static host mapping), and unchanged two-pass evidence before starting
+  three uninitialized sealed processes without boot enablement. It writes only
+  non-secret pending markers;
   Shamir shares and the initial root token never enter Ansible. Start or marker
   publication failure stops and remasks every reachable member and removes any
   partial pending markers.
@@ -91,7 +92,7 @@ Available maintenance playbooks:
   detection prerequisites. It repeats the
   read-only evidence gates after approval without ordinary role convergence,
   starts backup-priority members before the preferred member, and qualifies
-  repeated single-owner VIP state and strict service-DNS TLS. Any activation or
+  repeated single-owner VIP state and strict service-hostname TLS. Any activation or
   qualification failure rolls back only Keepalived on every reachable member,
   verifies inactive/disabled state and VIP absence on all local interfaces, and
   reports unknown or unreachable hosts as unverified, never recovered.
@@ -230,8 +231,15 @@ and `openbao_keepalived_activation_ready: false`. For the operator lane, then ru
 imports the existing smoke, validates the active desired Keepalived contract and
 actual active/enabled state on all three hosts, requires repeated exact
 single-owner observations on the configured interface, and checks strict TLS
-using service DNS both forced to the VIP and through actual DNS resolution, with
-cluster identity agreement. It does not activate or repair services.
+using the service hostname both forced to the VIP and through ordinary
+service-name resolution (DNS or static host mapping), with cluster identity
+agreement. The name must resolve only to the configured VIP in the controller
+or CI job environment. DNS infrastructure is optional; certificate DNS SAN
+identity remains required. See
+[OpenBao Without DNS](../../docs/private-workflow.md#openbao-without-dns).
+A lookup alone does not qualify TLS or VIP health. Do not run VIP smoke before
+successful activation and the reviewed active desired-state handoff; it does not
+activate or repair services.
 For CI, run the fixed VIP smoke job against the reviewed active desired-state
 revision without a terminal continuation; activation's own qualification already
 runs against its immutable pre-activation source.

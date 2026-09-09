@@ -148,6 +148,69 @@ PLATFORM_CONFIG_INVENTORY=../platform-private/config/inventories/homelab/hosts.y
 ./scripts/run-dev.sh --inventory ../platform-private/config/inventories/dev/hosts.yml --check
 ```
 
+## OpenBao Without DNS
+
+DNS infrastructure is optional for OpenBao; the service hostname and its TLS
+identity are required. Keep `openbao_service_dns` set to the reviewed service
+hostname present in the certificate's DNS SANs. Static host mappings change
+address resolution, not certificate identity or CA trust. For VIP qualification,
+the service name must resolve only to the configured VIP from the actual
+controller or CI job environment.
+
+Use the existing mechanism for each resolution context, with real values kept
+in private configuration. The examples below use the SAN service hostname
+`bao.example.invalid` and documentation-only VIP `192.0.2.86`:
+
+1. **Development-container controller:** put one whitespace-free `hostname:IPv4`
+   mapping per line in `../platform-private/config/container.hostaliases`:
+
+   ```text
+   bao.example.invalid:192.0.2.86
+   ```
+
+   `scripts/in-container` reads this optional file in its development profile
+   and passes the mappings to Podman. For a different file, export its host-side
+   path **before launching** the wrapper or Make target:
+
+   ```bash
+   export PLATFORM_CONFIG_CONTAINER_HOST_ALIASES_FILE="$PWD/../platform-private/config/container.hostaliases"
+   ./scripts/in-container getent ahostsv4 bao.example.invalid
+   ```
+
+   Setting the variable inside an already-running container, or in an env file
+   sourced only after launch, is too late. The sanitized test profile does not
+   load private aliases.
+
+2. **GitLab Runner Docker jobs, helpers, and services:** set the existing private
+   Runner variable; these containers do not inherit the manager host's
+   `/etc/hosts`:
+
+   ```yaml
+   gitlab_runner_docker_extra_hosts:
+     - bao.example.invalid:192.0.2.86
+   ```
+
+   Append to the existing list and preserve its other mappings.
+
+   Updating an existing registration requires a controlled one-time
+   `gitlab_runner_force_register: true` apply from a separate controller while
+   the Runner is paused and idle. Keep a separate operator rollback backup and
+   use a literal `--limit` (Make `LIMIT`) equal to that one Runner's exact
+   inventory hostname, then immediately return force registration to false.
+   See [Runner registration](../roles/gitlab_runner/README.md#registration).
+
+3. **Managed hosts:** use private `platform_host_aliases` entries with `address`
+   and `names` through the `common` role for host-local `/etc/hosts` resolution,
+   including required canonical node names. This is separate from controller
+   and Docker job mappings; it does not configure either container context.
+
+Keep public alias defaults empty. Existing `getent` and `curl` checks accept
+NSS host mappings; no DNS-free flag is needed. A successful lookup proves only
+name resolution, not routing, TLS, service health, or VIP ownership. Use pre-VIP
+`smoke-openbao` before Keepalived activation; run `smoke-openbao-vip` only after
+successful activation and the reviewed active desired-state handoff described
+in [OpenBao VIP Acceptance](operator-runbook.md#openbao-vip-acceptance).
+
 ## Rocky Repository Policy
 
 Repository files remain externally managed. Private inventory may enable the

@@ -1686,6 +1686,14 @@ and recovery gates pass and normal onboarding is separately authorized. Merged
 orchestration, offline tests, and a successful smoke run alone do not establish
 full live qualification or authorize normal traffic.
 
+DNS infrastructure is optional, but the service hostname in `openbao_service_dns`
+and its certificate DNS SAN identity are required. Configure resolution in the
+actual controller or CI job environment using
+[OpenBao Without DNS](private-workflow.md#openbao-without-dns). A lookup alone
+does not qualify routing, TLS, health, or VIP ownership. Use pre-VIP smoke before
+activation; VIP smoke requires successful activation and the reviewed active
+desired-state handoff below.
+
 Before each Keepalived activation:
 
 1. Require accepted active OpenBao lifecycle markers and strict three-voter
@@ -1750,9 +1758,11 @@ make smoke-openbao-vip ENV=dev LIMIT=openbao
 `playbooks/openbao-vip-smoke.yml` imports `playbooks/openbao-smoke.yml` before
 validating the active desired Keepalived contract, actual active/enabled state
 on all three hosts, and repeated exact single-owner observations on the
-configured interface. It checks strict CA and service-DNS TLS identity both with
-the connection forced to the VIP and through the actual DNS path, and requires
-cluster identity agreement with direct-node and active-marker evidence. Zero
+configured interface. It checks strict CA and service-hostname TLS identity both
+with the connection forced to the VIP and through ordinary service-name
+resolution (DNS or static host mapping). The name must resolve only to the configured
+VIP from the controller or CI job environment. Both paths require cluster identity
+agreement with direct-node and active-marker evidence. Zero
 owners, multiple owners, wrong-interface ownership, unknown hosts, TLS failure,
 or cluster mismatch must fail rather than count as successful acceptance.
 
