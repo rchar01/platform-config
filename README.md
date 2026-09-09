@@ -138,6 +138,10 @@ relabeling OpenBao's private container tree. Path qualification allows ten bound
 strict TLS health requests and requires HTTP 200. Rollback inspects HAProxy after
 stopping/disabling it, clears a failed latch only when present, then verifies exact
 inactive/disabled state before releasing its guard.
+HAProxy plans also require the target-observed SSH peer to be admitted by the
+client allowlist, bind that stable observation, and recheck it before startup.
+Use direct SSH and stable controller egress; this early check does not replace
+the strict HTTPS check from the actual operator or CI job environment.
 
 Plans expire after 1800 seconds and bind clean committed source, private
 inventory, environment, lane, and live evidence, plus CI image/project/pipeline

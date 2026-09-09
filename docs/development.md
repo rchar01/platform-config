@@ -107,6 +107,8 @@ timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container py
   tests/python/test_openbao_haproxy_ca_staging.py
 timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
   tests/python/test_openbao_haproxy_rollback.py
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_openbao_haproxy_caller_source.py
 ```
 
 The activation-entry test resolves the real role with external collections
@@ -119,6 +121,21 @@ access in permissive mode. Rollback tests cover conditional failed-state reset,
 clean shutdown without a latch, incomplete results, bounded path retries,
 complete multi-host reports, and retained consumed records. Binding and service
 doubles do not prove live SELinux execution or host recovery.
+
+Caller-source tests execute the target parser and cover excluded/missing peers,
+stable source-port-independent plan evidence, and drift before enablement. The
+native `tests/python/test_openbao_haproxy_client_acl.py` regression renders the
+production template and tests strict TLS through actual HAProxy: adding only the
+caller's synthetic `/32` permits HTTP 200 while another source stays blocked.
+Run it inside a container with `haproxy`, `curl`, and `openssl` available:
+
+```bash
+python -m pytest -n 0 -s -q tests/python/test_openbao_haproxy_client_acl.py
+```
+
+It skips explicitly if those native tools are absent; a skip is not ACL
+verification. Neither synthetic loopback tests nor SSH-peer observations prove
+the source address seen from a real CI job after network address translation.
 
 Standalone dev acceptance does not depend on monitoring; production monitoring
 is still required. Offline checks do not authorize activation or normal

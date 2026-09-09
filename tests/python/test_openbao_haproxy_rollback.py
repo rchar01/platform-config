@@ -154,6 +154,11 @@ def rollback_target(repo_root, tmp_path, command_runner):
                                     for i, host in enumerate(HOSTS, 1)],
         "openbao_service_dns": "bao.test.invalid", "openbao_client_port": 8200,
         "openbao_tls_ca_src": "/fixture/ca.crt",
+        "openbao_haproxy_client_allowed_sources": ["198.51.100.0/24"],
+        "openbao_edge_prepared": {"plan": {"evidence": {"caller_sources": [{
+            "inventory_host": host, "source_address": "198.51.100.65",
+            "destination_address": "192.0.2.1", "destination_port": 22,
+        } for host in HOSTS]}}},
     }
 
 
@@ -279,13 +284,16 @@ def run_activation_and_check_report(
         "fixture_failed_latch_hosts": unverified,
     })
     plays = yaml.safe_load((repo_root / PLAYBOOK).read_text())[2:]
-    if phase == "startup":
+    if phase in ("startup", "caller"):
         plays = plays[:1]
     release = yaml.safe_load((repo_root / "playbooks/maintenance/tasks/openbao-edge-release.yml").read_text())
     release[0].pop("ansible.builtin.command")
     release[0]["fixture_io"] = {"argv": ["guard-release"]}
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
+    from test_openbao_haproxy_caller_source import stage_caller_source
+
+    stage_caller_source(repo_root, tasks_dir, tmp_path / "action_plugins")
     (tasks_dir / "openbao-edge-release.yml").write_text(yaml.safe_dump(release), encoding="utf-8")
     fields = ["failed_hosts", "unverified_rollback_hosts", "failed_path_hosts", "unverified_path_rollback_hosts"]
     for index, play in enumerate(plays):
@@ -300,13 +308,13 @@ def run_activation_and_check_report(
     result = run_rollback_plays(plays, tmp_path, command_runner)
     if failed:
         result.assert_failure()
-        assert ("activation failed." if phase == "startup" else "path qualification failed on") in result.stdout
+        assert ("activation failed." if phase in ("startup", "caller") else "path qualification failed on") in result.stdout
         assert "Unverified rollback hosts: " + (", ".join(unverified) or "none") in result.stdout
     else:
         result.assert_success()
     report = json.loads((tmp_path / f"report-{len(plays) - 1}.json").read_text())
-    assert report["failed_hosts" if phase == "startup" else "failed_path_hosts"] == failed
-    assert report["unverified_rollback_hosts" if phase == "startup" else "unverified_path_rollback_hosts"] == unverified
+    assert report["failed_hosts" if phase in ("startup", "caller") else "failed_path_hosts"] == failed
+    assert report["unverified_rollback_hosts" if phase in ("startup", "caller") else "unverified_path_rollback_hosts"] == unverified
     assert sorted(path.stem for path in tmp_path.glob("*.guard")) == unverified
     assert sorted(path.stem for path in tmp_path.glob("*.consumed")) == HOSTS
     assert all((tmp_path / f"{host}.consumed").read_text() == "permanent consumption" for host in HOSTS)

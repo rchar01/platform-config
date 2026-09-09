@@ -38,6 +38,9 @@
     name: openbao_haproxy
     tasks_from: activation_preflight.yml
 
+- name: Qualify target-observed OpenBao HAProxy caller source
+  ansible.builtin.include_tasks: openbao-haproxy-caller-source.yml
+
 - name: Inspect current OpenBao edge services
   ansible.builtin.service_facts:
 
@@ -78,6 +81,9 @@
     openbao_haproxy_activation_edge_observations: >-
       {{ groups['openbao'] | map('extract', hostvars, 'openbao_haproxy_activation_observation')
          | sort(attribute='inventory_host') | list }}
+    openbao_haproxy_activation_caller_sources: >-
+      {{ groups['openbao'] | map('extract', hostvars, 'openbao_haproxy_caller_source_observation')
+         | sort(attribute='inventory_host') | list }}
   run_once: true # noqa run-once[task]
   no_log: true
 
@@ -111,5 +117,6 @@
     openbao_haproxy_activation_evidence:
       cluster: "{{ openbao_haproxy_activation_observations }}"
       edge: "{{ openbao_haproxy_activation_edge_observations }}"
+      caller_sources: "{{ openbao_haproxy_activation_caller_sources }}"
   run_once: true # noqa run-once[task]
   no_log: true

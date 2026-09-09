@@ -1,0 +1,69 @@
+---
+# The SSH peer is an early guard for the direct-SSH caller contract, not proof
+# of the original HTTPS caller through arbitrary proxies or different routes.
+- name: Inspect target-observed OpenBao HAProxy caller source
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import ipaddress
+        import json
+        import os
+        import sys
+
+        try:
+            if sys.argv[2] not in (
+                "ssh", "ansible.builtin.ssh", "paramiko", "paramiko_ssh",
+                "ansible.builtin.paramiko_ssh",
+            ):
+                raise ValueError("unsupported transport")
+            source, source_port, destination, destination_port = os.environ["SSH_CONNECTION"].split()
+            source = ipaddress.IPv4Address(source)
+            destination = ipaddress.IPv4Address(destination)
+            for port in (source_port, destination_port):
+                if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+                    raise ValueError("invalid port")
+            declared = json.load(sys.stdin)
+            if not isinstance(declared, list) or not declared:
+                raise ValueError("missing source policy")
+            networks = []
+            for cidr in declared:
+                if not isinstance(cidr, str) or "/" not in cidr:
+                    raise ValueError("invalid CIDR")
+                networks.append(ipaddress.IPv4Network(cidr))
+            if not any(source in network for network in networks):
+                raise ValueError("source excluded")
+            print(json.dumps({
+                "inventory_host": sys.argv[1],
+                "source_address": str(source),
+                "destination_address": str(destination),
+                "destination_port": int(destination_port),
+            }, sort_keys=True))
+        except (KeyError, ValueError, TypeError):
+            sys.exit("OpenBao HAProxy caller source could not be qualified.")
+      - "{{ inventory_hostname }}"
+      - "{{ ansible_connection | default('ssh') }}"
+    stdin: "{{ openbao_haproxy_client_allowed_sources | default([]) | to_json }}"
+  become: false
+  vars:
+    # Connection variables override the task keyword, including inventory become.
+    ansible_become: false
+  register: openbao_haproxy_caller_source_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Require qualified OpenBao HAProxy caller source
+  ansible.builtin.assert:
+    that:
+      - openbao_haproxy_caller_source_probe is not unreachable
+      - openbao_haproxy_caller_source_probe is not skipped
+      - openbao_haproxy_caller_source_probe.rc | default(-1) == 0
+    quiet: true
+    fail_msg: OpenBao HAProxy caller source could not be qualified against the declared client source policy.
+
+- name: Record stable OpenBao HAProxy caller source
+  ansible.builtin.set_fact:
+    openbao_haproxy_caller_source_observation: "{{ openbao_haproxy_caller_source_probe.stdout | from_json }}"
+  no_log: true
