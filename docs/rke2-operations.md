@@ -140,6 +140,26 @@ Ansible child, waits for that child, and returns the conventional launcher
 status of 129, 130, or 143. Cancellation stops later fixed commands, but it
 cannot roll back changes already completed by Ansible or a managed host.
 
+## Prepare The RKE2 Cluster Token
+
+Generate one cluster token **before the first bootstrap** on a trusted machine;
+this workflow requires a supplied token rather than generating one during apply:
+
+```bash
+openssl rand -hex 32
+```
+
+Store the 64 hexadecimal characters, **without the command's trailing newline**,
+in an owner-only file outside Git referenced by `rke2_token_src`. For GitLab CI,
+provide the value through the protected **File** variable
+`PLATFORM_CI_RKE2_CLUSTER_TOKEN`, scoped to the reviewed deployment environment
+with variable expansion disabled.
+
+Keep the same token for all servers and agents and subsequent convergence runs.
+Retain a protected backup with the cluster recovery material; do not regenerate
+it per pipeline or commit it to Git. This is separate from the GitLab Runner
+authentication token (`glrt-...`).
+
 ## OpenBao Edge Lanes
 
 `platform-tools` owns the `platform-openbao-edge` facade. Its `haproxy-plan`,
