@@ -26,7 +26,7 @@ activation routes additionally require an absolute `--plan` path.
 | `openbao-keepalived-plan` | Exact three-host read-only Keepalived activation preflight, then exclusive publication of a source-bound plan; no target guard acquisition or service mutation. |
 | `openbao-keepalived-activate` | Validate and authorize the plan, acquire all edge guards and consume the plan, repeat final preflight, start backup-priority members before the preferred member, qualify VIP state, and roll back only Keepalived on failure. |
 | `openbao-smoke` | Strict direct-node and all-three-HAProxy smoke for the pre-VIP phase. |
-| `openbao-vip-smoke` | The existing smoke plus active desired and actual Keepalived state, repeated exact single-owner VIP checks, strict forced-VIP service-DNS TLS and actual DNS-path checks, and cluster identity agreement. |
+| `openbao-vip-smoke` | After successful activation and the reviewed active desired-state handoff: the existing smoke plus active desired and actual Keepalived state, repeated exact single-owner VIP checks, strict forced-VIP service-hostname TLS and ordinary service-name resolution (DNS or static host mapping), and cluster identity agreement. |
 
 The launcher does not accept limits, tags, playbook paths, modules, extra vars,
 or arbitrary Ansible arguments. CI generates the controller-variable file for

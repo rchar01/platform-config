@@ -106,6 +106,10 @@ limited to acceptance checks until named administrator access, local audit
 rotation, and recovery gates have been completed and normal onboarding has been
 separately authorized. These workflows are not evidence of live qualification.
 
+DNS infrastructure is optional; the service hostname and its certificate DNS SAN
+identity remain required. See [OpenBao Without DNS](docs/private-workflow.md#openbao-without-dns)
+for private controller, Docker job, and managed-host mappings.
+
 HAProxy and Keepalived require a reviewed firewall lifecycle and policy, not
 universal firewalld enablement. Explicit `firewalld_service_enabled: false` with
 `firewalld_service_state: stopped` requires actual inactive/boot-disabled state
@@ -157,8 +161,10 @@ reviewed recovery; never delete consumed records or reuse a consumed plan.
 The separately approved Keepalived activation starts the staged VIP;
 `make smoke-openbao-vip ENV=dev LIMIT=openbao` adds active Keepalived desired and
 actual state, repeated exact single-owner checks on the configured interface,
-strict service-DNS TLS through the forced VIP and actual DNS path, and cluster
-identity checks. Both smoke targets require the complete three-host cluster.
+strict service-hostname TLS through the forced VIP and ordinary service-name
+resolution (DNS or static host mapping), and cluster identity checks. Run VIP
+smoke only after successful activation and the reviewed active desired-state
+handoff. Both smoke targets require the complete three-host cluster.
 
 Follow the [OpenBao VIP acceptance procedure](docs/operator-runbook.md#openbao-vip-acceptance)
 for network prerequisites, per-activation approval, backup-priority-first startup,

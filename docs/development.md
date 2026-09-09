@@ -90,9 +90,14 @@ Keepalived rendering and preflight contracts, and the separate VIP smoke path.
 the pre-VIP phase. `smoke-openbao-vip` imports it and adds active desired
 Keepalived validation, actual active/enabled service state on all three hosts,
 repeated exact single-owner checks on the configured interface, strict forced-VIP
-service-DNS TLS and actual DNS-path checks, and matching cluster identity.
+service-hostname TLS and ordinary service-name resolution (DNS or static host
+mapping), and matching cluster identity. Run live VIP smoke only after successful
+activation and the reviewed active desired-state handoff. See
+[OpenBao Without DNS](private-workflow.md#openbao-without-dns) for the separate
+controller, Docker job, and managed-host mappings; controller file overrides
+must be exported before wrapper launch.
 Controlled fixtures do not establish live VRRP, target firewall or anti-spoofing
-readiness, duplicate-address detection, real DNS/TLS, failover, or recovery.
+readiness, duplicate-address detection, live name resolution/TLS, failover, or recovery.
 
 Focused HAProxy activation checks (each bounded independently):
 

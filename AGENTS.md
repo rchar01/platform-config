@@ -36,6 +36,13 @@
 
 ## OpenBao Activation Boundary
 
+- DNS infrastructure is optional; preserve `openbao_service_dns` and required
+  certificate DNS SAN identity. Use existing private controller
+  `container.hostaliases` (or `PLATFORM_CONFIG_CONTAINER_HOST_ALIASES_FILE`
+  exported before wrapper launch), `gitlab_runner_docker_extra_hosts` for Docker
+  jobs/helpers/services, and separate managed-host `platform_host_aliases`.
+  Keep public alias defaults empty; no new flags or lookup/TLS bypasses.
+  See [OpenBao Without DNS](docs/private-workflow.md#openbao-without-dns).
 - Standalone dev OpenBao acceptance has no monitoring-stack or observer
   dependency; production monitoring remains required. Allow acceptance traffic
   only until named administrator access, local audit rotation, and recovery gates
@@ -107,8 +114,10 @@
 - Keep `smoke-openbao` direct-node plus all-three-HAProxy only for the pre-VIP
   phase. `smoke-openbao-vip` imports that smoke and adds active desired Keepalived
   validation, actual active/enabled state on all three hosts, repeated exact
-  single-owner checks on the configured interface, strict forced-VIP service-DNS
-  TLS and actual DNS-path checks, and cluster identity agreement.
+  single-owner checks on the configured interface, strict forced-VIP service-hostname
+  TLS and ordinary service-name resolution (DNS or static host mapping), and
+  cluster identity agreement. Run VIP smoke only after successful activation and
+  the reviewed active desired-state handoff; a lookup alone proves no TLS success.
 - `activate-openbao-keepalived` requires an explicit full-cluster limit, private
   `openbao_keepalived_activation_ready: true`, and fresh exact approval for each
   activation in its operator or CI lane after network, peer VRRP, anti-spoofing,
