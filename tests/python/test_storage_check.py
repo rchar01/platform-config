@@ -132,3 +132,16 @@ def test_node_argument_is_rejected_by_other_routes(repo_root, isolated_test_dir,
                                  "--inventory", path, "--controller-vars", path, "--node", "server-a"])
     result.assert_failure()
     assert "only accepted by storage-check" in result.stderr
+
+
+@pytest.mark.parametrize("extra", [["--apply"], ["--limit", "all"], ["--node", "agent-a"]])
+def test_storage_check_rejects_broad_or_duplicate_arguments(repo_root, isolated_test_dir, command_runner, extra):
+    path = isolated_test_dir / "private.json"
+    path.write_text("{}")
+    path.chmod(0o600)
+    result = command_runner.run([
+        repo_root / "scripts/platform-config-operation", "storage-check",
+        "--inventory", path, "--controller-vars", path, "--node", "server-a", *extra,
+    ])
+    result.assert_failure()
+    assert "unsupported argument" in result.stderr or "exactly once" in result.stderr
