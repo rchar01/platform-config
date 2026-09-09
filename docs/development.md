@@ -99,6 +99,22 @@ must be exported before wrapper launch.
 Controlled fixtures do not establish live VRRP, target firewall or anti-spoofing
 readiness, duplicate-address detection, live name resolution/TLS, failover, or recovery.
 
+Focused Keepalived script SELinux regression checks:
+
+```bash
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_keepalived_vip_script_selinux.py
+```
+
+These execute the production native policy probe with API-shaped read-only
+doubles, including positive `getfilecon` lengths, five-argument access-vector
+decisions, denied execute/transition/entrypoint/execute_no_trans bits including
+permissive mode, same-domain dependencies, and full-context drift. Staging
+requests policy defaults only for the script and its directory. Offline tests,
+native policy queries, and UID-only readiness do not prove execution in the real
+Keepalived service-script context. That read-only target probe remains separate,
+after reviewed stopped-artifact repair; activation does not repair SELinux state.
+
 Focused HAProxy activation checks (each bounded independently):
 
 ```bash

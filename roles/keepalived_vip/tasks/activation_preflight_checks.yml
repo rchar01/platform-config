@@ -163,6 +163,9 @@
   changed_when: false
   check_mode: false
 
+- name: Verify prospective Keepalived script SELinux policy before UID-only readiness
+  ansible.builtin.include_tasks: script_selinux_guard.yml
+
 - name: Check staged Keepalived readiness as the configured script identity
   ansible.builtin.command:
     argv:
@@ -256,6 +259,7 @@
       package_checksum: "{{ keepalived_vip_activation_package_digest.stdout }}"
       config_checksum: "{{ keepalived_vip_activation_artifacts.results[0].stat.checksum }}"
       script_checksum: "{{ keepalived_vip_activation_artifacts.results[1].stat.checksum }}"
+      script_selinux: "{{ keepalived_vip_script_selinux_probe.stdout | from_json }}"
       drop_in_checksum: "{{ keepalived_vip_activation_artifacts.results[2].stat.checksum }}"
       binary_checksum: "{{ keepalived_vip_activation_artifacts.results[3].stat.checksum }}"
       unit_checksum: "{{ keepalived_vip_activation_artifacts.results[4].stat.checksum }}"

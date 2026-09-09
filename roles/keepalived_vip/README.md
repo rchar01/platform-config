@@ -28,6 +28,16 @@ repository transaction. A disposable Rocky Linux 10.1 check on 2026-07-31
 resolved `keepalived-0:2.2.8-9.el10.x86_64`; this observation is not target-host
 or immutable-repository evidence.
 
+The tracking script defaults to
+`/usr/libexec/keepalived/keepalived-check-service`, the standard location for the
+target policy's `keepalived_unconfined_script_exec_t` label. Staging uses built-in
+`file`/`template` `_default` SELinux contexts for this script and its directory
+only. Custom script paths need an equivalent reviewed default file-context policy;
+activation validates the actual label rather than requiring a fixed script path.
+Existing stopped artifacts need separately reviewed repair before a fresh plan;
+activation never relabels them. Do not use pristine OpenBao staging to repair an
+active or initialized OpenBao cluster.
+
 Example inputs:
 
 ```yaml
@@ -187,11 +197,31 @@ binary, SHA-256 RPM header identity, and non-configuration package files using
 `rpm -V --noscripts --noconfig`. Configuration, script, and drop-in must be regular
 root:root files with the role's exact modes and SHA-256 equality to freshly
 rendered current inventory. It also checks native configuration and Bash syntax,
-executes readiness as the configured script user/group, and requires up
-interfaces, exact source addresses, VIP routes through the configured interfaces,
+checks prospective SELinux script policy, executes readiness as the configured
+script user/group, and requires up interfaces, exact source addresses, VIP routes
+through the configured interfaces,
 and VIP absence across **all** local IPv4 interfaces, not just the VRRP interface.
 Managed firewall mode additionally requires protected current manifest metadata
 and exact equality to current inventory, plus the declared-mode guard above.
+
+The built-in-only read-only `script_selinux_guard.yml` uses the target Python's
+native SELinux bindings before the UID-only `runuser` check. It records the exact
+`getenforce` mode; `Disabled` needs no bindings, while both `Enforcing` and
+`Permissive` require the actual script type `keepalived_unconfined_script_exec_t`.
+It derives the prospective daemon domain from PID 1 and the Keepalived executable
+context, then the script domain from that daemon and the actual script context,
+requiring `keepalived_t` to `keepalived_unconfined_script_t`. For both PID 1 to
+daemon and daemon to script, policy must allow the source domain's file `execute`,
+the source-to-target process `transition`, and the target domain's file
+`entrypoint`. Each of `bash`, `systemctl`, `ip`, `ss`, and `awk`, resolved
+canonically using the script's fixed `/usr/sbin:/usr/bin` PATH, must retain the
+exact script domain under `security_compute_create` and allow both file `execute`
+and `execute_no_trans`. Missing native observations or denied bits fail even in
+permissive mode. Full observed contexts, including the script
+directory and dependencies, and mode are bound into plan evidence. This policy
+probe and successful `runuser` execution do not prove execution in the actual
+service-script context; that remains a separately authorized target verification
+after repair. The guard makes no runtime SELinux repairs.
 
 Activation supports the native service contract observed directly from
 `keepalived-0:2.2.8-9.el10.x86_64`: `keepalived.service`, executable
@@ -219,8 +249,8 @@ qualify a completely pinned Rocky 10.1 environment or managed-host networking.
 Successful preflight publishes `keepalived_vip_activation_observation` containing
 `inventory_host`, `instances`, `cluster_members`, `service_name`, artifact paths,
 `package_nevra`, `package_checksum`, `binary_checksum`, `config_checksum`,
-`script_checksum`, `drop_in_checksum`, `unit_checksum`, `sysconfig_checksum`,
-`systemd_properties`, `firewalld_manage`, `firewalld`, and
+`script_checksum`, `script_selinux`, `drop_in_checksum`, `unit_checksum`,
+`sysconfig_checksum`, `systemd_properties`, `firewalld_manage`, `firewalld`, and
 `firewalld_manifest_checksum` (`unmanaged` when not managed). `package_checksum`
 is the installed RPM header SHA-256, not the digest of a downloaded RPM file or
 independent provenance evidence. `firewalld` contains the verified `managed`,
@@ -262,14 +292,16 @@ Focused synthetic checks (no managed hosts or private configuration):
 
 ```bash
 PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -q tests/python/test_keepalived_vip_render.py
+timeout 90s env PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q tests/python/test_keepalived_vip_script_selinux.py
 ```
 
 These execute the Ansible task chains with real template rendering, file metadata,
 checksums, and Bash syntax checks in an isolated user namespace. RPM, systemd,
-network, native Keepalived validation, and script-identity execution use controlled
-doubles. Integration fixtures relocate canonical paths only in scratch role
-copies; separate tests exercise the unchanged canonical-path guards. These checks
-do not establish live service, native package, or network readiness.
+network, native Keepalived validation, SELinux policy APIs, and script-identity
+execution use controlled doubles. Integration fixtures relocate canonical paths
+only in scratch role copies; separate tests exercise the unchanged canonical-path
+guards. These checks do not establish live service, native package, or network
+readiness.
 
 Node-local ownership metrics and the shared external observer integration remain
 owned by the planned `platform_external_probe` slice. They must be detect-only

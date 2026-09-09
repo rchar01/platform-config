@@ -20,7 +20,7 @@ keepalived_vip_instances: []
 keepalived_vip_script_user: keepalived_script
 keepalived_vip_script_group: keepalived_script
 keepalived_vip_script_name: platform_haproxy_ready
-keepalived_vip_script_dir: /usr/local/libexec/platform
+keepalived_vip_script_dir: /usr/libexec/keepalived
 keepalived_vip_script_path: "{{ keepalived_vip_script_dir }}/keepalived-check-service"
 keepalived_vip_script_interval: 1
 keepalived_vip_script_timeout: 1

@@ -117,6 +117,18 @@
 - After successful activation, record `keepalived_vip_service_enabled: true` and
   `keepalived_vip_service_state: started` in private desired state and reset
   `openbao_keepalived_activation_ready: false`; then use VIP smoke, not staging.
+- Keepalived's default tracking script lives under `/usr/libexec/keepalived` for
+  the target policy's `keepalived_unconfined_script_exec_t` label. Stage policy
+  `_default` contexts only on the script and its directory with built-in modules.
+  The read-only native SELinux guard precedes UID-only readiness and binds mode,
+  full contexts, prospective `keepalived_t` to `keepalived_unconfined_script_t`
+  transition, and dependency decisions into existing plan evidence. Require
+  source execute, process transition, and target entrypoint for both domain
+  transitions; all five dependencies must retain the exact script domain and
+  allow execute plus execute_no_trans, including in permissive mode.
+  Custom paths must pass actual-label validation; preflight/start never repair
+  labels. Neither native policy queries nor `runuser` prove actual daemon-script
+  execution; verify that separately after reviewed stopped-artifact repair.
 
 ## Setup And Checks
 

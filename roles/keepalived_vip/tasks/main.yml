@@ -74,7 +74,7 @@
           does not match required {{ keepalived_vip_package_nevra }}.
       when: keepalived_vip_dependencies_ready
 
-    - name: Ensure Keepalived configuration and script directories exist
+    - name: Ensure Keepalived configuration and service directories exist
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: directory
@@ -84,10 +84,20 @@
       loop:
         - path: "{{ keepalived_vip_config_path | dirname }}"
           mode: "0755"
-        - path: "{{ keepalived_vip_script_dir }}"
-          mode: "0755"
         - path: "{{ keepalived_vip_service_drop_in_dir }}"
           mode: "0755"
+
+    - name: Ensure Keepalived script directory has its policy default context
+      ansible.builtin.file:
+        path: "{{ keepalived_vip_script_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+        seuser: _default
+        serole: _default
+        setype: _default
+        selevel: _default
 
     - name: Check Keepalived VRRP interfaces
       ansible.builtin.command:
@@ -176,6 +186,10 @@
         owner: root
         group: root
         mode: "0755"
+        seuser: _default
+        serole: _default
+        setype: _default
+        selevel: _default
         validate: /usr/bin/bash -n %s
 
     - name: Write validated Keepalived configuration

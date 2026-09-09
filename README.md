@@ -166,6 +166,14 @@ resolution (DNS or static host mapping), and cluster identity checks. Run VIP
 smoke only after successful activation and the reviewed active desired-state
 handoff. Both smoke targets require the complete three-host cluster.
 
+Keepalived stages its tracking script under `/usr/libexec/keepalived` with policy
+default SELinux contexts. A built-in-only read-only preflight binds the actual
+script label and prospective domains into the plan, checks both transitions'
+execute/transition/entrypoint permissions, and requires same-domain dependency
+execution with `execute` and `execute_no_trans`. UID-only readiness is not proof
+of service-domain execution; see
+the [Keepalived role](roles/keepalived_vip/README.md#activation-entry-points).
+
 Follow the [OpenBao VIP acceptance procedure](docs/operator-runbook.md#openbao-vip-acceptance)
 for network prerequisites, per-activation approval, backup-priority-first startup,
 Keepalived-only rollback, and the post-success reviewed private desired-state

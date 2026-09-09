@@ -1,0 +1,94 @@
+---
+- name: Query native Keepalived script SELinux policy without changing target state
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - |
+        import json
+        import os
+        import shutil
+        import subprocess
+        import sys
+
+        binary, script = sys.argv[1:]
+        mode = subprocess.check_output(["getenforce"], text=True).strip()
+        if mode not in ("Enforcing", "Permissive", "Disabled"):
+            raise SystemExit("Unrecognized SELinux mode")
+        observation = {"mode": mode}
+        if mode != "Disabled":
+            import selinux
+
+            def file_context(path):
+                rc, context = selinux.getfilecon(path)
+                if rc < 0 or not context:
+                    raise SystemExit("Missing SELinux file context: " + path)
+                return context
+
+            def require_access(source, target, kind, permissions):
+                class_id = selinux.string_to_security_class(kind)
+                if class_id <= 0:
+                    raise SystemExit("Missing SELinux class: " + kind)
+                mask = 0
+                for permission in permissions:
+                    bit = selinux.string_to_av_perm(class_id, permission)
+                    if bit <= 0:
+                        raise SystemExit("Missing SELinux permission: " + permission)
+                    mask |= bit
+                # Inspect policy bits even in permissive mode; UID readiness is separate.
+                decision = selinux.av_decision()
+                rc = selinux.security_compute_av(source, target, class_id, mask, decision)
+                if not isinstance(rc, int) or rc < 0 or decision.allowed & mask != mask:
+                    raise SystemExit("SELinux denies " + kind + " " + "/".join(permissions)
+                                     + ": " + source + " -> " + target)
+
+            rc, source = selinux.getpidcon(1)
+            if rc < 0 or not source:
+                raise SystemExit("Missing systemd SELinux source context")
+            executable = file_context(binary)
+            script_context = file_context(script)
+            if script_context.split(":")[2:3] != ["keepalived_unconfined_script_exec_t"]:
+                raise SystemExit("Incorrect Keepalived script executable context")
+            process_class = selinux.string_to_security_class("process")
+            if process_class <= 0:
+                raise SystemExit("Missing SELinux process class")
+            rc, daemon = selinux.security_compute_create(source, executable, process_class)
+            if rc < 0 or not daemon or daemon.split(":")[2:3] != ["keepalived_t"]:
+                raise SystemExit("Missing or incorrect prospective Keepalived daemon domain")
+            rc, domain = selinux.security_compute_create(daemon, script_context, process_class)
+            if rc < 0 or not domain or domain.split(":")[2:3] != ["keepalived_unconfined_script_t"]:
+                raise SystemExit("Missing or incorrect prospective Keepalived script domain")
+            for src, dst, entrypoint in ((source, daemon, executable), (daemon, domain, script_context)):
+                require_access(src, entrypoint, "file", ["execute"])
+                require_access(src, dst, "process", ["transition"])
+                require_access(dst, entrypoint, "file", ["entrypoint"])
+            dependencies = {}
+            for name in ("bash", "systemctl", "ip", "ss", "awk"):
+                path = shutil.which(name, path="/usr/sbin:/usr/bin")
+                if not path or not os.path.isfile(path):
+                    raise SystemExit("Missing Keepalived script dependency: " + name)
+                path = os.path.realpath(path)
+                context = file_context(path)
+                rc, dependency_domain = selinux.security_compute_create(domain, context, process_class)
+                if rc < 0 or dependency_domain != domain:
+                    raise SystemExit("Keepalived script dependency must retain its SELinux domain: " + path)
+                require_access(domain, context, "file", ["execute", "execute_no_trans"])
+                dependencies[name] = {"path": path, "context": context}
+            observation.update(source_context=source, executable_context=executable,
+                               prospective_daemon_domain=daemon, script_context=script_context,
+                               script_directory_context=file_context(os.path.dirname(script)),
+                               prospective_script_domain=domain, dependencies=dependencies)
+        print(json.dumps(observation, sort_keys=True))
+      - "{{ keepalived_vip_binary_path }}"
+      - "{{ keepalived_vip_script_path }}"
+  register: keepalived_vip_script_selinux_probe
+  changed_when: false
+  check_mode: false
+
+- name: Require a complete reachable Keepalived script SELinux policy observation
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_script_selinux_probe is not failed
+      - keepalived_vip_script_selinux_probe is not unreachable
+      - keepalived_vip_script_selinux_probe is not skipped
+      - keepalived_vip_script_selinux_probe.rc | default(-1) == 0
