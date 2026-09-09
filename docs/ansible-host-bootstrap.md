@@ -153,6 +153,40 @@ Result: READY FOR ANSIBLE TRANSPORT
 This establishes the helper's local checks, not end-to-end connectivity or
 authorization to run workload playbooks.
 
+### Non-TTY Sudo and Existing Prepared Hosts
+
+The root-owned, mode-`0440` policy at
+`/etc/sudoers.d/90-platform-ansible-rocky` is:
+
+```sudoers
+Defaults:rocky !requiretty
+rocky ALL=(ALL) NOPASSWD: ALL
+```
+
+`NOPASSWD` alone does not override `requiretty`. The first line permits only
+`rocky` to use sudo without an interactive terminal; global `requiretty`,
+`use_pty`, and other users' policy are not changed. The helper runs its command
+checks in a new session with no controlling terminal, including
+`runuser -u rocky -- sudo -n true`. Redirecting stdin alone is insufficient when
+the helper is launched from a console.
+
+For an already prepared host, transfer the reviewed updated helper and compare
+its digest as in step 2. Reuse the same reviewed connection arguments and per-VM
+public key, then run step 3's `check`, approved `apply`, and final `check`.
+The old one-line policy is reported not ready by `check`; `check` never rewrites
+it. `apply` can atomically upgrade only the exact previous policy
+(`rocky ALL=(ALL) NOPASSWD: ALL` with one final newline), preserving the account
+and key. The existing file must be root-owned, group root, mode `0440`, a
+single-link regular file, and below root-controlled directories. Candidate
+syntax is validated with `visudo` before publication and legacy content is
+rechecked before replacement. Custom or unsafe policies are refused for review.
+
+The helper lock serializes its own apply runs. Do not edit or converge sudoers
+concurrently through another root process. An error after publication still
+requires review; readiness is reported only after the full final checks pass.
+If the detached sudo check still fails, review the effective host policy rather
+than adding a forced SSH terminal or disabling Ansible pipelining.
+
 ## 4. Authenticate The VM Host Key
 
 `check` and successful `apply` print the host-key fingerprint and a three-field

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import base64
+import errno
 import importlib.util
+import json
 import os
+import pty
+import select
+import signal
 import stat
 import struct
 import subprocess
 import sys
+import time
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -33,6 +39,439 @@ def _public_key(comment: str = "opl test") -> bytes:
     blob = field(b"ssh-ed25519") + field(bytes(range(32)))
     encoded = base64.b64encode(blob).decode("ascii")
     return f"ssh-ed25519 {encoded} {comment}\n".encode("ascii")
+
+
+def _file_state(path: Path) -> tuple[int, ...]:
+    info = os.stat(path, follow_symlinks=False)
+    # Reads may update atime; inode, metadata and nanosecond write/change times
+    # must survive refusals and idempotent runs unchanged.
+    return (
+        info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+        info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def test_run_command_detaches_from_real_controlling_terminal(repo_root: Path) -> None:
+    # forkpty gives the helper's caller a real controlling terminal, even in CI.
+    script = r'''
+import json
+import os
+import runpy
+import signal
+import subprocess
+import sys
+
+signal.alarm(20)
+helper = runpy.run_path(sys.argv[1])
+tty = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+os.close(tty)
+probe = """
+import json
+import os
+import signal
+signal.alarm(5)
+try:
+    tty = os.open('/dev/tty', os.O_RDONLY | os.O_NOCTTY)
+except OSError as error:
+    tty_error = error.errno
+else:
+    os.close(tty)
+    tty_error = None
+print(json.dumps({'tty_error': tty_error, 'stdio_ttys': [os.isatty(fd) for fd in (0, 1, 2)]}))
+"""
+detached = json.loads(helper["run_command"](sys.executable, "-c", probe))
+original_run = subprocess.run
+def undetached_run(*args, **kwargs):
+    kwargs.pop("start_new_session", None)
+    return original_run(*args, **kwargs)
+subprocess.run = undetached_run
+try:
+    control = json.loads(helper["run_command"](sys.executable, "-c", probe))
+finally:
+    subprocess.run = original_run
+print(json.dumps({'caller_has_ctty': True, 'detached': detached, 'control': control}), flush=True)
+'''
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            os.execv(sys.executable, [
+                sys.executable, "-c", script,
+                str(repo_root / "scripts/rocky-ansible-host-prepare"),
+            ])
+        finally:
+            os._exit(127)
+
+    output = bytearray()
+    status = None
+    eof = False
+    deadline = time.monotonic() + 25
+    try:
+        while status is None or not eof:
+            assert time.monotonic() < deadline, f"PTY probe timed out: {output!r}"
+            readable, _, _ = select.select([] if eof else [master], [], [], 0.05)
+            if readable:
+                try:
+                    chunk = os.read(master, 65536)
+                    output.extend(chunk)
+                    eof = not chunk
+                except OSError as error:
+                    if error.errno != errno.EIO:  # Linux PTY slave has closed.
+                        raise
+                    eof = True
+            if status is None:
+                waited, child_status = os.waitpid(pid, os.WNOHANG)
+                if waited:
+                    status = child_status
+        assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors="replace")
+        result = json.loads(output)
+        assert result["caller_has_ctty"] is True
+        assert result["control"] == {"tty_error": None, "stdio_ttys": [False] * 3}
+        assert result["detached"] == {"tty_error": errno.ENXIO, "stdio_ttys": [False] * 3}
+    finally:
+        os.close(master)
+        # Only signal our unreaped forkpty child/session. Detached probes also
+        # have their own alarm, bounding their lifetime if the caller is interrupted.
+        if status is None:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                os.kill(pid, signal.SIGKILL)
+            cleanup_deadline = time.monotonic() + 2
+            while not os.waitpid(pid, os.WNOHANG)[0]:
+                if time.monotonic() >= cleanup_deadline:
+                    pytest.fail("PTY child did not exit after SIGKILL")
+                time.sleep(0.01)
+
+
+@pytest.fixture
+def sudoers_environment(repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    helper = _helper(repo_root)
+    directory = tmp_path / "sudoers.d"
+    directory.mkdir(mode=0o755)
+    target = directory / "90-platform-ansible-rocky"
+    owners: dict[Path, tuple[int, int]] = {}
+    original_lstat = Path.lstat
+    original_fstat = os.fstat
+
+    def root_owned_lstat(path: Path) -> os.stat_result:
+        info = original_lstat(path)
+        if not (path.is_relative_to(directory) or path in directory.parents):
+            return info
+        values = list(info)
+        values[4:6] = owners.get(path, (0, 0))
+        # Model the trusted system ancestors above our sandbox only;
+        # permissions/types inside it still come from the real filesystem.
+        if path in tmp_path.parents:
+            values[0] = int(values[0]) & ~0o022
+        return os.stat_result(values)
+
+    def root_owned_fstat(descriptor: int) -> os.stat_result:
+        values = list(original_fstat(descriptor))
+        path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        if path.is_relative_to(directory):
+            values[4:6] = owners.get(path, (0, 0))
+        return os.stat_result(values)
+
+    def root_fchown(descriptor: int, uid: int, gid: int) -> None:
+        assert (uid, gid) == (0, 0)
+        assert Path(os.readlink(f"/proc/self/fd/{descriptor}")).is_relative_to(directory)
+
+    monkeypatch.setattr(Path, "lstat", root_owned_lstat)
+    # Keep identity emulation local to the helper; writes, modes, links, rename,
+    # fsync and all validation functions execute normally without root.
+    monkeypatch.setattr(helper, "os", SimpleNamespace(
+        **(vars(os) | {"fstat": root_owned_fstat, "fchown": root_fchown}),
+    ))
+    monkeypatch.setattr(helper, "SUDOERS_FILE", target)
+    monkeypatch.setattr(helper, "AUTHORIZED_KEYS", tmp_path / "authorized_keys")
+    monkeypatch.setattr(helper, "AUTHORIZED_KEYS_2", tmp_path / "authorized_keys2")
+    monkeypatch.setattr(helper, "run_command", lambda *_args: pytest.fail("unexpected host command"))
+    return helper, owners
+
+
+@pytest.mark.parametrize("initial", [None, "legacy", "current"])
+def test_sudoers_publication_validates_candidate_and_is_idempotent(
+    sudoers_environment, monkeypatch: pytest.MonkeyPatch, initial: str | None,
+) -> None:
+    helper, _ = sudoers_environment
+    target = helper.SUDOERS_FILE
+    old = b"rocky ALL=(ALL) NOPASSWD: ALL\n"
+    current = b"Defaults:rocky !requiretty\n" + old
+    assert helper.LEGACY_SUDOERS_CONTENT == old
+    assert helper.SUDOERS_CONTENT == current
+    previous = {None: None, "legacy": old, "current": current}[initial]
+    if previous is not None:
+        target.write_bytes(previous)
+        target.chmod(0o440)
+    validated: list[Path] = []
+    events: list[str] = []
+    original_replace = helper.os.replace
+    original_fsync = helper.os.fsync
+
+    def validate(name: str, flag: str, filename: str) -> str:
+        assert (name, flag) == ("visudo", "-cf")
+        candidate = Path(filename)
+        assert candidate != target and candidate.parent == target.parent
+        assert candidate.read_bytes() == current
+        helper.check_path(candidate, uid=0, gid=0, mode=0o440, directory=False)
+        assert (target.read_bytes() if target.exists() else None) == previous
+        validated.append(candidate)
+        events.append("validated")
+        return ""
+
+    def replace(source, destination, *, src_dir_fd, dst_dir_fd):
+        assert events[-1] == "validated"
+        assert source == validated[0].name and destination == target.name
+        assert src_dir_fd == dst_dir_fd
+        assert os.fstat(src_dir_fd).st_ino == target.parent.stat().st_ino
+        original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        events.append("replaced")
+
+    def fsync(descriptor: int) -> None:
+        original_fsync(descriptor)
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            events.append("directory-synced")
+
+    monkeypatch.setattr(helper, "run_command", validate)
+    monkeypatch.setattr(helper.os, "replace", replace)
+    monkeypatch.setattr(helper.os, "fsync", fsync)
+    helper.preflight_managed_files(helper.parse_ed25519_public_key(_public_key()))
+    before = _file_state(target) if target.exists() else None
+    helper.publish_sudoers()
+    assert target.read_bytes() == current
+    helper.check_path(target, uid=0, gid=0, mode=0o440, directory=False)
+    assert list(target.parent.iterdir()) == [target]
+    if initial == "legacy":
+        assert events == ["validated", "replaced", "directory-synced"]
+        assert before is not None
+        assert target.stat().st_ino != before[0]
+    assert len(validated) == (0 if initial == "current" else 1)
+    if initial == "current":
+        assert _file_state(target) == before
+
+    before = _file_state(target)
+    monkeypatch.setattr(helper, "run_command", lambda *_args: pytest.fail("idempotent run invoked visudo"))
+    monkeypatch.setattr(helper.tempfile, "mkstemp", lambda **_kwargs: pytest.fail("idempotent run staged a file"))
+    helper.publish_sudoers()
+    assert _file_state(target) == before
+    assert target.read_bytes() == current
+
+
+@pytest.mark.parametrize("content", [
+    b"rocky ALL=(ALL) NOPASSWD: ALL\n\n",
+    b"rocky ALL=(ALL) NOPASSWD: ALL\n# local policy\n",
+    b"Defaults !requiretty\nrocky ALL=(ALL) NOPASSWD: ALL\n",
+    b"somebody ALL=(ALL) ALL\n",
+])
+def test_sudoers_rejects_unknown_policy_without_rewriting(sudoers_environment, content: bytes) -> None:
+    helper, _ = sudoers_environment
+    target = helper.SUDOERS_FILE
+    target.write_bytes(content)
+    target.chmod(0o440)
+    before = _file_state(target)
+    with pytest.raises(helper.PreparationError, match="different sudoers policy"):
+        helper.preflight_managed_files(helper.parse_ed25519_public_key(_public_key()))
+    with pytest.raises(helper.PreparationError, match="different sudoers policy"):
+        helper.publish_sudoers()
+    assert target.read_bytes() == content
+    assert _file_state(target) == before
+    assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("defect, message", [
+    ("owner", "ownership"), ("group", "ownership"),
+    (0o400, "mode"), (0o644, "mode"), (0o460, "mode"),
+    ("hardlink", "exactly one link"), ("symlink", "type"),
+    ("directory", "type"), ("fifo", "type"),
+])
+def test_sudoers_rejects_bad_metadata_before_staging(
+    sudoers_environment, monkeypatch: pytest.MonkeyPatch, defect, message: str, legacy: bool,
+) -> None:
+    helper, owners = sudoers_environment
+    target = helper.SUDOERS_FILE
+    content = helper.LEGACY_SUDOERS_CONTENT if legacy else helper.SUDOERS_CONTENT
+    target.write_bytes(content)
+    target.chmod(0o440)
+    if defect in ("owner", "group"):
+        owners[target] = (1000, 0) if defect == "owner" else (0, 1000)
+    elif isinstance(defect, int):
+        target.chmod(defect)
+    elif defect == "hardlink":
+        os.link(target, target.parent / "other")
+    else:
+        target.rename(target.parent / "other")
+        if defect == "symlink":
+            target.symlink_to(target.parent / "other")
+        elif defect == "directory":
+            target.mkdir(mode=0o440)
+        else:
+            os.mkfifo(target, 0o440)
+    before = _file_state(target)
+    entries = set(target.parent.iterdir())
+    monkeypatch.setattr(helper.tempfile, "mkstemp", lambda **_kwargs: pytest.fail("unsafe policy staged"))
+    with pytest.raises(helper.PreparationError, match=message):
+        helper.preflight_managed_files(helper.parse_ed25519_public_key(_public_key()))
+    with pytest.raises(helper.PreparationError, match=message):
+        helper.publish_sudoers()
+    assert _file_state(target) == before
+    assert set(target.parent.iterdir()) == entries
+    if stat.S_ISREG(target.lstat().st_mode):
+        assert target.read_bytes() == content
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("defect, message", [
+    ("owner", "not root-owned"), ("writable", "writable"),
+    ("symlink", "not a directory"), ("missing", "absent"),
+])
+def test_sudoers_requires_root_controlled_ancestors(
+    sudoers_environment, tmp_path: Path, existing: bool, defect: str, message: str,
+) -> None:
+    helper, owners = sudoers_environment
+    target = helper.SUDOERS_FILE
+    if existing:
+        target.write_bytes(helper.LEGACY_SUDOERS_CONTENT)
+        target.chmod(0o440)
+    if defect == "owner":
+        owners[target.parent] = (1000, 0)
+    elif defect == "writable":
+        target.parent.chmod(0o775)
+    else:
+        moved = tmp_path / "moved"
+        target.parent.rename(moved)
+        if defect == "symlink":
+            target.parent.symlink_to(moved, target_is_directory=True)
+    with pytest.raises(helper.PreparationError, match=f"ancestor.*{message}"):
+        helper.preflight_managed_files(helper.parse_ed25519_public_key(_public_key()))
+    with pytest.raises(helper.PreparationError, match=f"ancestor.*{message}"):
+        helper.publish_sudoers()
+
+
+@pytest.mark.parametrize("failure", ["visudo", "replace"])
+def test_sudoers_upgrade_failure_preserves_legacy_and_cleans_candidate(
+    sudoers_environment, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    helper, _ = sudoers_environment
+    target = helper.SUDOERS_FILE
+    target.write_bytes(helper.LEGACY_SUDOERS_CONTENT)
+    target.chmod(0o440)
+    before = _file_state(target)
+    validated: list[Path] = []
+
+    def validate(name: str, flag: str, filename: str) -> str:
+        assert (name, flag) == ("visudo", "-cf")
+        candidate = Path(filename)
+        assert candidate.parent == target.parent and candidate != target
+        assert candidate.read_bytes() == helper.SUDOERS_CONTENT
+        assert target.read_bytes() == helper.LEGACY_SUDOERS_CONTENT
+        validated.append(candidate)
+        if failure == "visudo":
+            raise helper.PreparationError("injected visudo failure")
+        return ""
+
+    def fail_replace(*_args, **_kwargs):
+        assert failure == "replace" and len(validated) == 1
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(helper, "run_command", validate)
+    monkeypatch.setattr(helper.os, "replace", fail_replace)
+    error = helper.PreparationError if failure == "visudo" else OSError
+    with pytest.raises(error, match=f"injected {failure} failure"):
+        helper.publish_sudoers()
+    assert len(validated) == 1
+    assert target.read_bytes() == helper.LEGACY_SUDOERS_CONTENT
+    assert _file_state(target) == before
+    assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("change", ["current", "unknown", "missing", "mode"])
+def test_sudoers_upgrade_rechecks_legacy_after_validation(
+    sudoers_environment, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    helper, _ = sudoers_environment
+    target = helper.SUDOERS_FILE
+    target.write_bytes(helper.LEGACY_SUDOERS_CONTENT)
+    target.chmod(0o440)
+    changed = None
+    changed_stat = None
+
+    def validate(name: str, flag: str, filename: str) -> str:
+        nonlocal changed, changed_stat
+        assert (name, flag) == ("visudo", "-cf")
+        assert Path(filename).read_bytes() == helper.SUDOERS_CONTENT
+        if change == "missing":
+            target.unlink()
+        elif change == "mode":
+            target.chmod(0o640)
+        else:
+            target.chmod(0o600)
+            target.write_bytes(helper.SUDOERS_CONTENT if change == "current" else b"local policy\n")
+            target.chmod(0o440)
+        if target.exists():
+            changed = target.read_bytes()
+            changed_stat = _file_state(target)
+        return ""
+
+    monkeypatch.setattr(helper, "run_command", validate)
+    monkeypatch.setattr(helper.os, "replace", lambda *_args, **_kwargs: pytest.fail("replaced changed policy"))
+    message = {"current": "changed during", "unknown": "different sudoers", "missing": "changed during", "mode": "mode"}[change]
+    with pytest.raises(helper.PreparationError, match=message):
+        helper.publish_sudoers()
+    assert (target.read_bytes() if target.exists() else None) == changed
+    assert (_file_state(target) if target.exists() else None) == changed_stat
+    assert list(target.parent.iterdir()) == ([] if change == "missing" else [target])
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_check_mode_requires_current_sudoers_without_rewriting(
+    sudoers_environment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, legacy: bool,
+) -> None:
+    helper, _ = sudoers_environment
+    home = tmp_path / "rocky"
+    home.mkdir(mode=0o700)
+    (home / ".ssh").mkdir(mode=0o700)
+    key = home / ".ssh/authorized_keys"
+    key.write_bytes(_public_key())
+    key.chmod(0o600)
+    target = helper.SUDOERS_FILE
+    content = helper.LEGACY_SUDOERS_CONTENT if legacy else helper.SUDOERS_CONTENT
+    target.write_bytes(content)
+    target.chmod(0o440)
+    before = _file_state(target)
+    user = SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid())
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(helper, "AUTOMATION_HOME", home)
+    monkeypatch.setattr(helper, "AUTHORIZED_KEYS", key)
+    monkeypatch.setattr(helper.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(helper.pwd, "getpwnam", lambda _name: user)
+    monkeypatch.setattr(helper, "check_account_identity", lambda _user: SimpleNamespace(gr_gid=user.pw_gid))
+    monkeypatch.setattr(helper.grp, "getgrnam", lambda _name: SimpleNamespace(gr_gid=2000))
+    monkeypatch.setattr(helper, "account_groups", lambda _user: {user.pw_gid, 2000})
+    monkeypatch.setattr(helper, "password_is_locked", lambda: True)
+    monkeypatch.setattr(helper, "load_public_key", lambda _path: helper.parse_ed25519_public_key(_public_key()))
+    monkeypatch.setattr(helper, "check_base", lambda *_args, **_kwargs: (True, set()))
+    monkeypatch.setattr(helper, "check_effective_ssh_policy", lambda _settings: None)
+    monkeypatch.setattr(helper, "command_path", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(helper, "run_command", lambda *args: calls.append(args) or "")
+    result = helper.main([
+        "check", "--expected-hostname", "node.example", "--public-key-file", str(key),
+        "--controller-address", "192.0.2.20", "--controller-hostname", "controller.example",
+        "--server-address", "192.0.2.30", "--server-port", "22",
+    ])
+    output = capsys.readouterr()
+    assert result == (1 if legacy else 0)
+    if legacy:
+        assert "managed sudoers policy differs" in output.out
+        assert "Result: NOT READY" in output.err
+        assert "Result: READY" not in output.out
+        assert not calls
+    else:
+        assert "Result: READY FOR ANSIBLE TRANSPORT" in output.out
+        assert calls[0] == ("runuser", "-u", "rocky", "--", "/usr/bin/sudo", "-n", "true")
+    assert target.read_bytes() == content
+    assert _file_state(target) == before
+    assert list(target.parent.iterdir()) == [target]
 
 
 def test_argument_contract_requires_explicit_apply_confirmation(repo_root: Path) -> None:
@@ -750,13 +1189,13 @@ def test_existing_account_preflight_rejects_ssh_startup_files(
 
 
 def test_apply_resumes_exact_key_only_partial_state(
-    repo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    sudoers_environment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    helper = _helper(repo_root)
+    helper, _ = sudoers_environment
     home = tmp_path / "rocky"
     ssh_directory = home / ".ssh"
     authorized_keys = ssh_directory / "authorized_keys"
-    sudoers = tmp_path / "sudoers"
+    sudoers = helper.SUDOERS_FILE
     staging = tmp_path / "staging"
     home.mkdir(mode=0o700)
     ssh_directory.mkdir(mode=0o700)

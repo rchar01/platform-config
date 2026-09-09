@@ -16,6 +16,13 @@
   direct/controller-local transport, SSH access provisioning, or
   operator-supplied package coordinates.
 
+- `rocky-ansible-host-prepare` owns the fixed `rocky`-only `!requiretty` exception
+  and detached non-TTY sudo check. Only approved `apply` may atomically upgrade
+  its exact previous root-owned `0440` one-line policy; `check` remains read-only.
+  Reject custom/unsafe policy and retain account/key checks. Its lock coordinates
+  helper applies only; prohibit concurrent out-of-band sudoers edits. See
+  [Host Bootstrap](docs/ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
+
 ## Kubernetes Bastion Boundary
 
 - `platform-config` owns installing and configuring bastion hosts with Ansible.

@@ -32,7 +32,8 @@ AUTOMATION_HOME = Path("/home/rocky")
 AUTHORIZED_KEYS = AUTOMATION_HOME / ".ssh/authorized_keys"
 AUTHORIZED_KEYS_2 = AUTOMATION_HOME / ".ssh/authorized_keys2"
 SUDOERS_FILE = Path("/etc/sudoers.d/90-platform-ansible-rocky")
-SUDOERS_CONTENT = b"rocky ALL=(ALL) NOPASSWD: ALL\n"
+LEGACY_SUDOERS_CONTENT = b"rocky ALL=(ALL) NOPASSWD: ALL\n"
+SUDOERS_CONTENT = b"Defaults:rocky !requiretty\n" + LEGACY_SUDOERS_CONTENT
 SSH_HOST_PUBLIC_KEY = Path("/etc/ssh/ssh_host_ed25519_key.pub")
 LOCK_FILE = Path("/run/lock/platform-ansible-host-prepare.lock")
 HOME_STAGING_DIRECTORY = Path("/home/.platform-ansible-host-prepare")
@@ -155,6 +156,8 @@ def run_command(name: str, *arguments: str) -> str:
         env={"LC_ALL": "C", "PATH": COMMAND_PATH},
         check=False,
         close_fds=True,
+        # DEVNULL alone leaves a console's controlling terminal available to sudo.
+        start_new_session=True,
         timeout=15,
     )
     if result.returncode != 0:
@@ -436,8 +439,7 @@ def check_account(public_key: PublicKey) -> None:
     require(read_managed_file(AUTHORIZED_KEYS) == public_key.content, "authorized key differs from the supplied per-VM key")
     require(not path_exists(AUTHORIZED_KEYS_2), f"conflicting key file exists: {AUTHORIZED_KEYS_2}")
     check_ssh_directory_entries(AUTOMATION_HOME / ".ssh")
-    check_path(SUDOERS_FILE, uid=0, gid=0, mode=0o440, directory=False)
-    require(read_managed_file(SUDOERS_FILE) == SUDOERS_CONTENT, "managed sudoers policy differs from the required policy")
+    require(preflight_sudoers() == SUDOERS_CONTENT, "managed sudoers policy differs from the required policy")
     run_command("runuser", "-u", AUTOMATION_USER, "--", command_path("sudo"), "-n", "true")
     for path in (
         AUTOMATION_HOME,
@@ -447,7 +449,7 @@ def check_account(public_key: PublicKey) -> None:
     ):
         run_command("matchpathcon", "-V", os.fspath(path))
     ok("automation account, key, permissions, and password lock are correct")
-    ok("passwordless non-interactive sudo succeeds")
+    ok("passwordless sudo succeeds without a controlling terminal")
     ok("managed paths have their expected SELinux contexts")
 
 
@@ -592,12 +594,24 @@ def ensure_account_state_before_apply() -> tuple[pwd.struct_passwd | None, grp.s
     return user, primary
 
 
+def preflight_sudoers() -> bytes | None:
+    validate_root_controlled_ancestors(SUDOERS_FILE)
+    if not path_exists(SUDOERS_FILE):
+        return None
+    check_path(SUDOERS_FILE, uid=0, gid=0, mode=0o440, directory=False)
+    content = read_managed_file(SUDOERS_FILE)
+    require(
+        content in (LEGACY_SUDOERS_CONTENT, SUDOERS_CONTENT),
+        "refusing to replace a different sudoers policy",
+    )
+    return content
+
+
 def preflight_managed_files(public_key: PublicKey) -> None:
     require(not path_exists(AUTHORIZED_KEYS_2), f"conflicting key file exists: {AUTHORIZED_KEYS_2}")
     if path_exists(AUTHORIZED_KEYS):
         require(read_managed_file(AUTHORIZED_KEYS) == public_key.content, "refusing to replace a different authorized key")
-    if path_exists(SUDOERS_FILE):
-        require(read_managed_file(SUDOERS_FILE) == SUDOERS_CONTENT, "refusing to replace a different sudoers policy")
+    preflight_sudoers()
 
 
 def write_all(descriptor: int, content: bytes) -> None:
@@ -663,8 +677,8 @@ def publish_file(
 
 
 def publish_sudoers() -> None:
-    if path_exists(SUDOERS_FILE):
-        publish_file(SUDOERS_FILE, SUDOERS_CONTENT, uid=0, gid=0, mode=0o440)
+    previous = preflight_sudoers()
+    if previous == SUDOERS_CONTENT:
         return
 
     descriptor, temporary_name = tempfile.mkstemp(prefix=".platform-ansible-rocky.", dir=SUDOERS_FILE.parent)
@@ -677,7 +691,22 @@ def publish_sudoers() -> None:
         os.close(descriptor)
         descriptor = -1
         run_command("visudo", "-cf", os.fspath(temporary))
-        publish_file(SUDOERS_FILE, SUDOERS_CONTENT, uid=0, gid=0, mode=0o440)
+        if previous == LEGACY_SUDOERS_CONTENT:
+            # Only upgrade our exact previous policy, after validating the candidate.
+            require(preflight_sudoers() == previous, "sudoers policy changed during preparation")
+            directory_descriptor = os.open(
+                SUDOERS_FILE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            try:
+                os.replace(
+                    temporary.name, SUDOERS_FILE.name,
+                    src_dir_fd=directory_descriptor, dst_dir_fd=directory_descriptor,
+                )
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        else:
+            publish_file(SUDOERS_FILE, SUDOERS_CONTENT, uid=0, gid=0, mode=0o440)
     except Exception:
         if descriptor >= 0:
             os.close(descriptor)

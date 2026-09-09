@@ -98,6 +98,11 @@ make storage-test-preflight ENV=config-test LIMIT=storage-volume-test-01
 Most Make targets accept `ENV`, `PLAYBOOK`, `LIMIT`, and `EXTRA_ARGS`. Real
 runs require the matching private environment file and inventory.
 
+Managed-host preparation includes a `rocky`-only non-TTY sudo exception and a
+detached sudo check. The helper can upgrade its exact previous policy on an
+approved rerun; see
+[Non-TTY Sudo](docs/ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
+
 ### OpenBao Acceptance
 
 Standalone dev OpenBao acceptance does not depend on the monitoring stack or

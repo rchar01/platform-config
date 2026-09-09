@@ -35,7 +35,10 @@ Use this cross-repository workflow for each managed VM:
    the fixed Rocky 10.0 `rocky`/`access_ssh` boundary, transfer
    `scripts/rocky-ansible-host-prepare` and the per-VM public key through the
    authenticated console or provisioning channel, then run its explicit
-   `apply` and `check` operations as root.
+    `apply` and `check` operations as root. The managed policy includes a
+    `rocky`-only `!requiretty` exception and the sudo probe has no controlling
+    terminal. An approved rerun can upgrade the helper's exact old policy; see
+    [existing prepared hosts](ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
 3. Authenticate the VM's SSH host public key through the console,
    infrastructure authority, or another independent channel. `ssh-keyscan` can
    collect a candidate but cannot authenticate it.
