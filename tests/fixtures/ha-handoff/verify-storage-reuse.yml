@@ -111,19 +111,30 @@
     storage_volume_reuse_filesystem_sizes:
       results:
         - rc: 0
-          stdout: |
-            blocksize = 4096
-            dblocks = {{
-              1835008
-              if test_storage_reuse_scenario | default('valid') == 'growth_wrong_geometry'
-              else (
-                2097152
-                if test_storage_reuse_scenario | default('valid') == 'growth_converged'
-                else 1572864
-              )
-            }}
+          stdout: "{{ test_storage_xfs_geometry | default(storage_volume_reuse_test_geometry) }}"
           skipped: "{{ not test_storage_growth | default(false) | bool }}"
           storage_volume_reuse_requested_volume: "{{ storage_volume_reuse_primary_volume }}"
+    storage_volume_reuse_test_geometry: |
+      meta-data=/dev/mapper/test_data-primary isize=512    agcount=4, agsize=393216 blks
+               =                       sectsz=512   attr=2, projid32bit=1
+               =                       crc=1        finobt=1, sparse=1, rmapbt=0
+               =                       reflink=1    bigtime=1 inobtcount=1 nrext64=0
+      data     =                       bsize=4096   blocks={{ storage_volume_reuse_test_blocks }}, imaxpct=25
+               =                       sunit=0      swidth=0 blks
+      naming   =version 2               bsize=4096   ascii-ci=0, ftype=1
+      log      =internal log            bsize=4096   blocks=16384, version=2
+               =                       sectsz=512   sunit=0 blks, lazy-count=1
+      realtime =none                    extsz=4096   blocks=0, rtextents=0
+    storage_volume_reuse_test_blocks: >-
+      {{
+        1835008
+        if test_storage_reuse_scenario | default('valid') == 'growth_wrong_geometry'
+        else (
+          2097152
+          if test_storage_reuse_scenario | default('valid') == 'growth_converged'
+          else 1572864
+        )
+      }}
     storage_volume_reuse_layout_state: {}
   tasks:
     - name: Add an unexpected second PV to the observed VG

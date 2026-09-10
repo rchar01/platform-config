@@ -327,17 +327,14 @@
     - not ansible_check_mode
 
 - name: Inspect grown XFS storage geometry
+  # Read mounted geometry: a raw superblock can lag journaled online growth.
   ansible.builtin.command:
     argv:
-      - xfs_db
-      - -r
-      - -c
-      - sb 0
-      - -c
-      - p blocksize
-      - -c
-      - p dblocks
-      - "{{ storage_volume_lv_device }}"
+      - xfs_growfs
+      - -n
+      - "{{ storage_volume_mountpoint }}"
+  environment:
+    LC_ALL: C
   register: storage_volume_growth_xfs_report
   changed_when: false
   check_mode: false
@@ -367,7 +364,8 @@
     storage_volume_growth_xfs_values: >-
       {{
         storage_volume_growth_xfs_report.stdout
-        | regex_findall('(?m)^(?:blocksize|dblocks) = ([0-9]+)$')
+        | regex_findall('(?m)^data[ \t]*=[ \t]+bsize=([0-9]+)[ \t]+blocks=([0-9]+),[^\r\n]*$')
+        | flatten
       }}
     storage_volume_growth_target_bytes: >-
       {{

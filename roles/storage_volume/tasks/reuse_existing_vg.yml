@@ -231,15 +231,11 @@
 - name: Inspect requested existing XFS growth geometry
   ansible.builtin.command:
     argv:
-      - xfs_db
-      - -r
-      - -c
-      - sb 0
-      - -c
-      - p blocksize
-      - -c
-      - p dblocks
-      - "/dev/{{ storage_volume_reuse_layout.vg_name }}/{{ storage_volume_reuse_requested_volume.lv_name }}"
+      - xfs_growfs
+      - -n
+      - "{{ storage_volume_reuse_requested_volume.mountpoint }}"
+  environment:
+    LC_ALL: C
   loop: "{{ storage_volume_reuse_requested_volumes | selectattr('grow_from_size_gib', 'defined') | list }}"
   loop_control:
     loop_var: storage_volume_reuse_requested_volume

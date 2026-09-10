@@ -171,7 +171,8 @@
     storage_volume_reuse_filesystem_size_values: >-
       {{
         storage_volume_reuse_filesystem_size.stdout
-        | regex_findall('(?m)^(?:blocksize|dblocks) = ([0-9]+)$')
+        | regex_findall('(?m)^data[ \t]*=[ \t]+bsize=([0-9]+)[ \t]+blocks=([0-9]+),[^\r\n]*$')
+        | flatten
       }}
     storage_volume_reuse_filesystem_size_matching_lvs: >-
       {{
@@ -313,7 +314,8 @@
     storage_volume_reuse_filesystem_size_values: >-
       {{
         storage_volume_reuse_filesystem_size.stdout
-        | regex_findall('(?m)^(?:blocksize|dblocks) = ([0-9]+)$')
+        | regex_findall('(?m)^data[ \t]*=[ \t]+bsize=([0-9]+)[ \t]+blocks=([0-9]+),[^\r\n]*$')
+        | flatten
       }}
     storage_volume_reuse_filesystem_size_target_bytes: >-
       {{

@@ -56,6 +56,14 @@ size. Shrinking, missing growth-marked LVs, intermediate sizes, and other
 filesystems fail closed. After successful growth, removing
 `grow_from_size_gib` returns the volume to ordinary exact-target management.
 
+Preflight and post-growth checks read live mounted XFS geometry with
+`LC_ALL=C xfs_growfs -n <mountpoint>`, which reports geometry without growing the
+filesystem. Only the single `data` row supplies block size and count; metadata
+and internal-log fields are not filesystem capacity. Raw-device `xfs_db` reads
+can lag journaled online growth and are not used for these checks. An already
+converged filesystem needs no further growth; the existing size bounds are
+unchanged. The fixed `storage-apply` route still requires a zero-change second apply.
+
 Example:
 
 ```yaml
