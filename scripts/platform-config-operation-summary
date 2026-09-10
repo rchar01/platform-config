@@ -15,6 +15,10 @@ from typing import Any
 
 OPERATIONS = {
     "storage-check": ("inventory", "connectivity", "storage-check"),
+    "storage-apply": (
+        "inventory", "connectivity", "storage-check", "storage-apply",
+        "storage-idempotence", "storage-verify",
+    ),
     "rke2-bootstrap-plan": (
         "inventory",
         "connectivity",
@@ -97,6 +101,8 @@ COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "i
 OPENBAO_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-"))
 UNCHANGED_PHASES = frozenset(
     {
+        "storage-idempotence",
+        "storage-verify",
         "rke2-post-check",
         "kube-vip-post-check",
         "rke2-gitlab-runner-post-check",
@@ -200,6 +206,79 @@ def command_initialize(args: argparse.Namespace) -> None:
     )
 
 
+def command_storage_apply_controller_vars(args: argparse.Namespace) -> None:
+    # Match platform-ci/templates/storage-apply.yml. Direct controllers may
+    # supply just the per-host key map, leaving transport policy in inventory.
+    null_fields = {
+        "ansible_become_password", "ansible_become_pass", "ansible_sudo_pass",
+        "ansible_su_pass", "ansible_private_key", "ansible_password", "ansible_ssh_pass",
+    }
+    fixed_fields = {
+        "ansible_ssh_password_mechanism": "disable",
+        "ansible_ssh_pkcs11_provider": "",
+        "ansible_ssh_common_args": "",
+        "ansible_ssh_extra_args": "",
+        "ansible_ssh_private_key_file": "{{ platform_ci_ssh_private_key_files[inventory_hostname] }}",
+    }
+    allowed = null_fields | fixed_fields.keys() | {
+        "platform_ci_ssh_private_key_files", "ansible_ssh_executable", "ansible_ssh_args",
+    }
+
+    def no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise SummaryError
+            result[key] = value
+        return result
+
+    def literal(value: object) -> str:
+        text = safe_text(value, 8192)
+        if any(marker in text for marker in ("{{", "{%", "{#")):
+            raise SummaryError
+        return text
+
+    descriptor = os.open(args.input, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        details = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid()
+                or stat.S_IMODE(details.st_mode) & 0o077):
+            raise SummaryError
+        payload = stream.read(MAX_INPUT_BYTES + 1)
+    if len(payload) > MAX_INPUT_BYTES:
+        raise SummaryError
+    try:
+        values = json.loads(payload, object_pairs_hook=no_duplicates)
+    except (ValueError, UnicodeError):
+        raise SummaryError from None
+    if not isinstance(values, dict) or values.keys() - allowed:
+        raise SummaryError
+    for key, value in values.items():
+        if key in null_fields:
+            if value is not None:
+                raise SummaryError
+        elif key in fixed_fields:
+            if value != fixed_fields[key]:
+                raise SummaryError
+        elif key == "platform_ci_ssh_private_key_files":
+            if not isinstance(value, dict) or args.node not in value:
+                raise SummaryError
+            for host, path in value.items():
+                if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", safe_host(host)) is None:
+                    raise SummaryError
+                if not literal(path).startswith("/"):
+                    raise SummaryError
+        elif key == "ansible_ssh_executable":
+            if not literal(value).startswith("/"):
+                raise SummaryError
+        else:
+            literal(value)
+    if "ansible_ssh_private_key_file" in values and "platform_ci_ssh_private_key_files" not in values:
+        raise SummaryError
+    # Every Ansible call uses this validated snapshot, never the mutable input.
+    write_records(args.output, [values], create=True)
+
+
 def group_hosts(inventory: dict[str, Any], group: str) -> set[str]:
     found: set[str] = set()
     visiting: set[str] = set()
@@ -237,7 +316,7 @@ def command_hosts(args: argparse.Namespace) -> None:
         raise SummaryError
     records = []
     node = getattr(args, "node", None)
-    if operation == "storage-check":
+    if operation in {"storage-check", "storage-apply"}:
         if (
             not isinstance(node, str)
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", node) is None
@@ -257,6 +336,13 @@ def command_hosts(args: argparse.Namespace) -> None:
         volumes = values.get("storage_volumes")
         if not isinstance(volumes, list) or not volumes or not isinstance(values.get("storage_volume_layouts", []), list):
             raise SummaryError
+        if operation == "storage-apply":
+            # Match storage_volume/tasks/volume.yml and defaults/main.yml.
+            # Unresolved or non-string states fail closed before any target I/O.
+            default_state = values.get("storage_volume_default_mount_state", "mounted")
+            if any(not isinstance(volume, dict) or volume.get("state", default_state) != "mounted"
+                   for volume in volumes):
+                raise SummaryError
         records.append({"schema": 1, "kind": "host", "host": node,
                         "role": "server" if node in servers else "agent"})
     elif node is not None:
@@ -361,6 +447,13 @@ def command_render(args: argparse.Namespace) -> int:
     if not 0 <= args.status <= 255:
         raise SummaryError
     operation, phases, hosts, records = parse_records(args.input)
+    through = getattr(args, "through", None)
+    if through is not None:
+        # Only the fixed storage apply route uses prefix evidence to gate its
+        # next command. Ordinary render always requires the complete operation.
+        if operation != "storage-apply" or through not in phases:
+            raise SummaryError
+        phases = phases[:phases.index(through) + 1]
     phase_status: dict[str, int | None] = {}
     recaps: dict[tuple[str, str], dict[str, int]] = {}
     tasks: dict[str, dict[str, set[str]]] = {
@@ -399,6 +492,8 @@ def command_render(args: argparse.Namespace) -> int:
             task = safe_text(record.get("task"), 255)
             if phase not in phases or outcome not in tasks:
                 raise SummaryError
+            if operation == "storage-apply" and host not in hosts:
+                raise SummaryError
             if host in hosts:
                 tasks[outcome][task].add(host)
         elif kind == "recap":
@@ -414,6 +509,8 @@ def command_render(args: argparse.Namespace) -> int:
                 or not 0 <= counters[counter] <= 1_000_000
                 for counter in COUNTERS
             ):
+                raise SummaryError
+            if operation == "storage-apply" and host not in hosts:
                 raise SummaryError
             if host in hosts:
                 key = (phase, host)
@@ -464,6 +561,7 @@ def command_render(args: argparse.Namespace) -> int:
                     if (
                         recap["failures"] > 0
                         or recap["unreachable"] > 0
+                        or (operation == "storage-apply" and (recap["ignored"] > 0 or recap["rescued"] > 0))
                         or (phase in UNCHANGED_PHASES and recap["changed"] > 0)
                     )
                     else "PASS"
@@ -496,6 +594,7 @@ def command_render(args: argparse.Namespace) -> int:
         and not invalid
         and args.status == 0
         and (operation not in OPENBAO_OPERATIONS or len(hosts) == 3)
+        and (operation != "storage-apply" or len(hosts) == 1)
         and all(role != "N/A" for role in hosts.values())
         and all(result == "PASS" for result in host_results.values())
         and all(phase in phase_status and phase_status[phase] == 0 for phase in phases)
@@ -554,6 +653,10 @@ def parser() -> argparse.ArgumentParser:
     hosts.add_argument("--inventory", required=True, type=Path)
     hosts.add_argument("--output", required=True, type=Path)
     hosts.add_argument("--node")
+    controller = subparsers.add_parser("storage-apply-controller-vars", add_help=False)
+    controller.add_argument("--input", required=True, type=Path)
+    controller.add_argument("--output", required=True, type=Path)
+    controller.add_argument("--node", required=True)
     phase = subparsers.add_parser("phase", add_help=False)
     phase.add_argument("--output", required=True, type=Path)
     phase.add_argument("--phase", required=True)
@@ -562,6 +665,7 @@ def parser() -> argparse.ArgumentParser:
     render = subparsers.add_parser("render", add_help=False)
     render.add_argument("--input", required=True, type=Path)
     render.add_argument("--status", required=True, type=int)
+    render.add_argument("--through")
     return result
 
 
@@ -572,6 +676,8 @@ def main() -> int:
             command_initialize(args)
         elif args.command == "hosts":
             command_hosts(args)
+        elif args.command == "storage-apply-controller-vars":
+            command_storage_apply_controller_vars(args)
         elif args.command == "phase":
             command_phase(args)
         elif args.command == "render":

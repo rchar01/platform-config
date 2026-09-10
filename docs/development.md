@@ -221,6 +221,21 @@ LVM, XFS, mount, idempotency, or reboot behavior; that evidence requires the
 explicit `storage-test-*` sequence against a disposable fixture described in
 [Storage Volume Acceptance Fixture](storage-volume-test.md).
 
+Focused fixed-route checks use:
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_storage_check.py tests/python/test_storage_apply.py \
+  tests/python/test_operation_summary.py
+```
+
+These cover single-node scope, fixed check/apply commands, phase-failure gates,
+signal handling, transport-only controller JSON and snapshot isolation, pre-ping
+mounted-state validation, and real Ansible callback rejection of a changed second apply.
+Mounted-state assertions use synthetic target probes; they do not qualify live
+LVM/XFS, kernel mount behavior, or private excluded-path requirements. See
+[Storage Apply](storage-check.md#storage-apply).
+
 `ansible-lint`, `yamllint`, and `make test` are development checks. They are not required on managed hosts. These Make targets use the development image through a sanitized test profile: the public repository is mounted read-only at `/workspace`, invocation-local writable state is overlaid at `/workspace/.ansible`, and private configuration, SSH files, the external secret store, the SSH agent, and the Podman socket are not exposed. Their configuration excludes `.ansible/` and the vendored bastion runtime.
 
 `make check-dev-toolchain` reports the Python, pytest, Ansible, lint, shell, crypto, and GNU utility versions used by tests and runs `python -m pip check`. `make check-test-container-profile` verifies the sanitized mount, identity, cache, executable-scratch, and secret-isolation contract. `make check-container-wrapper` verifies success, failure, SIGINT/SIGTERM interruption status, and temporary-state cleanup. All three checks are included in `make verify`.

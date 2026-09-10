@@ -31,18 +31,25 @@ def summary(repo_root):
     return module
 
 
-@pytest.mark.parametrize("bad", ["outside", "empty", "group", "dual-role", "not-storage", "address"])
-def test_storage_selection_rejects_invalid_hosts(summary, isolated_test_dir, bad):
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply"])
+@pytest.mark.parametrize("bad", ["outside", "vault", "empty", "group", "dual-role", "no-role", "not-storage", "address"])
+def test_storage_selection_rejects_invalid_hosts(summary, isolated_test_dir, bad, operation):
     data = inventory()
     node = "server-a"
     if bad == "outside":
         node = "runner"
+    elif bad == "vault":
+        node = "vault-a"
+        data["storage_volume_hosts"]["hosts"].append(node)
+        data["_meta"]["hostvars"][node] = {"storage_volumes": [{}]}
     elif bad == "empty":
         data["_meta"]["hostvars"][node]["storage_volumes"] = []
     elif bad == "group":
         data[node] = {"hosts": ["agent-a"]}
     elif bad == "dual-role":
         data["rke2_agents"]["hosts"].append(node)
+    elif bad == "no-role":
+        data["rke2_servers"]["hosts"] = []
     elif bad == "address":
         node = "192.0.2.1"
         data["rke2_cluster"]["hosts"] = [node]
@@ -54,7 +61,7 @@ def test_storage_selection_rejects_invalid_hosts(summary, isolated_test_dir, bad
     path.write_text(json.dumps(data))
     path.chmod(0o600)
     with pytest.raises(summary.SummaryError):
-        summary.command_hosts(SimpleNamespace(operation="storage-check", node=node,
+        summary.command_hosts(SimpleNamespace(operation=operation, node=node,
                                               inventory=path, output=isolated_test_dir / "unused"))
 
 
@@ -111,12 +118,13 @@ raise SystemExit(2 if failed else 0)
     assert "agent-a" not in result.stdout
 
 
-@pytest.mark.parametrize("node", [None, "all", "ungrouped", "rke2_cluster:runner", "*", "--help"])
-def test_storage_launcher_rejects_host_patterns(repo_root, isolated_test_dir, command_runner, node):
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply"])
+@pytest.mark.parametrize("node", [None, "all", "ungrouped", "rke2_cluster:runner", "*", "--help", "server-a,agent-a"])
+def test_storage_launcher_rejects_host_patterns(repo_root, isolated_test_dir, command_runner, node, operation):
     path = isolated_test_dir / "private.json"
     path.write_text("{}")
     path.chmod(0o600)
-    args = [repo_root / "scripts/platform-config-operation", "storage-check", "--inventory", path, "--controller-vars", path]
+    args = [repo_root / "scripts/platform-config-operation", operation, "--inventory", path, "--controller-vars", path]
     if node is not None:
         args += ["--node", node]
     result = command_runner.run(args)
@@ -134,13 +142,16 @@ def test_node_argument_is_rejected_by_other_routes(repo_root, isolated_test_dir,
     assert "only accepted by storage-check" in result.stderr
 
 
-@pytest.mark.parametrize("extra", [["--apply"], ["--limit", "all"], ["--node", "agent-a"]])
-def test_storage_check_rejects_broad_or_duplicate_arguments(repo_root, isolated_test_dir, command_runner, extra):
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply"])
+@pytest.mark.parametrize("extra", [["--apply"], ["--limit", "all"], ["--node", "agent-a"],
+                                   ["--playbook", "other.yml"], ["--extra-vars", "initialize=true"],
+                                   ["--list"], ["--all"], ["--retry"]])
+def test_storage_check_rejects_broad_or_duplicate_arguments(repo_root, isolated_test_dir, command_runner, extra, operation):
     path = isolated_test_dir / "private.json"
     path.write_text("{}")
     path.chmod(0o600)
     result = command_runner.run([
-        repo_root / "scripts/platform-config-operation", "storage-check",
+        repo_root / "scripts/platform-config-operation", operation,
         "--inventory", path, "--controller-vars", path, "--node", "server-a", *extra,
     ])
     result.assert_failure()

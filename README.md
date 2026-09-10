@@ -103,6 +103,15 @@ detached sudo check. The helper can upgrade its exact previous policy on an
 approved rerun; see
 [Non-TTY Sudo](docs/ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
 
+### RKE2 Storage Operations
+
+The fixed `storage-check` and `storage-apply` routes accept one literal RKE2 storage
+host per call. Apply first validates transport-only controller JSON and mounted
+inventory declarations, then runs a fresh check, the existing storage role, a
+second real apply requiring zero changes, and read-only mounted-state verification. Private
+CI owns per-node manual confirmation; failed or interrupted runs require review
+before another attempt. See [Storage Operations](docs/storage-check.md).
+
 ### OpenBao Acceptance
 
 Standalone dev OpenBao acceptance does not depend on the monitoring stack or
@@ -217,7 +226,7 @@ platform-docs documents the design and operations across all repositories.
   [in-cluster Runner](roles/rke2_gitlab_runner/README.md) with a private
   HTTPS Helm repository override and unchanged upstream default
   (an optional HTTPS clone origin preserves checkout through approved proxies)
-- [Read-only RKE2 storage checks](docs/storage-check.md)
+- [RKE2 storage checks and single-node apply](docs/storage-check.md)
 - [GitLab Runner offline preload](roles/gitlab_runner/README.md#temporary-offline-preload):
   temporary dedicated trusted-runner `if-not-present` override; the default and
   self-bootstrap remain `always`.

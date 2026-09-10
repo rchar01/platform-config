@@ -1,0 +1,38 @@
+---
+- name: Verify mounted storage after single-node apply
+  hosts: storage_volume_hosts
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require one RKE2 storage host
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname in groups.get('rke2_cluster', [])
+          - (inventory_hostname in groups.get('rke2_servers', [])) != (inventory_hostname in groups.get('rke2_agents', []))
+          - storage_volumes | default([]) | length > 0
+
+    - name: Read storage defaults without overriding inventory
+      ansible.builtin.include_vars:
+        file: ../../roles/storage_volume/defaults/main.yml
+        name: storage_verify_defaults
+
+    - name: Verify each declared mounted volume
+      ansible.builtin.include_tasks: tasks/storage-volumes-verify-mount.yml
+      loop: "{{ storage_volumes }}"
+      loop_control:
+        loop_var: storage_verify_volume
+        label: "{{ storage_verify_volume.mountpoint }}"
+      vars:
+        storage_verify_layout: >-
+          {{ storage_volume_layouts | default([])
+             | selectattr('name', 'equalto', storage_verify_volume.layout | default(''))
+             | first | default({}) }}
+        storage_volume_mountpoint: "{{ storage_verify_volume.mountpoint }}"
+        storage_volume_lv_device: >-
+          /dev/{{ storage_verify_volume.vg_name | default(storage_verify_layout.vg_name) }}/{{ storage_verify_volume.lv_name }}
+        storage_verify_fstype: >-
+          {{ storage_verify_volume.fstype | default(storage_volume_default_fstype | default(storage_verify_defaults.storage_volume_default_fstype)) }}
+        storage_verify_options: >-
+          {{ (storage_verify_volume.mount_options | default(storage_volume_default_mount_options | default(storage_verify_defaults.storage_volume_default_mount_options))).split(',') }}

@@ -48,6 +48,19 @@
   `--node`; it never accepts arbitrary playbooks or apply flags. Predicted
   changes are plan output, not a failure. CI may repeat this route sequentially
   across its reviewed scope and must retain failure status for any failed node.
+- `storage-apply` uses the same exact-node scope and fixed storage role: inventory,
+  ping, fresh `--check --diff`, apply, second real apply, and read-only mounted-state
+  verification. Gate each next command on complete successful evidence; the second
+  apply must report zero changes and no failed/unreachable/ignored/rescued tasks.
+  No lists/all, arbitrary arguments, automatic retries, or initialization override.
+  Apply alone accepts only the documented transport-only controller JSON schema;
+  validate and snapshot it before inventory execution. Reject effective non-mounted
+  inventory volume states before ping. Keep the schema aligned with the generated
+  `platform-ci/templates/storage-apply.yml` map and transport fields.
+  Private CI owns per-node check/manual-apply pairs and native UI confirmation;
+  this is not API-proof approval. Interruptions are not rollback. Keep layouts and
+  excluded service paths in reviewed private inventory, not public launcher logic.
+  See [Storage Apply](docs/storage-check.md#storage-apply).
 
 - In-cluster Runner Helm repository overrides belong in private inventory via
   `rke2_gitlab_runner_chart_repo`. Preserve the public upstream default, indexed

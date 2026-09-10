@@ -1,0 +1,39 @@
+---
+- name: Reuse storage role mount identity verification
+  ansible.builtin.include_tasks: ../../../roles/storage_volume/tasks/verify_mountpoint.yml
+  vars:
+    storage_volume_mountpoint_check_phase: post-apply verification
+
+- name: Require the declared filesystem to be mounted
+  ansible.builtin.assert:
+    that:
+      - storage_volume_mountpoint_records | length == 1
+      - storage_volume_mountpoint_records[0].fstype == storage_verify_fstype
+    fail_msg: "The declared storage filesystem must be actively mounted after apply."
+
+- name: Read active storage mount options
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --json
+      - --mountpoint
+      - "{{ storage_volume_mountpoint }}"
+      - --output
+      - OPTIONS
+  register: storage_verify_active_mount
+  changed_when: false
+  check_mode: false
+
+- name: Require declared active storage mount options
+  ansible.builtin.assert:
+    that:
+      - storage_verify_mount_rows | length == 1
+      # These userspace options do not appear in the kernel mount option list.
+      - storage_verify_options | difference(['defaults', 'auto', 'noauto', 'nofail', '_netdev', 'exec', 'dev', 'suid']) | difference(storage_verify_active_options) | length == 0
+      - "'exec' not in storage_verify_options or 'noexec' not in storage_verify_active_options"
+      - "'dev' not in storage_verify_options or 'nodev' not in storage_verify_active_options"
+      - "'suid' not in storage_verify_options or 'nosuid' not in storage_verify_active_options"
+    fail_msg: "Active storage mount options do not match the reviewed declaration."
+  vars:
+    storage_verify_mount_rows: "{{ (storage_verify_active_mount.stdout | from_json).filesystems }}"
+    storage_verify_active_options: "{{ storage_verify_mount_rows[0].options.split(',') }}"

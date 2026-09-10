@@ -3,8 +3,8 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check only)]' \
-    'Fixed operations: storage-check, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
+    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check/storage-apply only)]' \
+    'Fixed operations: storage-check, storage-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
 }
 
 fail() {
@@ -81,7 +81,7 @@ truncate_summary_output() {
 operation=$1
 shift
 case "$operation" in
-  storage-check) ;;
+  storage-check | storage-apply) ;;
   rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status | openbao-restart-plan | openbao-restart | openbao-converge-plan | openbao-deploy | openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate | openbao-smoke | openbao-vip-smoke) ;;
   *) fail "unsupported operation: $operation" ;;
 esac
@@ -216,14 +216,20 @@ done
 
 [[ -n $inventory ]] || fail "--inventory is required"
 [[ -n $controller_vars ]] || fail "--controller-vars is required"
-if [[ $operation == storage-check ]]; then
+if [[ $operation == storage-check || $operation == storage-apply ]]; then
   [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$ && $node != all && $node != ungrouped ]] ||
-    fail "storage-check requires --node with one literal inventory hostname"
+    fail "$operation requires --node with one literal inventory hostname"
 else
-  [[ -z $node ]] || fail "--node is only accepted by storage-check"
+  [[ -z $node ]] || fail "--node is only accepted by storage-check or storage-apply"
 fi
 require_private_file inventory "$inventory"
 require_owner_private_file controller-vars "$controller_vars"
+if [[ $operation == storage-apply ]]; then
+  "$summary_tool" storage-apply-controller-vars --input "$controller_vars" \
+    --output "$summary_dir/controller-vars.json" --node "$node" ||
+    fail "storage-apply controller-vars must be transport-only JSON"
+  controller_vars="$summary_dir/controller-vars.json"
+fi
 
 case "$operation" in
   openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate)
@@ -244,7 +250,7 @@ export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
 
 extra_vars=(--extra-vars "@$controller_vars")
 summary_host_args=()
-if [[ $operation == storage-check ]]; then
+if [[ $operation == storage-check || $operation == storage-apply ]]; then
   summary_host_args=(--node "$node")
 fi
 
@@ -370,6 +376,12 @@ run_playbook() {
     "${extra_vars[@]}"
 }
 
+require_storage_apply_evidence() {
+  # Fail before the next command even when Ansible exits zero with incomplete,
+  # ignored, or rescued evidence. Final reporting still runs through finish.
+  "$summary_tool" render --input "$summary_events" --status 0 --through "$1" >/dev/null
+}
+
 run_openbao_status() {
   local phase=$1
   local allow_desired_config_drift=$2
@@ -407,6 +419,18 @@ case "$operation" in
   storage-check)
     ping_group connectivity "$node"
     run_playbook storage-check playbooks/storage-volumes.yml "$node" --check --diff
+    ;;
+  storage-apply)
+    ping_group connectivity "$node"
+    require_storage_apply_evidence connectivity
+    run_playbook storage-check playbooks/storage-volumes.yml "$node" --check --diff
+    require_storage_apply_evidence storage-check
+    run_playbook storage-apply playbooks/storage-volumes.yml "$node"
+    require_storage_apply_evidence storage-apply
+    # This is a real second apply, not a prediction or an automatic retry.
+    run_playbook storage-idempotence playbooks/storage-volumes.yml "$node"
+    require_storage_apply_evidence storage-idempotence
+    run_playbook storage-verify playbooks/maintenance/storage-volumes-verify.yml "$node"
     ;;
   rke2-bootstrap-plan)
     ping_group connectivity rke2_cluster

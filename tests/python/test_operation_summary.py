@@ -177,6 +177,47 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
     assert "Observed failed tasks:\n  none" in result.stdout
 
 
+@pytest.mark.parametrize("counter", [None, "changed", "failures", "unreachable", "ignored", "rescued", "missing"])
+def test_storage_apply_summary_requires_clean_real_idempotence(
+    repo_root, isolated_test_dir, command_runner, counter,
+):
+    events = _initialize(repo_root, command_runner, isolated_test_dir, "storage-apply")
+    _append(events, {"schema": 1, "kind": "host", "host": "agent-a", "role": "agent"})
+    for phase in ("inventory", "connectivity", "storage-check", "storage-apply", "storage-idempotence", "storage-verify"):
+        _append(events, *_phase(phase))
+        if phase == "inventory" or (phase == "storage-idempotence" and counter == "missing"):
+            continue
+        recap = _recap(phase, "agent-a", changed=int(phase in {"storage-check", "storage-apply"}))
+        if phase == "storage-idempotence" and counter is not None:
+            counters = recap["counters"]
+            assert isinstance(counters, dict)
+            counters[counter] = 1
+        _append(events, recap)
+    result = _render(repo_root, command_runner, events, 0)
+    assert result.returncode == (0 if counter is None else 2)
+    assert f"Overall: {'PASS' if counter is None else 'FAIL'}" in result.stdout
+
+
+def test_storage_apply_prefix_gate_cannot_hide_future_or_missing_evidence(
+    repo_root, isolated_test_dir, command_runner,
+):
+    events = _initialize(repo_root, command_runner, isolated_test_dir, "storage-apply")
+    _append(events, {"schema": 1, "kind": "host", "host": "server-a", "role": "server"},
+            *_phase("inventory"), *_phase("connectivity"), _recap("connectivity", "server-a"))
+    args = [repo_root / "scripts/platform-config-operation-summary", "render", "--input", events,
+            "--status", "0", "--through", "connectivity"]
+    command_runner.run(args).assert_success()
+    _render(repo_root, command_runner, events, 0).assert_failure()
+    _append(events, *_phase("storage-check"))
+    command_runner.run(args).assert_failure()
+
+
+def test_storage_check_cannot_request_partial_summary(repo_root, isolated_test_dir, command_runner):
+    events = _initialize(repo_root, command_runner, isolated_test_dir, "storage-check")
+    command_runner.run([repo_root / "scripts/platform-config-operation-summary", "render", "--input", events,
+                        "--status", "0", "--through", "inventory"]).assert_failure()
+
+
 @pytest.mark.parametrize(
     ("changed_phase", "changed_host"),
     [
