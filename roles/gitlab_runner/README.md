@@ -98,12 +98,39 @@ the selected policy too; the role does not manage that optional field.
 No force registration is needed when the complete managed contract already
 matches; keep `gitlab_runner_force_register: false`. Changing inventory alone
 still fails closed on registered-config drift. The role does not automatically
-edit or migrate the token-bearing configuration. Restore `always` in both places
+edit the registered pull policy. Restore `always` in both places
 when the temporary exception ends.
 
 [Self-bootstrap](../../docs/gitlab-runner-self-bootstrap.md) remains
 `always`-only; its separate preflight rejects this override. This role validation
 does not qualify live Runner image lookup or job execution on Podman `5.4.0`.
+
+## Manager Concurrency
+
+`gitlab_runner_concurrent` defaults to `1` and accepts only a positive integer
+(for example, `gitlab_runner_concurrent: 3`); booleans and strings are rejected.
+It manages the top-level `concurrent` job ceiling across the manager's runners,
+not per-runner `limit` or `request_concurrency` (parallel job requests).
+Choose capacity for the VM's CPU, memory, storage, and other busy services;
+raising the ceiling does not reserve resources or establish safe job capacity.
+
+The role reconciles this value after fresh/forced registration and on existing
+matching registrations without force registration or a concurrency-only restart
+notification. Runner 18.11.3 natively checks configuration for reload every three
+seconds. Only the integer token is replaced atomically on the target, preserving
+the authentication token, unknown TOML fields, comments, and line endings.
+The file must be root-owned, mode `0600`, regular, single-link, and not a symlink;
+target Python 3.11+ supplies `tomllib`. One unquoted positive decimal
+`concurrent = N` assignment before the first table is required. Missing,
+malformed, quoted-key, noncanonical numeric, or ambiguous multiline formatting
+fails closed for reviewed target-local correction.
+
+Concurrency drift uses the existing root-only backup, rollback, and deferred
+cleanup transaction. Serialize applies and other configuration writers; the
+pre-publication stat recheck detects observed replacement/token rotation but is
+not a universal writer lock. Check mode predicts existing-file changes without
+writing; fresh/forced check mode skips reconciliation of the not-yet-generated
+configuration.
 
 ## Registration
 
@@ -149,6 +176,7 @@ static runner volume.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `gitlab_runner_executor` | `shell` | Selects the one registered executor |
+| `gitlab_runner_concurrent` | `1` | Positive integer manager-wide concurrent job ceiling |
 | `gitlab_runner_token_src` | empty | Outside-Git token file on the control node |
 | `gitlab_runner_tls_ca_cert_sha256` | empty | Exact SHA-256 of the configured outside-Git CA file |
 | `gitlab_runner_podman_socket_enabled` | `false` | Mounts the role-managed rootful Podman socket into the manager |

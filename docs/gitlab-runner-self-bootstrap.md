@@ -706,6 +706,13 @@ make smoke-container ENV="$environment" LIMIT="$runner_host"
 
 Finally, register and verify the runner:
 
+Set `gitlab_runner_concurrent` in private host variables when a manager needs a
+job ceiling other than the default `1`. The positive integer applies after first
+registration and during later normal convergence. For an existing matching
+registration, a concurrency-only change preserves its token and uses native
+configuration reload, without force registration or a restart notification.
+GitLab stages, dependencies, and shared resource groups can still serialize jobs.
+
 ```bash
 make check ENV="$environment" PLAYBOOK=playbooks/gitlab-runners.yml LIMIT="$runner_host"
 make apply ENV="$environment" PLAYBOOK=playbooks/gitlab-runners.yml LIMIT="$runner_host"

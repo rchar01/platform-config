@@ -72,7 +72,7 @@
 
 - name: Prepare GitLab Runner configuration backup
   when:
-    - gitlab_runner_force_register | bool
+    - gitlab_runner_force_register | bool or gitlab_runner_concurrency_preflight.needs_change | default(false) | bool
     - gitlab_runner_config_stat.stat.exists
     - not ansible_check_mode
   block:
@@ -84,7 +84,7 @@
       register: gitlab_runner_config_backup
       no_log: true
 
-    - name: Back up GitLab Runner configuration before forced re-registration
+    - name: Back up GitLab Runner configuration before reconciliation
       ansible.builtin.copy:
         src: "{{ gitlab_runner_config_path }}"
         dest: "{{ gitlab_runner_config_backup.path }}"
@@ -240,6 +240,16 @@
       when:
         - gitlab_runner_registration_result is changed
         - not ansible_check_mode
+
+    - name: Reconcile GitLab Runner manager concurrency
+      gitlab_runner_concurrency:
+        path: "{{ gitlab_runner_config_path }}"
+        concurrent: "{{ gitlab_runner_concurrent }}"
+      no_log: true
+      diff: false
+      when: >-
+        not ansible_check_mode
+        or (gitlab_runner_config_stat.stat.exists and not gitlab_runner_force_register | bool)
 
   rescue:
     - name: Remove failed GitLab Runner configuration without previous state

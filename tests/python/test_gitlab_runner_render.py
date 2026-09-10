@@ -64,6 +64,7 @@ def test_gitlab_runner_defaults_remain_socket_free(repo_root: Path) -> None:
     )
     for line in (
         "gitlab_runner_executor: shell",
+        "gitlab_runner_concurrent: 1",
         "gitlab_runner_podman_socket_enabled: false",
         'gitlab_runner_docker_image: ""',
         'gitlab_runner_docker_helper_image: ""',

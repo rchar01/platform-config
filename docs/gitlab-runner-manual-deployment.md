@@ -193,6 +193,15 @@ Registration writes `/etc/gitlab-runner/config.toml`. Treat that file as a
 secret because it contains runner authentication material. Do not print or
 commit it.
 
+Registration normally writes top-level `concurrent = 1`. This is the manager's
+global simultaneous-job ceiling, separate from its single persistent container.
+For Ansible-managed operation, declare a positive `gitlab_runner_concurrent` in
+private inventory and let normal `playbooks/gitlab-runners.yml` convergence manage
+the value; no force registration is needed. For manual operation, keep the root
+integer aligned with that declared limit while preserving all other configuration
+and private file permissions. Runner 18.11.3 reloads changes automatically.
+Stages, dependencies, and shared GitLab resource groups can impose a lower limit.
+
 If registration reports `x509: certificate signed by unknown authority`, the
 runner image does not trust GitLab's issuer. Return to step 3 and install the
 authenticated public CA bundle. Do not disable TLS verification.

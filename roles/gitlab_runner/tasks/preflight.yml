@@ -74,6 +74,19 @@
     checksum_algorithm: sha256
   register: gitlab_runner_config_stat
 
+- name: Inspect existing GitLab Runner concurrency without writing
+  gitlab_runner_concurrency:
+    path: "{{ gitlab_runner_config_path }}"
+    concurrent: "{{ gitlab_runner_concurrent }}"
+  check_mode: true
+  changed_when: false
+  register: gitlab_runner_concurrency_preflight
+  no_log: true
+  diff: false
+  when:
+    - gitlab_runner_config_stat.stat.exists
+    - not gitlab_runner_force_register | bool
+
 - name: Check GitLab Runner CA before convergence
   ansible.builtin.stat:
     path: "{{ gitlab_runner_tls_ca_cert_path }}"

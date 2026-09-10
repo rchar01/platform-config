@@ -14,6 +14,7 @@ gitlab_runner_gitlab_url: ""
 gitlab_runner_token_src: ""
 gitlab_runner_name: "{{ inventory_hostname }}"
 gitlab_runner_executor: shell
+gitlab_runner_concurrent: 1
 gitlab_runner_tags: []
 gitlab_runner_registration_extra_args: []
 gitlab_runner_force_register: false

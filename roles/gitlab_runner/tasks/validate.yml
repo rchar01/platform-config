@@ -5,6 +5,8 @@
       - gitlab_runner_gitlab_url | length > 0
       - gitlab_runner_token_src | length > 0
       - gitlab_runner_name | length > 0
+      - gitlab_runner_concurrent is integer
+      - gitlab_runner_concurrent > 0
       - gitlab_runner_image is match('^[^\s@]+@sha256:[0-9a-f]{64}$')
       - gitlab_runner_podman_socket_enabled is boolean
       - gitlab_runner_registration_extra_args is sequence
