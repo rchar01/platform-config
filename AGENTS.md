@@ -44,6 +44,21 @@
 
 ## RKE2 Runner Boundary
 
+- `rke2-host-aliases-plan/apply` select the complete coherent RKE2 cluster, with
+  exactly one server/agent role per host, independently of storage or installed
+  RKE2. Validate and snapshot transport-only controller JSON before inventory.
+  Keep `common/tasks/host_aliases.yml` shared with ordinary common convergence;
+  the fixed preparation play uses only that entry point after read-only all-host
+  guards under linear execution. Reject invalid aliases, unsafe `/etc/hosts`,
+  malformed markers, and conflicting unmanaged entries before any alias write.
+  Preserve the existing cloud-init selector and guards. Plan permits predicted
+  changes; apply requires fresh check, alias-only apply, zero-change post-check,
+  and read-only node NSS verification of every alias. Resolution runs only after
+  apply, never in check mode. Require complete successful per-host phase evidence;
+  no selectors, path flags, retries, rollback, or bootstrap alias repair. Private
+  CI owns native manual approval and revision bindings. See
+  [RKE2 Host Aliases](docs/rke2-host-aliases.md).
+
 - Both bootstrap routes must run the shared all-node pristine/source preflight
   before host mutation. Keep RPM key HTTPS 200 plus mandatory in-memory SHA-256
   validation and unique explicit registry v2 probes node-side, strict-TLS,

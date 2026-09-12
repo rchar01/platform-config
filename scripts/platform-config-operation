@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   printf '%s\n' \
     'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check/storage-apply only)]' \
-    'Fixed operations: storage-check, storage-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
+    'Fixed operations: storage-check, storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
 }
 
 fail() {
@@ -82,6 +82,7 @@ operation=$1
 shift
 case "$operation" in
   storage-check | storage-apply) ;;
+  rke2-host-aliases-plan | rke2-host-aliases-apply) ;;
   rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status | openbao-restart-plan | openbao-restart | openbao-converge-plan | openbao-deploy | openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate | openbao-smoke | openbao-vip-smoke) ;;
   *) fail "unsupported operation: $operation" ;;
 esac
@@ -230,6 +231,12 @@ if [[ $operation == storage-apply ]]; then
     fail "storage-apply controller-vars must be transport-only JSON"
   controller_vars="$summary_dir/controller-vars.json"
 fi
+if [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply ]]; then
+  "$summary_tool" transport-controller-vars --input "$controller_vars" \
+    --output "$summary_dir/controller-vars.json" ||
+    fail "$operation controller-vars must be transport-only JSON"
+  controller_vars="$summary_dir/controller-vars.json"
+fi
 
 case "$operation" in
   openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate)
@@ -252,6 +259,8 @@ extra_vars=(--extra-vars "@$controller_vars")
 summary_host_args=()
 if [[ $operation == storage-check || $operation == storage-apply ]]; then
   summary_host_args=(--node "$node")
+elif [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply ]]; then
+  summary_host_args=(--controller-vars "$controller_vars")
 fi
 
 forward_signal() {
@@ -376,7 +385,7 @@ run_playbook() {
     "${extra_vars[@]}"
 }
 
-require_storage_apply_evidence() {
+require_phase_evidence() {
   # Fail before the next command even when Ansible exits zero with incomplete,
   # ignored, or rescued evidence. Final reporting still runs through finish.
   "$summary_tool" render --input "$summary_events" --status 0 --through "$1" >/dev/null
@@ -422,15 +431,29 @@ case "$operation" in
     ;;
   storage-apply)
     ping_group connectivity "$node"
-    require_storage_apply_evidence connectivity
+    require_phase_evidence connectivity
     run_playbook storage-check playbooks/storage-volumes.yml "$node" --check --diff
-    require_storage_apply_evidence storage-check
+    require_phase_evidence storage-check
     run_playbook storage-apply playbooks/storage-volumes.yml "$node"
-    require_storage_apply_evidence storage-apply
+    require_phase_evidence storage-apply
     # This is a real second apply, not a prediction or an automatic retry.
     run_playbook storage-idempotence playbooks/storage-volumes.yml "$node"
-    require_storage_apply_evidence storage-idempotence
+    require_phase_evidence storage-idempotence
     run_playbook storage-verify playbooks/maintenance/storage-volumes-verify.yml "$node"
+    ;;
+  rke2-host-aliases-plan | rke2-host-aliases-apply)
+    require_phase_evidence inventory
+    ping_group connectivity rke2_cluster
+    require_phase_evidence connectivity
+    run_playbook host-aliases-check playbooks/rke2-host-aliases.yml rke2_cluster --check --diff
+    require_phase_evidence host-aliases-check
+    if [[ $operation == rke2-host-aliases-apply ]]; then
+      run_playbook host-aliases-apply playbooks/rke2-host-aliases.yml rke2_cluster
+      require_phase_evidence host-aliases-apply
+      run_playbook host-aliases-post-check playbooks/rke2-host-aliases.yml rke2_cluster --check --diff
+      require_phase_evidence host-aliases-post-check
+      run_playbook host-aliases-verify playbooks/rke2-host-aliases-verify.yml rke2_cluster
+    fi
     ;;
   rke2-bootstrap-plan)
     ping_group connectivity rke2_cluster

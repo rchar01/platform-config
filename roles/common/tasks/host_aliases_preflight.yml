@@ -1,0 +1,9 @@
+---
+- name: Require the existing cloud-init template selector to be a string
+  ansible.builtin.assert:
+    that:
+      - platform_host_aliases_cloud_init_template is string
+
+- name: Validate desired aliases and existing hosts file without mutation
+  platform_host_aliases_guard:
+    aliases: "{{ platform_host_aliases }}"

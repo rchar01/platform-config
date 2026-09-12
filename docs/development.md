@@ -221,7 +221,26 @@ LVM, XFS, mount, idempotency, or reboot behavior; that evidence requires the
 explicit `storage-test-*` sequence against a disposable fixture described in
 [Storage Volume Acceptance Fixture](storage-volume-test.md).
 
-Focused fixed-route checks use:
+For aliases-only preparation, run these focused offline checks:
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \
+  tests/python/test_rke2_host_aliases.py \
+  tests/python/test_rke2_host_aliases_operations.py \
+  tests/python/test_common_host_aliases.py
+```
+
+These exercise the shared common-task extraction, strict node guard, and real
+nine-host Ansible runs with only fixed target paths relocated into disposable
+fixtures. They cover missing-block check-mode prediction without file writes,
+unmanaged-byte preservation, idempotence, late-node failure barriers, existing
+cloud-template guards, and post-apply NSS failure with retained aliases. Native
+launcher/callback checks complement synthetic transport-schema, scope, phase
+failure, and interruption cases. No test writes real `/etc/hosts` or contacts
+managed nodes. See [RKE2 Host Aliases](rke2-host-aliases.md) for the live contract;
+offline evidence does not qualify private host resolution or authorize apply.
+
+For the shared launcher and existing storage contracts:
 
 ```bash
 PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -q \

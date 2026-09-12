@@ -11,7 +11,7 @@ def load_yaml(path: Path):
 
 def test_common_preserves_aliases_across_cloud_init_rewrites(repo_root: Path) -> None:
     defaults = load_yaml(repo_root / "roles/common/defaults/main.yml")
-    tasks = load_yaml(repo_root / "roles/common/tasks/main.yml")
+    tasks = load_yaml(repo_root / "roles/common/tasks/host_aliases.yml")
     by_name = {task["name"]: task for task in tasks}
 
     assert defaults["platform_host_aliases_cloud_init_template"] == (

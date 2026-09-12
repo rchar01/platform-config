@@ -111,6 +111,13 @@ host configuration changes. Required CA trust must be preinstalled. See
 [Bootstrap Source Preflight](docs/rke2-operations.md#bootstrap-source-preflight)
 for the checks and their endpoint-only qualification boundary.
 
+Prepare inventory-declared managed-host aliases separately with the fixed
+`rke2-host-aliases-plan` and `rke2-host-aliases-apply` routes. They select the
+complete RKE2 cluster and run only common host-alias tasks after all-node guards.
+Apply finishes with an unchanged check and node-side NSS verification. See
+[RKE2 Host Aliases](docs/rke2-host-aliases.md) for the transport-only JSON contract
+and private CI approval boundary.
+
 ### RKE2 Storage Operations
 
 The fixed `storage-check` and `storage-apply` routes accept one literal RKE2 storage
@@ -235,6 +242,7 @@ platform-docs documents the design and operations across all repositories.
   HTTPS Helm repository override and unchanged upstream default
   (an optional HTTPS clone origin preserves checkout through approved proxies)
 - [RKE2 storage checks and single-node apply](docs/storage-check.md)
+- [RKE2 aliases-only preparation](docs/rke2-host-aliases.md)
 - [GitLab Runner offline preload](roles/gitlab_runner/README.md#temporary-offline-preload):
   temporary dedicated trusted-runner `if-not-present` override; the default and
   self-bootstrap remain `always`.

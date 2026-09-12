@@ -12,6 +12,8 @@ activation routes additionally require an absolute `--plan` path.
 
 | Operation | Commands |
 | --- | --- |
+| `rke2-host-aliases-plan` | Coherent full-cluster inventory, ping, and aliases-only all-node guarded check with diff; predicted changes are valid plan output. |
+| `rke2-host-aliases-apply` | The same fresh plan, only common alias tasks, zero-change post-check, and read-only actual NSS resolution verification on every node. |
 | `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node and node-side source preflight, then fixed base RKE2 check mode with diff. |
 | `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2, kube-vip, and GitLab Runner check mode with diff. |
 | `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node and node-side source preflight, serial native-RPM installation, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
@@ -33,13 +35,18 @@ or arbitrary Ansible arguments. CI generates the controller-variable file for
 strict per-host SSH identities and clears password-based SSH and become values
 without disabling inventory-authorized passwordless privilege escalation.
 
-Each mutating RKE2 route performs exactly one live base apply and one live apply
-for each enabled add-on. After all smoke suites pass, it runs the base, kube-vip,
+Each mutating RKE2 bootstrap/convergence route performs exactly one live base
+apply and one live apply for each enabled add-on. After all smoke suites pass, it runs the base, kube-vip,
 and GitLab Runner playbooks with `--check --diff`. Every applicable post-check
 host must report `changed=0`, `failed=0`, and `unreachable=0`; otherwise the
 structured summary and operation fail. This is predictive post-apply
 verification, not a second live apply. A disabled GitLab Runner role skips its
 management without uninstalling an existing release.
+
+The separate [aliases-only preparation routes](rke2-host-aliases.md) require
+transport-only controller JSON and full-cluster guards independently of storage
+or RKE2 installation. Bootstrap source preflight never repairs missing aliases;
+prepare them through the separately approved aliases route before bootstrap.
 
 Every fixed launcher operation ends with a deterministic plain-text summary on
 both success and failure. It lists only inventory hostnames selected for that

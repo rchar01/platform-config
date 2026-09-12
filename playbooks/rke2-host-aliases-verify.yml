@@ -1,0 +1,15 @@
+---
+- name: Verify applied RKE2 host alias resolution
+  hosts: rke2_cluster
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require the complete coherent RKE2 alias scope
+      ansible.builtin.import_tasks: tasks/rke2-host-aliases-scope.yml
+  tasks:
+    - name: Verify only applied aliases through node NSS
+      ansible.builtin.import_role:
+        name: common
+        tasks_from: host_aliases_verify

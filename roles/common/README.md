@@ -25,6 +25,21 @@ stop managing a template that already contains the marked block, first converge
 with `platform_host_aliases: []`; clear the template path only after that cleanup
 run.
 
+The shared `tasks/host_aliases.yml` entry point contains the same alias and
+cloud-init tasks used at their original position in ordinary common convergence.
+The fixed [RKE2 Host Aliases](../../docs/rke2-host-aliases.md) playbook imports only
+that entry point with common defaults, after route-specific all-node preflight.
+It does not run timezone, directory, logrotate, or message-of-the-day tasks.
+
+That preparation route requires a nonempty, strictly typed alias list, safe
+existing `/etc/hosts`, unambiguous common markers, and no unmanaged entry mapping
+a desired name to a different IP. Same-IP unmanaged entries remain untouched.
+It preserves the existing cloud-init selector, including the explicit empty
+string opt-out. Ordinary common convergence still supports empty-list removal;
+the fixed preparation route does not accept empty lists. Applied NSS resolution
+is checked by the separate read-only `host_aliases_verify` entry point, only
+after apply and never during check mode.
+
 ## Logrotate
 
 By default the role enables `compress` in `/etc/logrotate.conf` so rotated system logs do not accumulate uncompressed on the root filesystem.

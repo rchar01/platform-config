@@ -1,0 +1,6 @@
+---
+- name: Require every applied alias to resolve only to its declared address
+  platform_host_aliases_guard:
+    aliases: "{{ platform_host_aliases }}"
+    verify_resolution: true
+  when: not ansible_check_mode

@@ -1,0 +1,13 @@
+---
+- name: Require full cluster selection and disjoint RKE2 roles
+  ansible.builtin.assert:
+    that:
+      - groups.get('rke2_servers', []) | length > 0
+      - groups.get('rke2_servers', []) | intersect(groups.get('rke2_agents', [])) | length == 0
+      - >-
+        groups.get('rke2_cluster', []) | sort ==
+        (groups.get('rke2_servers', []) + groups.get('rke2_agents', [])) | unique | sort
+      - ansible_play_hosts_all | sort == groups.get('rke2_cluster', []) | sort
+    fail_msg: >-
+      Host alias preparation requires the complete nonempty rke2_cluster,
+      a nonempty server group, and exactly one server or agent role per host.

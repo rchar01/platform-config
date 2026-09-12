@@ -14,6 +14,11 @@ from typing import Any
 
 
 OPERATIONS = {
+    "rke2-host-aliases-plan": ("inventory", "connectivity", "host-aliases-check"),
+    "rke2-host-aliases-apply": (
+        "inventory", "connectivity", "host-aliases-check", "host-aliases-apply",
+        "host-aliases-post-check", "host-aliases-verify",
+    ),
     "storage-check": ("inventory", "connectivity", "storage-check"),
     "storage-apply": (
         "inventory", "connectivity", "storage-check", "storage-apply",
@@ -99,8 +104,12 @@ OPERATIONS = {
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
 OPENBAO_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-"))
+ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
+EVIDENCE_GATED_OPERATIONS = ALIAS_OPERATIONS | {"storage-apply"}
 UNCHANGED_PHASES = frozenset(
     {
+        "host-aliases-post-check",
+        "host-aliases-verify",
         "storage-idempotence",
         "storage-verify",
         "rke2-post-check",
@@ -206,7 +215,7 @@ def command_initialize(args: argparse.Namespace) -> None:
     )
 
 
-def command_storage_apply_controller_vars(args: argparse.Namespace) -> None:
+def transport_controller_vars(path: Path) -> dict[str, Any]:
     # Match platform-ci/templates/storage-apply.yml. Direct controllers may
     # supply just the per-host key map, leaving transport policy in inventory.
     null_fields = {
@@ -238,7 +247,7 @@ def command_storage_apply_controller_vars(args: argparse.Namespace) -> None:
             raise SummaryError
         return text
 
-    descriptor = os.open(args.input, os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as stream:
         details = os.fstat(stream.fileno())
         if (not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid()
@@ -261,7 +270,7 @@ def command_storage_apply_controller_vars(args: argparse.Namespace) -> None:
             if value != fixed_fields[key]:
                 raise SummaryError
         elif key == "platform_ci_ssh_private_key_files":
-            if not isinstance(value, dict) or args.node not in value:
+            if not isinstance(value, dict) or not value:
                 raise SummaryError
             for host, path in value.items():
                 if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", safe_host(host)) is None:
@@ -275,8 +284,19 @@ def command_storage_apply_controller_vars(args: argparse.Namespace) -> None:
             literal(value)
     if "ansible_ssh_private_key_file" in values and "platform_ci_ssh_private_key_files" not in values:
         raise SummaryError
+    return values
+
+
+def command_storage_apply_controller_vars(args: argparse.Namespace) -> None:
+    values = transport_controller_vars(args.input)
+    if "platform_ci_ssh_private_key_files" in values and args.node not in values["platform_ci_ssh_private_key_files"]:
+        raise SummaryError
     # Every Ansible call uses this validated snapshot, never the mutable input.
     write_records(args.output, [values], create=True)
+
+
+def command_transport_controller_vars(args: argparse.Namespace) -> None:
+    write_records(args.output, [transport_controller_vars(args.input)], create=True)
 
 
 def group_hosts(inventory: dict[str, Any], group: str) -> set[str]:
@@ -354,6 +374,20 @@ def command_hosts(args: argparse.Namespace) -> None:
         selected = group_hosts(inventory, "rke2_cluster")
         servers = group_hosts(inventory, "rke2_servers")
         agents = group_hosts(inventory, "rke2_agents")
+        if operation in ALIAS_OPERATIONS:
+            if not servers or not selected or servers & agents or selected != servers | agents:
+                raise SummaryError
+            if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", host) is None
+                   or host in inventory for host in selected):
+                raise SummaryError
+            # Scope-dependent coverage follows inventory resolution; schema validation
+            # and snapshotting have already happened before inventory execution.
+            if getattr(args, "controller_vars", None) is None:
+                raise SummaryError
+            values = transport_controller_vars(args.controller_vars)
+            if ("platform_ci_ssh_private_key_files" in values
+                    and selected - values["platform_ci_ssh_private_key_files"].keys()):
+                raise SummaryError
         for host in sorted(selected):
             if (host in servers) == (host in agents):
                 role = "N/A"
@@ -449,9 +483,9 @@ def command_render(args: argparse.Namespace) -> int:
     operation, phases, hosts, records = parse_records(args.input)
     through = getattr(args, "through", None)
     if through is not None:
-        # Only the fixed storage apply route uses prefix evidence to gate its
-        # next command. Ordinary render always requires the complete operation.
-        if operation != "storage-apply" or through not in phases:
+        # Fixed evidence-gated routes require a complete successful prefix before
+        # the next command. Ordinary render requires the complete operation.
+        if operation not in EVIDENCE_GATED_OPERATIONS or through not in phases:
             raise SummaryError
         phases = phases[:phases.index(through) + 1]
     phase_status: dict[str, int | None] = {}
@@ -492,7 +526,7 @@ def command_render(args: argparse.Namespace) -> int:
             task = safe_text(record.get("task"), 255)
             if phase not in phases or outcome not in tasks:
                 raise SummaryError
-            if operation == "storage-apply" and host not in hosts:
+            if operation in EVIDENCE_GATED_OPERATIONS and host not in hosts:
                 raise SummaryError
             if host in hosts:
                 tasks[outcome][task].add(host)
@@ -510,7 +544,7 @@ def command_render(args: argparse.Namespace) -> int:
                 for counter in COUNTERS
             ):
                 raise SummaryError
-            if operation == "storage-apply" and host not in hosts:
+            if operation in EVIDENCE_GATED_OPERATIONS and host not in hosts:
                 raise SummaryError
             if host in hosts:
                 key = (phase, host)
@@ -561,7 +595,8 @@ def command_render(args: argparse.Namespace) -> int:
                     if (
                         recap["failures"] > 0
                         or recap["unreachable"] > 0
-                        or (operation == "storage-apply" and (recap["ignored"] > 0 or recap["rescued"] > 0))
+                        or (operation in ALIAS_OPERATIONS and recap["ok"] == 0)
+                        or (operation in EVIDENCE_GATED_OPERATIONS and (recap["ignored"] > 0 or recap["rescued"] > 0))
                         or (phase in UNCHANGED_PHASES and recap["changed"] > 0)
                     )
                     else "PASS"
@@ -653,10 +688,14 @@ def parser() -> argparse.ArgumentParser:
     hosts.add_argument("--inventory", required=True, type=Path)
     hosts.add_argument("--output", required=True, type=Path)
     hosts.add_argument("--node")
+    hosts.add_argument("--controller-vars", type=Path)
     controller = subparsers.add_parser("storage-apply-controller-vars", add_help=False)
     controller.add_argument("--input", required=True, type=Path)
     controller.add_argument("--output", required=True, type=Path)
     controller.add_argument("--node", required=True)
+    transport = subparsers.add_parser("transport-controller-vars", add_help=False)
+    transport.add_argument("--input", required=True, type=Path)
+    transport.add_argument("--output", required=True, type=Path)
     phase = subparsers.add_parser("phase", add_help=False)
     phase.add_argument("--output", required=True, type=Path)
     phase.add_argument("--phase", required=True)
@@ -678,6 +717,8 @@ def main() -> int:
             command_hosts(args)
         elif args.command == "storage-apply-controller-vars":
             command_storage_apply_controller_vars(args)
+        elif args.command == "transport-controller-vars":
+            command_transport_controller_vars(args)
         elif args.command == "phase":
             command_phase(args)
         elif args.command == "render":
