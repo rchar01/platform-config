@@ -44,6 +44,14 @@
 
 ## RKE2 Runner Boundary
 
+- Both bootstrap routes must run the shared all-node pristine/source preflight
+  before host mutation. Keep RPM key HTTPS 200 plus mandatory in-memory SHA-256
+  validation and unique explicit registry v2 probes node-side, strict-TLS,
+  read-only, and active in check mode. Require preinstalled node trust; never
+  install a controller CA during preflight. Registry API success is not image
+  pull, token-exchange, RPM dependency, or Helm qualification. See
+  [Bootstrap Source Preflight](docs/rke2-operations.md#bootstrap-source-preflight).
+
 - `storage-check` is check-only and accepts one literal RKE2 storage host through
   `--node`; it never accepts arbitrary playbooks or apply flags. Predicted
   changes are plan output, not a failure. CI may repeat this route sequentially

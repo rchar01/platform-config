@@ -357,6 +357,12 @@ track a reviewed public registry CA under
 future CI job then consume the same file from their immutable private checkout.
 No GitLab File variable or public pipeline change is required.
 
+For bootstrap, prepare required node trust separately before running either
+fixed bootstrap route. The [bootstrap source preflight](rke2-operations.md#bootstrap-source-preflight)
+performs strict node-side key and registry API requests before these roles can
+install trust. A controller CA source or a not-yet-installed registry `ca_file`
+cannot satisfy that gate; API success does not qualify image pulls or token exchange.
+
 System trust applies to every process on the node. Review the complete bundle and
 prefer only the issuing CA chain required by the mirror. The RKE2-specific
 `rke2_registry_ca_src` and `rke2_registry_configs` variables remain available for

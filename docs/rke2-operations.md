@@ -12,9 +12,9 @@ activation routes additionally require an absolute `--plan` path.
 
 | Operation | Commands |
 | --- | --- |
-| `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node preflight, then fixed base RKE2 check mode with diff. |
+| `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node and node-side source preflight, then fixed base RKE2 check mode with diff. |
 | `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2, kube-vip, and GitLab Runner check mode with diff. |
-| `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node preflight, serial native-RPM installation, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
+| `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node and node-side source preflight, serial native-RPM installation, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
 | `rke2-deploy` | Local inventory resolution for summary initialization, core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
 | `openbao-restart-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Predicted changes fail the plan. |
@@ -97,6 +97,50 @@ templates without creating target directories and reports the exact package and
 managed configuration scope as changed. Child-file diffs become available after
 their parent directories exist; the bootstrap job still requires a reviewed
 plan.
+
+### Bootstrap Source Preflight
+
+Both bootstrap routes run `playbooks/rke2-bootstrap-preflight.yml` across the
+complete `rke2_cluster` before the base playbook can change firewalld, kernel
+packages, trust, signing keys, or RKE2 installation. Existing inventory and
+pristine-node gates remain mandatory. A failure on any node stops the route.
+The source probes also execute when this preflight is invoked with `--check`.
+
+After validating inventory source types and credential-free HTTPS URLs, each
+managed node uses `ansible.builtin.uri` and its own Ansible Python TLS trust to:
+
+- GET `rke2_rpm_gpg_key_url`, require HTTP 200, and compare the response in memory
+  with the mandatory lowercase `rke2_rpm_gpg_key_sha256`. No key file is saved or
+  imported. The apply role still enforces its checksum, GPG fingerprint, and
+  package/repository signature checks.
+- GET each unique explicit `rke2_registry_mirrors` API endpoint once per host.
+  Bare origins receive `/v2/`; existing path endpoints ending in `/v2` or `/v2/`
+  retain that API path without doubling it. The response must identify
+  `Docker-Distribution-Api-Version: registry/2.0` and return either HTTP 200
+  with an empty or empty-object body, or HTTP 401 with an HTTPS Bearer realm.
+  HTML 200, Basic 401, other status codes, and redirects fail.
+
+Probe URLs lowercase only the authority (DNS hostname and optional port) before
+deduplication and CA lookup; repository path case remains significant. Selected
+per-registry configs require canonical lowercase `rke2_registry_configs` authority
+keys and matching lowercase endpoint authorities. Noncanonical or case-ambiguous
+custom config names fail before HTTP; use lowercase names in both mappings.
+Without custom configs for an authority, mixed-case DNS endpoints can normalize
+and deduplicate normally using the node's Python/system trust.
+
+Requests use strict certificate verification, no redirects, no retries, no
+netrc credentials, and a 30-second socket timeout. Trust must already exist:
+the key uses the node's Python/system CA store; each registry uses its selected
+`rke2_registry_configs[authority].tls.ca_file` if configured, otherwise the
+node's Python/system CA store. An explicit `ca_file` must already be readable
+on that node. `rke2_registry_ca_src` is a controller source for later apply,
+not evidence of node trust; preflight never copies or installs a CA. Prepare
+required trust separately before retrying. TLS bypass settings are rejected.
+
+With no explicit mirrors, registry probes are skipped and the key probe remains
+mandatory. A successful registry API GET establishes only node-side endpoint
+reachability, TLS, and API identity. It does not qualify token exchange, image
+availability or pulls, full RPM downloads/dependency resolution, or Helm jobs.
 
 RKE2 bootstrap accepts only recreated nodes without existing RKE2 packages,
 configuration, state, or binaries. It is a one-time installation path and does

@@ -1,0 +1,165 @@
+---
+# Import only validators, never the role (whose dependencies can mutate hosts).
+- name: Validate bootstrap RPM source URLs
+  ansible.builtin.import_tasks: ../../roles/rke2/tasks/validate_rpm_sources.yml
+
+# Preserve effective inventory values without loading role defaults at a higher
+# precedence. ca_path also resolves existing inventory tls.ca_file expressions.
+- name: Resolve optional bootstrap registry defaults
+  ansible.builtin.set_fact:
+    rke2_registry_mirrors: "{{ rke2_registry_mirrors | default({}) }}"
+    rke2_disable_default_registry_endpoint: "{{ rke2_disable_default_registry_endpoint | default(false) }}"
+    rke2_registry_ca_path: >-
+      {{ rke2_registry_ca_path | default((rke2_config_dir | default('/etc/rancher/rke2')) ~ '/registry-ca.crt') }}
+
+- name: Require the reviewed bootstrap RPM key pin and registry input types
+  ansible.builtin.assert:
+    that:
+      - rke2_rpm_gpg_key_sha256 is defined
+      - rke2_rpm_gpg_key_sha256 is string
+      - rke2_rpm_gpg_key_sha256 is match('^[0-9a-f]{64}\Z')
+      - rke2_registry_configs | default({}) is mapping
+      - rke2_registry_ca_src | default('') is string
+    fail_msg: >-
+      Bootstrap requires a reviewed lowercase SHA-256 RPM key pin and valid
+      registry configuration before any source request.
+
+- name: Validate bootstrap registry mirror schema
+  ansible.builtin.import_tasks: ../../roles/rke2/tasks/validate_registry_mirrors.yml
+  no_log: true
+
+- name: Validate bootstrap registry endpoint URLs
+  ansible.builtin.assert:
+    that:
+      - item is match(rke2_bootstrap_endpoint_pattern)
+      - >-
+        ':' not in item.split('/')[2]
+        or item.split('/')[2].rsplit(':', 1)[1] | int in range(1, 65536)
+    fail_msg: >-
+      Bootstrap registry endpoints require credential-free HTTPS URLs with
+      canonical DNS hostnames, valid optional ports, and no query or fragment.
+  loop: "{{ rke2_registry_mirrors.values() | map(attribute='endpoint') | flatten | unique(case_sensitive=true) }}"
+  no_log: "{{ item is search('[@?#\\s]') }}"
+  vars:
+    rke2_bootstrap_endpoint_pattern: >-
+      ^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::[0-9]{1,5})?(?:/(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})*)?\Z
+
+- name: Require canonical authorities for selected bootstrap registry configs
+  ansible.builtin.assert:
+    that:
+      - >-
+        rke2_bootstrap_authority_configs | length == 0
+        or (rke2_bootstrap_authority == rke2_bootstrap_authority | lower
+            and rke2_bootstrap_authority_configs | map(attribute='key') | list == [rke2_bootstrap_authority])
+    fail_msg: >-
+      Selected registry configs require a canonical lowercase authority key and
+      matching lowercase endpoint authorities. Use canonical names in both
+      rke2_registry_configs and rke2_registry_mirrors before bootstrap.
+  loop: "{{ rke2_registry_mirrors.values() | map(attribute='endpoint') | flatten | unique(case_sensitive=true) }}"
+  vars:
+    rke2_bootstrap_authority: "{{ item | urlsplit('netloc') }}"
+    rke2_bootstrap_authority_configs: >-
+      {{ rke2_registry_configs | default({}) | dict2items
+         | selectattr('key', 'match', '(?i)^' ~ (rke2_bootstrap_authority | regex_escape) ~ '\Z') | list }}
+
+- name: Resolve unique bootstrap registry API URLs
+  ansible.builtin.set_fact:
+    rke2_bootstrap_registry_urls: >-
+      {%- set urls = [] -%}
+      {%- for endpoint in rke2_registry_mirrors.values() | map(attribute='endpoint') | flatten -%}
+      {%- set _ = urls.append('https://' ~ (endpoint | urlsplit('netloc') | lower) ~ (endpoint | urlsplit('path'))) -%}
+      {%- endfor -%}
+      {{ urls
+         | map('regex_replace', '/+$', '')
+         | map('regex_replace', '(?<!/v2)$', '/v2')
+         | map('regex_replace', '$', '/') | unique(case_sensitive=true) | list }}
+
+- name: Require strict target-local bootstrap registry trust settings
+  ansible.builtin.assert:
+    that:
+      - rke2_bootstrap_registry_config is mapping
+      - rke2_bootstrap_registry_config.get('tls', {}) is mapping
+      - rke2_bootstrap_registry_tls.get('insecure_skip_verify', false) is boolean
+      - not rke2_bootstrap_registry_tls.get('insecure_skip_verify', false)
+      - rke2_bootstrap_registry_tls.get('ca_file', '') is string
+      - >-
+        'ca_file' not in rke2_bootstrap_registry_tls
+        or rke2_bootstrap_registry_tls.ca_file is match('^/[^\r\n]+\Z')
+    fail_msg: >-
+      Bootstrap registry probes require strict TLS and an absolute target-local
+      ca_file when selected. Trust must be preinstalled; a controller CA source
+      or a future apply does not establish node HTTPS trust.
+  loop: "{{ rke2_bootstrap_registry_urls }}"
+  vars:
+    rke2_bootstrap_registry_config: "{{ (rke2_registry_configs | default({})).get(item | urlsplit('netloc'), {}) }}"
+    rke2_bootstrap_registry_tls: "{{ rke2_bootstrap_registry_config.get('tls', {}) }}"
+
+- name: Qualify bootstrap source HTTPS from managed nodes
+  block:
+    - name: Read the bootstrap RPM signing key into memory
+      ansible.builtin.uri:
+        url: "{{ rke2_rpm_gpg_key_url }}"
+        method: GET
+        status_code: 200
+        return_content: true
+        validate_certs: true
+        follow_redirects: none
+        use_netrc: false
+        timeout: 30
+      register: rke2_bootstrap_key_response
+      check_mode: false
+      changed_when: false
+
+    - name: Require the bootstrap RPM key SHA-256 to match
+      ansible.builtin.assert:
+        that:
+          - rke2_bootstrap_key_response.content | hash('sha256') == rke2_rpm_gpg_key_sha256
+        fail_msg: Bootstrap RPM key SHA-256 differs from the reviewed inventory pin.
+
+    - name: Probe each selected bootstrap registry API once
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        method: GET
+        status_code: [200, 401]
+        return_content: true
+        validate_certs: true
+        ca_path: "{{ rke2_bootstrap_registry_tls.get('ca_file', omit) }}"
+        follow_redirects: none
+        use_netrc: false
+        timeout: 30
+      loop: "{{ rke2_bootstrap_registry_urls }}"
+      vars:
+        rke2_bootstrap_registry_tls: >-
+          {{ (rke2_registry_configs | default({})).get(item | urlsplit('netloc'), {}).get('tls', {}) }}
+      register: rke2_bootstrap_registry_responses
+      check_mode: false
+      changed_when: false
+
+    - name: Require registry v2 success or a Bearer authentication challenge
+      ansible.builtin.assert:
+        that:
+          - item.docker_distribution_api_version | default('') == 'registry/2.0'
+          - >-
+            (item.status == 200
+             and (item.content | default('') | trim == '' or item.json | default(none) == {})
+             and not (item.content_type | default('') is search('(?i)text/html')))
+            or (item.status == 401
+                and item.www_authenticate | default('') is match('(?i)^Bearer\s+')
+                and item.www_authenticate is search('(?i)(?:^Bearer\s+|,\s*)realm="https://[^"\s]+"(?:\s*,|\s*$)'))
+        fail_msg: >-
+          Bootstrap requires a registry/2.0 API response: HTTP 200 with an empty
+          or empty-object body, or HTTP 401 with an HTTPS Bearer realm.
+          HTML pages and Basic authentication challenges do not qualify.
+      loop: "{{ rke2_bootstrap_registry_responses.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+  rescue:
+    - name: Stop bootstrap before host mutation after source qualification failure
+      ansible.builtin.fail:
+        msg: >-
+          Node-side bootstrap source qualification failed. Require reachable
+          inventory endpoints and preinstalled trust in the managed node's
+          Ansible Python CA store (RPM key and default registry trust), or an
+          already installed registry tls.ca_file when selected. Controller CA
+          sources and CA installation during a future apply cannot satisfy this
+          preflight. Review the failed request or SHA-256/API assertion above.

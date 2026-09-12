@@ -31,6 +31,7 @@
         - rke2-common
         - rke2-selinux
       register: rke2_bootstrap_package_checks
+      check_mode: false
       changed_when: false
       failed_when: false
 
@@ -69,3 +70,6 @@
           RKE2 bootstrap accepts only recreated clean nodes without RKE2
           packages, configuration, state, or binaries. Use the guarded
           convergence workflow for an existing cluster.
+
+    - name: Check RKE2 bootstrap sources from every pristine node
+      ansible.builtin.import_tasks: tasks/rke2-bootstrap-sources.yml

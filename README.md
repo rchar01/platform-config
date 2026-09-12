@@ -103,6 +103,14 @@ detached sudo check. The helper can upgrade its exact previous policy on an
 approved rerun; see
 [Non-TTY Sudo](docs/ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
 
+### RKE2 Bootstrap
+
+RKE2 bootstrap plan and apply first require pristine nodes and strict node-side
+HTTPS checks of the pinned RPM key and explicit registry mirror APIs, before
+host configuration changes. Required CA trust must be preinstalled. See
+[Bootstrap Source Preflight](docs/rke2-operations.md#bootstrap-source-preflight)
+for the checks and their endpoint-only qualification boundary.
+
 ### RKE2 Storage Operations
 
 The fixed `storage-check` and `storage-apply` routes accept one literal RKE2 storage
