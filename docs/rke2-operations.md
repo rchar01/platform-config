@@ -142,7 +142,8 @@ the key uses the node's Python/system CA store; each registry uses its selected
 node's Python/system CA store. An explicit `ca_file` must already be readable
 on that node. `rke2_registry_ca_src` is a controller source for later apply,
 not evidence of node trust; preflight never copies or installs a CA. Prepare
-required trust separately before retrying. TLS bypass settings are rejected.
+required trust separately before retrying; see [Prepare Node HTTPS Trust](#prepare-node-https-trust).
+TLS bypass settings are rejected.
 
 With no explicit mirrors, registry probes are skipped and the key probe remains
 mandatory. A successful registry API GET establishes only node-side endpoint
@@ -190,6 +191,50 @@ The launcher translates `HUP`, `INT`, and `TERM` into `TERM` for its active
 Ansible child, waits for that child, and returns the conventional launcher
 status of 129, 130, or 143. Cancellation stops later fixed commands, but it
 cannot roll back changes already completed by Ansible or a managed host.
+
+## Prepare Node HTTPS Trust
+
+Before the first bootstrap plan, qualify name resolution, the endpoint's served
+certificate chain and the actual managed-node Python trust store. These are
+separate prerequisites. A certificate-issuer error alone does not distinguish a
+missing client CA from a missing intermediate on the server.
+
+| Trust Context | Responsibility |
+| --- | --- |
+| CI controller | Trust used to fetch configuration sources; a controller CA File variable does not install trust on managed nodes |
+| Managed-node OS/Python | Preinstalled approved CA trust for the RPM-key request and registry probes without an explicit `ca_file` |
+| Selected registry `tls.ca_file` | An already installed node-local CA file for that registry probe; it does not configure RPM-key trust |
+| HTTPS endpoint | Serve its leaf certificate and required intermediates; clients normally hold the root trust anchor |
+| Kubernetes jobs/pods | Separate name-resolution and trust configuration; successful host HTTPS does not qualify these consumers |
+
+Use a separately approved baseline/trust preparation procedure:
+
+1. Obtain the CA chain from the authoritative PKI source and verify reviewed
+   SHA-256 certificate fingerprints. A certificate fingerprint hashes DER
+   certificate bytes; it is not the SHA-256 of a PEM file. Keep the file-byte pin
+   required by `registry_ca_trust_sha256` distinct from that fingerprint.
+2. Have the endpoint owner configure the complete intermediate chain. Do not
+   install a downloaded server leaf as a client trust anchor.
+3. On Rocky Linux, install the approved root in
+   `/etc/pki/ca-trust/source/anchors/` as a root-owned `0644` certificate and run
+   `update-ca-trust extract`. Do not overwrite generated CA bundles manually.
+   The scope of trusted issuers is an environment policy decision, not a public
+   default to copy across environments.
+4. Verify strict hostname-aware TLS on every selected node, then start a fresh
+   bootstrap plan. Require the node-side Python key request, SHA-256 assertion
+   and selected registry API probes to pass before reviewing the base RKE2 plan.
+
+The existing `roles/registry_ca_trust` role installs a reviewed, file-digest-pinned
+OS trust anchor and refreshes system trust. Its RKE2 dependency runs after the
+fixed bootstrap source preflight, so future role convergence cannot prepare that
+preflight. There is currently no dedicated CA-only preparation playbook or fixed
+operation route. `playbooks/base-os.yml` does not install CA trust, and the registry
+playbook also converges other roles. Do not use either as an assumed CA-only fix.
+
+Keep site-specific certificate names, fingerprints, downloads, target lists and
+approved installation commands in the private environment runbook. Keep this
+preparation separate from host-alias application and bootstrap; neither installs
+a controller CA during source qualification or bypasses TLS verification.
 
 ## Prepare The RKE2 Cluster Token
 

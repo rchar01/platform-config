@@ -110,6 +110,8 @@ HTTPS checks of the pinned RPM key and explicit registry mirror APIs, before
 host configuration changes. Required CA trust must be preinstalled. See
 [Bootstrap Source Preflight](docs/rke2-operations.md#bootstrap-source-preflight)
 for the checks and their endpoint-only qualification boundary.
+Follow [Prepare Node HTTPS Trust](docs/rke2-operations.md#prepare-node-https-trust)
+for the separate controller, node, registry and endpoint-chain responsibilities.
 
 Prepare inventory-declared managed-host aliases separately with the fixed
 `rke2-host-aliases-plan` and `rke2-host-aliases-apply` routes. They select the
