@@ -118,8 +118,9 @@ managed node uses `ansible.builtin.uri` and its own Ansible Python TLS trust to:
 
 - GET `rke2_rpm_gpg_key_url`, require HTTP 200, and compare the response in memory
   with the mandatory lowercase `rke2_rpm_gpg_key_sha256`. No key file is saved or
-  imported. The apply role still enforces its checksum, GPG fingerprint, and
-  package/repository signature checks.
+  imported. The apply role still enforces its checksum, GPG fingerprint and
+  package signatures. Repository metadata-signature verification defaults on
+  and follows the [inventory-selected policy](#rpm-repository-trust).
 - GET each unique explicit `rke2_registry_mirrors` API endpoint once per host.
   Bare origins receive `/v2/`; existing path endpoints ending in `/v2` or `/v2/`
   retain that API path without doubling it. The response must identify
@@ -349,11 +350,23 @@ role.
 
 The role downloads the signing key with the configured checksum, verifies its
 fingerprint during import, and configures common and version repositories with
-both package and repository GPG checks enabled. Both repositories remain
+package GPG checks enabled. Repository metadata GPG checks default to enabled.
+Both repositories remain
 disabled by default and are enabled only for the exact RKE2 package transaction.
 The installed node-package NEVRA, SELinux-package NEVRA, and RKE2 binary version
 are verified before the service is managed. The role permits upgrades but does
 not perform downgrades; selecting a lower package identity fails closed.
+
+`rke2_rpm_repo_gpgcheck` accepts only a boolean and defaults to `true`. An explicit
+private-inventory `false` changes only `repo_gpgcheck` on both RKE2 repositories
+for an approved mirror-metadata exception. It trusts the HTTPS mirror's index
+without a repository GPG signature; RPM package signatures and signing-key pins
+remain required. It does not select OS repository policy, disable TLS, or skip
+the all-node bootstrap source preflight. The shared RPM-source validator rejects
+invalid types before bootstrap mutation, including in check mode. Restore `true`
+when a correctly signed or byte-preserving metadata source becomes available.
+The plan previews repository configuration, not an actual DNF transaction;
+neither policy setting establishes package availability or dependency closure.
 
 Rancher publishes Enterprise Linux packages under `centos/<major>` paths. Rocky
 10.0, 10.1, and 10.2 therefore use native `centos/10` RKE2 repositories; the

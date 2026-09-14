@@ -1,4 +1,13 @@
 ---
+- name: Validate RKE2 repository metadata verification selection
+  ansible.builtin.assert:
+    that:
+      - (rke2_rpm_repo_gpgcheck | default(true)) is boolean
+    fail_msg: >-
+      rke2_rpm_repo_gpgcheck must be a boolean. It defaults to true; false
+      disables only repository metadata-signature verification, not RPM package
+      signature or HTTPS verification.
+
 - name: Validate RKE2 RPM source URLs
   ansible.builtin.assert:
     that:

@@ -197,6 +197,30 @@ def test_bootstrap_invalid_sources_fail_before_http(
     assert "user:secret" not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("case", ["valid", "wrong-hash", "untrusted", "registry-error", "invalid-type"])
+def test_bootstrap_metadata_policy_preserves_source_checks(
+    repo_root, isolated_test_dir, command_runner, endpoint, case,
+):
+    updates: dict[str, object] = {"rke2_rpm_repo_gpgcheck": False}
+    if case == "wrong-hash":
+        updates["rke2_rpm_gpg_key_sha256"] = "0" * 64
+    if case == "registry-error":
+        endpoint["status"] = 403
+    if case == "invalid-type":
+        updates["rke2_rpm_repo_gpgcheck"] = "false"
+    result = run_preflight(repo_root, isolated_test_dir, command_runner, endpoint,
+                           updates=updates, check=True, trusted=case != "untrusted")
+    if case == "valid":
+        result.assert_success()
+        assert "changed=0" in result.stdout
+    else:
+        result.assert_failure()
+    expected = [] if case in {"untrusted", "invalid-type"} else ["/key"]
+    if case in {"valid", "registry-error"}:
+        expected.append("/v2/")
+    assert endpoint["requests"] == expected
+
+
 def test_bootstrap_rejects_registry_tls_bypass_before_http(
     repo_root, isolated_test_dir, command_runner, endpoint,
 ):

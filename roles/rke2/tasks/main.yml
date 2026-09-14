@@ -692,7 +692,7 @@
     baseurl: "{{ rke2_rpm_common_repository_url }}"
     enabled: false
     gpgcheck: true
-    repo_gpgcheck: true
+    repo_gpgcheck: "{{ rke2_rpm_repo_gpgcheck }}"
     gpgkey: "file://{{ rke2_rpm_gpg_key_path }}"
 
 - name: Configure the disabled RKE2 version RPM repository
@@ -703,7 +703,7 @@
     baseurl: "{{ rke2_rpm_version_repository_url }}"
     enabled: false
     gpgcheck: true
-    repo_gpgcheck: true
+    repo_gpgcheck: "{{ rke2_rpm_repo_gpgcheck }}"
     gpgkey: "file://{{ rke2_rpm_gpg_key_path }}"
 
 - name: Install exact native RKE2 RPM packages

@@ -44,6 +44,13 @@
 
 ## RKE2 Runner Boundary
 
+- `rke2_rpm_repo_gpgcheck` is a strict boolean, default `true`. An explicit private
+  inventory exception changes only metadata-signature checking on the common and
+  version RKE2 RPM repositories. Keep package `gpgcheck: true`, HTTPS, key
+  checksum/fingerprint and exact package checks. Validate types in the shared
+  source validator before bootstrap mutation; never skip source preflight or
+  infer an exception from a proxy URL. See [RPM Repository Trust](docs/rke2-operations.md#rpm-repository-trust).
+
 - `rke2-host-aliases-plan/apply` select the complete coherent RKE2 cluster, with
   exactly one server/agent role per host, independently of storage or installed
   RKE2. Validate and snapshot transport-only controller JSON before inventory.

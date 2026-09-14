@@ -7,6 +7,7 @@ rke2_rpm_version_repository_url: ""
 rke2_rpm_common_repository_id: rancher-rke2-common
 rke2_rpm_version_repository_id: rancher-rke2
 rke2_rpm_repository_file: rancher-rke2
+rke2_rpm_repo_gpgcheck: true
 rke2_rpm_el_major: ""
 rke2_rpm_arch: x86_64
 rke2_rpm_package_release: ""

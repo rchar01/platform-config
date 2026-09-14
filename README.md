@@ -120,6 +120,11 @@ Apply finishes with an unchanged check and node-side NSS verification. See
 [RKE2 Host Aliases](docs/rke2-host-aliases.md) for the transport-only JSON contract
 and private CI approval boundary.
 
+RKE2 repository metadata-signature verification defaults to enabled. The boolean
+`rke2_rpm_repo_gpgcheck` permits an explicit private-inventory exception for both
+RKE2 repositories while keeping package signatures, key pins and HTTPS checks.
+See [RPM Repository Trust](docs/rke2-operations.md#rpm-repository-trust).
+
 ### RKE2 Storage Operations
 
 The fixed `storage-check` and `storage-apply` routes accept one literal RKE2 storage

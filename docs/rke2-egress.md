@@ -22,17 +22,19 @@ interfaces, credentials, or trust-file locations.
 | RKE2 Helm Controller job | kube-vip and GitLab Runner Helm indexes. The job may run on any eligible cluster node. | Chart URLs selected from the indexes and any release-asset redirects. |
 | CI Runner and operational job | Digest-pinned maintained operational image from GHCR and immutable GitLab repositories, then SSH and internal smoke endpoints. | GHCR authentication and image layers. The job does not proxy target-node RPM or OCI downloads. |
 
-The pristine-node preflight, Ansible template rendering, guarded reboot,
-second-apply idempotency checks, and smoke playbooks do not intentionally fetch
-external artifacts. Runtime reconciliation may still pull a missing image while
-smoke waits for a workload.
+Bootstrap source preflight fetches the signing key into memory and probes the
+explicit registry APIs from every node, including in check mode. It does not
+qualify RPM metadata, package signatures or dependency resolution. Ansible
+template rendering and read-only smoke checks do not intentionally fetch these
+artifacts; runtime reconciliation may still pull missing images while smoke waits.
 
 ## Native RPM Sources
 
 The role configures the two Rancher repositories disabled by default and enables
-them only for the exact RKE2 transaction. Both package and repository GPG checks
-are enabled. The signing key is independently pinned by SHA-256 and OpenPGP
-fingerprint.
+them only for the exact RKE2 transaction. Package GPG checking is always enabled.
+Repository metadata GPG checking defaults to enabled and is selected by the
+boolean `rke2_rpm_repo_gpgcheck`. The signing key is independently pinned by
+SHA-256 and OpenPGP fingerprint.
 
 ### Configuring RPM Sources
 
@@ -42,6 +44,7 @@ These variables are the public configuration interface for RKE2 RPM sources:
 | --- | --- |
 | `rke2_rpm_common_repository_url` | HTTPS DNF base URL containing common packages such as `rke2-selinux`. |
 | `rke2_rpm_version_repository_url` | HTTPS DNF base URL containing versioned `rke2-server`, `rke2-agent`, and `rke2-common` packages. |
+| `rke2_rpm_repo_gpgcheck` | Boolean, default `true`; selects metadata-signature verification for both RKE2 repositories. Package GPG and HTTPS checks remain enabled. |
 | `rke2_rpm_gpg_key_url` | HTTPS source for the repository signing key. |
 | `rke2_rpm_gpg_key_sha256` | Reviewed lowercase SHA-256 of the downloaded key. |
 | `rke2_rpm_gpg_key_fingerprint` | Reviewed uppercase OpenPGP fingerprint. |
@@ -49,8 +52,8 @@ These variables are the public configuration interface for RKE2 RPM sources:
 The repository values are base URLs, not individual RPM URLs or OCI registry
 references. They must contain metadata and packages matching `rke2_version`,
 `rke2_rpm_el_major`, `rke2_rpm_arch`, `rke2_rpm_package_release`, and
-`rke2_rpm_selinux_package_nevra`. Role defaults are intentionally empty so each
-inventory must select and review its sources.
+`rke2_rpm_selinux_package_nevra`. Source URL and signing-key identity defaults
+are intentionally empty so each inventory must select and review its sources.
 
 Real environment values belong in private inventory. For example, an internal
 immutable mirror that preserves Rancher's packages, metadata signatures, and
@@ -74,13 +77,22 @@ rke2_rpm_gpg_key_sha256: >-
 rke2_rpm_gpg_key_fingerprint: C8CFF216455126E9B9C918BE925EA29AE257814A # gitleaks:allow - Public signing-key fingerprint.
 ```
 
-The existing checksum and fingerprint remain valid only when the mirror serves
-the unchanged Rancher key and preserves both upstream signature sets. A mirror
+With metadata verification enabled, the mirror must preserve both upstream
+signature sets and the unchanged Rancher key for that trust contract. A mirror
 that re-signs content must sign both RPM packages and repository metadata with
 the one configured key, publish that reviewed key, and configure its SHA-256 and
 fingerprint. Separate package-signing and metadata-signing keys require a role
 enhancement. Do not embed credentials in repository URLs; authenticated
 repositories require a separate secret-backed interface.
+
+An inventory may explicitly set `rke2_rpm_repo_gpgcheck: false` for a reviewed
+mirror that regenerates the repository index without a usable metadata signature.
+This trusts the mirror's index over HTTPS without GPG-authenticating it; it is
+not equivalent to signed metadata. Only `repo_gpgcheck` changes, on the common
+and version repositories. RPM package signatures, key checksum/fingerprint,
+exact package identities, HTTPS validation and bootstrap source probes remain
+required. Strings, numbers and null are rejected by the shared source validator.
+Restore `true` when a correctly signed or byte-preserving source is available.
 
 | Artifact | Exact upstream source |
 | --- | --- |
@@ -93,7 +105,7 @@ repositories require a separate secret-backed interface.
 | Server package | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-server-1.35.5~rke2r2-0.el10.x86_64.rpm` |
 | Agent package | `https://rpm.rancher.io/rke2/stable/1.35/centos/10/x86_64/rke2-agent-1.35.5~rke2r2-0.el10.x86_64.rpm` |
 
-With repository GPG verification enabled, DNF also requests the detached
+With `rke2_rpm_repo_gpgcheck: true`, DNF also requests the detached
 metadata signature, normally `repodata/repomd.xml.asc`. DNF then reads
 `repomd.xml` and follows its hashed metadata filenames. Those filenames and
 repository contents are mutable and cannot be represented by one permanent list

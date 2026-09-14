@@ -894,9 +894,15 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
     assert defaults["rke2_rpm_gpg_key_url"] == ""
     assert defaults["rke2_rpm_gpg_key_sha256"] == ""
     assert defaults["rke2_rpm_gpg_key_fingerprint"] == ""
+    assert defaults["rke2_rpm_repo_gpgcheck"] is True
 
     assertions = preflight["ansible.builtin.assert"]["that"]
     rpm_sources = _named(rpm_source_tasks, "Validate RKE2 RPM source URLs")
+    metadata_policy = _named(rpm_source_tasks, "Validate RKE2 repository metadata verification selection")
+    assert metadata_policy["ansible.builtin.assert"]["that"] == [
+        "(rke2_rpm_repo_gpgcheck | default(true)) is boolean"
+    ]
+    assert rpm_source_tasks.index(metadata_policy) < rpm_source_tasks.index(rpm_sources)
     assert any(
         "item is match(rke2_rpm_source_url_pattern)" in assertion
         for assertion in rpm_sources["ansible.builtin.assert"]["that"]
@@ -925,7 +931,7 @@ def test_rke2_uses_pinned_native_rpm_repositories(repo_root: Path) -> None:
         settings = repository["ansible.builtin.yum_repository"]
         assert settings["enabled"] is False
         assert settings["gpgcheck"] is True
-        assert settings["repo_gpgcheck"] is True
+        assert settings["repo_gpgcheck"] == "{{ rke2_rpm_repo_gpgcheck }}"
         assert settings["gpgkey"] == "file://{{ rke2_rpm_gpg_key_path }}"
 
     assert install["ansible.builtin.dnf"]["name"] == [
@@ -1059,6 +1065,7 @@ def test_rke2_egress_matrix_tracks_pinned_inputs(repo_root: Path) -> None:
     for name in (
         "rke2_rpm_common_repository_url",
         "rke2_rpm_version_repository_url",
+        "rke2_rpm_repo_gpgcheck",
         "rke2_rpm_gpg_key_url",
         "rke2_rpm_gpg_key_sha256",
         "rke2_rpm_gpg_key_fingerprint",
