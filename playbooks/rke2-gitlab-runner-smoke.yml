@@ -4,6 +4,9 @@
   become: true
   gather_facts: false
   vars:
+    # Keep role defaults namespaced so explicit inventory values still win.
+    rke2_gitlab_runner_smoke_defaults: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/rke2_gitlab_runner/defaults/main.yml') | from_yaml }}
     rke2_gitlab_runner_smoke_bootstrap_host: "{{ (groups.get('rke2_servers', []) | first) | default('') }}"
     rke2_gitlab_runner_smoke_is_bootstrap: "{{ inventory_hostname == rke2_gitlab_runner_smoke_bootstrap_host }}"
     rke2_gitlab_runner_smoke_kubectl: /var/lib/rancher/rke2/bin/kubectl
@@ -246,11 +249,15 @@
           - rke2_gitlab_runner_smoke_namespace_object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'baseline'
           - rke2_gitlab_runner_smoke_helmchart_object.spec.chart == 'gitlab-runner'
           - rke2_gitlab_runner_smoke_helmchart_object.spec.targetNamespace == rke2_gitlab_runner_smoke_namespace
-          - rke2_gitlab_runner_smoke_helmchart_object.spec.version == rke2_gitlab_runner_chart_version
+          - >-
+            rke2_gitlab_runner_smoke_helmchart_object.spec.version ==
+            (rke2_gitlab_runner_chart_version | default(rke2_gitlab_runner_smoke_defaults.rke2_gitlab_runner_chart_version))
           - rke2_gitlab_runner_smoke_deployment.spec.template.spec.serviceAccountName == rke2_gitlab_runner_smoke_release_name
           - rke2_gitlab_runner_smoke_affinity_expression.key == 'node-role.kubernetes.io/control-plane'
           - rke2_gitlab_runner_smoke_affinity_expression.operator == 'DoesNotExist'
-          - rke2_gitlab_runner_smoke_deployment.spec.template.spec.containers[0].image == rke2_gitlab_runner_manager_image
+          - >-
+            rke2_gitlab_runner_smoke_deployment.spec.template.spec.containers[0].image ==
+            (rke2_gitlab_runner_manager_image | default(rke2_gitlab_runner_smoke_defaults.rke2_gitlab_runner_manager_image))
           - rke2_gitlab_runner_smoke_projected_secret.projected.sources[0].secret.name == 'rke2-gitlab-runner-token'
           - rke2_gitlab_runner_smoke_ca_volume.secret.secretName == 'rke2-gitlab-runner-ca'
           - not rke2_gitlab_runner_smoke_deployment.spec.template.spec.containers[0].securityContext.privileged
@@ -261,8 +268,12 @@
           - rke2_gitlab_runner_smoke_rolebinding.roleRef.name == rke2_gitlab_runner_smoke_release_name
           - rke2_gitlab_runner_smoke_rolebinding.subjects[0].name == rke2_gitlab_runner_smoke_release_name
           - rke2_gitlab_runner_smoke_role.rules == rke2_gitlab_runner_smoke_expected_role_rules
-          - rke2_gitlab_runner_helper_image in rke2_gitlab_runner_smoke_config
-          - rke2_gitlab_runner_default_job_image in rke2_gitlab_runner_smoke_config
+          - >-
+            (rke2_gitlab_runner_helper_image | default(rke2_gitlab_runner_smoke_defaults.rke2_gitlab_runner_helper_image))
+            in rke2_gitlab_runner_smoke_config
+          - >-
+            (rke2_gitlab_runner_default_job_image | default(rke2_gitlab_runner_smoke_defaults.rke2_gitlab_runner_default_job_image))
+            in rke2_gitlab_runner_smoke_config
           - ('name = ' ~ (rke2_gitlab_runner_name | to_json)) in rke2_gitlab_runner_smoke_config
           - ('url = ' ~ (rke2_gitlab_runner_gitlab_url | to_json)) in rke2_gitlab_runner_smoke_config
           - >-

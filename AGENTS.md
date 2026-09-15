@@ -44,6 +44,11 @@
 
 ## RKE2 Runner Boundary
 
+- Standalone kube-vip and Runner smoke must resolve optional role defaults in
+  a separate namespace, with explicit inventory values taking precedence.
+  Do not invoke role convergence or load defaults over inventory to obtain them.
+  Test the complete standalone smoke paths with role-default inputs omitted.
+
 - `rke2_coredns_static_hosts` is an optional private IPv4/FQDN list, public default
   empty. Preserve the qualified RKE2 `v1.35.5+rke2r2` / CoreDNS chart `1.45.212`
   server/plugin contract and Rancher's cluster-domain prepend. Guard ownership

@@ -31,6 +31,11 @@ an optional trailing slash are supported. Chart `gitlab-runner` and version
 `0.88.3` remain fixed. Smoke compares the live repository with the same setting,
 using the upstream default when the variable is absent from inventory.
 
+Standalone smoke also reads omitted chart-version and image settings from this
+role's defaults file into a separate namespace. Explicit inventory values
+remain authoritative. Loading those fallback values does not run the role or
+change the existing security, repository-CA or placement assertions.
+
 Verify both `index.yaml` and the exact archive URL selected by its version entry.
 Changing the repository URL does not enforce a chart checksum or provide Helm-job
 CA trust. The internal source must be accessible and trusted by the Helm

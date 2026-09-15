@@ -4,12 +4,18 @@
   become: true
   gather_facts: false
   vars:
+    # Smoke runs in its own process: read defaults without running the role or
+    # raising their precedence above private inventory overrides.
+    rke2_kube_vip_smoke_defaults: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/rke2_kube_vip/defaults/main.yml') | from_yaml }}
+    rke2_kube_vip_smoke_expected_env: "{{ rke2_kube_vip_env | default(rke2_kube_vip_smoke_defaults.rke2_kube_vip_env) }}"
     rke2_kube_vip_smoke_bootstrap_host: "{{ (groups.get('rke2_servers', []) | first) | default('') }}"
     rke2_kube_vip_smoke_is_bootstrap: "{{ inventory_hostname == rke2_kube_vip_smoke_bootstrap_host }}"
     rke2_kube_vip_smoke_kubectl: "{{ rke2_kube_vip_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
     rke2_kube_vip_smoke_kubeconfig: "{{ rke2_kube_vip_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
     rke2_kube_vip_smoke_expected_servers: "{{ groups.get('rke2_servers', []) | length }}"
-    rke2_kube_vip_smoke_expected_image: "ghcr.io/kube-vip/kube-vip:{{ rke2_kube_vip_image_tag }}"
+    rke2_kube_vip_smoke_expected_image: >-
+      ghcr.io/kube-vip/kube-vip:{{ rke2_kube_vip_image_tag | default(rke2_kube_vip_smoke_defaults.rke2_kube_vip_image_tag) }}
   tasks:
     - name: Confirm kube-vip HelmChart exists
       ansible.builtin.command:
@@ -88,7 +94,7 @@
           | selectattr('name', 'equalto', 'vip_leaseduration')
           | map(attribute='value')
           | first
-        ) == (rke2_kube_vip_env.vip_leaseduration | string)
+        ) == (rke2_kube_vip_smoke_expected_env.vip_leaseduration | string)
         and
         (
           (
@@ -100,7 +106,7 @@
           | selectattr('name', 'equalto', 'vip_renewdeadline')
           | map(attribute='value')
           | first
-        ) == (rke2_kube_vip_env.vip_renewdeadline | string)
+        ) == (rke2_kube_vip_smoke_expected_env.vip_renewdeadline | string)
         and
         (
           (
@@ -112,7 +118,7 @@
           | selectattr('name', 'equalto', 'vip_retryperiod')
           | map(attribute='value')
           | first
-        ) == (rke2_kube_vip_env.vip_retryperiod | string)
+        ) == (rke2_kube_vip_smoke_expected_env.vip_retryperiod | string)
       changed_when: false
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 
@@ -187,17 +193,17 @@
             (rke2_kube_vip_smoke_container.env
             | selectattr('name', 'equalto', 'vip_leaseduration')
             | map(attribute='value') | first)
-            == (rke2_kube_vip_env.vip_leaseduration | string)
+            == (rke2_kube_vip_smoke_expected_env.vip_leaseduration | string)
           - >-
             (rke2_kube_vip_smoke_container.env
             | selectattr('name', 'equalto', 'vip_renewdeadline')
             | map(attribute='value') | first)
-            == (rke2_kube_vip_env.vip_renewdeadline | string)
+            == (rke2_kube_vip_smoke_expected_env.vip_renewdeadline | string)
           - >-
             (rke2_kube_vip_smoke_container.env
             | selectattr('name', 'equalto', 'vip_retryperiod')
             | map(attribute='value') | first)
-            == (rke2_kube_vip_env.vip_retryperiod | string)
+            == (rke2_kube_vip_smoke_expected_env.vip_retryperiod | string)
         fail_msg: "kube-vip image or leader-election settings do not match inventory."
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 

@@ -64,4 +64,11 @@ stepping down, and `vip_retryperiod` controls the interval between attempts.
 These values tolerate transient API or etcd latency better than the former
 `5/3/1` defaults, at the cost of slower takeover after an abrupt leader failure.
 
+Standalone smoke reads the image and environment defaults directly from this
+role's defaults file into its own namespace. Explicit inventory values take
+precedence; an explicit environment dictionary replaces the default dictionary
+rather than being silently merged. Smoke does not run the role to obtain these
+values. Both its reconciliation wait and final assertions check the same
+effective image and leader-election timings.
+
 Preflight checks confirm the API VIP is included in `rke2_tls_sans` and that every RKE2 server routes the VIP through the configured interface.
