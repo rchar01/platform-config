@@ -1684,7 +1684,9 @@ dependency. Production monitoring is still required. Keep client traffic limited
 to acceptance checks until named administrator access, local audit rotation,
 and recovery gates pass and normal onboarding is separately authorized. Merged
 orchestration, offline tests, and a successful smoke run alone do not establish
-full live qualification or authorize normal traffic.
+full live qualification or authorize normal traffic. The narrower
+[standalone dev endpoint release](#standalone-dev-endpoint-release) has its own
+closeout criteria and does not depend on backup/restore implementation.
 
 DNS infrastructure is optional, but the service hostname in `openbao_service_dns`
 and its certificate DNS SAN identity are required. Configure resolution in the
@@ -1738,6 +1740,8 @@ those hosts and retained guards through the separately reviewed
 [recovery procedure](#openbao-edge-guard-recovery) before preparing a fresh plan;
 do not delete VIP addresses or consumed records manually or rerun ordinary staging.
 
+#### Required Desired-State Handoff Before VIP Smoke
+
 After successful activation, review and commit the active contract in private
 desired state and close the one-activation gate. Neither lane edits or pushes
 private source automatically:
@@ -1747,6 +1751,20 @@ keepalived_vip_service_enabled: true
 keepalived_vip_service_state: started
 openbao_keepalived_activation_ready: false
 ```
+
+These are desired-state declarations. The readiness flag is one-time activation
+authorization, not a runtime health indicator; resetting it does not stop the
+service. The enabled/started values tell subsequent maintenance to preserve the
+active lifecycle. Detecting actual state does not automatically rewrite inventory.
+
+For GitLab, **push this handoff and create a new pipeline on the new private
+revision**, selecting `openbao-vip-smoke`. Retrying a job from the earlier
+pipeline keeps its old revision. The error `VIP smoke requires active desired
+Keepalived state on every host` indicates an invalid active desired contract.
+Check the existing role opt-in (`keepalived_vip_enabled: true`) and enabled/started
+values in the selected inventory revision; a missing handoff or stale revision
+can cause this error. Do not rerun activation or weaken the smoke assertion to
+resolve a declaration error.
 
 Then run the separate read-only VIP smoke in the same operational lane, using
 the reviewed active desired-state revision. For direct interactive operations:
@@ -1771,7 +1789,42 @@ This is not an activation or repair command. Do not rerun
 Use separately approved active maintenance and VIP smoke. Keep live network,
 failover, audit rotation, named-administrator, and recovery evidence in the
 private operational record; the focused offline checks in
-[Development](development.md) do not replace those gates.
+[Development](development.md) do not replace live qualification for those
+separately scoped operations.
+
+### Standalone Dev Endpoint Release
+
+The minimal standalone dev release covers the active three-node OpenBao service,
+HAProxy routing, and the Keepalived VIP with strict TLS and service-name resolution
+through DNS or static mappings. A passing VIP smoke establishes the active desired
+and observed lifecycle, repeated single-owner observations, and matching healthy
+cluster identity through both client paths. It does not inject a failure or prove
+administrator access.
+
+After successful activation, the required desired-state handoff, and VIP smoke,
+close this release with one separately approved, reversible HAProxy-owner
+stop/failover/restore check and a basic named-administrator access handoff. Identify
+the current VIP owner rather than assuming the preferred node owns it. The bounded
+check must observe a different single owner and strict TLS HTTP 200, restore
+HAProxy, and pass final VIP smoke. It does not stop OpenBao, remove quorum, or
+inject storage faults. Record sanitized results and limitations in the release
+record; keep credentials and raw operational evidence outside public Git.
+
+Use the fixed Ansible-driven [HAProxy Failover and Recovery](openbao-failover.md)
+plan/test/recover routes for this exercise. They bind approval to the observed
+owner, prevent a repeated stop after interruption, and expose a separate
+recovery-only CI job. Live execution still needs its own approval and evidence.
+
+Backup automation, NAS integration, isolated restore, the wider fault campaign,
+and monitoring are independent follow-up work, not gates for this endpoint release.
+Its closeout does not declare disaster-recovery or production readiness, or
+authorize ordinary onboarding under the broader requirements above.
+
+RKE2 and standalone OpenBao are qualified independently. Passing their respective
+checks does not configure OpenBao Kubernetes authentication, an External Secrets
+or CSI integration, or prove that a workload can retrieve a secret. Such consumer
+integration needs its own scope and evidence; it is not an additional blocker for
+the standalone endpoint release.
 
 ### Backups
 

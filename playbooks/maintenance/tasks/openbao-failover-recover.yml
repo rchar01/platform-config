@@ -1,0 +1,168 @@
+---
+- name: Initialize independent restoration evidence
+  ansible.builtin.set_fact:
+    openbao_failover_recovery_gate: false
+    openbao_failover_recovery_result: failed
+    openbao_failover_restore_ok: false
+    openbao_failover_finish_ok: false
+    openbao_failover_smoke_ok: false
+
+- name: Establish restoration authority without blocking a previously armed reachable owner
+  block:
+    - name: Use this invocation's complete pre-stop claims for ordinary failure recovery
+      ansible.builtin.set_fact:
+        openbao_failover_recovery_gate: true
+        openbao_failover_record_present: true
+      when: openbao_failover_fresh and openbao_failover_all_claimed | default(false)
+
+    - name: Inspect all retained records for later recovery or partial claim cleanup
+      when: not openbao_failover_recovery_gate
+      block:
+        - name: Select only the already authorized retained identity
+          ansible.builtin.set_fact:
+            openbao_failover_inspect_id: "{{ openbao_failover_plan.plan_id }}"
+
+        - name: Reinspect all target records before recovery
+          ansible.builtin.include_tasks: openbao-failover-inspect.yml
+
+        - name: Validate complete conservative partial-claim or full recovery evidence
+          ansible.builtin.include_tasks: openbao-failover-records.yml
+
+        - name: Record validated restoration scope without claiming absent peers
+          ansible.builtin.set_fact:
+            openbao_failover_recovery_gate: true
+            openbao_failover_record_present: "{{ openbao_failover_record is not none }}"
+
+    - name: Preserve global failure on reachable records after any ordinary test failure
+      ansible.builtin.include_tasks: openbao-failover-guard.yml
+      vars:
+        openbao_failover_guard_action: fail
+      when:
+        - openbao_failover_fresh
+        - openbao_failover_record_present
+        - >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_test_result')
+          | select('equalto', 'passed') | length != 3
+
+    # Do not gate owner restoration on a peer's new response: all-host authority
+    # was established before stop (or by complete retained-record inspection).
+    - name: Persist restore intent on every present target record
+      ansible.builtin.include_tasks: openbao-failover-guard.yml
+      vars:
+        openbao_failover_guard_action: restore
+      when: openbao_failover_record_present
+
+    - name: Record exact local restore authorization and historical outcome
+      ansible.builtin.set_fact:
+        openbao_failover_restore_ok: >-
+          {{ not openbao_failover_record_present or
+             (not openbao_failover_transition.unreachable | default(false)
+              and openbao_failover_transition.rc | default(-1) == 0
+              and (openbao_failover_transition.stdout | from_json).status in ['restoring', 'closed']) }}
+      no_log: true
+
+    - name: Restore only recorded owner HAProxy with durable restore authorization
+      ansible.builtin.systemd_service:
+        name: haproxy.service
+        state: started
+      register: openbao_failover_start
+      ignore_unreachable: true
+      when:
+        - inventory_hostname == openbao_failover_plan.owner
+        - openbao_failover_record_present
+        - openbao_failover_restore_ok
+        - (openbao_failover_transition.stdout | from_json).restore_authorized is sameas true
+
+    - name: Retain the permanent test outcome independently of restored health
+      ansible.builtin.set_fact:
+        openbao_failover_test_result: >-
+          {{ 'passed' if openbao_failover_record_present and openbao_failover_restore_ok
+             and (openbao_failover_transition.stdout | from_json).record.outcome == 'proven'
+             else 'failed' }}
+
+    - name: Require complete restore intent responses before qualification or release
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_restore_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Gather fresh read-only restoration facts
+      ansible.builtin.setup:
+      ignore_unreachable: true
+
+    - name: Observe configured delayed failback without service convergence
+      ansible.builtin.include_tasks:
+        file: openbao-failover-settle.yml
+        apply:
+          ignore_unreachable: true
+
+    - name: Run full existing post-restoration VIP smoke
+      ansible.builtin.include_tasks:
+        file: openbao-failover-full-smoke.yml
+        apply:
+          ignore_unreachable: true
+
+    - name: Require final original cluster identity
+      ansible.builtin.assert:
+        that: >-
+          openbao_smoke_active_observations | map(attribute='cluster_id') | unique | list
+          == [openbao_failover_plan.evidence.nodes[0].cluster.cluster_id]
+
+    - name: Reobserve stable configuration identity after recovery
+      ansible.builtin.include_tasks:
+        file: openbao-failover-evidence.yml
+        apply:
+          ignore_unreachable: true
+
+    - name: Require original stable source evidence after restoration
+      ansible.builtin.assert:
+        that: openbao_failover_evidence == openbao_failover_plan.evidence
+      no_log: true
+
+    - name: Record complete local final smoke
+      ansible.builtin.set_fact:
+        openbao_failover_smoke_ok: true
+
+    - name: Require successful complete all-host final smoke before release
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_smoke_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Finish present records with explicit full smoke verification
+      ansible.builtin.include_tasks: openbao-failover-guard.yml
+      vars:
+        openbao_failover_guard_action: finish
+      when: openbao_failover_record_present
+
+    - name: Require verified local finish or conservatively absent partial-claim peer
+      ansible.builtin.assert:
+        that: >-
+          not openbao_failover_record_present or
+          (not openbao_failover_transition.unreachable | default(false)
+           and openbao_failover_transition.rc | default(-1) == 0
+           and (openbao_failover_transition.stdout | from_json).status == 'closed')
+
+    - name: Record successful recovery without changing historical fault result
+      ansible.builtin.set_fact:
+        openbao_failover_finish_ok: true
+        openbao_failover_recovery_result: passed
+  rescue:
+    - name: Retain unverified restoration records for the fixed recovery route
+      ansible.builtin.set_fact:
+        openbao_failover_recovery_result: failed
+  always:
+    - name: Measure elapsed transaction time when this invocation attempted a fault
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -c, 'import time; print(time.monotonic())']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: openbao_failover_finished_clock
+      when: openbao_failover_started_clock.stdout is defined
+
+    - name: Preserve total transaction duration separately from failover proof latency
+      ansible.builtin.set_fact:
+        openbao_failover_transaction_elapsed_seconds: >-
+          {{ ((openbao_failover_finished_clock.stdout | float) - (openbao_failover_started_clock.stdout | float)) | round(3) }}
+      when: openbao_failover_started_clock.stdout is defined

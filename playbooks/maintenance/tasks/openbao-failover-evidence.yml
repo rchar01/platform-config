@@ -1,0 +1,51 @@
+---
+- name: Inspect stable edge configuration identities
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop:
+    - "{{ openbao_haproxy_config_path | default('/etc/haproxy/haproxy.cfg') }}"
+    - "{{ openbao_haproxy_backend_ca_path | default('/etc/haproxy/openbao-ca.crt') }}"
+    - "{{ keepalived_vip_config_path | default('/etc/keepalived/keepalived.conf') }}"
+  register: openbao_failover_config_stats
+
+- name: Require safe complete edge configuration evidence
+  ansible.builtin.assert:
+    that:
+      - not item.unreachable | default(false)
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.checksum is match('^[a-f0-9]{64}$')
+  loop: "{{ openbao_failover_config_stats.results }}"
+  no_log: true
+
+- name: Require actual Keepalived configuration matches the reviewed timing and tracking
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_failover_config_stats.results[2].stat.checksum ==
+        lookup('ansible.builtin.template', playbook_dir ~ '/../../roles/keepalived_vip/templates/keepalived.conf.j2') | hash('sha256')
+  no_log: true
+
+- name: Record deterministic per-host failover evidence
+  ansible.builtin.set_fact:
+    openbao_failover_node_evidence:
+      host: "{{ inventory_hostname }}"
+      cluster: "{{ openbao_active_observation }}"
+      configuration: "{{ openbao_failover_config_stats.results | map(attribute='stat.checksum') | list }}"
+      vip: "{{ openbao_service_vip }}"
+      dns: "{{ openbao_service_dns }}"
+      port: "{{ openbao_client_port }}"
+      priority: "{{ keepalived_vip_instances[0].priority }}"
+      preempt_delay: "{{ keepalived_vip_preempt_delay }}"
+  no_log: true
+
+- name: Collect all three stable failover identities
+  ansible.builtin.set_fact:
+    openbao_failover_evidence:
+      nodes: "{{ groups['openbao'] | sort | map('extract', hostvars, 'openbao_failover_node_evidence') | list }}"
+    openbao_failover_owner: "{{ openbao_vip_owner_samples[0] }}"
+  no_log: true

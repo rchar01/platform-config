@@ -1,0 +1,23 @@
+---
+- name: Wait one bounded configured failback observation interval
+  ansible.builtin.pause:
+    seconds: "{{ [10, openbao_failover_settle_seconds - openbao_failover_settle_offset] | min }}"
+
+- name: Reset only this single failback sample
+  ansible.builtin.set_fact:
+    openbao_vip_owner_samples: []
+
+- name: Reuse exact single-owner and boot-state sampling during failback
+  ansible.builtin.include_tasks: ../../tasks/openbao-vip-sample.yml
+  vars:
+    openbao_vip_sample: 1
+
+- name: Reject oscillation after the preferred owner has returned
+  ansible.builtin.assert:
+    that: >-
+      openbao_failover_preferred not in openbao_failover_settle_owners or
+      openbao_vip_owner_samples[0] == openbao_failover_preferred
+
+- name: Retain failback ownership observations
+  ansible.builtin.set_fact:
+    openbao_failover_settle_owners: "{{ openbao_failover_settle_owners + [openbao_vip_owner_samples[0]] }}"

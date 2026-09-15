@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   printf '%s\n' \
     'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check/storage-apply only)]' \
-    'Fixed operations: storage-check, storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke' >&2
+    'Fixed operations: storage-check, storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
 }
 
 fail() {
@@ -83,6 +83,7 @@ shift
 case "$operation" in
   storage-check | storage-apply) ;;
   rke2-host-aliases-plan | rke2-host-aliases-apply) ;;
+  openbao-haproxy-failover-plan | openbao-haproxy-failover | openbao-haproxy-failover-recover) ;;
   rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status | openbao-restart-plan | openbao-restart | openbao-converge-plan | openbao-deploy | openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate | openbao-smoke | openbao-vip-smoke) ;;
   *) fail "unsupported operation: $operation" ;;
 esac
@@ -239,6 +240,19 @@ if [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-ap
 fi
 
 case "$operation" in
+  openbao-haproxy-failover-plan | openbao-haproxy-failover)
+    [[ $plan == /* ]] || fail "failover plan/test requires one absolute --plan path"
+    if [[ $operation == *-plan ]]; then
+      [[ ! -e $plan && ! -L $plan ]] || fail "plan output already exists"
+    else
+      require_owner_private_file plan "$plan"
+      [[ ${CI:-} == true || -t 0 ]] || fail "operator failover requires an interactive terminal"
+    fi
+    ;;
+  openbao-haproxy-failover-recover)
+    [[ -z $plan ]] || fail "failover recovery discovers retained target records; --plan is forbidden"
+    [[ ${CI:-} == true || -t 0 ]] || fail "operator recovery requires an interactive terminal"
+    ;;
   openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate)
     [[ $plan == /* ]] || fail "edge operations require one absolute --plan path"
     if [[ $operation == *-activate ]]; then
@@ -250,7 +264,7 @@ case "$operation" in
       [[ ! -e $plan && ! -L $plan ]] || fail "plan output already exists"
     fi
     ;;
-  *) [[ -z $plan ]] || fail "--plan is only accepted by edge plan/activation routes" ;;
+  *) [[ -z $plan ]] || fail "--plan is only accepted by edge plan/activation or failover plan/test routes" ;;
 esac
 
 export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
@@ -497,6 +511,17 @@ case "$operation" in
   openbao-status)
     ping_group connectivity openbao
     run_openbao_status openbao-status false
+    ;;
+  openbao-haproxy-failover-plan | openbao-haproxy-failover | openbao-haproxy-failover-recover)
+    mode='test'
+    [[ $operation != *-plan ]] || mode=plan
+    [[ $operation != *-recover ]] || mode=recover
+    plan_vars=$(python3 -c 'import json,sys; print(json.dumps(dict(zip(("openbao_failover_mode", "openbao_failover_plan_path"), sys.argv[1:]))))' "$mode" "$plan")
+    # The playbook inspects retained records before baseline smoke, so a stopped
+    # owner can be recovered. No pre-route health gate may prevent restoration.
+    run_phase "failover-$mode" ansible-playbook -i "$inventory" \
+      "$repo_root/playbooks/maintenance/openbao-haproxy-failover.yml" \
+      --limit openbao "${extra_vars[@]}" --extra-vars "$plan_vars"
     ;;
   openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate)
     edge=${operation#openbao-}

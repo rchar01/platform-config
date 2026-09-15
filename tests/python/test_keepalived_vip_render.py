@@ -60,6 +60,7 @@ def test_keepalived_vip_rendered_fail_closed_contract(
     rendered_keepalived: dict[str, str]
 ) -> None:
     config = rendered_keepalived["config"]
+    assert 'script "/usr/libexec/keepalived/keepalived-check-service"' in config
     for pattern in (
         r"^[ \t]+state BACKUP$",
         r"^[ \t]+preempt_delay 300$",
@@ -334,6 +335,9 @@ if name == "keepalived":
 if name == "runuser":
     assert args == ["-u", "keepalived_script", "-g", "keepalived_script", "--", os.environ["KEEPALIVED_SCRIPT"]]
     result("script not ready" if case == "script-unready" else "", 1 if case == "script-unready" else 0)
+if name == "getenforce":
+    assert not args
+    result("Disabled")
 if name == "systemctl":
     if args[0] == "show":
         prop = args[2].removeprefix("--property=")
@@ -433,7 +437,7 @@ def activation_fixture(
     root = isolated_test_dir
     binaries = root / "bin"
     binaries.mkdir()
-    for name in ("rpm", "keepalived", "runuser", "systemctl", "ip", "firewall-cmd", "firewall-offline-cmd"):
+    for name in ("rpm", "keepalived", "runuser", "getenforce", "systemctl", "ip", "firewall-cmd", "firewall-offline-cmd"):
         path = binaries / name
         path.write_text(f"#!{sys.executable}\n" + _ACTIVATION_COMMAND, encoding="utf-8")
         path.chmod(0o755)
@@ -474,6 +478,7 @@ def activation_fixture(
         "keepalived_vip_test_output_dir": str(output),
         "firewalld_service_enabled": True,
         "firewalld_service_state": "started",
+        "ansible_facts": {"python": {"executable": sys.executable}},
     })
     # Load defaults and canonical fixture inputs, then render exactly as staging does.
     fixture["tasks"] = fixture["tasks"][1:]
@@ -788,6 +793,7 @@ def test_keepalived_activation_preflight_is_repeatable_and_read_only(
             "keepalived_vip_activation_observation.cluster_members == keepalived_vip_cluster_members",
             "keepalived_vip_activation_observation.package_checksum == 'a' * 64",
             "keepalived_vip_activation_observation.binary_checksum | length == 64",
+            "keepalived_vip_activation_observation.script_selinux == {'mode': 'Disabled'}",
             "(keepalived_vip_activation_observation.firewalld_manifest_checksum != 'unmanaged') == keepalived_vip_firewalld_manage",
             "keepalived_vip_activation_observation.firewalld == keepalived_vip_firewall_observation",
             "keepalived_vip_activation_observation.firewalld.managed == keepalived_vip_firewalld_manage",
@@ -806,6 +812,7 @@ def test_keepalived_activation_preflight_is_repeatable_and_read_only(
     assert "changed: [localhost]" not in preflight_output
     commands = [json.loads(line) for line in (root / "commands.jsonl").read_text().splitlines()]
     assert commands.count(["ip", "-j", "-4", "address", "show"]) == 2
+    assert commands.count(["getenforce"]) == 2
     assert ["systemctl", "is-enabled", "haproxy.service"] in commands
     assert any(command[0] == "runuser" for command in commands)
     assert any(command[0] == "firewall-cmd" for command in commands) is (managed and enabled)
@@ -889,6 +896,7 @@ def test_keepalived_activation_preflight_rejects_unready_or_stale_state(
     "Inspect exact staged Keepalived package identity",
     "Verify staged Keepalived non-configuration package files without scripts",
     "Validate staged Keepalived configuration natively",
+    "Query native Keepalived script SELinux policy without changing target state",
     "Check staged Keepalived readiness as the configured script identity",
     "Inspect loaded Keepalived unit configuration",
     "Observe Keepalived activation service states",

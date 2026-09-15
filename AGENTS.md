@@ -102,6 +102,20 @@
 
 ## OpenBao Activation Boundary
 
+- `openbao-haproxy-failover-plan`/`openbao-haproxy-failover` require an exact
+  owner-bound private plan; `openbao-haproxy-failover-recover` discovers retained
+  target records without an artifact. Require complete three-host baseline and
+  final smoke, active desired services, protected manual CI or exact TTY approval,
+  and fresh 1800-second authorization before one HAProxy-only stop. Preserve boot
+  enablement. The shared edge mutex/active namespace excludes activation; permanent
+  consumption and durable stop intent prevent repeat faults. Recovery may ignore
+  expiration/pipeline only, preserving source/private/project/image/lane identity.
+  Failed proof remains failed after restoration; reports separate test, recovery,
+  smoke and nullable proof/transaction timing. Retain unknown/partial records;
+  never automatically unlock or delete consumption. CI allows two hours for
+  test/recovery with the failover-only bounded timing envelope. Other lifecycle
+  work must be excluded procedurally. See [OpenBao Failover](docs/openbao-failover.md).
+
 - DNS infrastructure is optional; preserve `openbao_service_dns` and required
   certificate DNS SAN identity. Use existing private controller
   `container.hostaliases` (or `PLATFORM_CONFIG_CONTAINER_HOST_ALIASES_FILE`
@@ -114,6 +128,14 @@
   only until named administrator access, local audit rotation, and recovery gates
   pass and normal onboarding is separately authorized. Do not equate offline
   tests or merged orchestration with live qualification.
+- Distinguish the scoped standalone dev endpoint release from broader operational
+  onboarding. Its closeout requires successful activation, active-state handoff,
+  VIP smoke, one separately approved HAProxy-owner stop/failover/restore check,
+  and basic named-administrator handoff. Backup/restore, NAS, the wider fault
+  campaign, and monitoring are separate work, not endpoint-release gates. Closing
+  that scope does not waive ordinary-onboarding rules or claim production/DR
+  readiness. Independent RKE2 and OpenBao qualification does not establish
+  Kubernetes authentication or workload secret-consumption integration.
 - `playbooks/openbao.yml` is pristine inactive staging only and is forbidden for
   active or initialized clusters. Do not use ordinary staging after activation.
 - HAProxy activation must select its built-in-only `activation_enable.yml`, not
@@ -193,6 +215,22 @@
 - After successful activation, record `keepalived_vip_service_enabled: true` and
   `keepalived_vip_service_state: started` in private desired state and reset
   `openbao_keepalived_activation_ready: false`; then use VIP smoke, not staging.
+  For CI, commit and push this handoff and create a fresh smoke pipeline on that
+  revision. Do not retry a smoke job bound to the pre-activation declaration or
+  weaken the desired-state assertion. Readiness is one-time authorization, not
+  service health; desired state and runtime observations remain distinct.
+- Keepalived's default tracking script lives under `/usr/libexec/keepalived` for
+  the target policy's `keepalived_unconfined_script_exec_t` label. Stage policy
+  `_default` contexts only on the script and its directory with built-in modules.
+  The read-only native SELinux guard precedes UID-only readiness and binds mode,
+  full contexts, prospective `keepalived_t` to `keepalived_unconfined_script_t`
+  transition, and dependency decisions into existing plan evidence. Require
+  source execute, process transition, and target entrypoint for both domain
+  transitions; all five dependencies must retain the exact script domain and
+  allow execute plus execute_no_trans, including in permissive mode.
+  Custom paths must pass actual-label validation; preflight/start never repair
+  labels. Neither native policy queries nor `runuser` prove actual daemon-script
+  execution; verify that separately after reviewed stopped-artifact repair.
 
 ## Setup And Checks
 

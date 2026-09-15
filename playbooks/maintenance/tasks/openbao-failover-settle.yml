@@ -1,0 +1,29 @@
+---
+- name: Validate normal Keepalived topology and failback timing
+  ansible.builtin.include_role:
+    name: keepalived_vip
+    tasks_from: validate.yml
+    public: true
+
+- name: Derive the configured preferred member and settle interval
+  ansible.builtin.set_fact:
+    openbao_failover_preferred: >-
+      {{ (openbao_failover_plan.evidence.nodes | sort(attribute='priority') | last).host }}
+    openbao_failover_settle_seconds: >-
+      {{ (keepalived_vip_preempt_delay if openbao_failover_plan.owner ==
+          (openbao_failover_plan.evidence.nodes | sort(attribute='priority') | last).host else 0)
+         + 4 * keepalived_vip_advert_interval
+         + (keepalived_vip_script_rise + 1) * keepalived_vip_script_interval + 2 }}
+    openbao_failover_settle_owners: []
+
+- name: Observe unique ownership throughout the configured preemption window
+  ansible.builtin.include_tasks: openbao-failover-settle-sample.yml
+  loop: "{{ range(0, openbao_failover_settle_seconds, 10) | list }}"
+  loop_control:
+    loop_var: openbao_failover_settle_offset
+
+- name: Require settled ownership on the configured preferred member
+  ansible.builtin.assert:
+    that:
+      - openbao_failover_settle_owners[-1] == openbao_failover_preferred
+      - openbao_failover_settle_owners | unique | length <= 2

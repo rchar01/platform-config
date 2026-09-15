@@ -1,0 +1,232 @@
+---
+- name: Initialize fresh fault transaction phase evidence
+  ansible.builtin.set_fact:
+    openbao_failover_claim_ok: false
+    openbao_failover_all_claimed: false
+    openbao_failover_recheck_ok: false
+    openbao_failover_verify_ok: false
+    openbao_failover_stop_ok: false
+    openbao_failover_stop_observed: false
+    openbao_failover_vip_proof_ok: false
+    openbao_failover_test_result: failed
+
+- name: Claim recheck arm and prove the one-shot fault
+  block:
+    - name: Claim the shared edge namespace on every host
+      ansible.builtin.include_tasks: openbao-failover-guard.yml
+      vars:
+        openbao_failover_guard_action: claim
+
+    - name: Record complete reachable claim evidence
+      ansible.builtin.set_fact:
+        openbao_failover_claim_ok: >-
+          {{ not openbao_failover_transition.unreachable | default(false)
+             and openbao_failover_transition.rc | default(-1) == 0
+             and (openbao_failover_transition.stdout | from_json).status == 'claimed' }}
+
+    - name: Require all three claims before any stop intent
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_claim_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Preserve complete claims for reachable-owner emergency restoration
+      ansible.builtin.set_fact:
+        openbao_failover_all_claimed: true
+
+    - name: Recheck complete smoke after acquiring all guards
+      ansible.builtin.include_tasks:
+        file: openbao-failover-full-smoke.yml
+        apply:
+          ignore_unreachable: true
+
+    - name: Recheck stable configuration and owner evidence
+      ansible.builtin.include_tasks:
+        file: openbao-failover-evidence.yml
+        apply:
+          ignore_unreachable: true
+
+    - name: Record successful local pre-stop recheck
+      ansible.builtin.set_fact:
+        openbao_failover_recheck_ok: true
+
+    - name: Require complete successful all-host recheck before arming
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_recheck_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Verify fresh exact owner source lane and deterministic plan evidence
+      openbao_failover_plan:
+        action: verify
+        mode: test
+        plan: "{{ openbao_failover_plan }}"
+        owner: "{{ openbao_failover_owner }}"
+        evidence: "{{ openbao_failover_evidence }}"
+      no_log: true
+
+    - name: Record successful local controller verification
+      ansible.builtin.set_fact:
+        openbao_failover_verify_ok: true
+
+    - name: Require all three controller verifications before arming
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_verify_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Record monotonic fault start time
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -c, 'import time; print(time.monotonic())']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: openbao_failover_started_clock
+
+    - name: Persist one stop intent only on the recorded owner
+      ansible.builtin.include_tasks: openbao-failover-guard.yml
+      vars:
+        openbao_failover_guard_action: arm
+      when: inventory_hostname == openbao_failover_plan.owner
+
+    - name: Stop only the owner with a fresh successful arm response
+      ansible.builtin.systemd_service:
+        name: haproxy.service
+        state: stopped
+      register: openbao_failover_stop
+      ignore_unreachable: true
+      when:
+        - inventory_hostname == openbao_failover_plan.owner
+        - not openbao_failover_transition.unreachable | default(false)
+        - openbao_failover_transition.rc | default(-1) == 0
+        - (openbao_failover_transition.stdout | from_json).stop_authorized is sameas true
+
+    - name: Record successful owner stop response
+      ansible.builtin.set_fact:
+        openbao_failover_stop_ok: >-
+          {{ not openbao_failover_stop.skipped | default(false)
+             and not openbao_failover_stop.unreachable | default(false)
+             and openbao_failover_stop.state | default('') == 'stopped' }}
+      when: inventory_hostname == openbao_failover_plan.owner
+
+    - name: Require the recorded owner stop before fault proof
+      ansible.builtin.assert:
+        that: hostvars[openbao_failover_plan.owner].openbao_failover_stop_ok
+
+    - name: Observe actual stopped owner HAProxy and unchanged boot enablement
+      ansible.builtin.command:
+        argv: [systemctl, "{{ item }}", haproxy.service]
+      loop: [is-active, is-enabled]
+      register: openbao_failover_stopped_services
+      changed_when: false
+      failed_when: false
+      ignore_unreachable: true
+      when: inventory_hostname == openbao_failover_plan.owner
+
+    - name: Require complete reachable owner service observations
+      ansible.builtin.assert:
+        that:
+          - not openbao_failover_stopped_services.unreachable | default(false)
+          - openbao_failover_stopped_services.results | default([]) | length == 2
+          - not item.unreachable | default(false)
+          - item.rc | default(-1) == (3 if item.item == 'is-active' else 0)
+          - item.stdout | default('') == ('inactive' if item.item == 'is-active' else 'enabled')
+      loop: "{{ openbao_failover_stopped_services.results | default([]) }}"
+      when: inventory_hostname == openbao_failover_plan.owner
+
+    - name: Record proven inactive and boot-enabled owner HAProxy
+      ansible.builtin.set_fact:
+        openbao_failover_stop_observed: >-
+          {{ openbao_failover_stopped_services.results | default([]) | length == 2 }}
+      when: inventory_hostname == openbao_failover_plan.owner
+
+    - name: Require actual owner stop evidence on all hosts before VIP proof
+      ansible.builtin.assert:
+        that: hostvars[openbao_failover_plan.owner].openbao_failover_stop_observed
+
+    - name: Allow bounded hard-fault detection and alternate VRRP election
+      ansible.builtin.pause:
+        seconds: >-
+          {{ 4 * (keepalived_vip_advert_interval | default(1))
+             + ((keepalived_vip_script_fall | default(1)) + 1)
+               * (keepalived_vip_script_interval | default(1)) + 2 }}
+
+    # Deliberately use the VIP oracle alone: all-HAProxy smoke would reject the
+    # intentional inactive owner and would not qualify alternate VIP routing.
+    - name: Prove strict bounded alternate-owner VIP TLS and cluster identity
+      ansible.builtin.include_tasks:
+        file: ../../tasks/openbao-vip-status.yml
+        apply:
+          ignore_unreachable: true
+
+    - name: Require a different stable VIP owner during the fault
+      ansible.builtin.assert:
+        that: openbao_vip_owner_samples[0] != openbao_failover_plan.owner
+
+    - name: Record successful local alternate-owner and TLS proof
+      ansible.builtin.set_fact:
+        openbao_failover_vip_proof_ok: true
+
+    - name: Require complete alternate-owner and TLS proof before recording latency
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_vip_proof_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Capture monotonic time at successful alternate-owner and TLS proof
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -c, 'import time; print(time.monotonic())']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: openbao_failover_proven_clock
+
+    # This is latency to the completed strict VIP observation, including bounded
+    # detection/election sampling. Recovery/preemption waiting is counted separately.
+    - name: Record failover proof latency before restoration
+      ansible.builtin.set_fact:
+        openbao_failover_elapsed_seconds: >-
+          {{ ((openbao_failover_proven_clock.stdout | float) - (openbao_failover_started_clock.stdout | float)) | round(3) }}
+
+    - name: Prove unchanged healthy direct OpenBao and Raft during the fault
+      ansible.builtin.include_role:
+        name: openbao_status
+        apply:
+          ignore_unreachable: true
+
+    - name: Require original cluster identity during the fault
+      ansible.builtin.assert:
+        that: >-
+          openbao_status_health_results.results | map(attribute='json.cluster_id') | unique | list
+          == [openbao_failover_plan.evidence.nodes[0].cluster.cluster_id]
+
+    - name: Record complete local fault proof
+      ansible.builtin.set_fact:
+        openbao_failover_proof_ok: true
+
+    - name: Require all three fault proofs before persisting success
+      ansible.builtin.assert:
+        that: >-
+          groups['openbao'] | map('extract', hostvars, 'openbao_failover_proof_ok')
+          | select('equalto', true) | length == 3
+
+    - name: Persist globally proven fault on all records
+      ansible.builtin.include_tasks: openbao-failover-guard.yml
+      vars:
+        openbao_failover_guard_action: prove
+
+    - name: Require complete durable local proof
+      ansible.builtin.assert:
+        that:
+          - not openbao_failover_transition.unreachable | default(false)
+          - openbao_failover_transition.rc | default(-1) == 0
+          - (openbao_failover_transition.stdout | from_json).status == 'failover-proven'
+
+    - name: Preserve successful test separately from recovery
+      ansible.builtin.set_fact:
+        openbao_failover_test_result: passed
+  rescue:
+    - name: Preserve failed test even when restoration later succeeds
+      ansible.builtin.set_fact:
+        openbao_failover_proof_ok: false
+        openbao_failover_test_result: failed

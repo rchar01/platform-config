@@ -1,0 +1,18 @@
+---
+- name: Execute the fixed durable failover transition
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/openbao/files/platform-openbao-failover-guard') }}"
+      - "{{ openbao_failover_guard_action }}"
+    stdin: >-
+      {{ ({'host': inventory_hostname, 'plan': openbao_failover_plan, 'nonce': openbao_failover_plan.nonce}
+          | combine({'smoke_verified': true} if openbao_failover_guard_action == 'finish' else {})) | to_json }}
+  register: openbao_failover_transition
+  changed_when: >-
+    openbao_failover_transition.rc | default(-1) == 0 and
+    (openbao_failover_transition.stdout | from_json).changed
+  failed_when: false
+  ignore_unreachable: true
+  no_log: true

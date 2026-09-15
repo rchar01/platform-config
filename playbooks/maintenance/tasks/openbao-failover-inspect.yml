@@ -1,0 +1,46 @@
+---
+- name: Reset fresh all-host inspection evidence
+  ansible.builtin.set_fact:
+    openbao_failover_inspect_ok: false
+    openbao_failover_record: null
+
+- name: Inspect retained target transaction without creating records
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../roles/openbao/files/platform-openbao-failover-guard') }}"
+      - inspect
+    stdin: >-
+      {{ ({'host': inventory_hostname}
+          | combine({'plan_id': openbao_failover_inspect_id} if openbao_failover_inspect_id | length else {})) | to_json }}
+  register: openbao_failover_inspection
+  changed_when: false
+  failed_when: false
+  ignore_unreachable: true
+  no_log: true
+
+- name: Accept only complete reachable inspection responses
+  when:
+    - not openbao_failover_inspection.unreachable | default(false)
+    - openbao_failover_inspection.rc | default(-1) == 0
+  block:
+    - name: Decode target inspection
+      ansible.builtin.set_fact:
+        openbao_failover_record: "{{ (openbao_failover_inspection.stdout | from_json).record }}"
+        openbao_failover_inspect_ok: true
+      no_log: true
+  rescue:
+    - name: Retain unknown target state
+      ansible.builtin.set_fact:
+        openbao_failover_inspect_ok: false
+
+- name: Collect complete retained target records
+  ansible.builtin.set_fact:
+    openbao_failover_inspected_all: >-
+      {{ groups['openbao'] | map('extract', hostvars, 'openbao_failover_inspect_ok')
+         | select('equalto', true) | length == 3 }}
+    openbao_failover_records: >-
+      {{ groups['openbao'] | map('extract', hostvars, 'openbao_failover_record')
+         | reject('equalto', none) | list }}
+  no_log: true

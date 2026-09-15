@@ -1,0 +1,33 @@
+---
+# A missing peer is safe only for an interrupted claim/its failed cleanup.
+# Never manufacture missing consumption or turn an ambiguous arm into a retry.
+- name: Require complete coherent retained transaction evidence
+  ansible.builtin.assert:
+    that:
+      - openbao_failover_inspected_all
+      - openbao_failover_records | length > 0
+      - openbao_failover_records | map(attribute='plan') | unique | length == 1
+      - openbao_failover_records | map(attribute='nonce') | unique | length == 1
+      - openbao_failover_records | map(attribute='host') | unique | length == openbao_failover_records | length
+      - >-
+        openbao_failover_records | length == 3 or
+        (openbao_failover_records | selectattr('phase', 'equalto', 'claimed') | list | length
+         + openbao_failover_records | selectattr('phase', 'in', ['restoring', 'closed'])
+           | selectattr('outcome', 'equalto', 'failed') | list | length
+         == openbao_failover_records | length)
+    fail_msg: Unknown, foreign, incomplete or inconsistent failover records remain blocked.
+  no_log: true
+
+- name: Bind the exact retained plan on every host
+  ansible.builtin.set_fact:
+    openbao_failover_plan: "{{ openbao_failover_records[0].plan }}"
+  no_log: true
+
+- name: Validate retained plan source environment and recovery lane
+  openbao_failover_plan:
+    action: prepare
+    mode: recover
+    plan: "{{ openbao_failover_plan }}"
+  register: openbao_failover_prepared
+  run_once: true # noqa run-once[task]
+  no_log: true

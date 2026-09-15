@@ -459,6 +459,8 @@ def test_openbao_bootstrap_member_resolution_behavior(
 
 def test_openbao_smoke_and_rollback_source_contract(repo_root: Path) -> None:
     smoke = (repo_root / "playbooks/openbao-smoke.yml").read_text(encoding="utf-8")
+    assert "ansible.builtin.import_tasks: tasks/openbao-smoke.yml" in smoke
+    smoke = (repo_root / "playbooks/tasks/openbao-smoke.yml").read_text(encoding="utf-8")
     rollback = (
         repo_root / "roles/openbao_haproxy/tasks/activation_rollback.yml"
     ).read_text(encoding="utf-8")

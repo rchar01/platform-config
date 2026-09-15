@@ -1,0 +1,281 @@
+---
+- name: Inspect and approve the exact OpenBao HAProxy owner transaction
+  hosts: openbao
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: true
+  tasks:
+    - name: Require explicit complete scope and active desired fixed services
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - openbao_failover_mode | default('') in ['plan', 'test', 'recover']
+          - groups.get('openbao', []) | length == 3
+          - ansible_play_hosts_all | sort == groups.get('openbao', []) | sort
+          - ansible_limit | default('') | length > 0
+          - query('ansible.builtin.inventory_hostnames', ansible_limit) | sort == groups['openbao'] | sort
+          - openbao_failover_mode == hostvars[groups['openbao'][0]].openbao_failover_mode
+          - openbao_failover_plan_path | default('') == hostvars[groups['openbao'][0]].openbao_failover_plan_path | default('')
+          - openbao_failover_plan_path | default('') is string
+          - openbao_failover_mode == 'recover' or openbao_failover_plan_path | default('') is match('^/')
+          - openbao_failover_mode != 'recover' or openbao_failover_plan_path | default('') == ''
+          - openbao_haproxy_enabled | default(false) is sameas true
+          - openbao_haproxy_service_enabled | default(false) is sameas true
+          - openbao_haproxy_service_state | default('stopped') == 'started'
+          - openbao_haproxy_service_name | default('haproxy.service') == 'haproxy.service'
+          - keepalived_vip_enabled | default(false) is sameas true
+          - keepalived_vip_service_enabled | default(false) is sameas true
+          - keepalived_vip_service_state | default('stopped') == 'started'
+          - keepalived_vip_service_name | default('keepalived.service') == 'keepalived.service'
+          - keepalived_vip_track_service | default('haproxy.service') == 'haproxy.service'
+          - keepalived_vip_preempt_delay | default(300) is integer
+          - keepalived_vip_preempt_delay | default(300) >= 60
+          - keepalived_vip_preempt_delay | default(300) <= 1000
+          - keepalived_vip_preempt_delay | default(300) == hostvars[groups['openbao'][0]].keepalived_vip_preempt_delay | default(300)
+        fail_msg: >-
+          Failover requires normal mode and exactly all three hosts with active desired fixed HAProxy and Keepalived;
+          plan/test require an absolute artifact path, and recover requires no artifact path.
+
+    - name: Require bounded normal Keepalived timing variables
+      ansible.builtin.assert:
+        that:
+          - hostvars[inventory_hostname].get(item.name, item.default) is integer
+          - hostvars[inventory_hostname].get(item.name, item.default) >= 1
+          - hostvars[inventory_hostname].get(item.name, item.default) <= 10
+          - >-
+            hostvars[inventory_hostname].get(item.name, item.default)
+            == hostvars[groups['openbao'][0]].get(item.name, item.default)
+        fail_msg: Keepalived timing must be bounded and identical on all three hosts so shared VIP sampling stays aligned.
+      loop:
+        - {name: keepalived_vip_advert_interval, default: 1}
+        - {name: keepalived_vip_script_interval, default: 1}
+        - {name: keepalived_vip_script_fall, default: 1}
+        - {name: keepalived_vip_script_rise, default: 2}
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Failover-only envelope; ordinary openbao_status retains its own contract.
+    # Native HTTP timeout/retry arithmetic at these maxima (11 attempts): health
+    # 3*(11*5 + 10*2)=225s; observe_raft has ONE retried URI per observation,
+    # so Raft is 3*(11*5 + 10*2) + 2*2=229s; audit is 5s: 459s/status.
+    # Four status phases execute six times across hosts (the fault phase runs on
+    # all three): at most 2754s summed HTTP/retry/stability allowance even serialized.
+    # Recovery settling adds at most 1000 + 4*10 + (10+1)*10 + 2=1152s;
+    # fault detection/election adds 152s. The 2h operational budget leaves room
+    # for VIP/HAProxy probes, guards and Ansible overhead; it is not a hard wall
+    # clock or controller-survival guarantee (URI timeouts are socket timeouts).
+    - name: Require bounded normal OpenBao status sampling variables
+      ansible.builtin.assert:
+        that:
+          - hostvars[inventory_hostname].get(item.name, item.default) is integer
+          - hostvars[inventory_hostname].get(item.name, item.default) >= item.minimum
+          - hostvars[inventory_hostname].get(item.name, item.default) <= item.maximum
+          - >-
+            hostvars[inventory_hostname].get(item.name, item.default)
+            == hostvars[groups['openbao'][0]].get(item.name, item.default)
+        fail_msg: Failover status timing must meet its per-field budget and be identical on all three hosts.
+      loop:
+        - {name: openbao_status_request_timeout, default: 5, minimum: 1, maximum: 5}
+        - {name: openbao_status_retries, default: 10, minimum: 1, maximum: 10}
+        - {name: openbao_status_retry_delay, default: 2, minimum: 0, maximum: 2}
+        - {name: openbao_status_stability_observations, default: 2, minimum: 2, maximum: 3}
+        - {name: openbao_status_stability_delay, default: 1, minimum: 1, maximum: 2}
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Timings describe this invocation only. Retained records preserve outcomes,
+    # not historical clocks; plan, replay and recovery-only timings remain null.
+    - name: Initialize explicit transaction results on every selected host
+      ansible.builtin.set_fact:
+        openbao_failover_inspect_id: ''
+        openbao_failover_fresh: false
+        openbao_failover_authorized: false
+        openbao_failover_proof_ok: false
+        openbao_failover_restore_ok: false
+        openbao_failover_smoke_ok: false
+        openbao_failover_finish_ok: false
+        openbao_failover_test_result: not_run
+        openbao_failover_recovery_result: not_required
+        openbao_failover_elapsed_seconds: null
+        openbao_failover_transaction_elapsed_seconds: null
+
+    # Inspect BEFORE full smoke: an interrupted fault intentionally has one
+    # inactive HAProxy. An unavailable or foreign record blocks a new fault.
+    - name: Discover retained target transactions before baseline health
+      ansible.builtin.include_tasks: tasks/openbao-failover-inspect.yml
+
+    - name: Require all initial inspections before selecting any transaction
+      ansible.builtin.assert:
+        that:
+          - openbao_failover_inspected_all
+          - openbao_failover_records | map(attribute='plan') | unique | length <= 1
+          - openbao_failover_mode != 'plan' or openbao_failover_records | length == 0
+
+    - name: Select the retained transaction identity
+      ansible.builtin.set_fact:
+        openbao_failover_inspect_id: "{{ openbao_failover_records[0].plan.plan_id }}"
+      when: openbao_failover_records | length > 0
+      no_log: true
+
+    - name: Require the artifact to name the already discovered active transaction
+      ansible.builtin.assert:
+        that:
+          - (lookup('ansible.builtin.file', openbao_failover_plan_path) | from_json).plan_id == openbao_failover_inspect_id
+        fail_msg: A different failover transaction is retained; run openbao-haproxy-failover-recover before another test.
+      when:
+        - openbao_failover_mode == 'test'
+        - openbao_failover_records | length > 0
+      no_log: true
+
+    # The artifact is only a lookup hint here. Authorization comes from the
+    # controller plugin and the exact root-owned target records, never this read.
+    - name: Select the reviewed artifact identity for consumed-result inspection
+      ansible.builtin.set_fact:
+        openbao_failover_inspect_id: "{{ (lookup('ansible.builtin.file', openbao_failover_plan_path) | from_json).plan_id }}"
+      when:
+        - openbao_failover_mode == 'test'
+        - openbao_failover_plan_path | default('') | length > 0
+      no_log: true
+
+    - name: Inspect the same retained identity including closed peers
+      ansible.builtin.include_tasks: tasks/openbao-failover-inspect.yml
+      when: openbao_failover_inspect_id | length > 0
+
+    - name: Require complete selected-plan inspections
+      ansible.builtin.assert:
+        that: openbao_failover_inspected_all
+
+    - name: Approve retained recovery without a healthy HAProxy prerequisite
+      when: openbao_failover_records | length > 0
+      block:
+        - name: Validate all retained records and controller identity
+          ansible.builtin.include_tasks: tasks/openbao-failover-records.yml
+
+        - name: Obtain exact restoration approval
+          ansible.builtin.include_tasks: tasks/openbao-failover-approval.yml
+
+        - name: Authorize only restoration of this retained identity
+          ansible.builtin.set_fact:
+            openbao_failover_authorized: true
+
+    - name: Prepare a fresh fault from the complete existing VIP smoke baseline
+      when:
+        - openbao_failover_records | length == 0
+        - openbao_failover_mode != 'recover'
+      block:
+        - name: Gather read-only baseline facts
+          ansible.builtin.setup:
+
+        - name: Run full existing VIP smoke before a new plan or fault
+          ansible.builtin.include_tasks: tasks/openbao-failover-full-smoke.yml
+
+        - name: Bind stable configuration cluster identity and exact owner
+          ansible.builtin.include_tasks: tasks/openbao-failover-evidence.yml
+
+        - name: Prepare or verify the controller-reviewed failover plan
+          openbao_failover_plan:
+            action: prepare
+            mode: "{{ openbao_failover_mode }}"
+            path: "{{ openbao_failover_plan_path | default('') }}"
+            owner: "{{ openbao_failover_owner }}"
+            evidence: "{{ openbao_failover_evidence }}"
+          register: openbao_failover_prepared
+          run_once: true # noqa run-once[task]
+          no_log: true
+
+        - name: Preserve the prepared transaction identity
+          ansible.builtin.set_fact:
+            openbao_failover_plan: "{{ openbao_failover_prepared.plan }}"
+          no_log: true
+
+        - name: Publish sanitized reviewed failover identity
+          ansible.builtin.debug:
+            msg:
+              operation: haproxy-failover
+              plan_id: "{{ openbao_failover_plan.plan_id }}"
+              owner: "{{ openbao_failover_plan.owner }}"
+              hosts: "{{ groups['openbao'] | sort }}"
+              digest: "{{ openbao_failover_plan.digest }}"
+
+        - name: Obtain exact fresh fault approval
+          ansible.builtin.include_tasks: tasks/openbao-failover-approval.yml
+          when: openbao_failover_mode == 'test'
+
+        - name: Authorize the fresh test only after approval
+          ansible.builtin.set_fact:
+            openbao_failover_fresh: "{{ openbao_failover_mode == 'test' }}"
+            openbao_failover_authorized: "{{ openbao_failover_mode == 'test' }}"
+
+- name: Execute at most one approved HAProxy owner stop
+  hosts: openbao
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: false
+  tasks:
+    - name: Execute fresh transaction only
+      ansible.builtin.include_tasks: tasks/openbao-failover-test.yml
+      when: openbao_failover_fresh | default(false)
+
+    - name: Clear host errors for independent reachable-owner restoration
+      ansible.builtin.meta: clear_host_errors
+
+- name: Restore retained HAProxy owner and verify the complete cluster
+  hosts: openbao
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: false
+  tasks:
+    - name: Restore only approved retained transactions
+      ansible.builtin.include_tasks: tasks/openbao-failover-recover.yml
+      when: openbao_failover_authorized | default(false)
+
+    - name: Verify recovery with no retained transaction
+      when:
+        - openbao_failover_mode == 'recover'
+        - not openbao_failover_authorized | default(false)
+      block:
+        - name: Gather read-only no-transaction facts
+          ansible.builtin.setup:
+
+        - name: Run full smoke when recovery finds no retained transaction
+          ansible.builtin.include_tasks: tasks/openbao-failover-full-smoke.yml
+
+        - name: Record verified no-transaction recovery
+          ansible.builtin.set_fact:
+            openbao_failover_smoke_ok: true
+            openbao_failover_finish_ok: true
+      rescue:
+        - name: Record failed no-transaction smoke
+          ansible.builtin.set_fact:
+            openbao_failover_smoke_ok: false
+
+    - name: Clear host errors for complete sanitized reporting
+      ansible.builtin.meta: clear_host_errors
+
+- name: Report distinct failover proof restoration and final smoke results
+  hosts: openbao
+  become: false
+  gather_facts: false
+  strategy: linear
+  tasks:
+    - name: Publish sanitized failover phase results on every selected host
+      ansible.builtin.debug:
+        msg:
+          failover_test_result: "{{ openbao_failover_test_result }}"
+          recovery_result: "{{ openbao_failover_recovery_result }}"
+          final_smoke_result: "{{ 'not_run' if openbao_failover_mode == 'plan' else ('passed' if openbao_failover_smoke_ok else 'failed') }}"
+          failover_elapsed_seconds: "{{ openbao_failover_elapsed_seconds }}"
+          transaction_elapsed_seconds: "{{ openbao_failover_transaction_elapsed_seconds }}"
+
+    - name: Require complete successful evidence without erasing a failed fault proof
+      ansible.builtin.assert:
+        that:
+          - >-
+            openbao_failover_mode == 'plan' or
+            (groups['openbao'] | map('extract', hostvars, 'openbao_failover_smoke_ok') | select('equalto', true) | length == 3
+             and groups['openbao'] | map('extract', hostvars, 'openbao_failover_finish_ok') | select('equalto', true) | length == 3)
+          - openbao_failover_mode != 'test' or openbao_failover_test_result == 'passed'
+        fail_msg: Failover proof or verified recovery failed; retained records require the fixed recovery route.

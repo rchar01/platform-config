@@ -193,7 +193,7 @@ def test_non_edge_routes_reject_plan(
     )
     assert result.returncode == 2, result.diagnostics()
     if not empty:
-        assert "--plan is only accepted by edge plan/activation routes" in result.stderr
+        assert "--plan is only accepted by edge plan/activation or failover plan/test routes" in result.stderr
     assert not launcher.log.exists()
 
 

@@ -19,7 +19,7 @@ HOSTS = ["bao-1", "bao-2", "bao-3"]
 def _copy_tasks(repo_root, root):
     destination = root / "playbooks/tasks"
     destination.mkdir(parents=True, exist_ok=True)
-    for name in ("openbao-vip-status.yml", "openbao-vip-sample.yml"):
+    for name in ("openbao-smoke.yml", "openbao-vip-status.yml", "openbao-vip-sample.yml"):
         source = (repo_root / "playbooks/tasks" / name).read_text()
         source = source.replace("ansible.builtin.command:", "ansible.legacy.command:")
         source = source.replace("ansible.builtin.pause:", "ansible.legacy.vip_pause:")

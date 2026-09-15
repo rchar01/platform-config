@@ -5,6 +5,11 @@
       inventory_host: "{{ inventory_hostname }}"
       config_checksum: >-
         {{ 'drift' if test_drift | default('') == 'keepalived' and test_preflight_count > 1 else 'keepalived' }}
+      script_selinux:
+        mode: Enforcing
+        script_context: >-
+          {{ 'system_u:object_r:keepalived_unconfined_script_exec_t:s0:'
+             ~ ('c2' if test_drift | default('') == 'keepalived-selinux' and test_preflight_count > 1 else 'c1') }}
       instances:
         - name: OPENBAO
           vip: "{{ openbao_service_vip }}/24"

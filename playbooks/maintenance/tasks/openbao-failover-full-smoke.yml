@@ -1,0 +1,19 @@
+---
+- name: Run existing direct-node Raft and all-HAProxy smoke
+  ansible.builtin.import_tasks: ../../tasks/openbao-smoke.yml
+
+- name: Validate the active desired Keepalived contract without convergence
+  ansible.builtin.include_role:
+    name: keepalived_vip
+    tasks_from: validate.yml
+    public: true
+
+- name: Require active desired OpenBao VIP lifecycle on every host
+  ansible.builtin.assert:
+    that:
+      - keepalived_vip_enabled is sameas true
+      - keepalived_vip_service_enabled is sameas true
+      - keepalived_vip_service_state == 'started'
+
+- name: Run existing repeated VIP ownership and strict TLS identity smoke
+  ansible.builtin.include_tasks: ../../tasks/openbao-vip-status.yml

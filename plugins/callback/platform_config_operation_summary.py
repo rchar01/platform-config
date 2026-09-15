@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import stat
 from typing import Any
@@ -19,6 +20,12 @@ requirements:
 """
 
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
+FAILOVER_RESULTS = {
+    "failover_test_result": {"passed", "failed", "not_run"},
+    "recovery_result": {"passed", "failed", "not_required"},
+    "final_smoke_result": {"passed", "failed", "not_run"},
+}
+FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 
 
 def _safe_text(value: object, maximum: int) -> str | None:
@@ -112,8 +119,33 @@ class CallbackModule(CallbackBase):
             self._write_failed = True
 
     def v2_runner_on_ok(self, result: Any) -> None:
+        context = self._context()
+        if (context is not None and context[1] in {"failover-plan", "failover-test", "failover-recover"}
+                and result._task.action in {"debug", "ansible.builtin.debug"}
+                and result._task.get_name() == "Publish sanitized failover phase results on every selected host"):
+            self._write_failover(result, context)
         if result._result.get("changed", False) is True:
             self._write_task(result, "changed")
+
+    def _write_failover(self, result: Any, context: tuple[str, str]) -> None:
+        path, phase = context
+        host = _safe_host(result._host.get_name())
+        values = result._result.get("msg")
+        if (host is None or not isinstance(values, dict)
+                or set(values) != FAILOVER_RESULTS.keys() | FAILOVER_TIMES
+                or any(not isinstance(values[key], str) or values[key] not in allowed
+                       for key, allowed in FAILOVER_RESULTS.items())):
+            self._write_error()
+            return
+        for key in FAILOVER_TIMES:
+            value = values[key]
+            if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86400):
+                self._write_error()
+                return
+        try:
+            _append_record(path, {"schema": 1, "kind": "failover", "phase": phase, "host": host, **values})
+        except OSError:
+            self._write_failed = True
 
     def v2_runner_on_failed(self, result: Any, ignore_errors: bool = False) -> None:
         if not ignore_errors:

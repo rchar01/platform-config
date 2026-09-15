@@ -1,0 +1,16 @@
+---
+- name: Request exact owner-bound operator approval
+  ansible.builtin.pause:
+    prompt: "Type exactly {{ openbao_failover_prepared.approval }}"
+  register: openbao_failover_approval
+  when: openbao_failover_prepared.plan.context.lane == 'operator'
+  run_once: true # noqa run-once[task]
+  no_log: true
+
+- name: Require exact operator approval or controller-verified protected CI
+  ansible.builtin.assert:
+    that:
+      - >-
+        openbao_failover_prepared.plan.context.lane == 'gitlab' or
+        openbao_failover_approval.user_input | default('') == openbao_failover_prepared.approval
+  no_log: true

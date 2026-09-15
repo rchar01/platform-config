@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import math
 import os
 import re
 import stat
@@ -73,6 +74,9 @@ OPERATIONS = {
     "openbao-keepalived-activate": ("inventory", "edge-activate"),
     "openbao-smoke": ("inventory", "openbao-smoke"),
     "openbao-vip-smoke": ("inventory", "openbao-vip-smoke"),
+    "openbao-haproxy-failover-plan": ("inventory", "failover-plan"),
+    "openbao-haproxy-failover": ("inventory", "failover-test"),
+    "openbao-haproxy-failover-recover": ("inventory", "failover-recover"),
     "openbao-restart-plan": (
         "inventory",
         "connectivity",
@@ -104,10 +108,18 @@ OPERATIONS = {
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
 OPENBAO_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-"))
+FAILOVER_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-haproxy-failover"))
+FAILOVER_RESULTS = {
+    "failover_test_result": {"passed", "failed", "not_run"},
+    "recovery_result": {"passed", "failed", "not_required"},
+    "final_smoke_result": {"passed", "failed", "not_run"},
+}
+FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
 EVIDENCE_GATED_OPERATIONS = ALIAS_OPERATIONS | {"storage-apply"}
 UNCHANGED_PHASES = frozenset(
     {
+        "failover-plan",
         "host-aliases-post-check",
         "host-aliases-verify",
         "storage-idempotence",
@@ -489,6 +501,7 @@ def command_render(args: argparse.Namespace) -> int:
             raise SummaryError
         phases = phases[:phases.index(through) + 1]
     phase_status: dict[str, int | None] = {}
+    failover_results: dict[str, dict[str, Any]] = {}
     recaps: dict[tuple[str, str], dict[str, int]] = {}
     tasks: dict[str, dict[str, set[str]]] = {
         outcome: defaultdict(set) for outcome in ("changed", "failed", "unreachable")
@@ -551,6 +564,20 @@ def command_render(args: argparse.Namespace) -> int:
                 if key in recaps:
                     raise SummaryError
                 recaps[key] = counters
+        elif kind == "failover":
+            exact_keys(record, {"schema", "kind", "phase", "host"} | FAILOVER_RESULTS.keys() | FAILOVER_TIMES)
+            host = safe_host(record.get("host"))
+            if (operation not in FAILOVER_OPERATIONS or record.get("phase") != phases[-1]
+                    or host not in hosts or host in failover_results):
+                raise SummaryError
+            if any(not isinstance(record[key], str) or record[key] not in allowed
+                   for key, allowed in FAILOVER_RESULTS.items()):
+                raise SummaryError
+            for key in FAILOVER_TIMES:
+                value = record[key]
+                if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 86400):
+                    raise SummaryError
+            failover_results[host] = record
         elif kind == "error":
             exact_keys(record, {"schema", "kind", "phase"})
             if safe_text(record.get("phase"), 64) not in phases:
@@ -605,6 +632,15 @@ def command_render(args: argparse.Namespace) -> int:
             else:
                 phase_result = "FAIL"
                 counts = ("-", "-", "-")
+            if operation in FAILOVER_OPERATIONS and phase != "inventory":
+                report = failover_results.get(host)
+                if (report is None or (phase == "failover-plan" and
+                        (report["failover_test_result"] != "not_run" or report["final_smoke_result"] != "not_run"))
+                        or (phase != "failover-plan" and report["final_smoke_result"] != "passed")
+                        or (phase == "failover-test" and
+                            (report["failover_test_result"] != "passed" or report["recovery_result"] != "passed"))
+                        or (phase == "failover-recover" and report["recovery_result"] == "failed")):
+                    phase_result = "FAIL"
             if applicable(role, phase):
                 statuses.append(phase_result)
             host_rows.append([host, role, phase, phase_result, *counts])
@@ -638,6 +674,14 @@ def command_render(args: argparse.Namespace) -> int:
     print(f"Operation: {operation}")
     print("Execution context: " + ("GitLab Runner" if os.environ.get("CI") == "true" else "Operator controller"))
     print(f"Overall: {'PASS' if complete else 'FAIL'}")
+    if operation in FAILOVER_OPERATIONS:
+        print("Failover outcomes (missing observations remain unknown):")
+        for host in sorted(hosts):
+            report = failover_results.get(host, {})
+            print(f"  {host}: " + ", ".join(f"{key}={report.get(key, 'unknown')}" for key in FAILOVER_RESULTS))
+            for key in sorted(FAILOVER_TIMES):
+                value = report.get(key)
+                print(f"    {key}: {value if value is not None else 'not measured'}")
     if operation in {"openbao-haproxy-activate", "openbao-keepalived-activate"}:
         print("Private desired-state handoff: " + ("review and commit after success" if complete else "blocked; review recovery"))
         if operation == "openbao-haproxy-activate":

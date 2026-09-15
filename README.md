@@ -76,6 +76,9 @@ For the full environment bring-up order, SSH key handoff, secrets layout, and se
 
 ## Common Commands
 
+OpenBao's approved single-owner HAProxy fault, restoration, and fixed GitLab
+recovery workflow are documented in [OpenBao Failover and Recovery](docs/openbao-failover.md).
+
 ```bash
 make help
 make syntax ENV=dev
@@ -200,7 +203,24 @@ actual state, repeated exact single-owner checks on the configured interface,
 strict service-hostname TLS through the forced VIP and ordinary service-name
 resolution (DNS or static host mapping), and cluster identity checks. Run VIP
 smoke only after successful activation and the reviewed active desired-state
-handoff. Both smoke targets require the complete three-host cluster.
+handoff. For CI, commit and push that handoff, then create a new smoke pipeline
+on the new private revision; retrying a job from the activation revision retains
+the old desired state. See the [required handoff values](docs/operator-runbook.md#required-desired-state-handoff-before-vip-smoke).
+Both smoke targets require the complete three-host cluster.
+
+Keepalived stages its tracking script under `/usr/libexec/keepalived` with policy
+default SELinux contexts. A built-in-only read-only preflight binds the actual
+script label and prospective domains into the plan, checks both transitions'
+execute/transition/entrypoint permissions, and requires same-domain dependency
+execution with `execute` and `execute_no_trans`. UID-only readiness is not proof
+of service-domain execution; see
+the [Keepalived role](roles/keepalived_vip/README.md#activation-entry-points).
+
+Passing VIP smoke establishes steady-state endpoint health, not a failure test or
+administrator-access handoff. The [standalone dev endpoint release scope](docs/operator-runbook.md#standalone-dev-endpoint-release)
+keeps those final checks separate from backup/restore and production acceptance.
+RKE2 and OpenBao are independently operated services; qualifying both does not
+configure or qualify Kubernetes workloads consuming secrets from OpenBao.
 
 Follow the [OpenBao VIP acceptance procedure](docs/operator-runbook.md#openbao-vip-acceptance)
 for network prerequisites, per-activation approval, backup-priority-first startup,

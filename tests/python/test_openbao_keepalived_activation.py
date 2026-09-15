@@ -185,6 +185,7 @@ def test_keepalived_activation_rejects_check_mode(activation, command_runner):
     {"test_drift": "cluster"},
     {"test_drift": "haproxy"},
     {"test_drift": "keepalived"},
+    {"test_drift": "keepalived-selinux"},
     {"test_drift": "raft"},
     {"test_service_drift": True},
 ])
