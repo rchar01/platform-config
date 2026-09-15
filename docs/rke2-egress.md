@@ -247,6 +247,12 @@ manifests, and Helm Controller jobs pull the referenced images.
 The role writes a local `HelmChart` manifest but the Helm Controller fetches the
 repository index and chart archive at runtime.
 
+The optional `rke2_kube_vip_chart_repo_ca_src` and
+`rke2_kube_vip_chart_repo_ca_sha256` pair supplies a reviewed controller-local CA
+bundle through `spec.repoCA`, independently of node/containerd trust. The source
+bytes must match the pin; the index and any advertised archive host still need
+pod DNS, routing and strict TLS qualification.
+
 | Artifact | Exact upstream source or identity |
 | --- | --- |
 | Helm index | `https://kube-vip.github.io/helm-charts/index.yaml` |
@@ -276,8 +282,13 @@ table records the default upstream sources, not a mandatory public download path
 
 The Helm Controller job must trust and reach the chosen repository and archive.
 Neither containerd registry TLS configuration nor a CA supplied only to the
-Ansible CI job establishes that trust. This setting provides no repository
-credentials, direct-archive mode, or TLS-verification bypass.
+Ansible CI job establishes that trust. The optional independent
+`rke2_gitlab_runner_chart_repo_ca_src` and
+`rke2_gitlab_runner_chart_repo_ca_sha256` pair supplies the exact reviewed bundle
+through `spec.repoCA`; Runner `certsSecretName` does not configure Helm-job trust.
+These settings provide no repository credentials, direct-archive mode, archive
+digest enforcement or TLS-verification bypass. Environments using host aliases
+also need [pod DNS mappings](rke2-operations.md#static-dns-for-pods).
 
 | Artifact | Exact upstream source or identity |
 | --- | --- |

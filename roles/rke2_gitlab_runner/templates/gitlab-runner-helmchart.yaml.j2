@@ -8,6 +8,9 @@ spec:
   chart: gitlab-runner
   createNamespace: false
   repo: {{ rke2_gitlab_runner_chart_repo | to_json }}
+{% if rke2_gitlab_runner_chart_repo_ca_src | length > 0 %}
+  repoCA: {{ rke2_gitlab_runner_chart_repo_ca_content.content | b64decode | to_json }}
+{% endif %}
   targetNamespace: {{ rke2_gitlab_runner_namespace | to_json }}
   version: {{ rke2_gitlab_runner_chart_version | to_json }}
   valuesContent: |-

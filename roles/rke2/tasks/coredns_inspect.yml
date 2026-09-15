@@ -1,0 +1,67 @@
+---
+# Executed once for each inventory server by the read-only preflight.
+- name: Inspect fixed CoreDNS source paths without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  delegate_to: "{{ rke2_coredns_source_host }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[rke2_coredns_source_host].ansible_ssh_private_key_file | default(none) }}"
+  loop:
+    - /var
+    - /var/lib
+    - /var/lib/rancher
+    - /var/lib/rancher/rke2
+    - /var/lib/rancher/rke2/server
+    - /var/lib/rancher/rke2/server/manifests
+    - /var/lib/rancher/rke2/server/manifests/rke2-coredns-config.yaml
+  register: rke2_coredns_paths
+
+- name: Determine whether CoreDNS source paths are safe
+  ansible.builtin.set_fact:
+    rke2_coredns_source_safe: >-
+      {%- set safe = namespace(value=true) -%}
+      {%- for item in rke2_coredns_paths.results -%}
+      {%- if item.stat.exists and not
+        (not item.stat.islnk and item.stat.uid == 0
+         and item.stat.mode[-2] not in ['2', '3', '6', '7']
+         and item.stat.mode[-1] not in ['2', '3', '6', '7']
+         and ((item.stat.isreg and item.stat.nlink == 1) if item.item.endswith('.yaml') else item.stat.isdir)) -%}
+      {%- set safe.value = false -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ safe.value }}
+
+- name: Read a safe existing CoreDNS source
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/rke2/server/manifests/rke2-coredns-config.yaml
+  delegate_to: "{{ rke2_coredns_source_host }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[rke2_coredns_source_host].ansible_ssh_private_key_file | default(none) }}"
+  register: rke2_coredns_source
+  when:
+    - rke2_coredns_source_safe | bool
+    - rke2_coredns_paths.results[-1].stat.exists
+
+# Our generated source contains this literal ownership marker. Foreign content
+# without it (including non-YAML content) needs no parsing or adoption.
+- name: Identify the platform-owned CoreDNS source
+  ansible.builtin.set_fact:
+    rke2_coredns_source_object: >-
+      {{ (rke2_coredns_source.content | b64decode | from_yaml)
+         if 'platform-config' in (rke2_coredns_source.content | default('') | b64decode) else {} }}
+
+- name: Retain per-server CoreDNS source ownership and path evidence
+  ansible.builtin.set_fact:
+    rke2_coredns_sources: >-
+      {{ rke2_coredns_sources + [{
+        'host': rke2_coredns_source_host,
+        'safe': rke2_coredns_source_safe | bool,
+        'exists': rke2_coredns_paths.results[-1].stat.exists,
+        'owned': rke2_coredns_source_object is mapping
+          and rke2_coredns_source_object.apiVersion | default('') == 'helm.cattle.io/v1'
+          and rke2_coredns_source_object.kind | default('') == 'HelmChartConfig'
+          and rke2_coredns_source_object.metadata.name | default('') == 'rke2-coredns'
+          and rke2_coredns_source_object.metadata.namespace | default('') == 'kube-system'
+          and rke2_coredns_source_object.metadata.labels['app.kubernetes.io/managed-by'] | default('') == 'platform-config'
+      }] }}

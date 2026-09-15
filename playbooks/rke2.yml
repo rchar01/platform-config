@@ -1,4 +1,15 @@
 ---
+- name: Guard CoreDNS before all base roles and their dependencies
+  hosts: rke2_servers:rke2_agents
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  strategy: linear
+  tasks:
+    - name: Inspect all server sources and cluster-wide CoreDNS inputs
+      ansible.builtin.include_tasks: ../roles/rke2/tasks/coredns_preflight.yml
+      when: inventory_hostname == ansible_play_hosts_all[0]
+
 - name: Configure RKE2 server nodes
   hosts: rke2_servers
   become: true
@@ -16,3 +27,14 @@
   roles:
     - firewalld
     - rke2
+
+- name: Verify CoreDNS after complete RKE2 base convergence
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  strategy: linear
+  tasks:
+    - name: Verify current CoreDNS before returning to addon orchestration
+      ansible.builtin.include_tasks: ../roles/rke2/tasks/coredns_smoke.yml
+      when: inventory_hostname == ansible_play_hosts_all[0]

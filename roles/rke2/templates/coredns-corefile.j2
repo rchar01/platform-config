@@ -1,0 +1,10 @@
+.:53 {
+{% for plugin in rke2_coredns_servers[0].plugins %}
+  {{ plugin.name }}{% if plugin.name == 'kubernetes' %} {{ rke2_coredns_cluster_domain }}{% endif %}{% if plugin.parameters is defined %} {{ plugin.parameters }}{% endif %}{% if plugin.configBlock is defined %} {
+{{ plugin.configBlock | trim | indent(4, true) }}
+  }
+{% else %}
+
+{% endif %}
+{% endfor %}
+}

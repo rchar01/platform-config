@@ -13,6 +13,8 @@ rke2_kube_vip_release_name: kube-vip
 rke2_kube_vip_namespace: kube-system
 rke2_kube_vip_chart_name: kube-vip
 rke2_kube_vip_chart_repo: https://kube-vip.github.io/helm-charts
+rke2_kube_vip_chart_repo_ca_src: ""
+rke2_kube_vip_chart_repo_ca_sha256: ""
 rke2_kube_vip_chart_version: 0.9.9
 rke2_kube_vip_image_tag: v1.2.1
 

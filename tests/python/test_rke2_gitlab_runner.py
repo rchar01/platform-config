@@ -19,6 +19,8 @@ EXPECTED_DEFAULTS = {
     "rke2_gitlab_runner_tls_ca_cert_sha256",
     "rke2_gitlab_runner_name",
     "rke2_gitlab_runner_chart_repo",
+    "rke2_gitlab_runner_chart_repo_ca_src",
+    "rke2_gitlab_runner_chart_repo_ca_sha256",
     "rke2_gitlab_runner_chart_version",
     "rke2_gitlab_runner_manager_image",
     "rke2_gitlab_runner_helper_image",

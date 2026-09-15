@@ -68,6 +68,31 @@
         - rke2_gitlab_runner_enabled | bool
         - rke2_gitlab_runner_smoke_is_bootstrap | bool
 
+    - name: Assert RKE2 GitLab Runner Helm repository CA policy
+      vars:
+        rke2_gitlab_runner_smoke_helmchart_object: "{{ rke2_gitlab_runner_smoke_helmchart.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - >-
+            rke2_gitlab_runner_smoke_helmchart_object.spec.repo
+            == (rke2_gitlab_runner_chart_repo | default('https://charts.gitlab.io'))
+          - rke2_gitlab_runner_chart_repo_ca_src | default('') is string
+          - rke2_gitlab_runner_chart_repo_ca_sha256 | default('') is string
+          - (rke2_gitlab_runner_chart_repo_ca_src | default('') == '') == (rke2_gitlab_runner_chart_repo_ca_sha256 | default('') == '')
+          - >-
+            (rke2_gitlab_runner_chart_repo_ca_sha256 | default('')) == '' or
+            rke2_gitlab_runner_chart_repo_ca_sha256 is match('^[0-9a-fA-F]{64}\Z')
+          - >-
+            (rke2_gitlab_runner_smoke_helmchart_object.spec.get('repoCA') is string
+             and (rke2_gitlab_runner_smoke_helmchart_object.spec.get('repoCA') | hash('sha256'))
+               == (rke2_gitlab_runner_chart_repo_ca_sha256 | lower))
+            if (rke2_gitlab_runner_chart_repo_ca_src | default('') | length > 0)
+            else ('repoCA' not in rke2_gitlab_runner_smoke_helmchart_object.spec)
+        fail_msg: "Runner Helm repository or repository CA does not match inventory, including the exact CA pin or expected absence."
+      when:
+        - rke2_gitlab_runner_enabled | bool
+        - rke2_gitlab_runner_smoke_is_bootstrap | bool
+
     - name: Wait for RKE2 GitLab Runner Deployment creation
       ansible.builtin.command:
         argv:
@@ -220,9 +245,6 @@
         that:
           - rke2_gitlab_runner_smoke_namespace_object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'baseline'
           - rke2_gitlab_runner_smoke_helmchart_object.spec.chart == 'gitlab-runner'
-          - >-
-            rke2_gitlab_runner_smoke_helmchart_object.spec.repo
-            == (rke2_gitlab_runner_chart_repo | default('https://charts.gitlab.io'))
           - rke2_gitlab_runner_smoke_helmchart_object.spec.targetNamespace == rke2_gitlab_runner_smoke_namespace
           - rke2_gitlab_runner_smoke_helmchart_object.spec.version == rke2_gitlab_runner_chart_version
           - rke2_gitlab_runner_smoke_deployment.spec.template.spec.serviceAccountName == rke2_gitlab_runner_smoke_release_name

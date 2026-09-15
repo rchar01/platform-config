@@ -1,0 +1,95 @@
+---
+# Inspect every inventory member even during serial server-first convergence.
+- name: Validate CoreDNS cluster inventory and input types
+  ansible.builtin.assert:
+    that:
+      - groups.get(rke2_coredns_server_group, []) | length > 0
+      - rke2_coredns_bootstrap in groups.get(rke2_coredns_server_group, [])
+      - groups.get(rke2_coredns_server_group, []) | intersect(groups.get(rke2_coredns_agent_group, [])) | length == 0
+      - >-
+        groups.get(rke2_coredns_cluster_group, []) | sort ==
+        (groups.get(rke2_coredns_server_group, []) + groups.get(rke2_coredns_agent_group, [])) | unique | sort
+      - rke2_extra_config | default({}) is mapping
+    fail_msg: CoreDNS requires a coherent RKE2 cluster and a list of static IPv4 host records.
+
+- name: Require identical CoreDNS inventory on every cluster member
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].rke2_coredns_static_hosts | default([]) == rke2_coredns_records
+      - hostvars[item].rke2_cluster_group | default('rke2_cluster') == rke2_coredns_cluster_group
+      - hostvars[item].rke2_server_group | default('rke2_servers') == rke2_coredns_server_group
+      - hostvars[item].rke2_agent_group | default('rke2_agents') == rke2_coredns_agent_group
+      - hostvars[item].rke2_bootstrap_host | default(groups[rke2_coredns_server_group][0]) == rke2_coredns_bootstrap
+      - >-
+        hostvars[item].rke2_node_role | default('server' if item in groups[rke2_coredns_server_group] else 'agent') ==
+        ('server' if item in groups[rke2_coredns_server_group] else 'agent')
+      - hostvars[item].rke2_extra_config | default({}) is mapping
+      - >-
+        (hostvars[item].rke2_extra_config | default({})).get('cluster-domain', 'cluster.local') ==
+        (rke2_extra_config | default({})).get('cluster-domain', 'cluster.local')
+      - >-
+        (hostvars[item].rke2_version | default('') == 'v1.35.5+rke2r2'
+         and 'rke2-coredns' not in (hostvars[item].rke2_disable | default([]))
+         and 'disable' not in (hostvars[item].rke2_extra_config | default({}))
+         and (hostvars[item].rke2_extra_config | default({})).get('data-dir', '/var/lib/rancher/rke2') == '/var/lib/rancher/rke2'
+         and hostvars[item].rke2_server_manifest_dir | default('/var/lib/rancher/rke2/server/manifests') == '/var/lib/rancher/rke2/server/manifests'
+         and hostvars[item].rke2_service_enabled | default(true) is sameas true
+         and hostvars[item].rke2_service_state | default('started') == 'started')
+    fail_msg: CoreDNS records, cluster domain and supported RKE2 version must agree across all inventory members.
+  loop: "{{ groups[rke2_coredns_cluster_group] }}"
+
+- name: Record the CoreDNS cluster domain
+  ansible.builtin.set_fact:
+    rke2_coredns_cluster_domain: "{{ (rke2_extra_config | default({})).get('cluster-domain', 'cluster.local') }}"
+
+- name: Require supported CoreDNS settings before RKE2 package mutation
+  ansible.builtin.assert:
+    that:
+      - rke2_version | default('') == 'v1.35.5+rke2r2'
+      - rke2_server_manifest_dir | default('/var/lib/rancher/rke2/server/manifests') == '/var/lib/rancher/rke2/server/manifests'
+      - (rke2_extra_config | default({})).get('data-dir', '/var/lib/rancher/rke2') == '/var/lib/rancher/rke2'
+      - "'rke2-coredns' not in (rke2_disable | default([]))"
+      - "'disable' not in (rke2_extra_config | default({}))"
+      - rke2_service_enabled | default(true) is sameas true
+      - rke2_service_state | default('started') == 'started'
+    fail_msg: Static CoreDNS hosts require qualified RKE2 v1.35.5+rke2r2 with active services and standard data paths.
+
+- name: Validate the CoreDNS cluster domain
+  ansible.builtin.assert:
+    that:
+      - rke2_coredns_cluster_domain is string
+      - rke2_coredns_cluster_domain | length <= 253
+      - rke2_coredns_cluster_domain is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z')
+
+- name: Validate CoreDNS static record structure and canonical IPv4 addresses
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | sort == ['address', 'names']
+      - item.address is string
+      - item.address is match('^(?:(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\Z')
+      - item.names is sequence and item.names is not string and item.names is not mapping
+      - item.names | length > 0
+    fail_msg: Each CoreDNS record requires only a canonical IPv4 address and a nonempty names list.
+  loop: "{{ rke2_coredns_records }}"
+
+- name: Validate CoreDNS names and reserved namespaces
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item | length <= 253
+      - item is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z')
+      - item is not match('^[0-9.]+\Z')
+      - item is not search('(^|\.)(localhost|localdomain|in-addr\.arpa|ip6\.arpa|cluster\.local)\Z')
+      - item is not search('(^|\.)' ~ (rke2_coredns_cluster_domain | regex_escape) ~ '\Z')
+    fail_msg: CoreDNS names must be lowercase FQDNs outside Kubernetes, reverse and localhost namespaces.
+  loop: "{{ rke2_coredns_records | map(attribute='names') | flatten(levels=1, skip_nulls=false) }}"
+
+- name: Reject duplicate CoreDNS addresses and duplicate or conflicting names
+  ansible.builtin.assert:
+    that:
+      - rke2_coredns_records | map(attribute='address') | unique | length == rke2_coredns_records | length
+      - >-
+        rke2_coredns_records | map(attribute='names') | flatten | unique | length ==
+        rke2_coredns_records | map(attribute='names') | flatten | length
+    fail_msg: Combine aliases for an address in one record; each DNS name must occur exactly once.

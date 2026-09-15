@@ -61,6 +61,9 @@ rke2_disable: []
 rke2_tls_sans: []
 rke2_extra_config: {}
 
+# Cluster-wide IPv4 records for bundled CoreDNS; no host-file inheritance.
+rke2_coredns_static_hosts: []
+
 rke2_server_manifest_dir: /var/lib/rancher/rke2/server/manifests
 rke2_traefik_helmchartconfig_path: "{{ rke2_server_manifest_dir }}/rke2-traefik-config.yaml"
 rke2_kong_manifest_path: "{{ rke2_server_manifest_dir }}/kong-ingress.yaml"

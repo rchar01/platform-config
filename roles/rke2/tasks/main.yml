@@ -1,4 +1,9 @@
 ---
+# Role-only callers have already run meta dependencies. The fixed rke2.yml
+# playbook provides the stronger pre-role barrier, including firewalld.
+- name: Guard cluster-wide CoreDNS before RKE2 role tasks
+  ansible.builtin.import_tasks: coredns_preflight.yml
+
 - name: Validate RKE2 registry mirror configuration
   ansible.builtin.import_tasks: validate_registry_mirrors.yml
 
@@ -1020,6 +1025,10 @@
     - rke2_node_role == 'server'
     - rke2_service_enabled | bool
     - rke2_service_state == 'started'
+
+- name: Converge bundled CoreDNS on the bootstrap server
+  ansible.builtin.include_tasks: coredns.yml
+  when: inventory_hostname == rke2_bootstrap_host
 
 - name: Wait for the converged RKE2 node to become Ready
   ansible.builtin.command:

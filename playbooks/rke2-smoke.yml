@@ -6,6 +6,7 @@
   hosts: rke2_servers
   become: true
   gather_facts: false
+  strategy: linear
   vars:
     rke2_smoke_is_bootstrap: "{{ inventory_hostname == groups['rke2_servers'][0] }}"
     rke2_smoke_kubectl: /var/lib/rancher/rke2/bin/kubectl
@@ -17,6 +18,10 @@
         | list
       }}
   tasks:
+    - name: Verify managed bundled CoreDNS configuration
+      ansible.builtin.include_tasks: ../roles/rke2/tasks/coredns_smoke.yml
+      when: inventory_hostname == ansible_play_hosts_all[0]
+
     - name: Confirm RKE2 ingress-nginx is absent
       ansible.builtin.command:
         argv:

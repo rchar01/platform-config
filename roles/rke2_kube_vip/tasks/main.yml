@@ -31,6 +31,71 @@
       election timings, and the VIP in rke2_tls_sans.
   when: rke2_kube_vip_enabled | bool
 
+- name: Assert RKE2 kube-vip Helm repository CA inputs
+  ansible.builtin.assert:
+    that:
+      - rke2_kube_vip_chart_repo_ca_src is string
+      - rke2_kube_vip_chart_repo_ca_sha256 is string
+      - (rke2_kube_vip_chart_repo_ca_src == '') == (rke2_kube_vip_chart_repo_ca_sha256 == '')
+      - >-
+        rke2_kube_vip_chart_repo_ca_src == '' or
+        rke2_kube_vip_chart_repo_ca_src is match('^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\Z')
+      - rke2_kube_vip_chart_repo_ca_src.split('/') | intersect(['.', '..']) | length == 0
+      - >-
+        rke2_kube_vip_chart_repo_ca_sha256 == '' or
+        rke2_kube_vip_chart_repo_ca_sha256 is match('^[0-9a-fA-F]{64}\Z')
+    fail_msg: >-
+      RKE2 kube-vip Helm repository CA requires paired source and SHA-256 strings,
+      either both empty or a canonical absolute safe path and a 64-digit hex checksum.
+  when: rke2_kube_vip_enabled | bool
+
+- name: Validate RKE2 kube-vip Helm repository CA on the controller
+  when:
+    - rke2_kube_vip_enabled | bool
+    - inventory_hostname == rke2_kube_vip_bootstrap_host
+    - rke2_kube_vip_chart_repo_ca_src | length > 0
+  block:
+    - name: Check RKE2 kube-vip Helm repository CA source
+      ansible.builtin.stat:
+        path: "{{ rke2_kube_vip_chart_repo_ca_src }}"
+        follow: false
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_become: false
+      register: rke2_kube_vip_chart_repo_ca_stat
+
+    - name: Assert RKE2 kube-vip Helm repository CA source is reviewed
+      ansible.builtin.assert:
+        that:
+          - rke2_kube_vip_chart_repo_ca_stat.stat.exists
+          - rke2_kube_vip_chart_repo_ca_stat.stat.isreg
+          - not rke2_kube_vip_chart_repo_ca_stat.stat.islnk
+          - rke2_kube_vip_chart_repo_ca_stat.stat.size > 0
+          - rke2_kube_vip_chart_repo_ca_stat.stat.size <= 1048576
+          - rke2_kube_vip_chart_repo_ca_stat.stat.checksum == (rke2_kube_vip_chart_repo_ca_sha256 | lower)
+        fail_msg: "kube-vip Helm repository CA must be a nonempty regular non-symlink file of at most 1 MiB with the reviewed SHA-256."
+
+    - name: Read RKE2 kube-vip Helm repository CA source
+      ansible.builtin.slurp:
+        src: "{{ rke2_kube_vip_chart_repo_ca_src }}"
+      delegate_to: localhost
+      become: false
+      vars:
+        ansible_become: false
+      register: rke2_kube_vip_chart_repo_ca_content
+      no_log: true
+
+    - name: Assert RKE2 kube-vip Helm repository CA content matches the pin
+      ansible.builtin.assert:
+        that:
+          - >-
+            (rke2_kube_vip_chart_repo_ca_content.content | b64decode | hash('sha256'))
+            == (rke2_kube_vip_chart_repo_ca_sha256 | lower)
+        fail_msg: "kube-vip Helm repository CA bytes read must match the reviewed SHA-256."
+      no_log: true
+
 - name: Discover route to kube-vip API VIP
   ansible.builtin.command:
     argv:

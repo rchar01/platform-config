@@ -34,6 +34,28 @@ Pin the application image separately from the chart version. Chart `0.9.9`
 defaults to kube-vip `v1.0.4`, so `rke2_kube_vip_image_tag` is required to run
 kube-vip `v1.2.1`.
 
+`rke2_kube_vip_chart_repo` defaults to `https://kube-vip.github.io/helm-charts`.
+For a repository requiring a private CA, explicitly select both
+`rke2_kube_vip_chart_repo_ca_src` and `rke2_kube_vip_chart_repo_ca_sha256` in
+private inventory. Both are strings and default to empty, which omits
+`spec.repoCA`. The source is a controller-local canonical absolute path using
+only letters, digits, `_`, `-`, `.`, and `/`, with no empty, `.` or `..`
+components. Select a reviewed PEM CA file, not a private key; its contents are
+published in the HelmChart. The checksum is exactly 64 hex digits (either case).
+Keep the real file and pin in private configuration.
+
+Before mutation, including in check mode, controller-side stat and slurp require
+a nonempty regular non-symlink file of at most 1 MiB, check its SHA-256, and hash
+the exact decoded slurp content again. JSON quoting preserves line endings and
+final newlines in `spec.repoCA`. This uses the `repoCA` support in helm-controller
+0.17.1 shipped with the approved RKE2 v1.35.5+rke2r2 baseline. It does not change
+node or registry trust or disable TLS verification.
+
+`playbooks/rke2-kube-vip-smoke.yml` compares the live Helm repository and exact CA
+SHA-256, or requires `repoCA` absence when unconfigured. Qualify the repository's
+`index.yaml`, selected chart archive, and Helm job separately; field agreement
+does not establish download success or a chart-content checksum.
+
 The leader-election values explicitly preserve kube-vip and Kubernetes
 client-go's `15/10/2`-second defaults. `vip_leaseduration` controls how long
 followers wait without a lease renewal before attempting takeover,

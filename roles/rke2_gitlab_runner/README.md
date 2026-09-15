@@ -6,7 +6,7 @@ pattern used by `rke2_kube_vip`.
 
 When enabled, the role requires a pre-created GitLab Runner authentication token
 and reviewed GitLab CA file outside Git. It reconciles those values into separate
-Kubernetes Secrets; the static HelmChart manifest contains only Secret names.
+Kubernetes Secrets; the static HelmChart manifest references those Secret names.
 
 The Runner uses the Kubernetes executor with one concurrent job, explicit
 namespace-scoped RBAC, digest-pinned manager/helper/job images, a separate job
@@ -32,10 +32,33 @@ an optional trailing slash are supported. Chart `gitlab-runner` and version
 using the upstream default when the variable is absent from inventory.
 
 Verify both `index.yaml` and the exact archive URL selected by its version entry.
-Changing the repository does not enforce a chart checksum or provide Helm-job
+Changing the repository URL does not enforce a chart checksum or provide Helm-job
 CA trust. The internal source must be accessible and trusted by the Helm
 Controller job; container-image registry trust alone is not sufficient. Do not
 put credentials in this URL or disable TLS verification.
+
+For a repository requiring a private CA, explicitly set both
+`rke2_gitlab_runner_chart_repo_ca_src` and
+`rke2_gitlab_runner_chart_repo_ca_sha256` in private inventory. Both are strings
+and default to empty, which omits `spec.repoCA`. The source is a controller-local
+canonical absolute path using only letters, digits, `_`, `-`, `.`, and `/`, with
+no empty, `.` or `..` components. Select a reviewed PEM CA file, not a private key;
+its contents are published in the HelmChart. The checksum is exactly 64 hex
+digits (either case). Keep the real file and pin in private configuration.
+
+Before mutation, including in check mode, the role uses controller-side stat and
+slurp to require a nonempty regular non-symlink file of at most 1 MiB, checks its
+SHA-256, and hashes the exact decoded slurp content again. The template serializes
+those bytes as `spec.repoCA` with JSON quoting, preserving line endings and final
+newlines. Smoke verifies the live repository and exact CA SHA-256, or absence of
+`repoCA` when unconfigured. This uses the `repoCA` support in helm-controller
+0.17.1 shipped with the approved RKE2 v1.35.5+rke2r2 baseline.
+
+Repository CA selection is independent of `rke2_gitlab_runner_tls_ca_cert_src`
+and its pin: those still populate the Runner's GitLab `certsSecretName` Secret.
+Neither setting infers the other, changes node/registry trust, or bypasses TLS
+verification. A matching live field is not proof of a successful chart download;
+qualify the actual Helm job and chart source separately.
 
 `rke2_gitlab_runner_clone_url` is an optional credential-free HTTPS origin for
 job repository checkout when GitLab advertises a different hostname. Its empty

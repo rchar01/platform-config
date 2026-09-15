@@ -22,11 +22,35 @@
           - get
           - helmchart
           - "{{ rke2_kube_vip_release_name | default('kube-vip') }}"
+          - -o=json
       register: rke2_kube_vip_smoke_helmchart
       retries: 30
       delay: 5
       until: rke2_kube_vip_smoke_helmchart.rc == 0
       changed_when: false
+      when: rke2_kube_vip_smoke_is_bootstrap | bool
+
+    - name: Assert kube-vip Helm repository and CA policy
+      vars:
+        rke2_kube_vip_smoke_helmchart_object: "{{ rke2_kube_vip_smoke_helmchart.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - >-
+            rke2_kube_vip_smoke_helmchart_object.spec.repo
+            == (rke2_kube_vip_chart_repo | default('https://kube-vip.github.io/helm-charts'))
+          - rke2_kube_vip_chart_repo_ca_src | default('') is string
+          - rke2_kube_vip_chart_repo_ca_sha256 | default('') is string
+          - (rke2_kube_vip_chart_repo_ca_src | default('') == '') == (rke2_kube_vip_chart_repo_ca_sha256 | default('') == '')
+          - >-
+            (rke2_kube_vip_chart_repo_ca_sha256 | default('')) == '' or
+            rke2_kube_vip_chart_repo_ca_sha256 is match('^[0-9a-fA-F]{64}\Z')
+          - >-
+            (rke2_kube_vip_smoke_helmchart_object.spec.get('repoCA') is string
+             and (rke2_kube_vip_smoke_helmchart_object.spec.get('repoCA') | hash('sha256'))
+               == (rke2_kube_vip_chart_repo_ca_sha256 | lower))
+            if (rke2_kube_vip_chart_repo_ca_src | default('') | length > 0)
+            else ('repoCA' not in rke2_kube_vip_smoke_helmchart_object.spec)
+        fail_msg: "kube-vip Helm repository or exact repository CA does not match inventory."
       when: rke2_kube_vip_smoke_is_bootstrap | bool
 
     - name: Wait for kube-vip DaemonSet configuration

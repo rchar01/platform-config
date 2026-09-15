@@ -1,0 +1,88 @@
+---
+# No roles or role defaults are loaded here: safe before firewalld/meta dependencies.
+- name: Reset CoreDNS discovery for this preflight
+  ansible.builtin.set_fact:
+    rke2_coredns_managed: false
+    rke2_coredns_sources: []
+
+- name: Validate requested CoreDNS configuration before target inspection
+  ansible.builtin.import_tasks: coredns_validate.yml
+
+- name: Inspect CoreDNS source ownership on every server
+  ansible.builtin.include_tasks: coredns_inspect.yml
+  loop: "{{ groups.get(rke2_coredns_server_group, []) }}"
+  loop_control:
+    loop_var: rke2_coredns_source_host
+
+- name: Inspect bootstrap API access without changing the host
+  ansible.builtin.stat:
+    path: "{{ hostvars[rke2_coredns_bootstrap].rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+  delegate_to: "{{ rke2_coredns_bootstrap }}"
+  # SSH options render in delegate scope; the bootstrap selector is a caller fact.
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[hostvars[inventory_hostname].rke2_coredns_bootstrap].ansible_ssh_private_key_file | default(none) }}"
+  register: rke2_coredns_kubeconfig
+  when: rke2_coredns_bootstrap | length > 0
+
+- name: Read existing CoreDNS HelmChartConfig ownership
+  ansible.builtin.command:
+    argv:
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+      - --kubeconfig
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+      - --request-timeout=30s
+      - -n
+      - kube-system
+      - get
+      - helmchartconfig/rke2-coredns
+      - --ignore-not-found
+      - -o=json
+  delegate_to: "{{ rke2_coredns_bootstrap }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[hostvars[inventory_hostname].rke2_coredns_bootstrap].ansible_ssh_private_key_file | default(none) }}"
+  register: rke2_coredns_hcc
+  check_mode: false
+  changed_when: false
+  # A stopped API cannot reveal an owned HCC whose local source was lost.
+  # Record that uncertainty; only known managed configuration makes it fatal.
+  failed_when: false
+  when: rke2_coredns_kubeconfig.stat.exists | default(false)
+
+- name: Identify owned CoreDNS configuration without adopting foreign customization
+  ansible.builtin.set_fact:
+    rke2_coredns_hcc_owned: >-
+      {{ rke2_coredns_hcc.rc | default(1) == 0 and rke2_coredns_hcc.stdout | default('') | length > 0 and
+         (rke2_coredns_hcc.stdout | from_json).metadata.labels['app.kubernetes.io/managed-by'] | default('') == 'platform-config' }}
+
+- name: Determine whether CoreDNS is managed
+  ansible.builtin.set_fact:
+    rke2_coredns_managed: >-
+      {{ rke2_coredns_requested | bool or rke2_coredns_hcc_owned
+         or rke2_coredns_sources | selectattr('owned') | list | length > 0 }}
+
+- name: Guard configured or previously owned CoreDNS before mutation
+  when: rke2_coredns_managed
+  block:
+    - name: Require successful API ownership inspection for managed CoreDNS
+      ansible.builtin.assert:
+        that:
+          - not rke2_coredns_kubeconfig.stat.exists | default(false) or rke2_coredns_hcc.rc | default(1) == 0
+        fail_msg: Cannot inspect CoreDNS API ownership while static hosts are requested or an owned source exists.
+
+    - name: Validate the complete managed CoreDNS inventory including empty resets
+      ansible.builtin.import_tasks: coredns_validate_managed.yml
+      when: not rke2_coredns_requested | bool
+
+    - name: Reject unsafe foreign or competing CoreDNS source files
+      ansible.builtin.assert:
+        that:
+          - item.safe
+          - not item.exists or (item.host == rke2_coredns_bootstrap and item.owned)
+        fail_msg: Managed CoreDNS requires safe paths and no competing source on any nonbootstrap server, even an owned source.
+      loop: "{{ rke2_coredns_sources }}"
+
+    - name: Reject a foreign live CoreDNS HelmChartConfig before publication
+      ansible.builtin.assert:
+        that:
+          - rke2_coredns_hcc.stdout | default('') | length == 0 or rke2_coredns_hcc_owned
+        fail_msg: Refusing to adopt a foreign CoreDNS HelmChartConfig while managing static hosts or resetting owned configuration.

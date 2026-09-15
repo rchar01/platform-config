@@ -76,6 +76,10 @@ For the full environment bring-up order, SSH key handoff, secrets layout, and se
 
 ## Common Commands
 
+RKE2 environments using static service addresses can configure
+[pod DNS and Helm repository CA trust](docs/rke2-operations.md#static-dns-for-pods)
+through private inventory and the existing guarded convergence workflow.
+
 OpenBao's approved single-owner HAProxy fault, restoration, and fixed GitLab
 recovery workflow are documented in [OpenBao Failover and Recovery](docs/openbao-failover.md).
 

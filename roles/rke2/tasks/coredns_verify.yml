@@ -1,0 +1,100 @@
+---
+# No old Helm Job/Ready condition can satisfy this desired-generation gate.
+- name: Wait for the desired live CoreDNS HelmChartConfig values
+  ansible.builtin.command:
+    argv:
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+      - --kubeconfig
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+      - --request-timeout=10s
+      - -n
+      - kube-system
+      - get
+      - helmchartconfig/rke2-coredns
+      - -o=json
+  delegate_to: "{{ rke2_coredns_bootstrap }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[hostvars[inventory_hostname].rke2_coredns_bootstrap].ansible_ssh_private_key_file | default(none) }}"
+  register: rke2_coredns_live_hcc
+  changed_when: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_coredns_live_hcc.rc == 0
+    - >-
+      (rke2_coredns_live_hcc.stdout | from_json).metadata.labels['app.kubernetes.io/managed-by'] | default('') == 'platform-config'
+    - >-
+      (rke2_coredns_live_hcc.stdout | from_json).spec.valuesContent | default('') | from_yaml ==
+      (rke2_coredns_manifest | from_yaml).spec.valuesContent | from_yaml
+
+- name: Wait for the desired effective CoreDNS Corefile and ConfigMap annotation
+  ansible.builtin.command:
+    argv:
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+      - --kubeconfig
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+      - --request-timeout=10s
+      - -n
+      - kube-system
+      - get
+      - configmap/rke2-coredns-rke2-coredns
+      - -o=json
+  register: rke2_coredns_live_config
+  delegate_to: "{{ rke2_coredns_bootstrap }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[hostvars[inventory_hostname].rke2_coredns_bootstrap].ansible_ssh_private_key_file | default(none) }}"
+  changed_when: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_coredns_live_config.rc == 0
+    - >-
+      (rke2_coredns_live_config.stdout | from_json).metadata.annotations['platform-config/coredns-spec'] | default('') == rke2_coredns_spec_hash
+    - >-
+      (rke2_coredns_live_config.stdout | from_json).data.Corefile | default('')
+      | regex_replace('(?m)^[ \t]+|[ \t]+$', '') | regex_replace('[ \t]+', ' ') | regex_replace('\n+', '\n') | trim ==
+      rke2_coredns_expected_corefile
+      | regex_replace('(?m)^[ \t]+|[ \t]+$', '') | regex_replace('[ \t]+', ' ') | regex_replace('\n+', '\n') | trim
+
+- name: Wait for the desired CoreDNS deployment pod specification
+  ansible.builtin.command:
+    argv:
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+      - --kubeconfig
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+      - --request-timeout=10s
+      - -n
+      - kube-system
+      - get
+      - deployment/rke2-coredns-rke2-coredns
+      - -o=json
+  register: rke2_coredns_live_deployment
+  delegate_to: "{{ rke2_coredns_bootstrap }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[hostvars[inventory_hostname].rke2_coredns_bootstrap].ansible_ssh_private_key_file | default(none) }}"
+  changed_when: false
+  retries: 60
+  delay: 5
+  until:
+    - rke2_coredns_live_deployment.rc == 0
+    - >-
+      (rke2_coredns_live_deployment.stdout | from_json).spec.template.metadata.annotations['platform-config/coredns-spec'] | default('') ==
+      rke2_coredns_spec_hash
+
+- name: Wait for the current CoreDNS deployment rollout
+  ansible.builtin.command:
+    argv:
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubectl | default('/var/lib/rancher/rke2/bin/kubectl') }}"
+      - --kubeconfig
+      - "{{ hostvars[rke2_coredns_bootstrap].rke2_kubeconfig | default('/etc/rancher/rke2/rke2.yaml') }}"
+      - --request-timeout=310s
+      - -n
+      - kube-system
+      - rollout
+      - status
+      - deployment/rke2-coredns-rke2-coredns
+      - --timeout=300s
+  delegate_to: "{{ rke2_coredns_bootstrap }}"
+  vars:
+    ansible_ssh_private_key_file: "{{ hostvars[hostvars[inventory_hostname].rke2_coredns_bootstrap].ansible_ssh_private_key_file | default(none) }}"
+  changed_when: false

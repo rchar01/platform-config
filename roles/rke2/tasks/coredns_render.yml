@@ -1,0 +1,16 @@
+---
+- name: Render the qualified CoreDNS server list
+  ansible.builtin.set_fact:
+    rke2_coredns_servers: "{{ lookup('ansible.builtin.template', (role_path | default(playbook_dir ~ '/../roles/rke2')) ~ '/templates/coredns-servers.yaml.j2') | from_yaml }}"
+
+- name: Render the expected effective CoreDNS Corefile
+  ansible.builtin.set_fact:
+    rke2_coredns_expected_corefile: "{{ lookup('ansible.builtin.template', (role_path | default(playbook_dir ~ '/../roles/rke2')) ~ '/templates/coredns-corefile.j2') }}"
+
+- name: Bind CoreDNS pods and ConfigMap to the desired specification
+  ansible.builtin.set_fact:
+    rke2_coredns_spec_hash: "{{ rke2_coredns_expected_corefile | hash('sha256') }}"
+
+- name: Render the CoreDNS manifest even on fresh check-mode nodes
+  ansible.builtin.set_fact:
+    rke2_coredns_manifest: "{{ lookup('ansible.builtin.template', (role_path | default(playbook_dir ~ '/../roles/rke2')) ~ '/templates/coredns-helmchartconfig.yaml.j2') }}"

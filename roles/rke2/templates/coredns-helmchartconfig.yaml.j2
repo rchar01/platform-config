@@ -1,0 +1,15 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-coredns
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/managed-by: platform-config
+spec:
+  valuesContent: |
+    podAnnotations:
+      platform-config/coredns-spec: {{ rke2_coredns_spec_hash | to_json }}
+    customAnnotations:
+      platform-config/coredns-spec: {{ rke2_coredns_spec_hash | to_json }}
+    servers:
+{{ rke2_coredns_servers | to_nice_yaml(indent=2) | indent(6, true) }}

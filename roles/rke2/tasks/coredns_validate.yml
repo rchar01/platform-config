@@ -1,0 +1,39 @@
+---
+# Internal defaults only: never load role defaults over private inventory vars.
+- name: Resolve CoreDNS task-only inputs
+  ansible.builtin.set_fact:
+    rke2_coredns_records: "{{ rke2_coredns_static_hosts | default([]) }}"
+    rke2_coredns_server_group: "{{ rke2_server_group | default('rke2_servers') }}"
+    rke2_coredns_agent_group: "{{ rke2_agent_group | default('rke2_agents') }}"
+    rke2_coredns_cluster_group: "{{ rke2_cluster_group | default('rke2_cluster') }}"
+    rke2_coredns_bootstrap: >-
+      {{ rke2_bootstrap_host | default(groups.get(rke2_server_group | default('rke2_servers'), []) | first | default('')) }}
+
+- name: Validate the CoreDNS records input type
+  ansible.builtin.assert:
+    that:
+      - rke2_coredns_records is sequence and rke2_coredns_records is not string and rke2_coredns_records is not mapping
+      - >-
+        hostvars[item].rke2_coredns_static_hosts | default([]) is sequence and
+        hostvars[item].rke2_coredns_static_hosts | default([]) is not string and
+        hostvars[item].rke2_coredns_static_hosts | default([]) is not mapping
+    fail_msg: CoreDNS static hosts must be a list.
+  loop: >-
+    {{ (groups.get(rke2_coredns_cluster_group, []) + groups.get(rke2_coredns_server_group, [])
+        + groups.get(rke2_coredns_agent_group, []) + [inventory_hostname]) | unique }}
+
+- name: Determine whether any cluster member requests static CoreDNS records
+  ansible.builtin.set_fact:
+    rke2_coredns_requested: >-
+      {%- set requested = namespace(value=rke2_coredns_records | length > 0) -%}
+      {%- for host in (groups.get(rke2_coredns_cluster_group, []) + groups.get(rke2_coredns_server_group, [])
+                      + groups.get(rke2_coredns_agent_group, [])) | unique -%}
+      {%- if hostvars[host].rke2_coredns_static_hosts | default([]) | length > 0 -%}
+      {%- set requested.value = true -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ requested.value }}
+
+- name: Validate configured or previously owned CoreDNS
+  ansible.builtin.include_tasks: coredns_validate_managed.yml
+  when: rke2_coredns_requested | bool or rke2_coredns_managed | default(false)

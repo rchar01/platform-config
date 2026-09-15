@@ -1,0 +1,34 @@
+---
+# Repeat after local API readiness; the fixed playbook also guards before roles.
+- name: Recheck CoreDNS ownership immediately before publication
+  ansible.builtin.import_tasks: coredns_preflight.yml
+
+- name: Stage owned CoreDNS on the bootstrap server
+  when:
+    - rke2_coredns_managed
+    - inventory_hostname == rke2_coredns_bootstrap
+  block:
+    - name: Render desired CoreDNS configuration
+      ansible.builtin.import_tasks: coredns_render.yml
+
+    - name: Inspect the CoreDNS manifest parent after base setup
+      ansible.builtin.stat:
+        path: /var/lib/rancher/rke2/server/manifests
+      register: rke2_coredns_parent
+
+    - name: Predict a new CoreDNS manifest with absent parent directories
+      ansible.builtin.debug:
+        msg: "{{ rke2_coredns_manifest }}"
+      changed_when: true
+      when:
+        - ansible_check_mode
+        - not rke2_coredns_parent.stat.exists
+
+    - name: Publish the owned CoreDNS HelmChartConfig
+      ansible.builtin.copy:
+        content: "{{ rke2_coredns_manifest }}"
+        dest: /var/lib/rancher/rke2/server/manifests/rke2-coredns-config.yaml
+        owner: root
+        group: root
+        mode: "0644"
+      when: not ansible_check_mode or rke2_coredns_parent.stat.exists

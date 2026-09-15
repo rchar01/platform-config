@@ -1,0 +1,14 @@
+---
+# Task-only entry point: importing the rke2 role would run mutating dependencies.
+- name: Inspect CoreDNS ownership and validate managed smoke inputs
+  ansible.builtin.import_tasks: coredns_preflight.yml
+
+- name: Verify configured or previously owned CoreDNS
+  when: rke2_coredns_managed
+  block:
+    - name: Render the desired CoreDNS smoke specification
+      ansible.builtin.import_tasks: coredns_render.yml
+
+    - name: Verify the effective CoreDNS specification after all base nodes
+      ansible.builtin.include_tasks: coredns_verify.yml
+      when: not ansible_check_mode

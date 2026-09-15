@@ -44,6 +44,23 @@
 
 ## RKE2 Runner Boundary
 
+- `rke2_coredns_static_hosts` is an optional private IPv4/FQDN list, public default
+  empty. Preserve the qualified RKE2 `v1.35.5+rke2r2` / CoreDNS chart `1.45.212`
+  server/plugin contract and Rancher's cluster-domain prepend. Guard ownership
+  and fixed source paths on all servers before base-role mutation; only the
+  bootstrap server publishes. Empty unmanaged configuration preserves foreign
+  customization; owned empty configuration resets values without deleting the
+  resource. Wait for desired HCC/Corefile/pod specification and rollout after all
+  base nodes, before add-ons. Smoke is task-only and must not invoke role
+  dependencies. Node aliases, pod DNS and Helm-job CA trust remain separate;
+  qualify real application lookups and strict TLS. See
+  [Static DNS for Pods](docs/rke2-operations.md#static-dns-for-pods).
+- Optional `rke2_kube_vip_chart_repo_ca_*` and
+  `rke2_gitlab_runner_chart_repo_ca_*` source/SHA pairs supply exact reviewed bytes
+  via HelmChart `spec.repoCA`. Preserve paired validation, bounded regular-file
+  reads, the decoded-content digest check, empty defaults and strict TLS. Do not
+  infer these trust selections from Runner `certsSecretName` or node trust.
+
 - `rke2_rpm_repo_gpgcheck` is a strict boolean, default `true`. An explicit private
   inventory exception changes only metadata-signature checking on the common and
   version RKE2 RPM repositories. Keep package `gpgcheck: true`, HTTPS, key
@@ -239,6 +256,11 @@
 - Bastion smoke checks after apply: `make smoke-k8s-bastion ENV=dev LIMIT=k8s-bastion-01`.
 - Lint checks: `make lint` and `make yamllint`.
 - Default tests: `make test` runs the authoritative serial pytest suite.
+- Focused iterations use exact pytest files/node IDs with `-x` and durations;
+  never append `.` to a selected-file command. Run any bounded `timeout` inside
+  `scripts/in-container` so expiry terminates the container command. Batch input
+  matrices through the real validator; keep full lifecycle/transport checks for
+  their specific boundaries rather than repeating them for every input variant.
 - Focused offline OpenBao VIP checks use `PLATFORM_CONFIG_CONTAINER_PROFILE=test
   ./scripts/in-container python -m pytest -n 0` with
   `tests/python/test_openbao_keepalived_activation.py`,

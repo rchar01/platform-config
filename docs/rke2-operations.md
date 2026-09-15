@@ -98,6 +98,115 @@ It records the exact qualified package, chart, and release-bundle inputs, where
 each fetch originates, and which dynamic upstream services require internal
 mirroring for a finite firewall policy.
 
+## Static DNS for Pods
+
+VM `/etc/hosts` entries do not become pod DNS records. For environments using
+reviewed static service addresses, select `rke2_coredns_static_hosts` in private
+cluster inventory (public default `[]`):
+
+```yaml
+rke2_coredns_static_hosts:
+  - address: 192.0.2.20
+    names:
+      - charts.example.test
+  - address: 192.0.2.21
+    names:
+      - git.example.test
+```
+
+Each entry has exactly `address` and `names`: a canonical IPv4 literal and a
+nonempty list of lowercase fully qualified names. Combine aliases at the same
+address; duplicate names, conflicting entries, and Kubernetes, reverse or
+localhost namespace overrides are rejected. Select the same list and cluster
+domain on every cluster member. Keep node aliases for host/containerd access.
+
+This optional configuration is qualified for **RKE2 `v1.35.5+rke2r2` and its
+bundled `rke2-coredns` chart `1.45.212`**, using standard data paths and active
+services. Other versions require review of the packaged chart contract. The
+chart is embedded in RKE2; installing this customization does not fetch it from
+the external repository whose DNS may be unavailable.
+
+`playbooks/rke2.yml` performs a read-only ownership/path preflight before the
+base roles or their dependencies. The bootstrap server alone writes
+`/var/lib/rancher/rke2/server/manifests/rke2-coredns-config.yaml`, a labelled
+`HelmChartConfig` named `rke2-coredns` in `kube-system`. Competing fixed sources
+on other servers, unsafe paths and foreign live customization block management.
+Do not run concurrent out-of-band CoreDNS or Helm configuration changes; the
+ownership label is a coordination convention, not an authorization mechanism.
+
+The complete qualified server list preserves Kubernetes service discovery and
+the packaged health, metrics, forwarding and caching settings. One `hosts`
+plugin adds the static records. It uses `/dev/null` as its file input, so it
+does not import unrelated entries from the CoreDNS pod's own `/etc/hosts`.
+Known IPv4 names return A records and empty successful AAAA answers. Other
+queries fall through to normal Kubernetes DNS and upstream forwarding.
+
+Publication happens after bootstrap API readiness. Verification waits until
+**all servers and agents have completed base convergence**, avoiding a first-node
+deadlock on CoreDNS replica placement. Before external add-on orchestration, it
+checks the live HelmChartConfig values, effective Corefile, desired ConfigMap and
+pod-spec annotations, and deployment rollout. Final RKE2 smoke repeats these
+read-only checks without invoking mutating role dependencies. The fixed launcher
+retains its existing phases and approvals. Direct role-only calls stage the
+configuration but do not provide this whole-playbook ordering guarantee.
+
+Check mode validates and previews changes without starting rollout or resolution
+checks. An unmanaged empty default preserves foreign customization. Once owned,
+changing the list removes obsolete entries; setting it to `[]` publishes the
+qualified baseline without `hosts`. It retains the owned HelmChartConfig:
+deleting a server manifest alone would not delete the live resource.
+
+These gates verify configuration and rollout, not workload DNS or HTTPS. During
+connected acceptance, test normal application lookups from Helm, manager and
+job/helper pod contexts, including their actual search suffixes and timeout
+behaviour. Also verify an ordinary Kubernetes Service lookup. With no reachable
+upstream, unlisted external names remain unresolved; non-cluster search suffixes
+can still cause delays. A trailing-dot diagnostic lookup alone is insufficient.
+
+For private HTTPS chart repositories, the independent optional
+`rke2_kube_vip_chart_repo_ca_src` / `rke2_kube_vip_chart_repo_ca_sha256` and
+`rke2_gitlab_runner_chart_repo_ca_src` / `rke2_gitlab_runner_chart_repo_ca_sha256`
+pairs embed reviewed, byte-pinned CA bundles into each `HelmChart.spec.repoCA`.
+This configures the Helm install job's trust, separately from Runner
+`certsSecretName`, controller Git trust and node/containerd trust. Both the index
+and its advertised archive URL must resolve and pass strict TLS. See the
+[kube-vip](../roles/rke2_kube_vip/README.md) and
+[Runner](../roles/rke2_gitlab_runner/README.md) role contracts.
+
+Fast offline iteration uses separate bounded batches. Keep the timeout inside
+the container and select explicit files or node IDs; appending `.` would collect
+the entire repository. Validation matrices execute the real Ansible assertions
+in batches rather than launching a playbook for every input variant.
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container \
+  timeout --signal=TERM --kill-after=2s 85s python -m pytest -n 0 -x -q --durations=5 \
+  tests/python/test_rke2_coredns.py \
+  -k 'invalid_structure or invalid_address or invalid_name or duplicates_and_conflicts or serial_bootstrap_checks or custom_domain or reordering'
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container \
+  timeout --signal=TERM --kill-after=2s 85s python -m pytest -n 0 -x -q --durations=5 \
+  tests/python/test_rke2_helm_repo_ca.py
+```
+
+Select affected lifecycle/ownership/transport tests by node ID separately. For
+example, the complete-base-before-DNS boundary and failed-agent barrier are:
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container \
+  timeout --signal=TERM --kill-after=2s 85s python -m pytest -n 0 -x -q --durations=5 \
+  tests/python/test_rke2_coredns.py::test_real_fixed_playbook_completes_all_base_nodes_before_dns_gate \
+  tests/python/test_rke2_coredns.py::test_failed_base_agent_prevents_final_coredns_verification
+```
+
+These selections are iteration checks, not a replacement for the authoritative
+serial suite. A timeout is incomplete verification: inspect the active case
+before broadening or repeating the run.
+
+For an initialized cluster, use a fresh `rke2-converge-plan`, review its changes,
+then separately approve `rke2-deploy`; retain the core-health/token gates. Real
+Helm installation, strict endpoint TLS and a successful Runner job remain
+connected acceptance requirements.
+
 The bootstrap plan fails before check mode unless every selected node is
 pristine. On fresh nodes, check mode validates the RKE2, registry, and Traefik
 templates without creating target directories and reports the exact package and

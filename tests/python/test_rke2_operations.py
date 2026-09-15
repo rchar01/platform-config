@@ -143,9 +143,14 @@ raise SystemExit(1 if failure else 0)
 def test_rke2_playbook_is_serial_and_fatal(repo_root: Path) -> None:
     plays = yaml.safe_load((repo_root / "playbooks/rke2.yml").read_text())
 
-    assert [play["hosts"] for play in plays] == ["rke2_servers", "rke2_agents"]
-    assert all(play["serial"] == 1 for play in plays)
+    assert [play["hosts"] for play in plays] == [
+        "rke2_servers:rke2_agents", "rke2_servers", "rke2_agents", "rke2_servers",
+    ]
+    assert all(play["serial"] == 1 for play in plays[1:3])
     assert all(play["any_errors_fatal"] is True for play in plays)
+    assert all("roles" not in play and play["strategy"] == "linear" for play in (plays[0], plays[-1]))
+    assert plays[0]["tasks"][0]["ansible.builtin.include_tasks"].endswith("coredns_preflight.yml")
+    assert plays[-1]["tasks"][0]["ansible.builtin.include_tasks"].endswith("coredns_smoke.yml")
 
 
 def test_rke2_composes_optional_registry_trust_and_fails_closed(
