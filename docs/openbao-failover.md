@@ -126,6 +126,24 @@ Unmeasured timing remains null. Missing host reports cannot produce success.
 A failed test remains failed even if recovery and final smoke pass. A later
 recovery-only job can succeed while reporting the historical failed proof.
 
+If initial plan validation rejects a fresh test, its failed task and summary
+show an allowlisted reason without printing the private plan:
+
+| Code | Meaning |
+| --- | --- |
+| `PLAN_EXPIRED` | The 1800-second authorization expired before validation, including time spent on baseline checks. |
+| `PLAN_NOT_YET_VALID` | The plan creation time is in the future relative to the controller clock. |
+| `VIP_OWNER_CHANGED` | Current ownership differs from the approved owner. |
+| `BASELINE_CHANGED` | Current baseline evidence differs from the plan. |
+| `SOURCE_OR_CI_IDENTITY_CHANGED` | Source, inventory, scope, environment, or CI identity validation failed. |
+| `INVALID_PLAN_ARTIFACT` | Plan reading, schema, or digest validation failed. |
+| `PLAN_VALIDATION_FAILED` | Validation failed without a recognized public reason. |
+
+This pre-fault rejection reports `not_run` / `not_required` / `not_run`, with
+unmeasured timings and overall failure. No guard acquisition or HAProxy stop is
+attempted. Inspect the reason before generating a fresh plan; the checks and
+authorization deadline remain mandatory. Protected evidence stays under `no_log`.
+
 ## Recovery and Persistent Records
 
 The target-root helper uses `/var/lib/platform-config/openbao-edge-guard`, sharing

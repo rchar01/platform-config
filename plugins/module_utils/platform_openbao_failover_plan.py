@@ -29,6 +29,14 @@ CONTEXT_KEYS = {"config_sha", "private_sha", "inventory", "environment", "lane",
                 "project", "pipeline", "image", "plan_job"}
 
 
+class PlanRejection(PlanError):
+    """A public reason code, separate from protected plan details."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def _match(pattern, value):
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
 
@@ -108,12 +116,17 @@ def validate(plan, mode, hosts, current_context, owner=None, evidence=None, now=
         # is permitted exclusively for restore. Baseline VIP ownership may differ.
         original.pop("pipeline")
         current.pop("pipeline")
-    elif (not plan["created"] <= now < plan["expires"]
-          or canonical(owner) != canonical(plan["owner"])
-          or canonical(evidence) != canonical(plan["evidence"])):
-        raise PlanError("Failover plan expired or exact owner/baseline changed")
+    else:
+        if not plan["created"] <= now < plan["expires"]:
+            code = "PLAN_EXPIRED" if now >= plan["expires"] else "PLAN_NOT_YET_VALID"
+            raise PlanRejection(code, "Failover plan expired or future-dated")
+        if canonical(owner) != canonical(plan["owner"]):
+            raise PlanRejection("VIP_OWNER_CHANGED", "Failover plan exact owner changed")
+        if canonical(evidence) != canonical(plan["evidence"]):
+            raise PlanRejection("BASELINE_CHANGED", "Failover plan exact baseline changed")
     if canonical(hosts) != canonical(plan["hosts"]) or canonical(current) != canonical(original):
-        raise PlanError("Failover hosts, source, environment or lane identity changed")
+        raise PlanRejection("SOURCE_OR_CI_IDENTITY_CHANGED",
+                            "Failover hosts, source, environment or lane identity changed")
     return plan
 
 

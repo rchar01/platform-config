@@ -600,6 +600,58 @@ def test_pre_stop_failures_never_stop(orchestration, command_runner, variables):
     assert not any(e['phase'] == 'stopped' for e in events(orchestration))
 
 
+def test_expired_plan_reports_rejection_before_any_fault(repo_root, orchestration, command_runner):
+    from test_operation_summary import _append, _initialize, _phase, _render
+
+    run(command_runner, orchestration, 'plan').assert_success()
+    root, environment, path = orchestration
+    plan = json.loads(path.read_text())
+    plan['created'] -= 90000
+    plan['expires'] -= 90000
+    plan['evidence']['private'] = 'PRIVATE-REJECTION-SENTINEL'
+    body = {k: v for k, v in plan.items() if k != 'digest'}
+    plan['digest'] = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':'),
+                                              ensure_ascii=True).encode()).hexdigest()
+    path.write_text(json.dumps(plan))
+    output = _initialize(repo_root, command_runner, root, 'openbao-haproxy-failover')
+    for host in HOSTS:
+        _append(output, {'schema': 1, 'kind': 'host', 'host': host, 'role': 'openbao'})
+    _append(output, *_phase('inventory'), _phase('failover-test')[0])
+    environment.update(ANSIBLE_CALLBACK_PLUGINS=str(repo_root / 'plugins/callback'),
+                       ANSIBLE_CALLBACKS_ENABLED='platform_config_operation_summary',
+                       PLATFORM_CONFIG_OPERATION_SUMMARY_PATH=str(output),
+                       PLATFORM_CONFIG_OPERATION_PHASE='failover-test')
+    result = run(command_runner, orchestration, 'test').assert_failure()
+    _append(output, _phase('failover-test', result.returncode)[1])
+    # A valid rendering succeeds; the launcher retains the failed Ansible status.
+    summary = _render(repo_root, command_runner, output, result.returncode).assert_success()
+    assert 'PLAN_EXPIRED' in result.stdout
+    assert 'PLAN_EXPIRED' in summary.stdout
+    assert 'Overall: FAIL' in summary.stdout
+    assert 'unknown' not in summary.stdout.replace('missing observations remain unknown', '')
+    for field, value in [('failover_test_result', 'not_run'), ('recovery_result', 'not_required'),
+                         ('final_smoke_result', 'not_run')]:
+        assert summary.stdout.count(f'{field}={value}') == 3
+    assert not any(e['phase'] in {'claim', 'arm', 'stopped', 'started'} for e in events(orchestration))
+    assert not records(orchestration)
+    assert not list(root.glob('bao-*/active'))
+    assert 'PRIVATE-REJECTION-SENTINEL' not in result.stdout + result.stderr + output.read_text() + summary.stdout
+
+
+@pytest.mark.parametrize('prepared', [{}, {'validation_code': 'PRIVATE-REJECTION-SENTINEL'},
+                                     {'validation_code': {'private': 'PRIVATE-REJECTION-SENTINEL'}}])
+def test_unknown_rejection_code_is_not_disclosed(repo_root, tmp_path, command_runner, prepared):
+    tasks = yaml.safe_load((repo_root / PLAYBOOK).read_text())[0]['tasks']
+    fresh = next(t['block'] for t in tasks if t['name'].startswith('Prepare a fresh fault'))
+    rejection = next(t for t in fresh if t['name'] == 'Report plan rejection before any target transaction')
+    path = tmp_path / 'rejection.yml'
+    path.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+                                    'vars': {'openbao_failover_prepared': prepared}, 'tasks': [rejection]}]))
+    result = command_runner.run(['ansible-playbook', '-i', 'localhost,', '-c', 'local', path]).assert_failure()
+    assert 'PLAN_VALIDATION_FAILED' in result.stdout
+    assert 'PRIVATE-REJECTION-SENTINEL' not in result.stdout + result.stderr
+
+
 def test_production_fixed_service_and_shared_oracles(repo_root):
     files = [repo_root / PLAYBOOK, repo_root / 'playbooks/tasks/openbao-smoke.yml',
              *(repo_root / 'playbooks/maintenance/tasks').glob('openbao-failover-*.yml')]

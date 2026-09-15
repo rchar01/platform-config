@@ -132,6 +132,8 @@
   never automatically unlock or delete consumption. CI allows two hours for
   test/recovery with the failover-only bounded timing envelope. Other lifecycle
   work must be excluded procedurally. See [OpenBao Failover](docs/openbao-failover.md).
+  Initial plan rejection exposes only allowlisted reason codes and reports
+  not-run/not-required outcomes before any claim or stop; keep plan evidence private.
 
 - DNS infrastructure is optional; preserve `openbao_service_dns` and required
   certificate DNS SAN identity. Use existing private controller

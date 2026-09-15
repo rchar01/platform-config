@@ -183,6 +183,36 @@
           register: openbao_failover_prepared
           run_once: true # noqa run-once[task]
           no_log: true
+          # Publish only an allowlisted reason before failing the whole play.
+          failed_when: false
+
+        - name: Report plan rejection before any target transaction
+          when: openbao_failover_prepared.validation_code | default('PLAN_VALIDATION_FAILED') != 'OK'
+          block:
+            - name: Select a public rejection code without exposing protected details
+              ansible.builtin.set_fact:
+                openbao_failover_rejection_code: >-
+                  {{ openbao_failover_prepared.validation_code
+                     if openbao_failover_prepared.validation_code | default('') in
+                       ['PLAN_EXPIRED', 'PLAN_NOT_YET_VALID', 'VIP_OWNER_CHANGED', 'BASELINE_CHANGED',
+                        'SOURCE_OR_CI_IDENTITY_CHANGED', 'INVALID_PLAN_ARTIFACT']
+                     else 'PLAN_VALIDATION_FAILED' }}
+              no_log: true
+
+            - name: Publish sanitized failover phase results on every selected host
+              ansible.builtin.debug:
+                msg:
+                  failover_test_result: not_run
+                  recovery_result: not_required
+                  final_smoke_result: not_run
+                  failover_elapsed_seconds: null
+                  transaction_elapsed_seconds: null
+
+            - name: "Reject failover plan before any fault: {{ openbao_failover_rejection_code }}"
+              ansible.builtin.fail:
+                msg: >-
+                  Failover plan rejected: {{ openbao_failover_rejection_code }}.
+                  No guard was acquired and no HAProxy stop was attempted in this run.
 
         - name: Preserve the prepared transaction identity
           ansible.builtin.set_fact:

@@ -1,6 +1,7 @@
 """Offline failover identity/TTL contract; no repositories committed or hosts used."""
 import copy
 import importlib.util
+import json
 import tempfile
 from pathlib import Path
 
@@ -220,3 +221,58 @@ def test_action_returns_exact_owner_approval_and_private_result(repo_root, plans
     assert action.run(task_vars=variables)['failed'] is True
     action._task.check_mode = True
     assert action.run(task_vars=variables)['failed'] is True
+
+
+@pytest.mark.parametrize('case,code', [
+    ('expired', 'PLAN_EXPIRED'), ('future', 'PLAN_NOT_YET_VALID'),
+    ('owner', 'VIP_OWNER_CHANGED'), ('baseline', 'BASELINE_CHANGED'),
+    ('identity', 'SOURCE_OR_CI_IDENTITY_CHANGED'),
+    ('context-error', 'SOURCE_OR_CI_IDENTITY_CHANGED'),
+    ('artifact', 'INVALID_PLAN_ARTIFACT'),
+])
+def test_action_classifies_rejection_without_disclosing_plan(
+        repo_root, plans, plan, monkeypatch, tmp_path, case, code):
+    from ansible.plugins.action import ActionBase
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location('failover_rejection_test', repo_root / 'plugins/action/openbao_failover_plan.py')
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(ActionBase, 'run', lambda *args: {})
+    current = copy.deepcopy(CONTEXT)
+    def context(*args):
+        if case == 'context-error':
+            raise module.plans.PlanError('PRIVATE-REJECTION-SENTINEL')
+        return current
+    monkeypatch.setattr(module.plans, 'context', context)
+    monkeypatch.setattr(module.plans.base.time, 'time', lambda: NOW)
+    plan['evidence']['private'] = 'PRIVATE-REJECTION-SENTINEL'
+    evidence = copy.deepcopy(plan['evidence'])
+    owner = HOSTS[0]
+    if case in {'expired', 'future'}:
+        offset = -1800 if case == 'expired' else 1
+        plan['created'] += offset
+        plan['expires'] += offset
+    elif case == 'owner':
+        owner = HOSTS[1]
+    elif case == 'baseline':
+        evidence['changed'] = True
+    elif case == 'identity':
+        current['private_sha'] = 'c' * 40
+    plan['digest'] = plans.digest(plan)
+    if case == 'artifact':
+        plan['digest'] = '0' * 64
+    path = tmp_path / 'plan.json'
+    path.write_text(json.dumps(plan))
+    path.chmod(0o600)
+    action = object.__new__(module.ActionModule)
+    action._task = SimpleNamespace(check_mode=False, args={
+        'action': 'prepare', 'mode': 'test', 'path': str(path), 'owner': owner, 'evidence': evidence,
+    })
+    result = action.run(task_vars={'groups': {'openbao': HOSTS},
+                                 'ansible_inventory_sources': ['fixture.yml'], 'platform_environment': 'fixture'})
+    assert result['failed'] is True
+    assert result['_ansible_no_log'] is True
+    assert result['validation_code'] == code
+    assert 'plan' not in result and 'approval' not in result

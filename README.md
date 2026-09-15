@@ -82,6 +82,7 @@ through private inventory and the existing guarded convergence workflow.
 
 OpenBao's approved single-owner HAProxy fault, restoration, and fixed GitLab
 recovery workflow are documented in [OpenBao Failover and Recovery](docs/openbao-failover.md).
+Pre-fault plan rejections report a safe reason code while keeping plan evidence private.
 
 ```bash
 make help
