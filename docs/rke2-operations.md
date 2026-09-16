@@ -323,11 +323,17 @@ Use a separately approved baseline/trust preparation procedure:
    SHA-256 certificate fingerprints. A certificate fingerprint hashes DER
    certificate bytes; it is not the SHA-256 of a PEM file. Keep the file-byte pin
    required by `registry_ca_trust_sha256` distinct from that fingerprint.
-2. Have the endpoint owner configure the complete intermediate chain. Do not
-   install a downloaded server leaf as a client trust anchor.
+2. Prefer an endpoint that serves its complete intermediate chain. If the server
+   cannot be changed, an environment may explicitly approve client-side trust
+   for the exact issuing intermediate alongside the root. Installing that
+   intermediate as an anchor grants it system-wide trust, not just issuer-cache
+   status. Do not install a downloaded server leaf as a client trust anchor.
 3. On Rocky Linux, install the approved root in
    `/etc/pki/ca-trust/source/anchors/` as a root-owned `0644` certificate and run
-   `update-ca-trust extract`. Do not overwrite generated CA bundles manually.
+   `update-ca-trust extract`. If client-side intermediate trust is approved,
+   verify its fingerprint and relationship to the root and install it as a
+   separate `0644` CA file before refreshing trust. Do not overwrite generated CA
+   bundles manually or skip the strict bootstrap source checks.
    The scope of trusted issuers is an environment policy decision, not a public
    default to copy across environments.
 4. Verify strict hostname-aware TLS on every selected node, then start a fresh
@@ -340,6 +346,10 @@ fixed bootstrap source preflight, so future role convergence cannot prepare that
 preflight. There is currently no dedicated CA-only preparation playbook or fixed
 operation route. `playbooks/base-os.yml` does not install CA trust, and the registry
 playbook also converges other roles. Do not use either as an assumed CA-only fix.
+For a target-local baseline action, use the standalone
+[`rocky-ca-trust-prepare` helper](rocky-ca-trust.md): offline certificate inputs,
+read-only check and explicitly confirmed apply, followed by separate endpoint
+verification. It is not a CI operation and is not invoked by bootstrap preflight.
 
 Keep site-specific certificate names, fingerprints, downloads, target lists and
 approved installation commands in the private environment runbook. Keep this

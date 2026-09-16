@@ -120,6 +120,8 @@ host configuration changes. Required CA trust must be preinstalled. See
 for the checks and their endpoint-only qualification boundary.
 Follow [Prepare Node HTTPS Trust](docs/rke2-operations.md#prepare-node-https-trust)
 for the separate controller, node, registry and endpoint-chain responsibilities.
+Use the standalone [Rocky CA trust helper](docs/rocky-ca-trust.md) for separately
+approved offline root/intermediate installation before that preflight.
 
 Prepare inventory-declared managed-host aliases separately with the fixed
 `rke2-host-aliases-plan` and `rke2-host-aliases-apply` routes. They select the

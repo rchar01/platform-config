@@ -23,6 +23,15 @@
   helper applies only; prohibit concurrent out-of-band sudoers edits. See
   [Host Bootstrap](docs/ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
 
+- `rocky-ca-trust-prepare` is a separate target-local Rocky 10 helper for reviewed
+  offline root/optional intermediate CA anchors. Keep check read-only, require
+  exact host-bound apply confirmation, verify DER fingerprints and CA chains,
+  reject unsafe/conflicting files, and refresh trust on every approved apply.
+  Its `/run/platform-ca-trust-prepare.lock` coordinates only its own applies;
+  prohibit concurrent other trust-store mutations. Selected-anchor/TLS-bundle
+  readiness is not endpoint qualification. Keep site pins private and bootstrap
+  source preflight unchanged. See [Rocky CA Trust](docs/rocky-ca-trust.md).
+
 ## Kubernetes Bastion Boundary
 
 - `platform-config` owns installing and configuring bastion hosts with Ansible.

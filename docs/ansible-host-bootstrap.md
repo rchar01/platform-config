@@ -153,6 +153,11 @@ Result: READY FOR ANSIBLE TRANSPORT
 This establishes the helper's local checks, not end-to-end connectivity or
 authorization to run workload playbooks.
 
+Prepare any approved system CA trust separately with
+[`rocky-ca-trust-prepare`](rocky-ca-trust.md) before workload source preflight.
+The access helper does not install CA certificates, and its transport-ready
+result does not establish HTTPS trust.
+
 ### Non-TTY Sudo and Existing Prepared Hosts
 
 The root-owned, mode-`0440` policy at

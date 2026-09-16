@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""Prepare reviewed target-local CA trust before workload source preflight."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import os
+import platform
+import re
+import secrets
+import shutil
+import ssl
+import stat
+import subprocess
+import sys
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+
+ANCHORS = Path('/etc/pki/ca-trust/source/anchors')
+TLS_BUNDLE = Path('/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem')
+# /run/lock may be writable by non-root users; /run itself must be root-controlled.
+LOCK = Path('/run/platform-ca-trust-prepare.lock')
+COMMAND_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
+PEM_PATTERN = re.compile(rb'-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----')
+
+
+class PreparationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Certificate:
+    pem: bytes
+    fingerprint: str
+    destination: Path
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise PreparationError(message)
+
+
+def parse_arguments(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description='Check or install target-local Rocky 10 system CA trust. Run as root.',
+        allow_abbrev=False,
+    )
+    parser.add_argument('operation', choices=('check', 'apply'))
+    parser.add_argument('--expected-hostname', required=True)
+    parser.add_argument('--root-file', type=Path, required=True)
+    parser.add_argument('--root-fingerprint', required=True, help='SHA-256 of certificate DER, 64 lowercase hex characters')
+    parser.add_argument('--root-name', default='platform-root-ca.crt', help='Anchor basename, not a path')
+    parser.add_argument('--intermediate-file', type=Path, help='Optional CA installed as a system-wide trust anchor')
+    parser.add_argument('--intermediate-fingerprint')
+    parser.add_argument('--intermediate-name', help='Anchor basename; defaults to platform-intermediate-ca.crt')
+    parser.add_argument('--confirm', help='apply only: <expected-hostname>:ca-trust')
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', args.expected_hostname):
+        parser.error('--expected-hostname must be one literal hostname')
+    intermediate = (args.intermediate_file, args.intermediate_fingerprint, args.intermediate_name)
+    if any(value is not None for value in intermediate) and not all(intermediate[:2]):
+        parser.error('--intermediate-file and --intermediate-fingerprint are required together')
+    args.intermediate_name = args.intermediate_name or 'platform-intermediate-ca.crt'
+    for slot in ('root', 'intermediate'):
+        source = getattr(args, f'{slot}_file')
+        if source is None:
+            continue
+        if not source.is_absolute() or '..' in source.parts:
+            parser.error(f'--{slot}-file must be an absolute path without parent traversal')
+        if not re.fullmatch(r'[0-9a-f]{64}', getattr(args, f'{slot}_fingerprint')):
+            parser.error(f'--{slot}-fingerprint must be 64 lowercase hexadecimal characters')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,80}\.crt', getattr(args, f'{slot}_name')):
+            parser.error(f'--{slot}-name must be a .crt basename')
+    if args.intermediate_file and args.root_name == args.intermediate_name:
+        parser.error('root and intermediate destinations must differ')
+    if args.operation == 'apply' and args.confirm != f'{args.expected_hostname}:ca-trust':
+        parser.error(f'apply requires --confirm {args.expected_hostname}:ca-trust')
+    if args.operation == 'check' and args.confirm is not None:
+        parser.error('--confirm is valid only for apply')
+    return args
+
+
+def run_command(name: str, *arguments: str, data: bytes = b'', pass_fds: tuple[int, ...] = (), timeout: int = 30) -> bytes:
+    executable = shutil.which(name, path=COMMAND_PATH)
+    require(executable is not None, f'required command is unavailable: {name}')
+    result = subprocess.run(
+        [executable, *arguments], input=data, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env={'PATH': COMMAND_PATH, 'LC_ALL': 'C'},
+        pass_fds=pass_fds, start_new_session=True, timeout=timeout, check=False,
+    )
+    require(result.returncode == 0, f'{name} failed: {result.stderr.decode(errors="replace").strip()}')
+    return result.stdout
+
+
+def validate_directory(path: Path) -> None:
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode), f'not a non-symlink directory: {path}')
+    require(info.st_uid == 0 and info.st_gid == 0, f'directory must be root:root: {path}')
+    require(not stat.S_IMODE(info.st_mode) & 0o022, f'directory is writable by group/others: {path}')
+
+
+def validate_ancestors(path: Path) -> None:
+    require(path.is_absolute() and '..' not in path.parts, f'unsafe path: {path}')
+    for parent in reversed(path.parents):
+        validate_directory(parent)
+
+
+def validate_file(info: os.stat_result, path: Path, mode: int | None = None) -> None:
+    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, f'not a singly linked regular file: {path}')
+    require(info.st_uid == 0 and info.st_gid == 0, f'file must be root:root: {path}')
+    require(not stat.S_IMODE(info.st_mode) & 0o022, f'file is writable by group/others: {path}')
+    if mode is not None:
+        require(stat.S_IMODE(info.st_mode) == mode, f'file must have mode {mode:04o}: {path}')
+
+
+def read_file(path: Path, *, mode: int | None = None, limit: int = 16384) -> bytes:
+    validate_ancestors(path)
+    # NONBLOCK prevents a substituted FIFO from blocking before fstat rejects it.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        validate_file(os.fstat(stream.fileno()), path, mode)
+        data = stream.read(limit + 1)
+    require(len(data) <= limit, f'file exceeds {limit} bytes: {path}')
+    return data
+
+
+def normalized_pem(data: bytes) -> bytes:
+    return data.replace(b'\r\n', b'\n').rstrip(b'\n') + b'\n'
+
+
+def load_certificate(path: Path, fingerprint: str, destination: Path) -> Certificate:
+    data = read_file(path)
+    pem = run_command('openssl', 'x509', '-outform', 'PEM', data=data)
+    require(normalized_pem(data) == pem, f'expected exactly one canonical PEM certificate: {path}')
+    der = ssl.PEM_cert_to_DER_cert(pem.decode('ascii'))
+    require(hashlib.sha256(der).hexdigest() == fingerprint, f'certificate DER fingerprint mismatch: {path}')
+    extensions = run_command('openssl', 'x509', '-noout', '-ext', 'basicConstraints,keyUsage', data=pem)
+    require(b'CA:TRUE' in extensions, f'certificate is not a CA: {path}')
+    if b'X509v3 Key Usage:' in extensions:
+        require(b'Certificate Sign' in extensions, f'CA lacks certificate-signing usage: {path}')
+    return Certificate(pem, fingerprint, destination)
+
+
+def validate_chain(certificates: list[Certificate]) -> None:
+    root = certificates[0]
+    names = run_command('openssl', 'x509', '-noout', '-subject', '-issuer', '-nameopt', 'RFC2253', data=root.pem).splitlines()
+    require(names[0].removeprefix(b'subject=') == names[1].removeprefix(b'issuer='), 'root must be self-issued')
+    # An anonymous, RAM-only snapshot keeps check read-only and binds verification
+    # to the bytes already fingerprint-checked, rather than reopening a source.
+    fd = os.memfd_create('platform-reviewed-root', os.MFD_CLOEXEC)
+    try:
+        with os.fdopen(os.dup(fd), 'wb') as stream:
+            stream.write(root.pem)
+        for certificate in certificates:
+            run_command(
+                'openssl', 'verify', '-no-CApath', '-no-CAstore', '-check_ss_sig',
+                '-CAfile', f'/proc/self/fd/{fd}',
+                data=certificate.pem, pass_fds=(fd,),
+            )
+    finally:
+        os.close(fd)
+    require(len({item.fingerprint for item in certificates}) == len(certificates), 'root and intermediate must be distinct')
+
+
+def check_host(expected_hostname: str) -> None:
+    require(os.geteuid() == 0, 'run this helper as root')
+    require(sys.version_info >= (3, 12), 'Python 3.12 or newer is required')
+    release = platform.freedesktop_os_release()
+    require(release.get('ID') == 'rocky' and release.get('VERSION_ID', '').split('.')[0] == '10', 'Rocky Linux 10 is required')
+    require(run_command('hostnamectl', '--static').decode().strip() == expected_hostname, 'static hostname differs from --expected-hostname')
+    require(run_command('getenforce').strip() == b'Enforcing', 'SELinux must be enforcing')
+    for command in ('openssl', 'update-ca-trust', 'restorecon', 'matchpathcon'):
+        require(shutil.which(command, path=COMMAND_PATH) is not None, f'required command is unavailable: {command}')
+
+
+def prepare(args: argparse.Namespace) -> list[Certificate]:
+    check_host(args.expected_hostname)
+    validate_ancestors(ANCHORS / 'anchor.crt')
+    certificates = [load_certificate(args.root_file, args.root_fingerprint, ANCHORS / args.root_name)]
+    if args.intermediate_file:
+        certificates.append(load_certificate(args.intermediate_file, args.intermediate_fingerprint, ANCHORS / args.intermediate_name))
+    validate_chain(certificates)
+    for item in certificates:
+        print(f'[OK] reviewed system-wide CA: {item.destination.name} SHA256={item.fingerprint}')
+    return certificates
+
+
+def missing_anchors(certificates: list[Certificate]) -> list[Certificate]:
+    missing = []
+    for item in certificates:
+        try:
+            existing = read_file(item.destination, mode=0o644)
+        except FileNotFoundError:
+            missing.append(item)
+            continue
+        require(normalized_pem(existing) == item.pem, f'conflicting installed anchor: {item.destination}')
+    return missing
+
+
+def check_installed(certificates: list[Certificate]) -> None:
+    missing = missing_anchors(certificates)
+    require(not missing, 'missing anchors: ' + ', '.join(item.destination.name for item in missing))
+    for item in certificates:
+        run_command('matchpathcon', '-V', str(item.destination))
+    bundle = read_file(TLS_BUNDLE, limit=4 * 1024 * 1024)
+    run_command('matchpathcon', '-V', str(TLS_BUNDLE))
+    fingerprints = {
+        hashlib.sha256(ssl.PEM_cert_to_DER_cert(match.group().decode('ascii'))).hexdigest()
+        for match in PEM_PATTERN.finditer(bundle)
+    }
+    require(all(item.fingerprint in fingerprints for item in certificates), 'selected CA is absent from extracted TLS bundle; approved apply must refresh trust')
+
+
+@contextmanager
+def apply_lock():
+    validate_ancestors(LOCK)
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        validate_file(os.fstat(fd), LOCK, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise PreparationError('another CA helper apply is running') from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def publish(certificate: Certificate) -> None:
+    path = certificate.destination
+    validate_ancestors(path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.platform-ca-' + secrets.token_hex(16)
+    created = False
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        created = True
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchown(stream.fileno(), 0, 0)
+            os.fchmod(stream.fileno(), 0o644)
+            stream.write(certificate.pem)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # link is an atomic no-replace publication, including if a destination
+        # appears after preflight. Both names are bound to the opened directory.
+        os.link(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+    finally:
+        if created:
+            os.unlink(temporary, dir_fd=directory)
+            os.fsync(directory)
+        os.close(directory)
+
+
+def apply(certificates: list[Certificate]) -> None:
+    # Validate every destination before publishing either certificate.
+    missing = missing_anchors(certificates)
+    for item in missing:
+        publish(item)
+    for item in certificates:
+        run_command('restorecon', '-F', str(item.destination))
+    # Always refresh on approved apply, including after an interrupted attempt.
+    # This avoids a new persistent marker/state protocol. Check observes the
+    # selected anchors and extracted TLS bundle, not prior command history.
+    run_command('update-ca-trust', 'extract', timeout=120)
+    check_installed(certificates)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_arguments(argv)
+    try:
+        if args.operation == 'check':
+            check_installed(prepare(args))
+        else:
+            # Check host identity before creating even the apply-only lock file.
+            check_host(args.expected_hostname)
+            with apply_lock():
+                apply(prepare(args))
+        print('Result: SELECTED CA ANCHORS AND TLS BUNDLE READY')
+        print('Endpoint HTTPS, RPM/image access and bootstrap qualification remain separate checks.')
+        return 0
+    except (PreparationError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f'[ERROR] {error}', file=sys.stderr)
+        print('Result: CA TRUST NOT READY', file=sys.stderr)
+        if args.operation == 'apply':
+            print('Apply may have left installed anchors; review before another approved apply. No rollback.', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv[1:]))
