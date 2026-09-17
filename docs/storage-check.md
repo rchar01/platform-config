@@ -19,7 +19,8 @@ the reviewed SSH key map; normal role checks still validate each storage layout.
 
 The route resolves inventory, pings only that host, and invokes the existing
 `playbooks/storage-volumes.yml` with the exact host limit and `--check --diff`.
-Check mode reports proposed LV/filesystem/mount changes without applying them.
+Check mode reports predicted changes without applying them; creation tasks for
+absent LVs in a reused VG are skipped, so it does not predict every future change.
 Expected changes are successful plan output, not an idempotence failure. Errors,
 unreachable hosts and incomplete summaries fail the check. Only a separately
 approved apply may make changes; its second real apply checks idempotence.
@@ -29,6 +30,43 @@ Use a qualified controller with Ansible Core 2.21.x, `ansible.posix` 2.2.2 and
 CA files, not cluster or Runner tokens. Keep logs private and coordinate checks
 with the same GitLab resource group used by platform mutations: a check is not
 reliable evidence while an overlapping apply changes the target.
+
+## OpenBao Storage Preparation
+
+`openbao-storage-check` is a separate fixed check-only route for initial
+three-node storage preparation. It validates the entire `openbao_storage` group
+before checking one literal `--node`:
+
+```bash
+scripts/platform-config-operation openbao-storage-check \
+  --inventory /absolute/private/hosts.yml \
+  --controller-vars /absolute/outside-git/controller-vars.json \
+  --node bao-01
+```
+
+All three hosts must belong to `storage_volume_hosts`, declare nonempty
+`storage_volumes` and list-valued layouts, and be disjoint from `rocky`,
+`container_hosts`, `openbao`, `rke2_cluster`, `rke2_servers` and `rke2_agents`.
+This storage-only preparation group does not enroll hosts for OS, runtime or
+service convergence. Group-name collisions, IP literals, patterns, missing or
+overlapping scope fail before target access, including faults on a different
+member from the selected node. Layout values remain private inventory intent.
+
+The route validates and snapshots the transport-only controller JSON described
+below before inventory execution, including selected-node key-map coverage.
+Complete inventory and ping evidence gate the next phase; the sole playbook is
+`playbooks/storage-volumes.yml --limit HOST --check --diff`. Complete successful
+single-host evidence is required even when Ansible exits zero. Predicted changes
+are allowed; a low count does not prove the new volumes already exist.
+
+CI's `storage-check` component opts in using
+`check-operation: openbao-storage-check` with `target-host: all`. It validates
+the full three-host scope, stages only its SSH identities, checks each host
+sequentially and retains any failure. Private bindings own the protected
+environment, immutable sources and Runner routing. Use the same three storage
+File-variable types, never OpenBao status/root/unseal credentials. No
+`openbao-storage-apply` operation is supplied; existing storage apply remains
+RKE2-only. Keep all lifecycle writers excluded during checks.
 
 ## Storage Apply
 
@@ -75,7 +113,7 @@ automatic job retries or concurrent out-of-band storage administration.
 
 ### Controller Variables
 
-For **`storage-apply` only**, `--controller-vars` must be an owner-private JSON
+For **`storage-apply` and `openbao-storage-check`**, `--controller-vars` must be an owner-private JSON
 object without duplicate members. YAML is not accepted by this route. Unknown
 keys are rejected before `ansible-inventory`, including storage definitions,
 devices, initialization settings, and connection endpoint overrides. Storage

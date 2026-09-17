@@ -21,6 +21,15 @@ def inventory():
     }
 
 
+def openbao_inventory():
+    data = inventory()
+    data["openbao_storage"] = {"hosts": ["vault-a", "vault-b", "vault-c"]}
+    data["storage_volume_hosts"]["children"].append("openbao_storage")
+    data["_meta"]["hostvars"].update({host: {"storage_volumes": [{"lv_name": "data"}]}
+                                    for host in data["openbao_storage"]["hosts"]})
+    return data
+
+
 @pytest.fixture
 def summary(repo_root):
     loader = importlib.machinery.SourceFileLoader("storage_summary", str(repo_root / "scripts/platform-config-operation-summary"))
@@ -65,12 +74,16 @@ def test_storage_selection_rejects_invalid_hosts(summary, isolated_test_dir, bad
                                               inventory=path, output=isolated_test_dir / "unused"))
 
 
-@pytest.mark.parametrize("failed,missing_recap", [(False, False), (True, False), (False, True)])
-def test_storage_launcher_is_single_host_check_only(repo_root, isolated_test_dir, command_runner, failed, missing_recap):
+@pytest.mark.parametrize("failed,missing_recap,fault_phase", [
+    (False, False, "storage-check"), (True, False, "storage-check"), (False, True, "storage-check"),
+    (True, False, "connectivity"), (False, True, "connectivity"),
+])
+@pytest.mark.parametrize("operation", ["storage-check", "openbao-storage-check"])
+def test_storage_launcher_is_single_host_check_only(repo_root, isolated_test_dir, command_runner, failed, missing_recap, fault_phase, operation):
     root = isolated_test_dir
     root.chmod(0o700)
     inv = root / "inventory.json"
-    inv.write_text(json.dumps(inventory()))
+    inv.write_text(json.dumps(openbao_inventory() if operation == "openbao-storage-check" else inventory()))
     inv.chmod(0o600)
     variables = root / "vars.json"
     variables.write_text("{}")
@@ -87,23 +100,24 @@ if name == "ansible-inventory":
     print(pathlib.Path(os.environ["FAKE_INVENTORY"]).read_text())
     raise SystemExit(0)
 phase = os.environ["PLATFORM_CONFIG_OPERATION_PHASE"]
-failed = phase == "storage-check" and os.environ["FAKE_FAILED"] == "1"
-if not (phase == "storage-check" and os.environ["FAKE_MISSING"] == "1"):
+failed = phase == os.environ["FAKE_FAULT_PHASE"] and os.environ["FAKE_FAILED"] == "1"
+if not (phase == os.environ["FAKE_FAULT_PHASE"] and os.environ["FAKE_MISSING"] == "1"):
     counters = dict(ok=1, changed=int(phase == "storage-check"), failures=int(failed), unreachable=0, skipped=0, rescued=0, ignored=0)
     with open(os.environ["PLATFORM_CONFIG_OPERATION_SUMMARY_PATH"], "a") as out:
-        out.write(json.dumps(dict(schema=1, kind="recap", phase=phase, host="server-a", counters=counters)) + "\\n")
+        out.write(json.dumps(dict(schema=1, kind="recap", phase=phase, host=os.environ["FAKE_NODE"], counters=counters)) + "\\n")
 raise SystemExit(2 if failed else 0)
 '''
     for name in ("ansible-inventory", "ansible", "ansible-playbook"):
         path = bin_dir / name
         path.write_text(code)
         path.chmod(0o755)
+    node = "vault-a" if operation == "openbao-storage-check" else "server-a"
     result = command_runner.run([
-        repo_root / "scripts/platform-config-operation", "storage-check",
-        "--inventory", inv, "--controller-vars", variables, "--node", "server-a",
+        repo_root / "scripts/platform-config-operation", operation,
+        "--inventory", inv, "--controller-vars", variables, "--node", node,
     ], environment={"PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_LOG": str(log),
             "FAKE_INVENTORY": str(inv), "FAKE_FAILED": str(int(failed)),
-            "FAKE_MISSING": str(int(missing_recap))})
+            "FAKE_MISSING": str(int(missing_recap)), "FAKE_NODE": node, "FAKE_FAULT_PHASE": fault_phase})
     if failed or missing_recap:
         result.assert_failure()
         assert "Overall: FAIL" in result.stdout
@@ -111,14 +125,22 @@ raise SystemExit(2 if failed else 0)
         result.assert_success()
         assert "Overall: PASS" in result.stdout  # planned changes are expected
     commands = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(commands) == 3
-    assert commands[1] == ["ansible", "-i", str(inv), "server-a", "-m", "ansible.builtin.ping", "--extra-vars", f"@{variables}"]
+    gated = fault_phase == "connectivity" and (failed or operation == "openbao-storage-check")
+    assert len(commands) == (2 if gated else 3)
+    expected_vars = commands[1][-1] if operation == "openbao-storage-check" else f"@{variables}"
+    if operation == "openbao-storage-check":
+        assert expected_vars != f"@{variables}"  # validated snapshot, not mutable caller input
+        assert expected_vars.endswith("/controller-vars.json")
+    assert commands[1] == ["ansible", "-i", str(inv), node, "-m", "ansible.builtin.ping", "--extra-vars", expected_vars]
+    if gated:
+        assert not any(command[0] == "ansible-playbook" for command in commands)
+        return
     assert commands[2] == ["ansible-playbook", "-i", str(inv), str(repo_root / "playbooks/storage-volumes.yml"),
-                           "--limit", "server-a", "--check", "--diff", "--extra-vars", f"@{variables}"]
+                           "--limit", node, "--check", "--diff", "--extra-vars", expected_vars]
     assert "agent-a" not in result.stdout
 
 
-@pytest.mark.parametrize("operation", ["storage-check", "storage-apply"])
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check"])
 @pytest.mark.parametrize("node", [None, "all", "ungrouped", "rke2_cluster:runner", "*", "--help", "server-a,agent-a"])
 def test_storage_launcher_rejects_host_patterns(repo_root, isolated_test_dir, command_runner, node, operation):
     path = isolated_test_dir / "private.json"
@@ -142,7 +164,7 @@ def test_node_argument_is_rejected_by_other_routes(repo_root, isolated_test_dir,
     assert "only accepted by storage-check" in result.stderr
 
 
-@pytest.mark.parametrize("operation", ["storage-check", "storage-apply"])
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check"])
 @pytest.mark.parametrize("extra", [["--apply"], ["--limit", "all"], ["--node", "agent-a"],
                                    ["--playbook", "other.yml"], ["--extra-vars", "initialize=true"],
                                    ["--list"], ["--all"], ["--retry"]])
@@ -156,3 +178,42 @@ def test_storage_check_rejects_broad_or_duplicate_arguments(repo_root, isolated_
     ])
     result.assert_failure()
     assert "unsupported argument" in result.stderr or "exactly once" in result.stderr
+
+
+@pytest.mark.parametrize("bad", ["size", "outside", "storage", "group", "address", "volumes", "layouts",
+                                  "rke2_cluster", "rke2_servers", "rke2_agents", "rocky", "container_hosts", "openbao"])
+def test_openbao_storage_checks_whole_scope(summary, isolated_test_dir, bad):
+    data = openbao_inventory()
+    node = "vault-a"
+    if bad == "size":
+        data["openbao_storage"]["hosts"].pop()
+    elif bad == "outside":
+        node = "server-a"
+    elif bad == "storage":
+        data["storage_volume_hosts"]["children"].remove("openbao_storage")
+    elif bad == "group":
+        data["vault-b"] = {"hosts": []}
+    elif bad == "address":
+        data["openbao_storage"]["hosts"][1] = "192.0.2.2"
+    elif bad == "volumes":
+        data["_meta"]["hostvars"]["vault-b"]["storage_volumes"] = []
+    elif bad == "layouts":
+        data["_meta"]["hostvars"]["vault-b"]["storage_volume_layouts"] = "invalid"
+    else:
+        data.setdefault(bad, {}).setdefault("hosts", []).append("vault-b")
+    path = isolated_test_dir / "inventory.json"
+    path.write_text(json.dumps(data))
+    path.chmod(0o600)
+    with pytest.raises(summary.SummaryError):
+        summary.command_hosts(SimpleNamespace(operation="openbao-storage-check", node=node,
+                                              inventory=path, output=isolated_test_dir / "unused"))
+
+
+def test_openbao_storage_rejects_intent_override_before_inventory(repo_root, isolated_test_dir, command_runner):
+    path = isolated_test_dir / "vars.json"
+    path.write_text(json.dumps({"storage_volumes": []}))
+    path.chmod(0o600)
+    result = command_runner.run([repo_root / "scripts/platform-config-operation", "openbao-storage-check",
+                                 "--inventory", path, "--controller-vars", path, "--node", "vault-a"])
+    result.assert_failure()
+    assert "controller-vars must be transport-only JSON" in result.stderr

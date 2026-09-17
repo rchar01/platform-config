@@ -3,8 +3,8 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check/storage-apply only)]' \
-    'Fixed operations: storage-check, storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, rke2-deployment-runners-smoke, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
+    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage routes only)]' \
+    'Fixed operations: storage-check, storage-apply, openbao-storage-check, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, rke2-deployment-runners-smoke, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
 }
 
 fail() {
@@ -81,7 +81,7 @@ truncate_summary_output() {
 operation=$1
 shift
 case "$operation" in
-  storage-check | storage-apply) ;;
+  storage-check | storage-apply | openbao-storage-check) ;;
   rke2-host-aliases-plan | rke2-host-aliases-apply) ;;
   rke2-deployment-runners-smoke) ;;
   openbao-haproxy-failover-plan | openbao-haproxy-failover | openbao-haproxy-failover-recover) ;;
@@ -219,18 +219,18 @@ done
 
 [[ -n $inventory ]] || fail "--inventory is required"
 [[ -n $controller_vars ]] || fail "--controller-vars is required"
-if [[ $operation == storage-check || $operation == storage-apply ]]; then
+if [[ $operation == storage-check || $operation == storage-apply || $operation == openbao-storage-check ]]; then
   [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$ && $node != all && $node != ungrouped ]] ||
     fail "$operation requires --node with one literal inventory hostname"
 else
-  [[ -z $node ]] || fail "--node is only accepted by storage-check or storage-apply"
+  [[ -z $node ]] || fail "--node is only accepted by storage-check, storage-apply or openbao-storage-check"
 fi
 require_private_file inventory "$inventory"
 require_owner_private_file controller-vars "$controller_vars"
-if [[ $operation == storage-apply ]]; then
+if [[ $operation == storage-apply || $operation == openbao-storage-check ]]; then
   "$summary_tool" storage-apply-controller-vars --input "$controller_vars" \
     --output "$summary_dir/controller-vars.json" --node "$node" ||
-    fail "storage-apply controller-vars must be transport-only JSON"
+    fail "$operation controller-vars must be transport-only JSON"
   controller_vars="$summary_dir/controller-vars.json"
 fi
 if [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
@@ -272,7 +272,7 @@ export ANSIBLE_CONFIG="$repo_root/ansible.cfg"
 
 extra_vars=(--extra-vars "@$controller_vars")
 summary_host_args=()
-if [[ $operation == storage-check || $operation == storage-apply ]]; then
+if [[ $operation == storage-check || $operation == storage-apply || $operation == openbao-storage-check ]]; then
   summary_host_args=(--node "$node")
 elif [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   summary_host_args=(--controller-vars "$controller_vars")
@@ -440,6 +440,12 @@ case "$operation" in
 esac
 
 case "$operation" in
+  openbao-storage-check)
+    require_phase_evidence inventory
+    ping_group connectivity "$node"
+    require_phase_evidence connectivity
+    run_playbook storage-check playbooks/storage-volumes.yml "$node" --check --diff
+    ;;
   storage-check)
     ping_group connectivity "$node"
     run_playbook storage-check playbooks/storage-volumes.yml "$node" --check --diff

@@ -85,6 +85,8 @@ and other secrets belong outside Git.
   all-node guards, zero-change post-check, and node NSS verification.
 - [RKE2 Storage Check and Apply](storage-check.md): Single-node storage plans,
   separately approved apply, second-apply idempotence, and mounted-state checks.
+- [OpenBao Storage Preparation](storage-check.md#openbao-storage-preparation):
+  Separate check-only initial three-host scope, one literal host per invocation.
 - [OpenBao Edge and VIP Acceptance](operator-runbook.md#openbao-edge-plans):
   Source-bound activation plans, approvals, guard recovery, active desired-state
   handoff, and the standalone dev endpoint release boundary.

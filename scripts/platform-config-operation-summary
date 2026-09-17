@@ -21,6 +21,7 @@ OPERATIONS = {
         "host-aliases-post-check", "host-aliases-verify",
     ),
     "storage-check": ("inventory", "connectivity", "storage-check"),
+    "openbao-storage-check": ("inventory", "connectivity", "storage-check"),
     "storage-apply": (
         "inventory", "connectivity", "storage-check", "storage-apply",
         "storage-idempotence", "storage-verify",
@@ -115,7 +116,9 @@ OPERATIONS = {
     ),
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
-OPENBAO_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-"))
+OPENBAO_OPERATIONS = frozenset(
+    name for name in OPERATIONS if name.startswith("openbao-") and name != "openbao-storage-check"
+)
 FAILOVER_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-haproxy-failover"))
 FAILOVER_RESULTS = {
     "failover_test_result": {"passed", "failed", "not_run"},
@@ -125,7 +128,7 @@ FAILOVER_RESULTS = {
 FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
 TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | {"rke2-deployment-runners-smoke"}
-EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply"}
+EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply", "openbao-storage-check"}
 PREFIX_GATED_OPERATIONS = EVIDENCE_GATED_OPERATIONS | {"rke2-converge-plan", "rke2-bootstrap", "rke2-deploy"}
 UNCHANGED_PHASES = frozenset(
     {
@@ -359,7 +362,33 @@ def command_hosts(args: argparse.Namespace) -> None:
         raise SummaryError
     records = []
     node = getattr(args, "node", None)
-    if operation in {"storage-check", "storage-apply"}:
+    if operation == "openbao-storage-check":
+        selected = group_hosts(inventory, "openbao_storage")
+        excluded = set().union(*(group_hosts(inventory, group) for group in (
+            "rke2_cluster", "rke2_servers", "rke2_agents", "rocky", "container_hosts", "openbao",
+        )))
+        if (len(selected) != 3 or selected & excluded
+                or not selected <= group_hosts(inventory, "storage_volume_hosts")
+                or not isinstance(node, str) or node not in selected):
+            raise SummaryError
+        metadata = inventory.get("_meta", {})
+        hostvars = metadata.get("hostvars", {}) if isinstance(metadata, dict) else {}
+        if not isinstance(hostvars, dict):
+            raise SummaryError
+        # Validate the complete preparation scope before contacting even one node.
+        for host in selected:
+            if (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", host) is None
+                    or host in inventory or host in {"all", "ungrouped"}):
+                raise SummaryError
+            safe_host(host)
+            values = hostvars.get(host)
+            if (not isinstance(values, dict)
+                    or not isinstance(values.get("storage_volumes"), list)
+                    or not values["storage_volumes"]
+                    or not isinstance(values.get("storage_volume_layouts", []), list)):
+                raise SummaryError
+        records.append({"schema": 1, "kind": "host", "host": node, "role": "openbao-storage"})
+    elif operation in {"storage-check", "storage-apply"}:
         if (
             not isinstance(node, str)
             or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", node) is None
@@ -483,7 +512,8 @@ def parse_records(path: Path) -> tuple[str, tuple[str, ...], dict[str, str], lis
         exact_keys(record, {"schema", "kind", "host", "role"})
         host = safe_host(record.get("host"))
         role = safe_text(record.get("role"), 16)
-        if role not in {"server", "agent", "openbao", "N/A"} or host in hosts:
+        allowed_roles = {"openbao-storage"} if operation == "openbao-storage-check" else {"server", "agent", "openbao", "N/A"}
+        if role not in allowed_roles or host in hosts:
             raise SummaryError
         hosts[host] = role
     return operation, phases, hosts, remaining
@@ -682,6 +712,7 @@ def command_render(args: argparse.Namespace) -> int:
         and args.status == 0
         and (operation not in OPENBAO_OPERATIONS or len(hosts) == 3)
         and (operation != "storage-apply" or len(hosts) == 1)
+        and (operation != "openbao-storage-check" or len(hosts) == 1)
         and (not any(phase.startswith("rke2-deployment-runners-") for phase in phases)
              or "server" in hosts.values())
         and all(role != "N/A" for role in hosts.values())

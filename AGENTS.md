@@ -126,6 +126,13 @@
   `--node`; it never accepts arbitrary playbooks or apply flags. Predicted
   changes are plan output, not a failure. CI may repeat this route sequentially
   across its reviewed scope and must retain failure status for any failed node.
+- `openbao-storage-check` is a separate initial-preparation check-only route.
+  Require exactly three `openbao_storage` hosts, all storage-managed and disjoint
+  from Rocky/runtime/OpenBao-service/RKE2 groups, before selecting one literal
+  `--node`. Validate and snapshot transport-only controller JSON before inventory;
+  gate ping and the fixed storage `--check --diff` on complete phase evidence.
+  No apply route or service enrollment is implied. Preserve RKE2-only storage
+  routes and inventory-owned layouts; see `docs/storage-check.md`.
 - `storage-apply` uses the same exact-node scope and fixed storage role: inventory,
   ping, fresh `--check --diff`, apply, second real apply, and read-only mounted-state
   verification. Gate each next command on complete successful evidence; the second
