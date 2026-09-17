@@ -38,6 +38,8 @@ and other secrets belong outside Git.
 
 - [Firewalld Readiness And Enablement](firewalld.md): Inactive baseline, rule
   ownership, offline staging, canary activation, validation, rollout, and rollback.
+- [Rocky CA Trust Preparation](rocky-ca-trust.md): Reviewed offline root/optional
+  intermediate anchors, read-only check, and host-bound approved apply.
 - [Target-Local PKI Layout](pki-local-layout.md): Target-owned lifecycle,
   trust, token, package, and outside-Git custody boundaries.
 
@@ -49,6 +51,9 @@ and other secrets belong outside Git.
 - [GitLab Runner Self-Bootstrap](gitlab-runner-self-bootstrap.md): Configure the
   first managed runner from itself with the repository container, self-SSH,
   private inventory, storage gates, and focused convergence.
+- [GitLab Runner Offline Preload](../roles/gitlab_runner/README.md#temporary-offline-preload):
+  Temporary dedicated trusted-runner `if-not-present` policy; the default and
+  self-bootstrap remain `always`.
 - [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
   two-route target-local request publication and response activation workflow.
 - [PKI Exchange Setup](pki-exchange-setup.md): Prepare the target-local token,
@@ -73,11 +78,22 @@ and other secrets belong outside Git.
   and smoke limitations.
 - [RKE2 Artifact and Egress Matrix](rke2-egress.md): Exact qualified package,
   image, and chart sources; dynamic fetch boundaries; and mirror requirements.
+- [RKE2 Host Aliases](rke2-host-aliases.md): Whole-cluster aliases-only preparation,
+  all-node guards, zero-change post-check, and node NSS verification.
+- [RKE2 Storage Check and Apply](storage-check.md): Single-node storage plans,
+  separately approved apply, second-apply idempotence, and mounted-state checks.
+- [OpenBao Edge and VIP Acceptance](operator-runbook.md#openbao-edge-plans):
+  Source-bound activation plans, approvals, guard recovery, active desired-state
+  handoff, and the standalone dev endpoint release boundary.
+- [OpenBao HAProxy Failover and Recovery](openbao-failover.md): Approved single-owner
+  fault, restoration, strict smoke, and explicit retained-record recovery.
 - [OpenBao Artifact and Egress Matrix](openbao-egress.md): Exact OpenBao image,
   package and PKI acquisition, Podman remapping, runtime boundaries, and
   lifecycle-aware qualification.
 - [Rebuild](rebuild.md): Host rebuild categories, repository responsibilities,
   service recovery, and Kubernetes node considerations.
+- [Rocky Linux Minor Alignment](rocky-minor-alignment.md): Isolated historical
+  10.0/10.1-to-10.2 migrations with explicit eligibility and an external controller.
 - [Migrations](../migrations/README.md): One-time transitions for existing hosts
   that do not belong in normal desired-state convergence.
 - [Maintenance Playbooks](../playbooks/maintenance/README.md): Explicit operator

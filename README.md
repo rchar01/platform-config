@@ -10,43 +10,43 @@
 
 ---
 
-`platform-config` configures already-provisioned hosts with Ansible. It
-contains public playbooks, roles, examples, helper scripts, and documentation
-for production-oriented operating system and service configuration.
+`platform-config` configures already-provisioned hosts with Ansible. It contains
+public playbooks, roles, helper scripts, examples, and documentation for operating
+systems and platform services, including RKE2, OpenBao, registries, GitLab
+Runners, and Kubernetes bastion hosts.
 
-The repository is one part of a split platform project. Template building,
-infrastructure provisioning, system configuration, Kubernetes bastion tooling,
-documentation, and shared helper tools live in separate repositories so each
-layer can evolve independently. Site-specific and personal configuration stays
-outside this public repository.
+Start with the [documentation index](docs/README.md) or the
+[operator runbook](docs/operator-runbook.md) for environment bring-up and service
+lifecycle procedures.
 
 ## Scope
 
-This repository owns public Ansible code: playbooks, roles, examples, Ansible
-support scripts, and documentation. Shared human and CI operator commands belong
-in `platform-tools`.
+This repository owns host and service configuration. VM templates and OpenTofu
+provisioning live in separate repositories; shared human and CI operator commands
+belong in `platform-tools`. Bastion runtime commands come from the
+`platform-k8s-bastion` submodule rather than copies in Ansible roles.
 
-It configures already-provisioned hosts. It does not create VMs, build Proxmox templates, manage OpenTofu state, or store secrets.
-
-Only safe examples belong here. Real inventories, host variables, access policies, CA certificates, and non-secret environment-specific configuration belong in `../platform-private/config/`; real kubeconfigs, tokens, passwords, private keys, and other secrets belong outside Git.
-
-Working plans, test plans, incident notes, and environment-specific operational
-notes belong in `../platform-plans/config/plans/`, not in this public repo.
+Only safe examples belong here. Keep real inventories, host/group variables,
+access policies, CA files, and non-secret environment configuration in
+`../platform-private/config/`. Keep kubeconfigs, tokens, passwords, and private
+keys outside Git. Working plans and environment-specific operational notes belong
+in `../platform-plans/config/plans/`.
 
 ## Requirements
 
-- Podman for the development/tooling container.
-- Git and Make for local setup and helper targets.
-- Ansible and lint tooling installed inside `Containerfile.dev` from
-  `requirements-dev.txt` and `requirements.yml`.
+- Podman, Git, and Make on the controller workstation.
+- Ansible and lint tooling supplied by `Containerfile.dev`,
+  `requirements-dev.txt`, and `requirements.yml`; project Python packages stay
+  inside the container.
 - The `vendor/platform-k8s-bastion` submodule for default bastion runtime input.
-- `platform-tools` v4.0.0 or newer for operator-side PKI exchange commands. Pin
-  the exact target-installed `platform-pki` SHA-256 in private inventory.
-- SSH access, host keys, private inventory, and secret files for real runs.
+- For real runs: private inventory, authenticated SSH host keys, SSH access,
+  secret files, and the [managed-host prerequisites](docs/development.md#managed-host-requirements).
+- For PKI exchange: `platform-tools` v4.0.0 or newer and the exact target-installed
+  `platform-pki` SHA-256 pinned in private inventory.
 
 ## Quick Start
 
-Clone submodules and build the local development container:
+Initialize the runtime submodule and build the tooling container:
 
 ```bash
 git submodule update --init --recursive
@@ -54,235 +54,142 @@ make deps
 make help
 ```
 
-Open an interactive toolbox shell when you need to run Ansible or lint tooling
-without installing those dependencies on the host:
+Run local checks through the container-backed Make targets:
 
 ```bash
-make shell
-```
-
-For real runs, source the matching private environment file and run a helper
-script. `homelab` is one example environment name; use the environment name
-from your private configuration layout.
-
-```bash
-source ../platform-private/config/homelab.ansible.env
-./scripts/run-homelab.sh
-```
-
-The helper scripts also accept explicit inventory overrides when needed.
-
-For the full environment bring-up order, SSH key handoff, secrets layout, and service smoke commands, see [Operator runbook](docs/operator-runbook.md).
-
-## Common Commands
-
-RKE2 environments using static service addresses can configure
-[pod DNS and Helm repository CA trust](docs/rke2-operations.md#static-dns-for-pods)
-through private inventory and the existing guarded convergence workflow.
-
-OpenBao's approved single-owner HAProxy fault, restoration, and fixed GitLab
-recovery workflow are documented in [OpenBao Failover and Recovery](docs/openbao-failover.md).
-Pre-fault plan rejections report a safe reason code while keeping plan evidence private.
-
-```bash
-make help
-make syntax ENV=dev
-make check ENV=dev
-make lint
 make yamllint
+make lint
 make test
-make test-parallel
-make verify
-make verify-parallel
-make syntax-openbao-observers ENV=dev
-make deploy-openbao-observers ENV=dev
-make smoke-openbao-observers ENV=dev
-make deploy-bootstrap-token-issuer-staging ENV=dev LIMIT=k8s-bastion-01 STAGING_MODE=preflight
-make smoke-firewalld ENV=dev
-make smoke-k8s-bastion ENV=dev
-make storage-test-preflight ENV=config-test LIMIT=storage-volume-test-01
 ```
 
-Most Make targets accept `ENV`, `PLAYBOOK`, `LIMIT`, and `EXTRA_ARGS`. Real
-runs require the matching private environment file and inventory.
+Use `make shell` for an interactive toolbox. For an existing private environment,
+the Make targets source its environment file **inside the container**:
 
-Managed-host preparation includes a `rocky`-only non-TTY sudo exception and a
-detached sudo check. The helper can upgrade its exact previous policy on an
-approved rerun; see
-[Non-TTY Sudo](docs/ansible-host-bootstrap.md#non-tty-sudo-and-existing-prepared-hosts).
+```bash
+make syntax ENV=dev
+```
 
-### RKE2 Bootstrap
+This requires `../platform-private/config/dev.ansible.env` and the matching
+private inventory; `dev` is an example environment name. Follow the
+[private workflow](docs/private-workflow.md) and
+[operator runbook](docs/operator-runbook.md) before selecting a service check or
+apply. Generic targets accept `ENV`, `PLAYBOOK`, `LIMIT`, and `EXTRA_ARGS`; guarded
+operational routes have narrower contracts. Direct helper scripts that invoke
+Ansible must also run through `./scripts/in-container` or inside `make shell`.
 
-RKE2 bootstrap plan and apply first require pristine nodes and strict node-side
-HTTPS checks of the pinned RPM key and explicit registry mirror APIs, before
-host configuration changes. Required CA trust must be preinstalled. See
-[Bootstrap Source Preflight](docs/rke2-operations.md#bootstrap-source-preflight)
-for the checks and their endpoint-only qualification boundary.
-Follow [Prepare Node HTTPS Trust](docs/rke2-operations.md#prepare-node-https-trust)
-for the separate controller, node, registry and endpoint-chain responsibilities.
-Use the standalone [Rocky CA trust helper](docs/rocky-ca-trust.md) for separately
-approved offline root/intermediate installation before that preflight.
+## Verification
 
-Prepare inventory-declared managed-host aliases separately with the fixed
-`rke2-host-aliases-plan` and `rke2-host-aliases-apply` routes. They select the
-complete RKE2 cluster and run only common host-alias tasks after all-node guards.
-Apply finishes with an unchanged check and node-side NSS verification. See
-[RKE2 Host Aliases](docs/rke2-host-aliases.md) for the transport-only JSON contract
-and private CI approval boundary.
+| Command | Purpose |
+| --- | --- |
+| `make help` | List targets and supported variables. |
+| `make syntax ENV=dev` | Syntax-check the selected playbook with private inventory. |
+| `make lint` / `make yamllint` | Container-backed Ansible and YAML lint checks. |
+| `make test` | Complete authoritative **serial** pytest suite. |
+| `make verify` | Authoritative serial merge check: toolchain, container boundary, wrapper, lint, YAML, and tests. |
+| `make test-parallel` / `make verify-parallel` | Supplemental faster feedback; `TEST_WORKERS` defaults to 2. |
 
-RKE2 repository metadata-signature verification defaults to enabled. The boolean
-`rke2_rpm_repo_gpgcheck` permits an explicit private-inventory exception for both
-RKE2 repositories while keeping package signatures, key pins and HTTPS checks.
-See [RPM Repository Trust](docs/rke2-operations.md#rpm-repository-trust).
+Local lint/default tests use a sanitized container profile without private
+configuration, secrets, SSH agents, or container-engine sockets. Parallel checks
+do not replace serial `make verify`; offline checks do not establish live service
+qualification. See [Development](docs/development.md) and [Testing](docs/testing.md)
+for focused suites and opt-in integration checks.
 
-### RKE2 Storage Operations
+## Operational Entry Points
 
-The fixed `storage-check` and `storage-apply` routes accept one literal RKE2 storage
-host per call. Apply first validates transport-only controller JSON and mounted
-inventory declarations, then runs a fresh check, the existing storage role, a
-second real apply requiring zero changes, and read-only mounted-state verification. Private
-CI owns per-node manual confirmation; failed or interrupted runs require review
-before another attempt. See [Storage Operations](docs/storage-check.md).
+Use the linked procedures for approvals, exact scope, and recovery. Managed-host
+preparation, including the `rocky`-only non-TTY sudo exception, is covered by
+[Ansible Host Bootstrap](docs/ansible-host-bootstrap.md).
 
-### OpenBao Acceptance
+### RKE2
 
-Standalone dev OpenBao acceptance does not depend on the monitoring stack or
-OpenBao-hosted observers. Production monitoring is still required. Keep traffic
-limited to acceptance checks until named administrator access, local audit
-rotation, and recovery gates have been completed and normal onboarding has been
-separately authorized. These workflows are not evidence of live qualification.
+- **Bootstrap:** both plan and apply require the shared all-node pristine/source
+  preflight before host mutation: strict node-side HTTPS, RPM signing-key hash,
+  and explicit registry API probes. Required node trust must already be installed.
+  API success does not qualify image pulls, token exchange, RPM dependencies, or
+  Helm jobs. Follow [source preflight](docs/rke2-operations.md#bootstrap-source-preflight)
+  and the separately approved [Rocky CA trust procedure](docs/rocky-ca-trust.md).
+- **Host aliases:** prepare the complete cluster separately through the fixed
+  [aliases-only plan/apply routes](docs/rke2-host-aliases.md), with all-node guards,
+  a zero-change post-check, and node NSS verification. Bootstrap does not repair
+  aliases. [Pod DNS and Helm repository trust](docs/rke2-operations.md#static-dns-for-pods)
+  are separate private-inventory selections.
+- **Convergence:** use the fixed [RKE2 operations](docs/rke2-operations.md) with
+  core-health gates, serial convergence, enabled add-on smoke, and zero-change
+  post-checks. [RPM metadata-signature checking](docs/rke2-operations.md#rpm-repository-trust)
+  defaults on; any explicit private boolean exception retains package signatures,
+  key pins, and HTTPS.
+- **Storage:** [storage-check/apply](docs/storage-check.md) select one literal
+  RKE2 storage host. Apply requires a fresh check, the storage role, a second real
+  apply with zero changes, and read-only mounted-state verification. Private CI
+  owns per-node confirmation; interruption is not rollback.
 
-DNS infrastructure is optional; the service hostname and its certificate DNS SAN
-identity remain required. See [OpenBao Without DNS](docs/private-workflow.md#openbao-without-dns)
-for private controller, Docker job, and managed-host mappings.
+See the [in-cluster Runner](roles/rke2_gitlab_runner/README.md) for private
+Helm repository and checkout-origin overrides, and the docs index for
+[host Runner offline preload](docs/README.md#services).
 
-HAProxy and Keepalived require a reviewed firewall lifecycle and policy, not
-universal firewalld enablement. Explicit `firewalld_service_enabled: false` with
-`firewalld_service_state: stopped` requires actual inactive/boot-disabled state
-and offline permanent configuration/rule validation; `true` with `started`
-requires actual active/boot-enabled state and correct runtime and permanent rules.
-Keep `*_firewalld_manage: true` in either mode. With firewalld off, there is no
-host-firewall enforcement from firewalld and its configured allowlists are not
-operative; this is not equivalent security or production qualification. The mode
-must match reviewed private commits and plan evidence. Enabling enforcement, if
-chosen, needs separate approval. See the
-[firewall contract](docs/firewalld.md#haproxy-and-keepalived-lifecycle).
+### OpenBao
 
-`make smoke-openbao ENV=dev LIMIT=openbao` checks strict direct-node status and
-all three HAProxy paths only, for the pre-VIP phase. The `platform-tools` facade
-`platform-openbao-edge` provides `haproxy-plan`, `haproxy-activate`,
-`keepalived-plan`, `keepalived-activate`, `smoke`, and `vip-smoke` through the same
-fixed core. The four plan/activation commands require `--plan` alongside
-`--source`, `--inventory`, and `--controller-vars`. Operator activation uses exact
-TTY approval; CI uses the matching same-pipeline protected manual job without a
-TTY. Existing direct interactive Make activation targets remain available.
+**Never run ordinary `playbooks/openbao.yml` staging against an active or
+initialized cluster**, including as an idempotency check. Use the fixed active
+maintenance and acceptance procedures.
 
-HAProxy activation starts the verified staged service without package,
-configuration, SELinux, or firewall reconvergence. Its built-in-only activation
-entry point rechecks staged SELinux client, metrics, and backend port labels and
-firewall policy before startup; ordinary staging retains its declared collection
-dependencies.
-Staging installs a separate public CA copy under `/etc/haproxy`; activation checks
-its identity, exact configuration, and SELinux service-domain access without
-relabeling OpenBao's private container tree. Path qualification allows ten bounded
-strict TLS health requests and requires HTTP 200. Rollback inspects HAProxy after
-stopping/disabling it, clears a failed latch only when present, then verifies exact
-inactive/disabled state before releasing its guard.
-HAProxy plans also require the target-observed SSH peer to be admitted by the
-client allowlist, bind that stable observation, and recheck it before startup.
-Use direct SSH and stable controller egress; this early check does not replace
-the strict HTTPS check from the actual operator or CI job environment.
+- [Edge plans](docs/operator-runbook.md#openbao-edge-plans) bind the complete
+  three-host cluster, clean committed source/private inventory, live evidence,
+  and execution lane for 1800 seconds. Commit readiness as exactly `true` before
+  planning. HAProxy and Keepalived activation each require separate exact TTY
+  approval or a matching same-pipeline protected manual CI job. Activation
+  verifies staged configuration, CA, SELinux, and firewall state without repair.
+  Operator plans stay outside Git in owner-only storage; CI uses restricted artifacts.
+- Preserve the reviewed [firewall lifecycle and policy](docs/firewalld.md#haproxy-and-keepalived-lifecycle).
+  Disabled firewalld still requires permanent-rule validation but provides no
+  host-firewall enforcement; it is not equivalent security. Enabling enforcement
+  requires separate approval.
+- Follow [VIP acceptance](docs/operator-runbook.md#openbao-vip-acceptance) for
+  network, peer VRRP, anti-spoofing, and duplicate-address prerequisites.
+  `smoke-openbao` is direct-node/all-three-HAProxy **pre-VIP** smoke.
+  `smoke-openbao-vip` requires successful activation and a reviewed
+  [active desired-state handoff](docs/operator-runbook.md#required-desired-state-handoff-before-vip-smoke),
+  then verifies service state, exact single ownership, strict TLS, resolution, and
+  cluster identity. CI needs a new pipeline on the pushed handoff revision.
+  [DNS infrastructure is optional](docs/private-workflow.md#openbao-without-dns);
+  service-hostname certificate identity remains required.
+- Exclude concurrent lifecycle work. Plans are consumed before final preflight;
+  retained guards require [reviewed recovery](docs/operator-runbook.md#openbao-edge-guard-recovery),
+  never consumed-record deletion or plan reuse. Activation rollback is limited to
+  the selected edge service; unknown or unreachable hosts remain unverified.
+  The separately approved
+  [HAProxy failover/restore check](docs/openbao-failover.md) has an explicit
+  retained-record recovery route; a failed proof remains failed after restoration.
 
-Plans expire after 1800 seconds and bind clean committed source, private
-inventory, environment, lane, and live evidence, plus CI image/project/pipeline
-and plan-job identity. Commit approved readiness as exactly true on all hosts
-before planning an activation; setting it after a read-only readiness-false plan
-invalidates that plan. Operator plans stay outside Git in an existing owner-only
-`0700` directory, published as new non-overwritten `0600` files; CI uses a fixed
-restricted artifact. Target guards consume plans before final preflight and
-exclude only supported HAProxy/Keepalived activations, not other lifecycle work.
-Do not run other lifecycle operations concurrently. Retained guards require
-reviewed recovery; never delete consumed records or reuse a consumed plan.
+Standalone dev acceptance has no monitoring-stack dependency; production
+monitoring remains required. Keep traffic acceptance-only until administrator,
+audit-rotation, and recovery gates pass and normal onboarding is separately
+authorized. The [standalone endpoint release](docs/operator-runbook.md#standalone-dev-endpoint-release)
+closes with activation, handoff, VIP smoke, a separately approved HAProxy-owner
+failover/restore check, and named-administrator handoff. It does not establish
+production/DR readiness or RKE2 workload secret integration.
 
-The separately approved Keepalived activation starts the staged VIP;
-`make smoke-openbao-vip ENV=dev LIMIT=openbao` adds active Keepalived desired and
-actual state, repeated exact single-owner checks on the configured interface,
-strict service-hostname TLS through the forced VIP and ordinary service-name
-resolution (DNS or static host mapping), and cluster identity checks. Run VIP
-smoke only after successful activation and the reviewed active desired-state
-handoff. For CI, commit and push that handoff, then create a new smoke pipeline
-on the new private revision; retrying a job from the activation revision retains
-the old desired state. See the [required handoff values](docs/operator-runbook.md#required-desired-state-handoff-before-vip-smoke).
-Both smoke targets require the complete three-host cluster.
-
-Keepalived stages its tracking script under `/usr/libexec/keepalived` with policy
-default SELinux contexts. A built-in-only read-only preflight binds the actual
-script label and prospective domains into the plan, checks both transitions'
-execute/transition/entrypoint permissions, and requires same-domain dependency
-execution with `execute` and `execute_no_trans`. UID-only readiness is not proof
-of service-domain execution; see
-the [Keepalived role](roles/keepalived_vip/README.md#activation-entry-points).
-
-Passing VIP smoke establishes steady-state endpoint health, not a failure test or
-administrator-access handoff. The [standalone dev endpoint release scope](docs/operator-runbook.md#standalone-dev-endpoint-release)
-keeps those final checks separate from backup/restore and production acceptance.
-RKE2 and OpenBao are independently operated services; qualifying both does not
-configure or qualify Kubernetes workloads consuming secrets from OpenBao.
-
-Follow the [OpenBao VIP acceptance procedure](docs/operator-runbook.md#openbao-vip-acceptance)
-for network prerequisites, per-activation approval, backup-priority-first startup,
-Keepalived-only rollback, and the post-success reviewed private desired-state
-commit. Neither operator nor CI activation automatically mutates or pushes private
-source; CI qualification, rollback, and reporting remain in CI. See
-[OpenBao Edge Plans](docs/operator-runbook.md#openbao-edge-plans) for the two lanes
-and [Guard Recovery](docs/operator-runbook.md#openbao-edge-guard-recovery).
-Never run the ordinary `playbooks/openbao.yml` staging playbook against an active
-or initialized cluster, including as a second apply after activation.
-
-## Platform Project
+## Repository Family
 
 | Repository | Purpose |
-|---|---|
-| [`platform-template-builder`](https://codeberg.org/rch/platform-template-builder) | Builds reusable Proxmox VM templates from cloud images. |
-| [`platform-infra`](https://codeberg.org/rch/platform-infra) | Provisions platform infrastructure with OpenTofu. |
-| [`platform-config`](https://codeberg.org/rch/platform-config) | Configures operating systems and services with Ansible. |
-| [`platform-k8s-bastion`](https://codeberg.org/rch/platform-k8s-bastion) | Contains Kubernetes bastion tooling and operational helpers. |
-| [`platform-docs`](https://codeberg.org/rch/platform-docs) | Contains architecture notes, runbooks, diagrams, and operational documentation. |
-| [`platform-tools`](https://codeberg.org/rch/platform-tools) | Provides shared operator tools, including host-local PKI exchange commands. |
-
-Typical workflow:
-
-```text
-platform-template-builder
-  -> platform-infra
-  -> platform-config
-  -> platform-k8s-bastion
-
-platform-tools provides shared human and CI operator commands.
-platform-docs documents the design and operations across all repositories.
-```
+| --- | --- |
+| [`platform-template-builder`](https://codeberg.org/rch/platform-template-builder) | Builds reusable Proxmox VM templates. |
+| [`platform-infra`](https://codeberg.org/rch/platform-infra) | Provisions infrastructure with OpenTofu. |
+| [`platform-config`](https://codeberg.org/rch/platform-config) | Configures hosts and services with Ansible. |
+| [`platform-k8s-bastion`](https://codeberg.org/rch/platform-k8s-bastion) | Owns bastion runtime commands and operator tools. |
+| [`platform-tools`](https://codeberg.org/rch/platform-tools) | Provides shared human and CI tools, including PKI exchange. |
+| `platform-ci` | Composes public diagnostics, acceptance, and guarded CI operations. |
+| `platform-private` | Holds real environment bindings and non-secret configuration. |
+| `platform-plans` | Holds working plans and environment-specific operational notes. |
+| [`platform-docs`](https://codeberg.org/rch/platform-docs) | Documents architecture and operations across repositories. |
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
-- [Operator runbook](docs/operator-runbook.md)
-- [Ansible host bootstrap](docs/ansible-host-bootstrap.md)
-- [Same-workstation PKI layout](docs/pki-local-layout.md)
-- [Private workflow](docs/private-workflow.md)
-- [Kubernetes bastion and issuer staging validation](docs/k8s-bastion.md)
-- [Storage volume acceptance fixture](docs/storage-volume-test.md)
-- [RKE2 operations](docs/rke2-operations.md), including the
-  [in-cluster Runner](roles/rke2_gitlab_runner/README.md) with a private
-  HTTPS Helm repository override and unchanged upstream default
-  (an optional HTTPS clone origin preserves checkout through approved proxies)
-- [RKE2 storage checks and single-node apply](docs/storage-check.md)
-- [RKE2 aliases-only preparation](docs/rke2-host-aliases.md)
-- [GitLab Runner offline preload](roles/gitlab_runner/README.md#temporary-offline-preload):
-  temporary dedicated trusted-runner `if-not-present` override; the default and
-  self-bootstrap remain `always`.
-- [Development](docs/development.md)
+The [documentation index](docs/README.md) covers setup, service guides, PKI,
+storage, RKE2, OpenBao, migrations, and development. Start with the
+[operator runbook](docs/operator-runbook.md) for a rollout or the
+[development guide](docs/development.md) for repository work.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for
-details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
