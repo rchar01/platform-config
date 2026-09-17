@@ -1,0 +1,13 @@
+---
+- name: Read-only RKE2 deployment Runner smoke
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: true
+  tasks:
+    - name: Inspect deployment Runners using only role smoke tasks
+      ansible.builtin.include_role:
+        name: rke2_gitlab_deployment_runners
+        tasks_from: smoke
+        defaults_from: unused

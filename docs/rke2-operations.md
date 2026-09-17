@@ -15,9 +15,10 @@ activation routes additionally require an absolute `--plan` path.
 | `rke2-host-aliases-plan` | Coherent full-cluster inventory, ping, and aliases-only all-node guarded check with diff; predicted changes are valid plan output. |
 | `rke2-host-aliases-apply` | The same fresh plan, only common alias tasks, zero-change post-check, and read-only actual NSS resolution verification on every node. |
 | `rke2-bootstrap-plan` | Inventory validation, `ansible.builtin.ping` for `rke2_cluster`, pristine-node and node-side source preflight, then fixed base RKE2 check mode with diff. |
-| `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2, kube-vip, and GitLab Runner check mode with diff. |
-| `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node and node-side source preflight, serial native-RPM installation, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
-| `rke2-deploy` | Local inventory resolution for summary initialization, core-health and token-equivalence preflights, serial RKE2 convergence, kube-vip and GitLab Runner convergence, all three smoke checks, then all three post-smoke checks. |
+| `rke2-converge-plan` | Inventory validation, cluster ping, core-health and token-equivalence preflights, then fixed base RKE2, kube-vip, legacy Runner and optional deployment-runners check mode with diff. |
+| `rke2-bootstrap` | Inventory validation, cluster ping, pristine-node/source preflight, serial native-RPM installation, kube-vip and both Runner role entry points, followed by all four smoke and post-check phases. |
+| `rke2-deploy` | Inventory resolution, core-health/token-equivalence preflights, serial RKE2 convergence, kube-vip and both Runner role entry points, followed by all four smoke and post-check phases. |
+| `rke2-deployment-runners-smoke` | Validate/snapshot transport-only controller JSON, resolve coherent full-cluster inventory, ping all cluster hosts, then run only the deployment-runner smoke against all servers. No apply or arbitrary selector. |
 | `openbao-status` | Inventory validation, `ansible.builtin.ping` for `openbao`, then the strict read-only OpenBao status playbook. |
 | `openbao-restart-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Predicted changes fail the plan. |
 | `openbao-converge-plan` | Inventory validation, exact OpenBao cluster ping, strict status, then the active OpenBao playbook in check mode with diff. Reviewed same-version configuration changes are valid plan output. |
@@ -37,11 +38,13 @@ without disabling inventory-authorized passwordless privilege escalation.
 
 Each mutating RKE2 bootstrap/convergence route performs exactly one live base
 apply and one live apply for each enabled add-on. After all smoke suites pass, it runs the base, kube-vip,
-and GitLab Runner playbooks with `--check --diff`. Every applicable post-check
+and both GitLab Runner playbooks with `--check --diff`. Every applicable post-check
 host must report `changed=0`, `failed=0`, and `unreachable=0`; otherwise the
 structured summary and operation fail. This is predictive post-apply
 verification, not a second live apply. A disabled GitLab Runner role skips its
-management without uninstalling an existing release.
+management without uninstalling an existing release. The deployment-runner list
+likewise defaults empty and performs no credential reads or Kubernetes inspection
+while empty; omitting entries is not permission revocation or release removal.
 
 The separate [aliases-only preparation routes](rke2-host-aliases.md) require
 transport-only controller JSON and full-cluster guards independently of storage
@@ -56,8 +59,9 @@ An RKE2 host receives role `N/A` only when selected inventory membership cannot
 establish exactly one of `server` or `agent`; that unresolved role makes the
 summary and otherwise successful operation fail closed.
 Ordinary plan and apply phases may report changes. The `rke2-post-check`,
-`kube-vip-post-check`, and `rke2-gitlab-runner-post-check` phases fail when they
-predict a change. Both add-ons remain server-orchestrated and render `N/A` for
+`kube-vip-post-check`, `rke2-gitlab-runner-post-check` and
+`rke2-deployment-runners-post-check` phases fail when they predict a change.
+All add-ons remain server-orchestrated and render `N/A` for
 agents.
 The `openbao-restart-check` and `openbao-post-check` phases likewise require
 `changed=0`; the `openbao-converge-check` phase permits reviewed changes. Every
@@ -493,6 +497,56 @@ Rocky minor release remains an independent OS-repository policy. Repository
 metadata and runtime container images remain downstream release-trust
 boundaries. Immutable snapshots or internally qualified mirrors are required
 where signed but mutable upstream repository content is insufficient.
+
+## Deployment Runner Acceptance Foundation
+
+The additive [deployment-runner role](../roles/rke2_gitlab_deployment_runners/README.md)
+installs exactly two profiles when explicitly configured. Both have projected job
+credentials, but their initial authority is limited to fixed acceptance resources:
+an apps ConfigMap or a platform-created disposable Namespace and reserved CRD.
+Kubernetes RBAC cannot restrict CREATE to specific names; the platform project is
+therefore trusted for those resource-type creation grants. General application
+manifests, Helm permissions and arbitrary cluster administration are not enabled.
+
+External Ansible owns runner namespaces, manager/job accounts, RBAC, NetworkPolicies,
+native admission, CA/token Secrets and static HelmCharts. GitLab project/Runner
+availability remains separately reviewed: initially paused or acceptance-only,
+with unique protected tags and no unrelated operational credentials in canary
+projects. Additive migration leaves the legacy Runner installed until a separate
+drain/retirement decision.
+
+Fixed phases are `rke2-deployment-runners-plan`, `-apply`, `-smoke` and
+`-post-check`, placed immediately after the corresponding legacy Runner phases.
+The summary requires complete successful per-server evidence and stops later
+commands after missing/failed/ignored/rescued new-phase results. The last phase
+is predictive `--check --diff`, not a second real apply.
+
+The standalone fixed route can be called from an approved external controller:
+
+```bash
+./scripts/platform-config-operation rke2-deployment-runners-smoke \
+  --inventory /absolute/private/inventories/dev/hosts.yml \
+  --controller-vars /absolute/private/controller-vars.json
+```
+
+The controller JSON has the existing transport-only schema and is snapshotted
+before inventory execution; a supplied SSH-key map must cover the full cluster.
+Smoke reads no Runner token files and does not invoke role convergence. It checks
+native admission using non-persisting server dry runs, exact resources/policy,
+Helm completion and rollout, a bounded stable-manager sample, and positive and
+negative effective RBAC probes. These are cluster-side checks, not proof of a
+GitLab job. Real CI canaries use their actual projected identity and independently
+verify checkout, artifact exchange, mutation, denial and owned cleanup.
+
+For external CI, see [RKE2 component custody](../../platform-ci/docs/rke2-operations.md).
+Its two optional protected File variables must be supplied as a distinct pair:
+`PLATFORM_CI_RKE2_APPS_RUNNER_TOKEN` and
+`PLATFORM_CI_RKE2_PLATFORM_RUNNER_TOKEN`. They stage into fixed ephemeral
+`rke2/<environment>/gitlab-apps-runner-token` and `gitlab-platform-runner-token`
+paths under `PLATFORM_INFRASTRUCTURE_CONFIG_DIR`; tokens never enter controller
+JSON or static Helm values. The existing legacy token path is unchanged.
+The component does not enable the role or select private CA/image/egress values.
+No new root CI selector or standalone smoke UI job is added by this contract.
 
 ## Smoke Boundaries
 

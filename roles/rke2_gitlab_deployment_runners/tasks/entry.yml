@@ -1,0 +1,58 @@
+---
+# Resolve into a private namespace: standalone smoke never loads defaults over inventory.
+- name: Resolve deployment Runner inputs
+  ansible.builtin.set_fact:
+    _deployment_runner_config: >-
+      {%- set resolved = {} -%}
+      {%- for name, value in (lookup('ansible.builtin.file', role_path ~ '/defaults/main.yml') | from_yaml).items() -%}
+      {%- set ignored = resolved.update({name: query('ansible.builtin.vars', name, default=value) | first}) -%}
+      {%- endfor -%}
+      {{ resolved }}
+
+- name: Validate deployment Runner list type
+  ansible.builtin.assert:
+    that: _deployment_runner_config.rke2_gitlab_deployment_runners | type_debug == 'list'
+
+- name: Manage explicitly selected deployment Runners
+  when: _deployment_runner_config.rke2_gitlab_deployment_runners | length > 0
+  vars:
+    _dr: >-
+      {{ dict(_deployment_runner_config | dict2items | rejectattr('key', 'equalto', 'rke2_gitlab_deployment_runners')
+         | map(attribute='key') | map('regex_replace', '^rke2_gitlab_deployment_runner_', '')
+         | zip(_deployment_runner_config | dict2items | rejectattr('key', 'equalto', 'rke2_gitlab_deployment_runners')
+         | map(attribute='value'))) }}
+    _dr_instances: "{{ _deployment_runner_config.rke2_gitlab_deployment_runners }}"
+    _dr_leader: "{{ groups.get('rke2_servers', []) | first | default('') }}"
+    _dr_kubectl: [/var/lib/rancher/rke2/bin/kubectl, --kubeconfig, /etc/rancher/rke2/rke2.yaml, --request-timeout=30s]
+    _dr_manifest_dir: /var/lib/rancher/rke2/server/manifests
+  block:
+    - name: Validate deployment Runner contract
+      ansible.builtin.import_tasks: validate.yml
+
+    - name: Guard static paths on every server before any write
+      ansible.builtin.import_tasks: paths.yml
+
+    - name: Prepare all deployment Runner desired objects
+      ansible.builtin.set_fact:
+        _dr_objects: "{{ lookup('ansible.builtin.template', 'resources.yaml.j2') | from_yaml_all | list }}"
+      when: inventory_hostname == _dr_leader
+
+    - name: Guard all live ownership before any write
+      ansible.builtin.import_tasks: ownership.yml
+      when: inventory_hostname == _dr_leader
+
+    - name: Inspect existing job pods without claiming retroactive admission
+      ansible.builtin.import_tasks: job_pods.yml
+      when: inventory_hostname == _dr_leader
+
+    - name: Converge both deployment Runners
+      ansible.builtin.import_tasks: converge.yml
+      when:
+        - inventory_hostname == _dr_leader
+        - not _deployment_runner_smoke
+
+    - name: Verify both deployment Runners without submitting jobs
+      ansible.builtin.import_tasks: verify.yml
+      when:
+        - inventory_hostname == _dr_leader
+        - _deployment_runner_smoke

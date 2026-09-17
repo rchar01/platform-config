@@ -305,8 +305,24 @@ mirror is required where that runtime trust boundary is unacceptable. Docker
 Hub pulls also resolve authentication, manifest, blob, and delivery endpoints
 dynamically. Manager and job traffic to the configured GitLab HTTPS endpoint is
 an environment-specific runtime path, not an upstream artifact fetch. The first
-deployment intentionally defines no NetworkPolicy, so network reachability must
+legacy deployment intentionally defines no NetworkPolicy, so network reachability must
 be qualified during the protected canary rollout.
+
+The optional [deployment-runner pair](../roles/rke2_gitlab_deployment_runners/README.md)
+is different: its four manager/job namespaces deny ingress and allow only fixed
+CoreDNS UDP/TCP 53 plus private exact-IPv4 TCP destinations. Select API Service
+and endpoint addresses as required by the actual CNI/DNAT path, coordinator,
+checkout/artifact endpoints and any other approved job destination explicitly.
+Normal hostname resolution and strict TLS remain required; an allowed IP does
+not qualify either. These policies do not govern node-side image pulls or Helm
+Controller jobs in `kube-system`.
+
+The new pair retains the reviewed chart/manager/helper contract above but requires
+an explicitly selected immutable tool image with `sh`, Git and kubectl 1.35.
+It has no Alpine job-image fallback or runtime package download. GitLab CA and
+optional Helm repository CA are separate exact-byte inputs with the
+`rke2_gitlab_deployment_runner_` prefix. Qualify chart, all image layers, actual
+job/helper traffic, native admission and real canaries before normal availability.
 
 ## Internal Registry Boundary
 

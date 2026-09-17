@@ -1,0 +1,5 @@
+---
+# include_role normally loads defaults/main.yml even with tasks_from: smoke.
+# Selecting this intentionally empty file prevents that implicit load; entry.yml
+# resolves main.yml into a private dictionary, with inventory taking precedence.
+{}

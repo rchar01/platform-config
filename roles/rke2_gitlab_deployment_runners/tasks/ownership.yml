@@ -1,0 +1,54 @@
+---
+- name: Read only metadata for every externally managed object
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['get', item.kind, item.metadata.name, '--ignore-not-found', '-o=jsonpath={.metadata}']
+         + (['-n', item.metadata.namespace] if item.metadata.namespace is defined else []) }}
+  loop: "{{ _dr_objects }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  register: _dr_ownership
+  changed_when: false
+  check_mode: false
+  no_log: "{{ item.kind == 'Secret' }}"
+
+- name: Reject foreign live objects before all writes
+  vars:
+    _dr_metadata: "{{ item.stdout | from_json if item.stdout else {} }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not _dr_metadata or
+        (_dr_metadata.get('labels', {}).get('app.kubernetes.io/managed-by') == 'platform-config'
+         and _dr_metadata.get('labels', {}).get('app.kubernetes.io/part-of') == 'rke2-gitlab-deployment-runners'
+         and _dr_metadata.get('labels', {}).get('app.kubernetes.io/component') == item.item.metadata.labels['app.kubernetes.io/component'])
+      - not _dr_metadata.get('deletionTimestamp')
+      - not _dr_metadata.get('ownerReferences')
+      - not _deployment_runner_smoke or _dr_metadata | length > 0
+  loop: "{{ _dr_ownership.results }}"
+  loop_control:
+    label: "{{ item.item.kind }}/{{ item.item.metadata.name }}"
+  no_log: "{{ item.item.kind == 'Secret' }}"
+
+- name: Inspect Helm-owned manager objects before any writes
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['get', item.1, 'rke2-gitlab-' ~ item.0.profile, '-n', item.0.manager_namespace,
+                       '--ignore-not-found', '-o=jsonpath={.metadata}'] }}
+  loop: "{{ _dr_instances | product(['deployment', 'configmap']) | list }}"
+  register: _dr_helm_ownership
+  check_mode: false
+  changed_when: false
+
+- name: Reject foreign manager releases
+  vars:
+    _dr_metadata: "{{ item.stdout | from_json if item.stdout else {} }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not _dr_metadata or
+        (_dr_metadata.get('labels', {}).get('app.kubernetes.io/managed-by') == 'Helm'
+         and _dr_metadata.get('annotations', {}).get('meta.helm.sh/release-name') == 'rke2-gitlab-' ~ item.item.0.profile
+         and _dr_metadata.get('annotations', {}).get('meta.helm.sh/release-namespace') == item.item.0.manager_namespace)
+      - not _dr_metadata.get('deletionTimestamp')
+  loop: "{{ _dr_helm_ownership.results }}"

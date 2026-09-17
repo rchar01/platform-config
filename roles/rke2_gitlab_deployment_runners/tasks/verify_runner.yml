@@ -1,0 +1,75 @@
+---
+- name: Read live Runner HelmChart
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', 'helmchart', _dr_release, '-n', 'kube-system', '-o=json'] }}"
+  register: _dr_live_chart
+  changed_when: false
+  check_mode: false
+
+- name: Require the exact Helm source values and selected repository CA
+  vars:
+    _dr_observed_chart: "{{ _dr_live_chart.stdout | from_json }}"
+    _dr_repo_ca: "{{ _dr_observed_chart.spec.repoCA | default('') }}"
+    _dr_expected_chart: "{{ lookup('ansible.builtin.template', 'helmchart.yaml.j2') | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_dr_observed_chart.spec | dict2items | rejectattr('key', 'equalto', 'set') | items2dict)
+        == _dr_expected_chart.spec
+      - >-
+        (_dr_repo_ca | hash('sha256') == _dr.chart_repo_ca_sha256 | lower)
+        if _dr.chart_repo_ca_src else ('repoCA' not in _dr_observed_chart.spec)
+
+- name: Read latest Helm installation Job
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', 'job', 'helm-install-' ~ _dr_release, '-n', 'kube-system', '-o=json'] }}"
+  register: _dr_helm_job
+  check_mode: false
+  changed_when: false
+
+- name: Require successful Helm installation
+  vars:
+    _dr_job: "{{ _dr_helm_job.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - _dr_job.status.conditions | selectattr('type', 'equalto', 'Complete') | selectattr('status', 'equalto', 'True') | list | length == 1
+      - _dr_job.status.conditions | selectattr('type', 'equalto', 'Failed') | selectattr('status', 'equalto', 'True') | list | length == 0
+
+- name: Require completed manager rollout
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['-n', _dr_runner.manager_namespace, 'rollout', 'status', 'deployment/' ~ _dr_release, '--timeout=300s'] }}"
+  check_mode: false
+  changed_when: false
+
+- name: Read manager Deployment and configuration
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', item, _dr_release, '-n', _dr_runner.manager_namespace, '-o=json'] }}"
+  loop: [deployment, configmap]
+  register: _dr_manager_resources
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Verify observed manager configuration
+  ansible.builtin.import_tasks: verify_manager.yml
+
+- name: Read first manager stability sample
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', 'pods', '-n', _dr_runner.manager_namespace, '-l', 'app=' ~ _dr_release, '-o=json'] }}"
+  register: _dr_pods_first
+  check_mode: false
+  changed_when: false
+
+- name: Observe a ten-second manager stability window
+  ansible.builtin.pause:
+    seconds: 10
+
+- name: Read second manager stability sample
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', 'pods', '-n', _dr_runner.manager_namespace, '-l', 'app=' ~ _dr_release, '-o=json'] }}"
+  register: _dr_pods_second
+  check_mode: false
+  changed_when: false
+
+- name: Verify the observed manager stability window
+  ansible.builtin.import_tasks: verify_manager_stability.yml

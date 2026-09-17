@@ -1,0 +1,31 @@
+---
+- name: Require deployed manager security placement and exact executor configuration
+  vars:
+    _dr_deployment: "{{ _dr_manager_resources.results[0].stdout | from_json }}"
+    _dr_pod_spec: "{{ _dr_deployment.spec.template.spec }}"
+    _dr_container: "{{ _dr_pod_spec.containers[0] }}"
+    _dr_cm: "{{ _dr_manager_resources.results[1].stdout | from_json }}"
+    _dr_values: "{{ (_dr_live_chart.stdout | from_json).spec.valuesContent | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - _dr_deployment.spec.replicas == 1
+      - _dr_deployment.status.observedGeneration == _dr_deployment.metadata.generation
+      - _dr_deployment.status.updatedReplicas == 1 and _dr_deployment.status.availableReplicas == 1
+      - _dr_pod_spec.serviceAccountName == _dr_release
+      - _dr_pod_spec.automountServiceAccountToken
+      - not _dr_pod_spec.hostNetwork | default(false)
+      - not _dr_pod_spec.hostPID | default(false)
+      - not _dr_pod_spec.hostIPC | default(false)
+      - _dr_pod_spec.volumes | selectattr('hostPath', 'defined') | list | length == 0
+      - _dr_pod_spec.containers | length == 1
+      - _dr_container.image == _dr.manager_image
+      - _dr_container.imagePullPolicy == 'Always'
+      - _dr_container.securityContext == _dr_values.securityContext
+      - _dr_container.resources == _dr_values.resources
+      - _dr_pod_spec.affinity == _dr_values.affinity
+      - >-
+        (_dr_pod_spec.volumes | selectattr('name', 'equalto', 'projected-secrets') | first)
+        .projected.sources[0].secret.name == _dr_release ~ '-token'
+      - (_dr_pod_spec.volumes | selectattr('name', 'equalto', 'custom-certs') | first).secret.secretName == _dr_release ~ '-ca'
+      - _dr_cm.data['config.template.toml'] | trim == _dr_values.runners.config | trim
+  no_log: true

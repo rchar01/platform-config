@@ -53,6 +53,12 @@ rke2_gitlab_runner_name: dev-rke2-runner-01
 # Override only in private inventory for an approved internal Helm repository.
 rke2_gitlab_runner_chart_repo: https://charts.gitlab.io
 
+# Optional additive apps/platform acceptance runners; no API access or mutation
+# while empty. See roles/rke2_gitlab_deployment_runners/README.md for the exact
+# two-profile declaration, separate namespaces, reviewed tool image and egress.
+# Keep real tokens, namespace assignments and destination addresses private.
+rke2_gitlab_deployment_runners: []
+
 rke2_registry_ca_src: "{{ lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') | dirname }}/pki/export/ansible/ca/root-ca.crt"
 rke2_registry_mirrors: "{{ {
   platform_registry_hostname: {

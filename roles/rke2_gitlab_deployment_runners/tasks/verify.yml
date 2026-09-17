@@ -1,0 +1,60 @@
+---
+- name: Verify installed authentication token separation without controller credentials
+  ansible.builtin.import_tasks: token_identity.yml
+
+- name: Read live non-secret managed resources
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['get', item.kind, item.metadata.name, '-o=json']
+         + (['-n', item.metadata.namespace] if item.metadata.namespace is defined else []) }}
+  loop: "{{ _dr_objects | rejectattr('kind', 'in', ['Secret', 'HelmChart']) | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  register: _dr_verified
+  check_mode: false
+  changed_when: false
+
+- name: Require exact policy RBAC account and namespace settings
+  vars:
+    _dr_live: "{{ item.stdout | from_json }}"
+    _dr_fields: "{{ item.item.keys() | difference(['metadata']) }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_dr_live | dict2items | selectattr('key', 'in', _dr_fields) | items2dict)
+        == (item.item | dict2items | rejectattr('key', 'equalto', 'metadata') | items2dict)
+      - _dr_live.metadata.labels | combine(item.item.metadata.labels) == _dr_live.metadata.labels
+  loop: "{{ _dr_verified.results }}"
+  loop_control:
+    label: "{{ item.item.kind }}/{{ item.item.metadata.name }}"
+
+- name: Verify native admission readiness and non-persisting Pod probes
+  ansible.builtin.import_tasks: admission.yml
+
+- name: Verify Helm rollout configuration and stable managers
+  ansible.builtin.include_tasks: verify_runner.yml
+  loop: "{{ _dr_instances }}"
+  loop_control:
+    loop_var: _dr_runner
+    label: "{{ _dr_runner.profile }}"
+  vars:
+    _dr_release: "{{ 'rke2-gitlab-' ~ _dr_runner.profile }}"
+
+- name: Build positive and negative effective authorization probes
+  ansible.builtin.set_fact:
+    _dr_probes: "{{ lookup('ansible.builtin.template', 'authorization.yaml.j2') | from_yaml }}"
+
+- name: Inspect effective manager and job authorization including inherited groups
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['auth', 'can-i', item.verb, item.resource,
+         '--as=system:serviceaccount:' ~ item.identity_namespace ~ ':' ~ item.account,
+         '--as-group=system:serviceaccounts', '--as-group=system:serviceaccounts:' ~ item.identity_namespace,
+         '--as-group=system:authenticated'] + (['-n', item.namespace] if item.namespace else []) }}
+  loop: "{{ _dr_probes }}"
+  loop_control:
+    label: "{{ item.account }}:{{ item.verb }}:{{ item.resource }}:{{ item.namespace }}"
+  register: _dr_auth
+  check_mode: false
+  changed_when: false
+  failed_when: _dr_auth.rc not in [0, 1] or _dr_auth.stdout | trim != ('yes' if item.allowed else 'no')

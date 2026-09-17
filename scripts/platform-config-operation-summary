@@ -39,6 +39,7 @@ OPERATIONS = {
         "rke2-plan",
         "kube-vip-plan",
         "rke2-gitlab-runner-plan",
+        "rke2-deployment-runners-plan",
     ),
     "rke2-bootstrap": (
         "inventory",
@@ -47,12 +48,15 @@ OPERATIONS = {
         "rke2-apply",
         "kube-vip-apply",
         "rke2-gitlab-runner-apply",
+        "rke2-deployment-runners-apply",
         "rke2-smoke",
         "kube-vip-smoke",
         "rke2-gitlab-runner-smoke",
+        "rke2-deployment-runners-smoke",
         "rke2-post-check",
         "kube-vip-post-check",
         "rke2-gitlab-runner-post-check",
+        "rke2-deployment-runners-post-check",
     ),
     "rke2-deploy": (
         "core-health",
@@ -60,13 +64,17 @@ OPERATIONS = {
         "rke2-apply",
         "kube-vip-apply",
         "rke2-gitlab-runner-apply",
+        "rke2-deployment-runners-apply",
         "rke2-smoke",
         "kube-vip-smoke",
         "rke2-gitlab-runner-smoke",
+        "rke2-deployment-runners-smoke",
         "rke2-post-check",
         "kube-vip-post-check",
         "rke2-gitlab-runner-post-check",
+        "rke2-deployment-runners-post-check",
     ),
+    "rke2-deployment-runners-smoke": ("inventory", "connectivity", "rke2-deployment-runners-smoke"),
     "openbao-status": ("inventory", "connectivity", "openbao-status"),
     "openbao-haproxy-plan": ("inventory", "edge-plan"),
     "openbao-haproxy-activate": ("inventory", "edge-activate"),
@@ -116,7 +124,9 @@ FAILOVER_RESULTS = {
 }
 FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
-EVIDENCE_GATED_OPERATIONS = ALIAS_OPERATIONS | {"storage-apply"}
+TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | {"rke2-deployment-runners-smoke"}
+EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply"}
+PREFIX_GATED_OPERATIONS = EVIDENCE_GATED_OPERATIONS | {"rke2-converge-plan", "rke2-bootstrap", "rke2-deploy"}
 UNCHANGED_PHASES = frozenset(
     {
         "failover-plan",
@@ -127,6 +137,7 @@ UNCHANGED_PHASES = frozenset(
         "rke2-post-check",
         "kube-vip-post-check",
         "rke2-gitlab-runner-post-check",
+        "rke2-deployment-runners-post-check",
         "openbao-restart-check",
         "openbao-post-check",
     }
@@ -386,7 +397,7 @@ def command_hosts(args: argparse.Namespace) -> None:
         selected = group_hosts(inventory, "rke2_cluster")
         servers = group_hosts(inventory, "rke2_servers")
         agents = group_hosts(inventory, "rke2_agents")
-        if operation in ALIAS_OPERATIONS:
+        if operation in TRANSPORT_OPERATIONS:
             if not servers or not selected or servers & agents or selected != servers | agents:
                 raise SummaryError
             if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", host) is None
@@ -479,7 +490,7 @@ def parse_records(path: Path) -> tuple[str, tuple[str, ...], dict[str, str], lis
 
 
 def applicable(role: str, phase: str) -> bool:
-    server_only = phase.startswith(("kube-vip-", "rke2-gitlab-runner-"))
+    server_only = phase.startswith(("kube-vip-", "rke2-gitlab-runner-", "rke2-deployment-runners-"))
     return not server_only or role == "server"
 
 
@@ -497,7 +508,7 @@ def command_render(args: argparse.Namespace) -> int:
     if through is not None:
         # Fixed evidence-gated routes require a complete successful prefix before
         # the next command. Ordinary render requires the complete operation.
-        if operation not in EVIDENCE_GATED_OPERATIONS or through not in phases:
+        if operation not in PREFIX_GATED_OPERATIONS or through not in phases:
             raise SummaryError
         phases = phases[:phases.index(through) + 1]
     phase_status: dict[str, int | None] = {}
@@ -541,6 +552,8 @@ def command_render(args: argparse.Namespace) -> int:
                 raise SummaryError
             if operation in EVIDENCE_GATED_OPERATIONS and host not in hosts:
                 raise SummaryError
+            if phase.startswith("rke2-deployment-runners-") and hosts.get(host) != "server":
+                raise SummaryError
             if host in hosts:
                 tasks[outcome][task].add(host)
         elif kind == "recap":
@@ -558,6 +571,8 @@ def command_render(args: argparse.Namespace) -> int:
             ):
                 raise SummaryError
             if operation in EVIDENCE_GATED_OPERATIONS and host not in hosts:
+                raise SummaryError
+            if phase.startswith("rke2-deployment-runners-") and hosts.get(host) != "server":
                 raise SummaryError
             if host in hosts:
                 key = (phase, host)
@@ -623,7 +638,8 @@ def command_render(args: argparse.Namespace) -> int:
                         recap["failures"] > 0
                         or recap["unreachable"] > 0
                         or (operation in ALIAS_OPERATIONS and recap["ok"] == 0)
-                        or (operation in EVIDENCE_GATED_OPERATIONS and (recap["ignored"] > 0 or recap["rescued"] > 0))
+                        or ((operation in EVIDENCE_GATED_OPERATIONS or phase.startswith("rke2-deployment-runners-"))
+                            and (recap["ignored"] > 0 or recap["rescued"] > 0))
                         or (phase in UNCHANGED_PHASES and recap["changed"] > 0)
                     )
                     else "PASS"
@@ -666,6 +682,8 @@ def command_render(args: argparse.Namespace) -> int:
         and args.status == 0
         and (operation not in OPENBAO_OPERATIONS or len(hosts) == 3)
         and (operation != "storage-apply" or len(hosts) == 1)
+        and (not any(phase.startswith("rke2-deployment-runners-") for phase in phases)
+             or "server" in hosts.values())
         and all(role != "N/A" for role in hosts.values())
         and all(result == "PASS" for result in host_results.values())
         and all(phase in phase_status and phase_status[phase] == 0 for phase in phases)

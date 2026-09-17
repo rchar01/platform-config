@@ -1,0 +1,68 @@
+---
+- name: Inspect fixed RKE2 manifest ancestors without following symlinks
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - /
+    - /var
+    - /var/lib
+    - /var/lib/rancher
+    - /var/lib/rancher/rke2
+    - /var/lib/rancher/rke2/server
+    - /var/lib/rancher/rke2/server/manifests
+  register: _dr_parents
+
+- name: Require root-controlled real manifest directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isdir and not item.stat.islnk
+      - item.stat.uid == 0 and item.stat.gid == 0
+      - item.stat.mode is match('^0[0-7][0145][0145]$')
+  loop: "{{ _dr_parents.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect both fixed manifest files on every server
+  ansible.builtin.stat:
+    path: "{{ _dr_manifest_dir }}/rke2-gitlab-{{ item.profile }}.yaml"
+    follow: false
+    get_checksum: false
+  loop: "{{ _dr_instances }}"
+  register: _dr_files
+
+- name: Reject unsafe files and secondary-server publications
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or inventory_hostname == _dr_leader
+      - not item.stat.exists or (item.stat.isreg and not item.stat.islnk and item.stat.nlink == 1)
+      - not item.stat.exists or (item.stat.uid == 0 and item.stat.gid == 0 and item.stat.mode == '0644')
+      - not item.stat.exists or (item.stat.size > 0 and item.stat.size <= 1048576)
+  loop: "{{ _dr_files.results }}"
+  loop_control:
+    label: "{{ item.item.profile }}"
+
+- name: Read existing static manifests only after path safety checks
+  ansible.builtin.slurp:
+    src: "{{ _dr_manifest_dir }}/rke2-gitlab-{{ item.item.profile }}.yaml"
+  loop: "{{ _dr_files.results }}"
+  when: item.stat.exists
+  register: _dr_file_contents
+
+- name: Require exact static manifest ownership before replacement
+  vars:
+    _dr_existing: "{{ item.content | b64decode | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - _dr_existing.apiVersion == 'helm.cattle.io/v1'
+      - _dr_existing.kind == 'HelmChart'
+      - _dr_existing.metadata.name == 'rke2-gitlab-' ~ item.item.item.profile
+      - _dr_existing.metadata.namespace == 'kube-system'
+      - _dr_existing.metadata.labels['app.kubernetes.io/managed-by'] == 'platform-config'
+      - _dr_existing.metadata.labels['app.kubernetes.io/part-of'] == 'rke2-gitlab-deployment-runners'
+      - _dr_existing.metadata.labels['app.kubernetes.io/component'] == item.item.item.profile
+  loop: "{{ _dr_file_contents.results }}"
+  when: not item.skipped | default(false)
+  loop_control:
+    label: "{{ item.item.item.profile }}"

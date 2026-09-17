@@ -1,0 +1,31 @@
+---
+- name: Render the fixed deployment Runner HelmChart
+  ansible.builtin.set_fact:
+    _dr_chart: "{{ lookup('ansible.builtin.template', 'helmchart.yaml.j2') | from_yaml }}"
+
+- name: Compare Ansible-owned static fields ignoring only RKE2 spec.set
+  vars:
+    _dr_prior_result: >-
+      {{ _dr_file_contents.results | selectattr('item.item.profile', 'equalto', _dr_runner.profile) | first }}
+    _dr_prior: "{{ _dr_prior_result.content | b64decode | from_yaml if not _dr_prior_result.skipped | default(false) else {} }}"
+    _dr_prior_owned: >-
+      {{ _dr_prior | combine({'spec': _dr_prior.get('spec', {}) | dict2items
+         | rejectattr('key', 'equalto', 'set') | items2dict}) if _dr_prior else {} }}
+  ansible.builtin.copy:
+    content: "{{ _dr_chart | to_nice_yaml(indent=2, width=160) }}"
+    dest: "{{ _dr_manifest_dir }}/{{ _dr_release }}.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  when: _dr_prior_owned != _dr_chart
+
+- name: Refresh existing managers after private Secret changes
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['-n', _dr_runner.manager_namespace, 'rollout', 'restart', 'deployment/' ~ _dr_release] }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - _dr_runner.profile in _dr_secret_changed
+    - >-
+      _dr_helm_ownership.results | selectattr('item.0.profile', 'equalto', _dr_runner.profile)
+      | selectattr('item.1', 'equalto', 'deployment') | map(attribute='stdout') | first | length > 0

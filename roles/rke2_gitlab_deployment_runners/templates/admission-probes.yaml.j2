@@ -1,0 +1,28 @@
+{% set security = {'allowPrivilegeEscalation': false, 'capabilities': {'drop': ['ALL']}, 'runAsNonRoot': true, 'seccompProfile': {'type': 'RuntimeDefault'}} %}
+{% set build = {'name': 'build', 'image': _dr.job_image, 'command': ['sh', '-c', 'exit 0'], 'securityContext': security} %}
+{% set helper = {'name': 'helper', 'image': _dr.helper_image, 'command': ['sh', '-c', 'exit 0'], 'securityContext': security} %}
+{% set init = {'name': 'init-permissions', 'image': _dr.helper_image, 'command': ['sh', '-c', 'exit 0'], 'securityContext': security} %}
+{% set base = {'serviceAccountName': _dr_release ~ '-job', 'automountServiceAccountToken': true, 'restartPolicy': 'Never', 'containers': [build, helper]} %}
+{% set cases = [
+  ('valid-no-init', base, ''),
+  ('valid-init-permissions', base | combine({'initContainers': [init]}), ''),
+  ('wrong-account', base | combine({'serviceAccountName': 'default'}), 'wrong service account'),
+  ('missing-helper', base | combine({'containers': [build]}), 'require only pinned build and helper'),
+  ('service', base | combine({'containers': [build, helper, helper | combine({'name': 'svc-0'})]}), 'require only pinned build and helper'),
+  ('unpinned-build', base | combine({'containers': [build | combine({'image': _dr.job_image.split('@')[0]}), helper]}), 'require only pinned build and helper'),
+  ('unpinned-helper', base | combine({'containers': [build, helper | combine({'image': _dr.helper_image.split('@')[0]})]}), 'require only pinned build and helper'),
+  ('other-init', base | combine({'initContainers': [init | combine({'name': 'init-build-uid-gid-collector'})]}), 'only the pinned init-permissions init container is allowed'),
+  ('unpinned-init', base | combine({'initContainers': [init | combine({'image': _dr.helper_image.split('@')[0]})]}), 'only the pinned init-permissions init container is allowed'),
+  ('sidecar-init', base | combine({'initContainers': [init | combine({'restartPolicy': 'Always'})]}), 'only the pinned init-permissions init container is allowed')
+] %}
+{% for name, spec, message in cases %}
+- name: {{ name | to_json }}
+  message: {{ message | to_json }}
+  pod:
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      generateName: {{ (_dr_release ~ '-admission-') | to_json }}
+      namespace: {{ _dr_runner.job_namespace | to_json }}
+    spec: {{ spec | to_json }}
+{% endfor %}

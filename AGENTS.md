@@ -53,6 +53,23 @@
 
 ## RKE2 Runner Boundary
 
+- `rke2_gitlab_deployment_runners` is a separate, empty-by-default acceptance-only
+  pair (`apps`/`platform`); preserve the legacy token-free Runner unchanged.
+  External Ansible owns all four executor namespaces, SAs, RBAC, NetworkPolicies
+  and native job Pod admission. Require full disjoint server/agent scope,
+  all-server source guards and exact live ownership before either profile writes.
+  Job tokens are projected; namespace/SA overrides and arbitrary images/services
+  remain forbidden. Native `Fail`/`Deny` admission closes Runner internal-image
+  exemptions and is qualified by policy-specific server dry runs before publish.
+  Manager authority effectively includes its own job identity; never infer
+  containment from direct manager RBAC alone. Apps has only the fixed ConfigMap
+  exercise; platform has namespace/CRD CREATE and exact-name remaining canary
+  rights. CREATE is not name-bound. Empty declarations do not revoke or uninstall.
+  Keep check-mode and standalone smoke non-persisting, with role defaults resolved
+  in a separate namespace. Use the fixed `rke2-deployment-runners-smoke` route and
+  complete per-server phase evidence; post-check must report zero changes. See
+  [Deployment Runners](roles/rke2_gitlab_deployment_runners/README.md).
+
 - Standalone kube-vip and Runner smoke must resolve optional role defaults in
   a separate namespace, with explicit inventory values taking precedence.
   Do not invoke role convergence or load defaults over inventory to obtain them.

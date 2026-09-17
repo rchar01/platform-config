@@ -1,0 +1,48 @@
+---
+- name: Inspect bounded controller source without following symlinks
+  ansible.builtin.stat:
+    path: "{{ _dr_source.src }}"
+    follow: false
+    get_checksum: false
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: _dr_source_stat
+  no_log: true
+
+- name: Require private tokens or bounded reviewed public CA files
+  ansible.builtin.assert:
+    that:
+      - _dr_source_stat.stat.exists and _dr_source_stat.stat.isreg and not _dr_source_stat.stat.islnk
+      - _dr_source_stat.stat.size > 0
+      - _dr_source_stat.stat.size <= (512 if _dr_source.token else 1048576)
+      - not _dr_source.token or _dr_source_stat.stat.mode in ['0400', '0600']
+  no_log: true
+
+- name: Read bounded controller source
+  ansible.builtin.slurp:
+    src: "{{ _dr_source.src }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  register: _dr_source_bytes
+  no_log: true
+
+- name: Validate the exact decoded bytes that will be used
+  vars:
+    _dr_content: "{{ _dr_source_bytes.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_dr_content is match('^glrt-[A-Za-z0-9_.-]+\Z') and _dr_content | length <= 512)
+        if _dr_source.token else
+        (_dr_content | length <= 1048576 and _dr_content | hash('sha256') == _dr_source.sha | lower)
+      - _dr_source.token or ('-----BEGIN CERTIFICATE-----' in _dr_content and 'PRIVATE KEY' not in _dr_content)
+  no_log: true
+
+- name: Retain validated source under private task state
+  ansible.builtin.set_fact:
+    _dr_material: "{{ _dr_material | combine({_dr_source.key: _dr_source_bytes.content | b64decode}) }}"
+  no_log: true

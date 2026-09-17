@@ -64,6 +64,9 @@ and other secrets belong outside Git.
 - [RKE2 GitLab Runner Role](../roles/rke2_gitlab_runner/README.md): Install an
   optional, namespace-scoped Kubernetes executor through the RKE2 Helm
   Controller without putting Runner credentials in the static manifest.
+- [RKE2 Deployment Runners](../roles/rke2_gitlab_deployment_runners/README.md):
+  Optional apps/platform acceptance pair with separate identities/namespaces,
+  externally owned RBAC, NetworkPolicies, native Pod admission and standalone smoke.
 - [GitLab PKI Package Exchange](pki-gitlab-package.md): Integration guidance for
   schema-2 request/response payloads, target-local token custody, and the live
   GitLab rollout gate.

@@ -1,0 +1,49 @@
+---
+- name: Render fixed positive and negative server dry-run Pods
+  ansible.builtin.set_fact:
+    _dr_admission_probes: "{{ lookup('ansible.builtin.template', 'admission-probes.yaml.j2') | from_yaml }}"
+
+- name: Require valid Pods to pass and invalid Pods to be denied by this exact policy
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['create', '--dry-run=server', '--validate=strict', '-f', '-', '-o=json',
+         '--as=system:serviceaccount:' ~ _dr_runner.manager_namespace ~ ':' ~ _dr_release,
+         '--as-group=system:serviceaccounts', '--as-group=system:serviceaccounts:' ~ _dr_runner.manager_namespace,
+         '--as-group=system:authenticated'] }}
+    stdin: "{{ item.pod | to_json }}"
+  loop: "{{ _dr_admission_probes }}"
+  loop_control:
+    label: "{{ _dr_runner.profile }}/{{ item.name }}"
+  register: _dr_admission_probe
+  check_mode: false
+  changed_when: false
+  failed_when: >-
+    (_dr_admission_probe.rc != 0) if item.message == '' else
+    (_dr_admission_probe.rc == 0 or (_dr_release ~ '-job-pods') not in _dr_admission_probe.stderr
+     or ('deployment-runner-job-pod: ' ~ item.message) not in _dr_admission_probe.stderr)
+
+# A subresource UPDATE requires an existing Pod. Never create a real probe Pod.
+# UID and resourceVersion bind this non-persisting request to the fresh snapshot.
+- name: Probe ephemeral-container UPDATE on available existing job pods without persistence
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['patch', 'pod', item.metadata.name, '-n', _dr_runner.job_namespace,
+         '--subresource=ephemeralcontainers', '--type=merge', '--dry-run=server', '-p',
+         {'metadata': {'uid': item.metadata.uid, 'resourceVersion': item.metadata.resourceVersion},
+          'spec': {'ephemeralContainers': [{'name': 'deployment-runner-admission-probe', 'image': _dr.helper_image,
+                   'command': ['sh', '-c', 'exit 0']}]}} | to_json] }}
+  loop: "{{ _dr_job_pods[_dr_runner.profile] }}"
+  register: _dr_ephemeral_probe
+  check_mode: false
+  changed_when: false
+  failed_when: >-
+    _dr_ephemeral_probe.rc == 0 or (_dr_release ~ '-job-pods') not in _dr_ephemeral_probe.stderr
+    or 'deployment-runner-job-pod: ephemeral containers are forbidden' not in _dr_ephemeral_probe.stderr
+  no_log: true
+
+- name: Report unavailable ephemeral subresource runtime evidence
+  ansible.builtin.debug:
+    msg: >-
+      {{ _dr_runner.profile }} has no existing job Pod. The exact ephemeral-container CEL rule and scope
+      were checked, but a live ephemeral subresource UPDATE dry-run was not exercised.
+  when: _dr_job_pods[_dr_runner.profile] | length == 0

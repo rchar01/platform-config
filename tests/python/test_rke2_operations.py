@@ -121,6 +121,8 @@ with summary_path.open("a") as stream:
             "task": "Post-check predicted drift",
         }, separators=(",", ":")) + "\\n")
     for index, host in enumerate(hosts):
+        if os.environ.get("PLATFORM_CONFIG_MISSING_PHASE") == phase and index == 0:
+            continue
         stream.write(json.dumps({
             "schema": 1,
             "kind": "recap",
@@ -132,8 +134,8 @@ with summary_path.open("a") as stream:
                 "failures": 1 if failure and index == 0 else 0,
                 "unreachable": 0,
                 "skipped": 0,
-                "rescued": 0,
-                "ignored": 0,
+                "rescued": int(os.environ.get("PLATFORM_CONFIG_RESCUED_PHASE") == phase),
+                "ignored": int(os.environ.get("PLATFORM_CONFIG_IGNORED_PHASE") == phase),
             },
         }, separators=(",", ":")) + "\\n")
 raise SystemExit(1 if failure else 0)
@@ -1327,6 +1329,14 @@ def test_operation_launcher_uses_fixed_commands(
         ]
         for command in commands
     ]
+    # Additive server-only phases follow the corresponding legacy Runner phase.
+    if operation in {"rke2-converge-plan", "rke2-bootstrap", "rke2-deploy"}:
+        expanded = []
+        for command in expected:
+            expanded.append(command)
+            if any(value.endswith(("/rke2-gitlab-runner.yml", "/rke2-gitlab-runner-smoke.yml")) for value in command):
+                expanded.append([value.replace("/rke2-gitlab-runner", "/rke2-gitlab-deployment-runners") for value in command])
+        expected = expanded
     assert observed == expected
 
 
@@ -1376,6 +1386,7 @@ def test_operation_launcher_hands_success_summary_to_wrapper(
     assert child_boundary_log.read_text(encoding="utf-8").splitlines() == [
         "ansible-inventory",
         "ansible",
+        "ansible-playbook",
         "ansible-playbook",
         "ansible-playbook",
         "ansible-playbook",
@@ -1454,7 +1465,7 @@ def test_openbao_launcher_enforces_preliminary_status_drift_policy(
 @pytest.mark.parametrize("operation", ["rke2-bootstrap", "rke2-deploy"])
 @pytest.mark.parametrize(
     "changed_phase",
-    ["rke2-post-check", "kube-vip-post-check", "rke2-gitlab-runner-post-check"],
+    ["rke2-post-check", "kube-vip-post-check", "rke2-gitlab-runner-post-check", "rke2-deployment-runners-post-check"],
 )
 def test_operation_launcher_fails_when_post_check_predicts_drift(
     repo_root: Path,
@@ -1502,7 +1513,7 @@ def test_operation_launcher_fails_when_post_check_predicts_drift(
 
     observed = [json.loads(line) for line in log.read_text().splitlines()]
     post_checks = [command for command in observed if "--check" in command]
-    assert len(post_checks) == 3
+    assert len(post_checks) == 4
     assert all("--diff" in command for command in post_checks)
     for playbook in (
         "playbooks/rke2.yml",

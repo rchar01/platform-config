@@ -135,13 +135,14 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
         "rke2-plan",
         "kube-vip-plan",
         "rke2-gitlab-runner-plan",
+        "rke2-deployment-runners-plan",
     )
     for phase in phases:
         _append(events, *_phase(phase))
         if phase == "inventory":
             continue
         _append(events, _recap(phase, "server-a", changed=1 if phase == "rke2-plan" else 0))
-        if not phase.startswith(("kube-vip-", "rke2-gitlab-runner-")):
+        if not phase.startswith(("kube-vip-", "rke2-gitlab-runner-", "rke2-deployment-runners-")):
             _append(events, _recap(phase, "agent-b", rescued=1 if phase == "core-health" else 0))
     _append(
         events,
@@ -226,6 +227,7 @@ def test_storage_check_cannot_request_partial_summary(repo_root, isolated_test_d
         ("rke2-post-check", "agent-b"),
         ("kube-vip-post-check", "server-a"),
         ("rke2-gitlab-runner-post-check", "server-a"),
+        ("rke2-deployment-runners-post-check", "server-a"),
     ],
 )
 def test_summary_requires_post_checks_to_predict_no_changes(
@@ -247,12 +249,15 @@ def test_summary_requires_post_checks_to_predict_no_changes(
         "rke2-apply",
         "kube-vip-apply",
         "rke2-gitlab-runner-apply",
+        "rke2-deployment-runners-apply",
         "rke2-smoke",
         "kube-vip-smoke",
         "rke2-gitlab-runner-smoke",
+        "rke2-deployment-runners-smoke",
         "rke2-post-check",
         "kube-vip-post-check",
         "rke2-gitlab-runner-post-check",
+        "rke2-deployment-runners-post-check",
     )
     for phase in phases:
         _append(events, *_phase(phase))
@@ -260,7 +265,7 @@ def test_summary_requires_post_checks_to_predict_no_changes(
             phase == changed_phase and changed_host == "server-a"
         )
         _append(events, _recap(phase, "server-a", changed=int(server_changed)))
-        if not phase.startswith(("kube-vip-", "rke2-gitlab-runner-")):
+        if not phase.startswith(("kube-vip-", "rke2-gitlab-runner-", "rke2-deployment-runners-")):
             agent_changed = phase == "rke2-apply" or (
                 phase == changed_phase and changed_host == "agent-b"
             )

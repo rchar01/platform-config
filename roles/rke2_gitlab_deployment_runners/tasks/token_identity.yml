@@ -1,0 +1,50 @@
+---
+- name: Initialize private authentication identity observations
+  ansible.builtin.set_fact:
+    _dr_identity_tokens: {}
+  no_log: true
+
+- name: Select reviewed controller token values during convergence
+  ansible.builtin.set_fact:
+    _dr_identity_tokens:
+      apps: "{{ _dr_material.apps }}"
+      platform: "{{ _dr_material.platform }}"
+  when: not _deployment_runner_smoke
+  no_log: true
+
+- name: Inspect only the two installed deployment authentication Secrets during smoke
+  ansible.builtin.include_tasks: token_secret_read.yml
+  vars:
+    _dr_token_key: "{{ item.profile }}"
+    _dr_token_namespace: "{{ item.manager_namespace }}"
+    _dr_token_name: "{{ 'rke2-gitlab-' ~ item.profile ~ '-token' }}"
+    _dr_token_optional: false
+  loop: "{{ _dr_instances }}"
+  when: _deployment_runner_smoke
+  no_log: true
+
+- name: Require two distinct canonical nonempty deployment token values
+  ansible.builtin.assert:
+    that:
+      - _dr_identity_tokens.apps is string and _dr_identity_tokens.platform is string
+      - _dr_identity_tokens.apps is match('^glrt-[A-Za-z0-9_.-]+\Z') and _dr_identity_tokens.apps | length <= 512
+      - _dr_identity_tokens.platform is match('^glrt-[A-Za-z0-9_.-]+\Z') and _dr_identity_tokens.platform | length <= 512
+      - _dr_identity_tokens.apps != _dr_identity_tokens.platform
+    fail_msg: Deployment Runner authentication token values must be canonical, nonempty and distinct.
+  no_log: true
+
+- name: Inspect only the fixed installed legacy authentication Secret
+  ansible.builtin.include_tasks: token_secret_read.yml
+  vars:
+    _dr_token_key: legacy
+    _dr_token_namespace: gitlab-runner
+    _dr_token_name: rke2-gitlab-runner-token
+    _dr_token_optional: true
+  no_log: true
+
+- name: Reject reuse of the known nonempty installed legacy authentication token
+  ansible.builtin.assert:
+    that:
+      - _dr_identity_tokens.legacy == '' or _dr_identity_tokens.legacy not in [_dr_identity_tokens.apps, _dr_identity_tokens.platform]
+    fail_msg: Deployment Runner authentication tokens must not reuse the known installed legacy token.
+  no_log: true

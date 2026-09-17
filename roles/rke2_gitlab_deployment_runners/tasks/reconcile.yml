@@ -1,0 +1,60 @@
+---
+- name: Read current deployment Runner object
+  ansible.builtin.command:
+    argv: >-
+      {{ _dr_kubectl + ['get', _dr_desired.kind, _dr_desired.metadata.name, '--ignore-not-found', '-o=json']
+         + (['-n', _dr_desired.metadata.namespace] if _dr_desired.metadata.namespace is defined else []) }}
+  register: _dr_current_result
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Compute object drift without exposing private data
+  vars:
+    _dr_current: "{{ _dr_current_result.stdout | from_json if _dr_current_result.stdout else {} }}"
+    _dr_fields: "{{ _dr_desired.keys() | difference(['metadata']) }}"
+  ansible.builtin.set_fact:
+    _dr_changed: >-
+      {{ not _dr_current
+         or (_dr_current | dict2items | selectattr('key', 'in', _dr_fields) | items2dict)
+            != (_dr_desired | dict2items | rejectattr('key', 'equalto', 'metadata') | items2dict)
+         or _dr_current.get('metadata', {}).get('labels', {}) | combine(_dr_desired.metadata.labels)
+            != _dr_current.get('metadata', {}).get('labels', {}) }}
+    _dr_replacement: >-
+      {{ _dr_current | combine(_dr_desired) | combine({'metadata':
+         _dr_current.get('metadata', {}) | combine(_dr_desired.metadata, recursive=true)}) }}
+  no_log: true
+
+- name: Recheck ownership at the resource-version write boundary
+  vars:
+    _dr_current: "{{ _dr_current_result.stdout | from_json if _dr_current_result.stdout else {} }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not _dr_current or
+        (_dr_current.metadata.labels.get('app.kubernetes.io/managed-by') == 'platform-config'
+         and _dr_current.metadata.labels.get('app.kubernetes.io/part-of') == 'rke2-gitlab-deployment-runners'
+         and _dr_current.metadata.labels.get('app.kubernetes.io/component') == _dr_desired.metadata.labels['app.kubernetes.io/component'])
+      - not _dr_current.get('metadata', {}).get('deletionTimestamp')
+      - not _dr_current.get('metadata', {}).get('ownerReferences')
+  no_log: true
+
+- name: Report predicted deployment Runner reconciliation
+  ansible.builtin.debug:
+    msg: "{{ _dr_desired.kind }}/{{ _dr_desired.metadata.name }} requires reconciliation."
+  changed_when: true
+  when: ansible_check_mode and _dr_changed
+
+- name: Reconcile deployment Runner object with optimistic concurrency
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + [('replace' if _dr_current_result.stdout else 'create'), '-f', '-'] }}"
+    stdin: "{{ _dr_replacement | to_json }}"
+  changed_when: true
+  when: not ansible_check_mode and _dr_changed
+  no_log: true
+
+- name: Record changed Secret profile for manager refresh
+  ansible.builtin.set_fact:
+    _dr_secret_changed: "{{ (_dr_secret_changed + [_dr_desired.metadata.labels['app.kubernetes.io/component']]) | unique }}"
+  when: _dr_changed and _dr_desired.kind == 'Secret'
+  no_log: true

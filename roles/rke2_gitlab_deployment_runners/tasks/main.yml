@@ -1,0 +1,5 @@
+---
+- name: Enter deployment Runner convergence
+  ansible.builtin.import_tasks: entry.yml
+  vars:
+    _deployment_runner_smoke: false

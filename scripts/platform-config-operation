@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   printf '%s\n' \
     'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage-check/storage-apply only)]' \
-    'Fixed operations: storage-check, storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
+    'Fixed operations: storage-check, storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, rke2-deployment-runners-smoke, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
 }
 
 fail() {
@@ -83,6 +83,7 @@ shift
 case "$operation" in
   storage-check | storage-apply) ;;
   rke2-host-aliases-plan | rke2-host-aliases-apply) ;;
+  rke2-deployment-runners-smoke) ;;
   openbao-haproxy-failover-plan | openbao-haproxy-failover | openbao-haproxy-failover-recover) ;;
   rke2-bootstrap-plan | rke2-converge-plan | rke2-bootstrap | rke2-deploy | openbao-status | openbao-restart-plan | openbao-restart | openbao-converge-plan | openbao-deploy | openbao-haproxy-plan | openbao-haproxy-activate | openbao-keepalived-plan | openbao-keepalived-activate | openbao-smoke | openbao-vip-smoke) ;;
   *) fail "unsupported operation: $operation" ;;
@@ -232,7 +233,7 @@ if [[ $operation == storage-apply ]]; then
     fail "storage-apply controller-vars must be transport-only JSON"
   controller_vars="$summary_dir/controller-vars.json"
 fi
-if [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply ]]; then
+if [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   "$summary_tool" transport-controller-vars --input "$controller_vars" \
     --output "$summary_dir/controller-vars.json" ||
     fail "$operation controller-vars must be transport-only JSON"
@@ -273,7 +274,7 @@ extra_vars=(--extra-vars "@$controller_vars")
 summary_host_args=()
 if [[ $operation == storage-check || $operation == storage-apply ]]; then
   summary_host_args=(--node "$node")
-elif [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply ]]; then
+elif [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   summary_host_args=(--controller-vars "$controller_vars")
 fi
 
@@ -474,6 +475,12 @@ case "$operation" in
     run_playbook bootstrap-preflight playbooks/rke2-bootstrap-preflight.yml rke2_cluster
     run_playbook rke2-plan playbooks/rke2.yml rke2_cluster --check --diff
     ;;
+  rke2-deployment-runners-smoke)
+    require_phase_evidence inventory
+    ping_group connectivity rke2_cluster
+    require_phase_evidence connectivity
+    run_playbook rke2-deployment-runners-smoke playbooks/rke2-gitlab-deployment-runners-smoke.yml rke2_servers
+    ;;
   rke2-converge-plan)
     ping_group connectivity rke2_cluster
     run_playbook core-health playbooks/rke2-core-health.yml rke2_cluster
@@ -481,6 +488,8 @@ case "$operation" in
     run_playbook rke2-plan playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook kube-vip-plan playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     run_playbook rke2-gitlab-runner-plan playbooks/rke2-gitlab-runner.yml rke2_servers --check --diff
+    require_phase_evidence rke2-gitlab-runner-plan
+    run_playbook rke2-deployment-runners-plan playbooks/rke2-gitlab-deployment-runners.yml rke2_servers --check --diff
     ;;
   rke2-bootstrap)
     ping_group connectivity rke2_cluster
@@ -488,12 +497,19 @@ case "$operation" in
     run_playbook rke2-apply playbooks/rke2.yml rke2_cluster
     run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
     run_playbook rke2-gitlab-runner-apply playbooks/rke2-gitlab-runner.yml rke2_servers
+    require_phase_evidence rke2-gitlab-runner-apply
+    run_playbook rke2-deployment-runners-apply playbooks/rke2-gitlab-deployment-runners.yml rke2_servers
+    require_phase_evidence rke2-deployment-runners-apply
     run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
     run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
     run_playbook rke2-gitlab-runner-smoke playbooks/rke2-gitlab-runner-smoke.yml rke2_servers
+    require_phase_evidence rke2-gitlab-runner-smoke
+    run_playbook rke2-deployment-runners-smoke playbooks/rke2-gitlab-deployment-runners-smoke.yml rke2_servers
+    require_phase_evidence rke2-deployment-runners-smoke
     run_playbook rke2-post-check playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook kube-vip-post-check playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     run_playbook rke2-gitlab-runner-post-check playbooks/rke2-gitlab-runner.yml rke2_servers --check --diff
+    run_playbook rke2-deployment-runners-post-check playbooks/rke2-gitlab-deployment-runners.yml rke2_servers --check --diff
     ;;
   rke2-deploy)
     run_playbook core-health playbooks/rke2-core-health.yml rke2_cluster
@@ -501,12 +517,19 @@ case "$operation" in
     run_playbook rke2-apply playbooks/rke2.yml rke2_cluster
     run_playbook kube-vip-apply playbooks/rke2-kube-vip.yml rke2_servers
     run_playbook rke2-gitlab-runner-apply playbooks/rke2-gitlab-runner.yml rke2_servers
+    require_phase_evidence rke2-gitlab-runner-apply
+    run_playbook rke2-deployment-runners-apply playbooks/rke2-gitlab-deployment-runners.yml rke2_servers
+    require_phase_evidence rke2-deployment-runners-apply
     run_playbook rke2-smoke playbooks/rke2-smoke.yml rke2_cluster
     run_playbook kube-vip-smoke playbooks/rke2-kube-vip-smoke.yml rke2_servers
     run_playbook rke2-gitlab-runner-smoke playbooks/rke2-gitlab-runner-smoke.yml rke2_servers
+    require_phase_evidence rke2-gitlab-runner-smoke
+    run_playbook rke2-deployment-runners-smoke playbooks/rke2-gitlab-deployment-runners-smoke.yml rke2_servers
+    require_phase_evidence rke2-deployment-runners-smoke
     run_playbook rke2-post-check playbooks/rke2.yml rke2_cluster --check --diff
     run_playbook kube-vip-post-check playbooks/rke2-kube-vip.yml rke2_servers --check --diff
     run_playbook rke2-gitlab-runner-post-check playbooks/rke2-gitlab-runner.yml rke2_servers --check --diff
+    run_playbook rke2-deployment-runners-post-check playbooks/rke2-gitlab-deployment-runners.yml rke2_servers --check --diff
     ;;
   openbao-status)
     ping_group connectivity openbao

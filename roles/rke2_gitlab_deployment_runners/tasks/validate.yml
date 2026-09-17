@@ -1,0 +1,107 @@
+---
+- name: Require coherent complete server scope and worker inventory
+  ansible.builtin.assert:
+    that:
+      - groups.get('rke2_servers', []) | length > 0
+      - groups.get('rke2_agents', []) | length > 0
+      - groups['rke2_servers'] | intersect(groups['rke2_agents']) | length == 0
+      - groups.get('rke2_cluster', []) | length > 0
+      - groups['rke2_servers'] | union(groups['rke2_agents']) | sort == groups['rke2_cluster'] | sort
+      - ansible_play_hosts_all | sort == groups['rke2_servers'] | sort
+      - ansible_play_batch | sort == groups['rke2_servers'] | sort
+      - rke2_bootstrap_host | default(_dr_leader) == _dr_leader
+      - rke2_server_group | default('rke2_servers') == 'rke2_servers'
+      - _dr_instances | length == 2
+    fail_msg: >-
+      Deployment Runners require exactly two profiles, nonempty disjoint server and agent groups,
+      their exact union declared as nonempty rke2_cluster, and the complete coherent RKE2 server group under linear execution.
+
+- name: Require identical deployment Runner declarations on every server
+  ansible.builtin.assert:
+    that:
+      - hostvars[item]._deployment_runner_config == _deployment_runner_config
+      - hostvars[item].rke2_bootstrap_host | default(_dr_leader) == _dr_leader
+  loop: "{{ groups['rke2_servers'] }}"
+
+- name: Validate exact deployment Runner instance schema
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | sort == ['job_namespace', 'manager_namespace', 'name', 'profile', 'token_src']
+      - item.profile in ['apps', 'platform']
+      - item.name is string and item.name is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z')
+      - item.token_src is string and item.token_src is match('^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\Z')
+      - item.token_src.split('/') | intersect(['.', '..']) | length == 0
+  loop: "{{ _dr_instances }}"
+  loop_control:
+    label: "{{ item.profile | default('invalid') }}"
+
+- name: Validate namespace separation and unique profiles
+  vars:
+    _dr_namespaces: >-
+      {{ (_dr_instances | map(attribute='manager_namespace') | list)
+         + (_dr_instances | map(attribute='job_namespace') | list)
+         + [_dr.acceptance_namespace, _dr.platform_acceptance_namespace] }}
+  ansible.builtin.assert:
+    that:
+      - _dr_instances | map(attribute='profile') | sort == ['apps', 'platform']
+      - _dr_instances | map(attribute='name') | unique | length == 2
+      - _dr_instances | map(attribute='token_src') | unique | length == 2
+      - _dr_namespaces | unique | length == 6
+      - item is string and item is match('^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z')
+      - not item.startswith('kube-')
+      - item not in ['default', 'gitlab-runner']
+  loop: "{{ _dr_namespaces }}"
+
+- name: Validate HTTPS origins and chart repository
+  ansible.builtin.assert:
+    that:
+      - item.value is string
+      - >-
+        (item.optional and item.value == '') or item.value is match(
+        '^https://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+        '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*'
+        '(?::[1-9][0-9]{0,4})?' ~ ('(?:/[A-Za-z0-9._~-]+)*' if item.path else '') ~ '/?\Z')
+      - item.value == '' or (item.value | urlsplit('port') | default(443, true) | int) <= 65535
+  loop:
+    - {value: "{{ _dr.gitlab_url }}", optional: false, path: false}
+    - {value: "{{ _dr.clone_url }}", optional: true, path: false}
+    - {value: "{{ _dr.chart_repo }}", optional: false, path: true}
+
+- name: Validate paired reviewed CA inputs
+  ansible.builtin.assert:
+    that:
+      - item.src is string and item.sha is string
+      - (item.src == '') == (item.sha == '')
+      - item.optional or item.src != ''
+      - item.src == '' or item.src is match('^/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\Z')
+      - item.src.split('/') | intersect(['.', '..']) | length == 0
+      - item.sha == '' or item.sha is match('^[0-9a-fA-F]{64}\Z')
+  loop:
+    - {src: "{{ _dr.tls_ca_cert_src }}", sha: "{{ _dr.tls_ca_cert_sha256 }}", optional: false}
+    - {src: "{{ _dr.chart_repo_ca_src }}", sha: "{{ _dr.chart_repo_ca_sha256 }}", optional: true}
+
+- name: Validate pinned chart images and required egress
+  ansible.builtin.assert:
+    that:
+      - _dr.chart_version == '0.88.3'
+      - _dr.manager_image is match('^docker\.io/gitlab/gitlab-runner:alpine-v18\.11\.3@sha256:[0-9a-f]{64}\Z')
+      - _dr.helper_image is match('^docker\.io/gitlab/gitlab-runner-helper:x86_64-v18\.11\.3@sha256:[0-9a-f]{64}\Z')
+      - _dr.job_image is string
+      - _dr.job_image is match('^[a-z0-9][a-z0-9.-]*(?::[1-9][0-9]{0,4})?/[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}\Z')
+      - _dr.egress | type_debug == 'list'
+      - _dr.egress | length > 0
+    fail_msg: Require chart 0.88.3, pinned Runner 18.11.3 images, a reviewed digest tool image with kubectl/sh/git, and explicit IPv4 TCP egress.
+
+- name: Validate exact IPv4 egress schema
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | sort == ['address', 'ports']
+      - item.address is string and item.address is match('^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}\Z')
+      - item.address.split('.') | map('int') | max <= 255
+      - item.ports | type_debug == 'list' and item.ports | length > 0
+      - item.ports | unique | length == item.ports | length
+      - item.ports | select('integer') | list == item.ports
+      - item.ports | min >= 1 and item.ports | max <= 65535
+  loop: "{{ _dr.egress }}"

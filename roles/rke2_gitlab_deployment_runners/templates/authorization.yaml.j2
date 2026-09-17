@@ -1,0 +1,46 @@
+{% macro probe(ns, sa, verb, resource, scope, allowed) %}
+- identity_namespace: {{ ns | to_json }}
+  account: {{ sa | to_json }}
+  verb: {{ verb | to_json }}
+  resource: {{ resource | to_json }}
+  namespace: {{ scope | to_json }}
+  allowed: {{ allowed | to_json }}
+{% endmacro %}
+{% for runner in _dr_instances %}
+{% set release = 'rke2-gitlab-' ~ runner.profile %}
+{% set other = _dr_instances | rejectattr('profile', 'equalto', runner.profile) | first %}
+{{ probe(runner.manager_namespace, release, 'create', 'pods', runner.job_namespace, true) }}
+{{ probe(runner.manager_namespace, release, 'get', 'secrets', runner.job_namespace, true) }}
+{% for scope in [runner.manager_namespace, other.job_namespace, other.manager_namespace, _dr.acceptance_namespace, 'default'] %}
+{{ probe(runner.manager_namespace, release, 'create', 'pods', scope, false) }}
+{{ probe(runner.manager_namespace, release, 'get', 'secrets', scope, false) }}
+{% endfor %}
+{% for ns, sa in [(runner.manager_namespace, release), (runner.job_namespace, release ~ '-job')] %}
+{% for resource in ['validatingadmissionpolicies', 'validatingadmissionpolicybindings'] %}
+{{ probe(ns, sa, 'create', resource ~ '.admissionregistration.k8s.io', '', false) }}
+{{ probe(ns, sa, 'patch', resource ~ '.admissionregistration.k8s.io/' ~ release ~ '-job-pods', '', false) }}
+{% endfor %}
+{% for verb, resource, scope in [('create', 'rolebindings', runner.job_namespace), ('patch', 'roles/' ~ release, runner.job_namespace), ('patch', 'networkpolicies/' ~ release, runner.job_namespace), ('create', 'serviceaccounts', runner.job_namespace), ('create', 'clusterrolebindings', ''), ('get', 'secrets', other.manager_namespace), ('get', 'secrets', 'kube-system')] %}
+{{ probe(ns, sa, verb, resource, scope, false) }}
+{% endfor %}
+{% endfor %}
+{% for scope in [runner.job_namespace, runner.manager_namespace, other.job_namespace, other.manager_namespace] %}
+{{ probe(runner.job_namespace, release ~ '-job', 'create', 'pods', scope, false) }}
+{{ probe(runner.job_namespace, release ~ '-job', 'get', 'secrets', scope, false) }}
+{% endfor %}
+{% for verb in ['create', 'get', 'patch', 'delete'] %}
+{{ probe(runner.job_namespace, release ~ '-job', verb, 'configmaps' ~ ('/runner-acceptance' if verb != 'create' else ''), _dr.acceptance_namespace, runner.profile == 'apps') }}
+{% endfor %}
+{{ probe(runner.job_namespace, release ~ '-job', 'patch', 'configmaps/not-runner-acceptance', _dr.acceptance_namespace, false) }}
+{% for verb in ['create', 'get', 'delete'] %}
+{{ probe(runner.job_namespace, release ~ '-job', verb, 'namespaces' ~ ('/' ~ _dr.platform_acceptance_namespace if verb != 'create' else ''), '', runner.profile == 'platform') }}
+{% endfor %}
+{{ probe(runner.job_namespace, release ~ '-job', 'patch', 'namespaces/' ~ _dr.platform_acceptance_namespace, '', false) }}
+{{ probe(runner.job_namespace, release ~ '-job', 'delete', 'namespaces/default', '', false) }}
+{% for verb in ['create', 'get', 'patch', 'delete'] %}
+{{ probe(runner.job_namespace, release ~ '-job', verb, 'customresourcedefinitions.apiextensions.k8s.io' ~ ('/runnerchecks.acceptance.platform.example' if verb != 'create' else ''), '', runner.profile == 'platform') }}
+{% endfor %}
+{{ probe(runner.job_namespace, release ~ '-job', 'patch', 'customresourcedefinitions.apiextensions.k8s.io/foreign.example', '', false) }}
+{{ probe(runner.manager_namespace, release, 'create', 'namespaces', '', false) }}
+{{ probe(runner.manager_namespace, release, 'create', 'customresourcedefinitions.apiextensions.k8s.io', '', false) }}
+{% endfor %}

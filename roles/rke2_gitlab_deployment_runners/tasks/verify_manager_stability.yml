@@ -1,0 +1,25 @@
+---
+- name: Require one ready stable worker manager with unchanged restart counts
+  vars:
+    _dr_first: "{{ (_dr_pods_first.stdout | from_json)['items'] }}"
+    _dr_second: "{{ (_dr_pods_second.stdout | from_json)['items'] }}"
+    _dr_agents: >-
+      [{% for host in groups['rke2_agents'] %}{{ hostvars[host].rke2_node_name | default(host) | to_json }}{% if not loop.last %},{% endif %}{% endfor %}]
+  ansible.builtin.assert:
+    that:
+      - _dr_first | length == 1 and _dr_second | length == 1
+      - _dr_first[0].metadata.uid == _dr_second[0].metadata.uid
+      - item.spec.nodeName in _dr_agents
+      - item.spec.serviceAccountName == _dr_release
+      - item.status.phase == 'Running'
+      - not item.metadata.get('deletionTimestamp')
+      - item.status.containerStatuses | length == 1
+      - item.status.containerStatuses[0].ready
+      - item.status.containerStatuses[0].restartCount is integer
+      - item.status.containerStatuses[0].restartCount >= 0
+      - _dr_first[0].status.containerStatuses[0].restartCount == _dr_second[0].status.containerStatuses[0].restartCount
+      - item.status.containerStatuses[0].state.running is defined
+      - item.status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length == 1
+  loop: "{{ _dr_first + _dr_second }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"

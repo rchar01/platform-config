@@ -1,0 +1,9 @@
+---
+- name: Configure the two additive RKE2 deployment Runners
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  strategy: linear
+  any_errors_fatal: true
+  roles:
+    - rke2_gitlab_deployment_runners

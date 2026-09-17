@@ -1,0 +1,38 @@
+---
+# Admission does not evict old pods. Inspect all pods, including completed or
+# terminating jobs; never silently remove an incompatible workload.
+- name: Read all pods in both fixed job namespaces
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', 'pods', '-n', item.job_namespace, '-o=json'] }}"
+  loop: "{{ _dr_instances }}"
+  register: _dr_job_pod_reads
+  check_mode: false
+  changed_when: false
+  no_log: true
+
+- name: Index the current job Pod snapshot
+  ansible.builtin.set_fact:
+    _dr_job_pods: >-
+      {{ dict(_dr_job_pod_reads.results | map(attribute='item.profile')
+         | zip(_dr_job_pod_reads.results | map(attribute='stdout') | map('from_json') | map(attribute='items'))) }}
+  no_log: true
+
+- name: Require existing job pods to satisfy the fixed admission shape
+  vars:
+    _dr_runner: "{{ _dr_instances | selectattr('profile', 'equalto', item.0.key) | first }}"
+    _dr_spec: "{{ item.1.spec }}"
+  ansible.builtin.assert:
+    that:
+      - item.1.metadata.namespace == _dr_runner.job_namespace
+      - _dr_spec.serviceAccountName == 'rke2-gitlab-' ~ _dr_runner.profile ~ '-job'
+      - _dr_spec.containers | length == 2
+      - _dr_spec.containers | selectattr('name', 'equalto', 'build') | selectattr('image', 'equalto', _dr.job_image) | list | length == 1
+      - _dr_spec.containers | selectattr('name', 'equalto', 'helper') | selectattr('image', 'equalto', _dr.helper_image) | list | length == 1
+      - _dr_spec.get('initContainers', []) | length <= 1
+      - _dr_spec.get('initContainers', []) | rejectattr('name', 'equalto', 'init-permissions') | list | length == 0
+      - _dr_spec.get('initContainers', []) | rejectattr('image', 'equalto', _dr.helper_image) | list | length == 0
+      - _dr_spec.get('initContainers', []) | selectattr('restartPolicy', 'defined') | list | length == 0
+      - _dr_spec.get('ephemeralContainers', []) | length == 0
+    fail_msg: Existing job pods violate the fixed admission contract; review them separately before publication or smoke.
+  loop: "{{ _dr_job_pods | dict2items | subelements('value') }}"
+  no_log: true

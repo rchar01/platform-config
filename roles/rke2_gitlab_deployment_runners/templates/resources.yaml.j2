@@ -1,0 +1,205 @@
+{% macro metadata(name, namespace, profile) %}
+metadata:
+  name: {{ name | to_json }}
+{% if namespace %}
+  namespace: {{ namespace | to_json }}
+{% endif %}
+  labels:
+    app.kubernetes.io/managed-by: platform-config
+    app.kubernetes.io/part-of: rke2-gitlab-deployment-runners
+    app.kubernetes.io/component: {{ profile | to_json }}
+{% endmacro %}
+{% for runner in _dr_instances %}
+{% set release = 'rke2-gitlab-' ~ runner.profile %}
+{% for ns in [runner.manager_namespace, runner.job_namespace] + ([_dr.acceptance_namespace] if runner.profile == 'apps' else []) %}
+---
+apiVersion: v1
+kind: Namespace
+{{ metadata(ns, '', runner.profile) }}
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.35
+{% endfor %}
+{% for ns, sa in [(runner.manager_namespace, release), (runner.job_namespace, release ~ '-job')] %}
+---
+apiVersion: v1
+kind: ServiceAccount
+{{ metadata(sa, ns, runner.profile) }}
+automountServiceAccountToken: true
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+{{ metadata(release, ns, runner.profile) }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{# Empty ingress is omitted by the API; policyTypes still enforces ingress isolation. #}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+{% for target in _dr.egress %}
+    - to:
+        - ipBlock:
+            cidr: {{ (target.address ~ '/32') | to_json }}
+      ports:
+{% for port in target.ports %}
+        - {protocol: TCP, port: {{ port }}}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+{{ metadata(release ~ '-job-pods', '', runner.profile) }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Exact
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ runner.job_namespace | to_json }}
+    objectSelector: {}
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+        scope: Namespaced
+  validations:
+    - expression: >-
+        object.spec.serviceAccountName == {{ (release ~ '-job') | to_json }}
+      message: 'deployment-runner-job-pod: wrong service account'
+      reason: Forbidden
+    - expression: >-
+        object.spec.containers.size() == 2 &&
+        object.spec.containers.exists(c, c.name == 'build' && c.image == {{ _dr.job_image | to_json }}) &&
+        object.spec.containers.exists(c, c.name == 'helper' && c.image == {{ _dr.helper_image | to_json }})
+      message: 'deployment-runner-job-pod: require only pinned build and helper'
+      reason: Forbidden
+    - expression: >-
+        !has(object.spec.initContainers) ||
+        (object.spec.initContainers.size() <= 1 &&
+        object.spec.initContainers.all(c, c.name == 'init-permissions' &&
+        c.image == {{ _dr.helper_image | to_json }} && !has(c.restartPolicy)))
+      message: 'deployment-runner-job-pod: only the pinned init-permissions init container is allowed'
+      reason: Forbidden
+    - expression: >-
+        !has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.size() == 0
+      message: 'deployment-runner-job-pod: ephemeral containers are forbidden'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+{{ metadata(release ~ '-job-pods', '', runner.profile) }}
+spec:
+  policyName: {{ (release ~ '-job-pods') | to_json }}
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Exact
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ runner.job_namespace | to_json }}
+    objectSelector: {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+{{ metadata(release, runner.job_namespace, runner.profile) }}
+rules:
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, delete, get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/attach, pods/exec]
+    verbs: [create, delete, get, patch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, delete, get, update]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+{{ metadata(release, runner.job_namespace, runner.profile) }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ release | to_json }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ release | to_json }}, namespace: {{ runner.manager_namespace | to_json }}}
+{% if runner.profile == 'apps' %}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+{{ metadata(release ~ '-acceptance', _dr.acceptance_namespace, runner.profile) }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [runner-acceptance]
+    verbs: [get, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+{{ metadata(release ~ '-acceptance', _dr.acceptance_namespace, runner.profile) }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ (release ~ '-acceptance') | to_json }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ (release ~ '-job') | to_json }}, namespace: {{ runner.job_namespace | to_json }}}
+{% else %}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+{{ metadata(release ~ '-acceptance', '', runner.profile) }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [{{ _dr.platform_acceptance_namespace | to_json }}]
+    verbs: [get, delete]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [create]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    resourceNames: [runnerchecks.acceptance.platform.example]
+    verbs: [get, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+{{ metadata(release ~ '-acceptance', '', runner.profile) }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ (release ~ '-acceptance') | to_json }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ (release ~ '-job') | to_json }}, namespace: {{ runner.job_namespace | to_json }}}
+{% endif %}
+{% for suffix in ['token', 'ca'] %}
+---
+apiVersion: v1
+kind: Secret
+{{ metadata(release ~ '-' ~ suffix, runner.manager_namespace, runner.profile) }}
+{% endfor %}
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+{{ metadata(release, 'kube-system', runner.profile) }}
+{% endfor %}

@@ -123,7 +123,13 @@ preparation, including the `rocky`-only non-TTY sudo exception, is covered by
   apply with zero changes, and read-only mounted-state verification. Private CI
   owns per-node confirmation; interruption is not rollback.
 
-See the [in-cluster Runner](roles/rke2_gitlab_runner/README.md) for private
+Optional [deployment Runners](roles/rke2_gitlab_deployment_runners/README.md)
+add isolated `apps` and `platform` acceptance profiles, externally owned RBAC,
+NetworkPolicies and native Pod admission. Their empty default preserves the
+existing Runner. Real job/API acceptance is separate from read-only Ansible smoke;
+the initial permissions cover fixed canaries, not general application deployment.
+
+See the [legacy in-cluster Runner](roles/rke2_gitlab_runner/README.md) for private
 Helm repository and checkout-origin overrides, and the docs index for
 [host Runner offline preload](docs/README.md#services).
 

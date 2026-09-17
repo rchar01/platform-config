@@ -1,0 +1,109 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: {{ _dr_release | to_json }}
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/managed-by: platform-config
+    app.kubernetes.io/part-of: rke2-gitlab-deployment-runners
+    app.kubernetes.io/component: {{ _dr_runner.profile | to_json }}
+spec:
+  chart: gitlab-runner
+  createNamespace: false
+  repo: {{ _dr.chart_repo | to_json }}
+{% if _dr.chart_repo_ca_src %}
+  repoCA: {{ _dr_repo_ca | to_json }}
+{% endif %}
+  targetNamespace: {{ _dr_runner.manager_namespace | to_json }}
+  version: {{ _dr.chart_version | to_json }}
+  valuesContent: |-
+    fullnameOverride: {{ _dr_release | to_json }}
+    gitlabUrl: {{ _dr.gitlab_url | to_json }}
+    certsSecretName: {{ (_dr_release ~ '-ca') | to_json }}
+    unregisterRunners: false
+    concurrent: 1
+    checkInterval: 3
+    image:
+      registry: docker.io
+      image: gitlab/gitlab-runner
+      tag: {{ (_dr.manager_image | regex_replace('^docker.io/gitlab/gitlab-runner:', '')) | to_json }}
+    imagePullPolicy: Always
+    rbac:
+      create: false
+      clusterWideAccess: false
+    serviceAccount:
+      create: false
+      name: {{ _dr_release | to_json }}
+    automountServiceAccountToken: true
+    podLabels:
+      app.kubernetes.io/part-of: rke2-gitlab-deployment-runners
+      app.kubernetes.io/component: {{ _dr_runner.profile | to_json }}
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+      capabilities:
+        drop: [ALL]
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 256Mi}
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+    runners:
+      name: {{ _dr_runner.name | to_json }}
+      secret: {{ (_dr_release ~ '-token') | to_json }}
+      executor: kubernetes
+      jobNamespace: {{ _dr_runner.job_namespace | to_json }}
+      config: |-
+        [[runners]]
+          name = {{ _dr_runner.name | to_json }}
+          url = {{ _dr.gitlab_url | to_json }}
+{% if _dr.clone_url %}
+          clone_url = {{ _dr.clone_url | to_json }}
+{% endif %}
+          executor = "kubernetes"
+          [runners.kubernetes]
+            namespace = {{ _dr_runner.job_namespace | to_json }}
+            namespace_overwrite_allowed = ""
+            namespace_per_job = false
+            service_account = {{ (_dr_release ~ '-job') | to_json }}
+            service_account_overwrite_allowed = ""
+            bearer_token_overwrite_allowed = false
+            node_selector_overwrite_allowed = ""
+            node_tolerations_overwrite_allowed = ""
+            pod_labels_overwrite_allowed = ""
+            pod_annotations_overwrite_allowed = ""
+            automount_service_account_token = true
+            image = {{ _dr.job_image | to_json }}
+            helper_image = {{ _dr.helper_image | to_json }}
+            allowed_images = [{{ _dr.job_image | to_json }}]
+            allowed_services = ["!"]
+            privileged = false
+            allow_privilege_escalation = false
+            cap_drop = ["ALL"]
+            pull_policy = ["always"]
+            allowed_pull_policies = ["always"]
+            cpu_request = "100m"
+            cpu_limit = "1"
+            memory_request = "128Mi"
+            memory_limit = "512Mi"
+            ephemeral_storage_request = "256Mi"
+            ephemeral_storage_limit = "1Gi"
+            helper_cpu_request = "50m"
+            helper_cpu_limit = "500m"
+            helper_memory_request = "64Mi"
+            helper_memory_limit = "256Mi"
+            helper_ephemeral_storage_request = "128Mi"
+            helper_ephemeral_storage_limit = "512Mi"
+            [runners.kubernetes.affinity]
+              [runners.kubernetes.affinity.node_affinity]
+                [runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution]
+                  [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms]]
+                    [[runners.kubernetes.affinity.node_affinity.required_during_scheduling_ignored_during_execution.node_selector_terms.match_expressions]]
+                      key = "node-role.kubernetes.io/control-plane"
+                      operator = "DoesNotExist"

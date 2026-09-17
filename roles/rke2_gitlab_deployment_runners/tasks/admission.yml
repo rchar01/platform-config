@@ -1,0 +1,59 @@
+---
+- name: Read the native admission policies and bindings
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', item.kind, item.metadata.name, '-o=json'] }}"
+  loop: "{{ _dr_objects | selectattr('kind', 'in', ['ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding']) | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  register: _dr_admission_objects
+  check_mode: false
+  changed_when: false
+
+- name: Require exact native policy expressions scope binding and ownership
+  vars:
+    _dr_live: "{{ item.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - _dr_live.apiVersion == item.item.apiVersion
+      - _dr_live.kind == item.item.kind
+      - _dr_live.metadata.name == item.item.metadata.name
+      - _dr_live.metadata.labels | combine(item.item.metadata.labels) == _dr_live.metadata.labels
+      - not _dr_live.metadata.get('deletionTimestamp')
+      - not _dr_live.metadata.get('ownerReferences')
+      - _dr_live.spec == item.item.spec
+  loop: "{{ _dr_admission_objects.results }}"
+  loop_control:
+    label: "{{ item.item.kind }}/{{ item.item.metadata.name }}"
+
+- name: Wait for native CEL type checking of the observed policy generation
+  ansible.builtin.command:
+    argv: "{{ _dr_kubectl + ['get', 'ValidatingAdmissionPolicy', item.metadata.name, '-o=json'] }}"
+  loop: "{{ _dr_objects | selectattr('kind', 'equalto', 'ValidatingAdmissionPolicy') | list }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  register: _dr_admission_ready
+  check_mode: false
+  changed_when: false
+  retries: 15
+  delay: 2
+  until: >-
+    _dr_admission_ready.rc == 0 and
+    (_dr_admission_ready.stdout | from_json).get('status', {}).get('observedGeneration', -1)
+      == (_dr_admission_ready.stdout | from_json).metadata.generation and
+    (_dr_admission_ready.stdout | from_json).get('status', {}).get('typeChecking') is mapping
+
+- name: Reject native CEL type warnings
+  ansible.builtin.assert:
+    that: (item.stdout | from_json).status.typeChecking.get('expressionWarnings', []) | length == 0
+  loop: "{{ _dr_admission_ready.results }}"
+  loop_control:
+    label: "{{ item.item.metadata.name }}"
+
+- name: Probe fixed job Pod admission without persisting Pods
+  ansible.builtin.include_tasks: admission_probes.yml
+  loop: "{{ _dr_instances }}"
+  loop_control:
+    loop_var: _dr_runner
+    label: "{{ _dr_runner.profile }}"
+  vars:
+    _dr_release: "{{ 'rke2-gitlab-' ~ _dr_runner.profile }}"

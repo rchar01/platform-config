@@ -1,0 +1,63 @@
+---
+- name: Initialize bounded controller material
+  ansible.builtin.set_fact:
+    _dr_material: {}
+    _dr_secret_changed: []
+  no_log: true
+
+- name: Read reviewed CA files before any mutation
+  ansible.builtin.include_tasks: source.yml
+  loop:
+    - {key: ca, src: "{{ _dr.tls_ca_cert_src }}", sha: "{{ _dr.tls_ca_cert_sha256 }}", token: false}
+    - {key: repo_ca, src: "{{ _dr.chart_repo_ca_src }}", sha: "{{ _dr.chart_repo_ca_sha256 }}", token: false}
+  loop_control:
+    loop_var: _dr_source
+  when: _dr_source.src != ''
+  no_log: true
+
+- name: Read each private authentication token before any mutation
+  ansible.builtin.include_tasks: source.yml
+  vars:
+    _dr_source:
+      key: "{{ item.profile }}"
+      src: "{{ item.token_src }}"
+      sha: ""
+      token: true
+  loop: "{{ _dr_instances }}"
+  no_log: true
+
+- name: Require separate authentication token values before any mutation
+  ansible.builtin.import_tasks: token_identity.yml
+
+- name: Reconcile externally owned namespaces accounts policy and RBAC
+  ansible.builtin.include_tasks: reconcile.yml
+  loop: "{{ _dr_objects | rejectattr('kind', 'in', ['Secret', 'HelmChart']) | list }}"
+  loop_control:
+    loop_var: _dr_desired
+    label: "{{ _dr_desired.kind }}/{{ _dr_desired.metadata.name }}"
+
+- name: Reconcile private Runner Secrets
+  ansible.builtin.include_tasks: secrets.yml
+  loop: "{{ _dr_instances }}"
+  loop_control:
+    loop_var: _dr_runner
+    label: "{{ _dr_runner.profile }}"
+  no_log: true
+
+- name: Reinspect existing job pods immediately before admission proof and publication
+  ansible.builtin.import_tasks: job_pods.yml
+  when: not ansible_check_mode
+
+- name: Require native admission readiness before either manager is published
+  ansible.builtin.import_tasks: admission.yml
+  when: not ansible_check_mode
+
+- name: Publish only bootstrap HelmChart sources
+  ansible.builtin.include_tasks: publish.yml
+  loop: "{{ _dr_instances }}"
+  loop_control:
+    loop_var: _dr_runner
+    label: "{{ _dr_runner.profile }}"
+  vars:
+    _dr_release: "{{ 'rke2-gitlab-' ~ _dr_runner.profile }}"
+    _dr_repo_ca: "{{ _dr_material.repo_ca | default('') }}"

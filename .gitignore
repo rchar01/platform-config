@@ -27,6 +27,8 @@ venv/
 .vault_pass
 .vault-pass
 secrets.yml
+# Public task definitions; credential values remain outside Git.
+!roles/rke2_gitlab_deployment_runners/tasks/secrets.yml
 secret.yml
 private.yml
 *.private.yml

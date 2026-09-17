@@ -1,0 +1,5 @@
+---
+- name: Enter read-only deployment Runner smoke
+  ansible.builtin.import_tasks: entry.yml
+  vars:
+    _deployment_runner_smoke: true
