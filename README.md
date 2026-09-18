@@ -123,10 +123,11 @@ preparation, including the `rocky`-only non-TTY sudo exception, is covered by
   apply with zero changes, and read-only mounted-state verification. Private CI
   owns per-node confirmation; interruption is not rollback.
 
-Initial OpenBao storage preparation has a separate fixed
+Initial OpenBao storage preparation has separate fixed
 [`openbao-storage-check`](docs/storage-check.md#openbao-storage-preparation)
-route: exactly three storage-only hosts, one checked per invocation, with no apply
-or service convergence. CI can check the complete scope sequentially.
+and `openbao-storage-apply` routes: exactly three storage-only hosts, one selected
+per invocation. Separately approved apply reuses the guarded storage sequence,
+including real second-apply idempotence and mounted-state verification.
 
 Optional [deployment Runners](roles/rke2_gitlab_deployment_runners/README.md)
 add isolated `apps` and `platform` acceptance profiles, externally owned RBAC,

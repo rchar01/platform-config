@@ -140,7 +140,7 @@ raise SystemExit(2 if failed else 0)
     assert "agent-a" not in result.stdout
 
 
-@pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check"])
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check", "openbao-storage-apply"])
 @pytest.mark.parametrize("node", [None, "all", "ungrouped", "rke2_cluster:runner", "*", "--help", "server-a,agent-a"])
 def test_storage_launcher_rejects_host_patterns(repo_root, isolated_test_dir, command_runner, node, operation):
     path = isolated_test_dir / "private.json"
@@ -161,10 +161,10 @@ def test_node_argument_is_rejected_by_other_routes(repo_root, isolated_test_dir,
     result = command_runner.run([repo_root / "scripts/platform-config-operation", "rke2-bootstrap-plan",
                                  "--inventory", path, "--controller-vars", path, "--node", "server-a"])
     result.assert_failure()
-    assert "only accepted by storage-check" in result.stderr
+    assert "only accepted by the fixed storage routes" in result.stderr
 
 
-@pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check"])
+@pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check", "openbao-storage-apply"])
 @pytest.mark.parametrize("extra", [["--apply"], ["--limit", "all"], ["--node", "agent-a"],
                                    ["--playbook", "other.yml"], ["--extra-vars", "initialize=true"],
                                    ["--list"], ["--all"], ["--retry"]])
@@ -182,7 +182,8 @@ def test_storage_check_rejects_broad_or_duplicate_arguments(repo_root, isolated_
 
 @pytest.mark.parametrize("bad", ["size", "outside", "storage", "group", "address", "volumes", "layouts",
                                   "rke2_cluster", "rke2_servers", "rke2_agents", "rocky", "container_hosts", "openbao"])
-def test_openbao_storage_checks_whole_scope(summary, isolated_test_dir, bad):
+@pytest.mark.parametrize("operation", ["openbao-storage-check", "openbao-storage-apply"])
+def test_openbao_storage_checks_whole_scope(summary, isolated_test_dir, bad, operation):
     data = openbao_inventory()
     node = "vault-a"
     if bad == "size":
@@ -205,8 +206,38 @@ def test_openbao_storage_checks_whole_scope(summary, isolated_test_dir, bad):
     path.write_text(json.dumps(data))
     path.chmod(0o600)
     with pytest.raises(summary.SummaryError):
-        summary.command_hosts(SimpleNamespace(operation="openbao-storage-check", node=node,
+        summary.command_hosts(SimpleNamespace(operation=operation, node=node,
                                               inventory=path, output=isolated_test_dir / "unused"))
+
+
+def test_openbao_apply_effective_mount_states(summary, isolated_test_dir):
+    isolated_test_dir.chmod(0o700)
+    path = isolated_test_dir / "inventory.json"
+    output = isolated_test_dir / "hosts.jsonl"
+    output.write_text("")
+    output.chmod(0o600)
+    args = SimpleNamespace(operation="openbao-storage-apply", node="vault-a", inventory=path, output=output)
+    for state in ("unmounted", "present", "absent", "ephemeral", "remounted", "", None, False, {}, "{{ state }}"):
+        for source in ("volume", "default"):
+            data = openbao_inventory()
+            values = data["_meta"]["hostvars"]["vault-c"]
+            if source == "volume":
+                values["storage_volumes"][0]["state"] = state
+            else:
+                values["storage_volume_default_mount_state"] = state
+            path.write_text(json.dumps(data))
+            path.chmod(0o600)
+            with pytest.raises(summary.SummaryError):
+                summary.command_hosts(args)
+    # Explicit mounted states override a non-mounted host default, as in the role.
+    data = openbao_inventory()
+    data["_meta"]["hostvars"]["vault-c"].update(
+        storage_volume_default_mount_state="unmounted",
+        storage_volumes=[{"lv_name": "data", "state": "mounted"}],
+    )
+    path.write_text(json.dumps(data))
+    summary.command_hosts(args)
+    assert json.loads(output.read_text())["host"] == "vault-a"
 
 
 def test_openbao_storage_rejects_intent_override_before_inventory(repo_root, isolated_test_dir, command_runner):

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from test_storage_check import inventory
+from test_storage_check import inventory, openbao_inventory
 
 
 # Sanitized output shape from platform-ci/templates/storage-apply.yml (variables).
@@ -86,14 +86,16 @@ raise SystemExit(7 if fault == "exit" else 0)
         path.write_text(code)
         path.chmod(0o755)
 
-    def run(node="server-a", phase="", fault="", native=False, controller=None,
-            hostvars=None, tamper=False, operation="storage-apply"):
+    def run(node=None, phase="", fault="", native=False, controller=None,
+            hostvars=None, tamper=False, operation="storage-apply", inventory_data=None):
+        node = node or ("vault-a" if operation == "openbao-storage-apply" else "server-a")
         if controller is not None:
             variables.write_text(controller if isinstance(controller, str) else json.dumps(controller))
+        data = inventory_data if inventory_data is not None else (
+            openbao_inventory() if operation == "openbao-storage-apply" else inventory())
         if hostvars is not None:
-            data = inventory()
             data["_meta"]["hostvars"][node].update(hostvars)
-            inv.write_text(json.dumps(data))
+        inv.write_text(json.dumps(data))
         environment = {
             "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_LOG": str(log),
             "FAKE_INVENTORY": str(inv), "FAULT_PHASE": phase, "FAULT": fault, "NODE": node,
@@ -130,9 +132,10 @@ raise SystemExit(7 if fault == "exit" else 0)
     return run
 
 
-@pytest.mark.parametrize("node", ["server-a", "agent-a"])
-def test_storage_apply_fixed_single_node_calls(repo_root, launcher, node):
-    result, commands, inv, variables = launcher(node=node)
+@pytest.mark.parametrize("operation,node", [("storage-apply", "server-a"), ("storage-apply", "agent-a"),
+                                           ("openbao-storage-apply", "vault-a")])
+def test_storage_apply_fixed_single_node_calls(repo_root, launcher, operation, node):
+    result, commands, inv, variables = launcher(node=node, operation=operation)
     result.assert_success()
     assert "Overall: PASS" in result.stdout
     common = ["--extra-vars", f"@{variables}"]
@@ -256,18 +259,20 @@ def test_storage_apply_invalid_scope_never_pings(launcher, node):
 
 
 @pytest.mark.parametrize("phase,count", [("connectivity", 2), ("storage-check", 3), ("storage-apply", 4),
-                                        ("storage-idempotence", 5), ("storage-verify", 6)])
+                                         ("storage-idempotence", 5), ("storage-verify", 6)])
 @pytest.mark.parametrize("fault", ["exit", "missing", "failures", "unreachable", "ignored", "rescued", "extra-host"])
-def test_storage_apply_stops_on_failed_or_incomplete_phase(launcher, phase, count, fault):
-    result, commands, _, _ = launcher(phase=phase, fault=fault)
+@pytest.mark.parametrize("operation", ["storage-apply", "openbao-storage-apply"])
+def test_storage_apply_stops_on_failed_or_incomplete_phase(launcher, phase, count, fault, operation):
+    result, commands, _, _ = launcher(phase=phase, fault=fault, operation=operation)
     result.assert_failure()
     assert result.returncode == (7 if fault == "exit" else 2)
     assert "Overall: FAIL" in result.stdout
     assert len(commands) == count
 
 
-def test_storage_apply_forwards_interruption_without_retry(launcher):
-    result, commands, _, _ = launcher(phase="storage-apply", fault="interrupt")
+@pytest.mark.parametrize("operation", ["storage-apply", "openbao-storage-apply"])
+def test_storage_apply_forwards_interruption_without_retry(launcher, operation):
+    result, commands, _, _ = launcher(phase="storage-apply", fault="interrupt", operation=operation)
     assert result.returncode == 143
     assert "Overall: FAIL" in result.stdout
     assert len(commands) == 4
@@ -312,13 +317,40 @@ def test_storage_verifier_real_includes_reject_unmounted_local_directory(repo_ro
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_storage_apply_native_callback_requires_real_second_apply_unchanged(launcher, changed):
-    result, commands, _, _ = launcher(phase="storage-idempotence", fault="changed" if changed else "", native=True)
+@pytest.mark.parametrize("operation", ["storage-apply", "openbao-storage-apply"])
+def test_storage_apply_native_callback_requires_real_second_apply_unchanged(launcher, changed, operation):
+    result, commands, _, _ = launcher(phase="storage-idempotence", fault="changed" if changed else "", native=True,
+                                     operation=operation)
     assert result.returncode == (2 if changed else 0), result.diagnostics()
     assert f"Overall: {'FAIL' if changed else 'PASS'}" in result.stdout
     assert len(commands) == (5 if changed else 6)
-    assert any(line.split()[:4] == ["server-a", "server", "storage-idempotence", "FAIL" if changed else "PASS"]
-               for line in result.stdout.splitlines())
+    host, role = ("vault-a", "openbao-storage") if operation == "openbao-storage-apply" else ("server-a", "server")
+    assert any(line.split()[:4] == [host, role, "storage-idempotence", "FAIL" if changed else "PASS"]
+                for line in result.stdout.splitlines())
+
+
+def test_openbao_apply_uses_validated_transport_snapshot(launcher, isolated_test_dir):
+    controller = {**CI_CONTROLLER_VARS, "platform_ci_ssh_private_key_files": {"vault-a": "/synthetic/vault-a"}}
+    result, commands, _, used = launcher(operation="openbao-storage-apply", controller=controller, tamper=True)
+    result.assert_success()
+    assert used != isolated_test_dir / "vars.json" and not used.exists()
+    observed = [json.loads(line) for line in (isolated_test_dir / "controller-inputs.jsonl").read_text().splitlines()]
+    assert observed == [controller] * 6
+
+
+def test_openbao_apply_refuses_nonmounted_peer_before_ping(launcher):
+    data = openbao_inventory()
+    data["_meta"]["hostvars"]["vault-c"]["storage_volumes"][0]["state"] = "absent"
+    result, commands, _, _ = launcher(operation="openbao-storage-apply", inventory_data=data)
+    result.assert_failure()
+    assert [call[0] for call in commands] == ["ansible-inventory"]
+
+
+def test_openbao_apply_rejects_intent_override_before_inventory(launcher):
+    result, commands, _, _ = launcher(operation="openbao-storage-apply", controller={"storage_volumes": []})
+    result.assert_failure()
+    assert "transport-only JSON" in result.stderr
+    assert commands == []
 
 
 @pytest.mark.parametrize("scenario", ["valid", "options", "wrong-device", "bind", "fstype", "absent", "exec", "override"])

@@ -179,11 +179,13 @@ def test_summary_renders_unchanged_changed_and_rescued_success(
 
 
 @pytest.mark.parametrize("counter", [None, "changed", "failures", "unreachable", "ignored", "rescued", "missing"])
+@pytest.mark.parametrize("operation", ["storage-apply", "openbao-storage-apply"])
 def test_storage_apply_summary_requires_clean_real_idempotence(
-    repo_root, isolated_test_dir, command_runner, counter,
+    repo_root, isolated_test_dir, command_runner, counter, operation,
 ):
-    events = _initialize(repo_root, command_runner, isolated_test_dir, "storage-apply")
-    _append(events, {"schema": 1, "kind": "host", "host": "agent-a", "role": "agent"})
+    events = _initialize(repo_root, command_runner, isolated_test_dir, operation)
+    _append(events, {"schema": 1, "kind": "host", "host": "agent-a",
+                     "role": "openbao-storage" if operation == "openbao-storage-apply" else "agent"})
     for phase in ("inventory", "connectivity", "storage-check", "storage-apply", "storage-idempotence", "storage-verify"):
         _append(events, *_phase(phase))
         if phase == "inventory" or (phase == "storage-idempotence" and counter == "missing"):
@@ -199,11 +201,13 @@ def test_storage_apply_summary_requires_clean_real_idempotence(
     assert f"Overall: {'PASS' if counter is None else 'FAIL'}" in result.stdout
 
 
+@pytest.mark.parametrize("operation", ["storage-apply", "openbao-storage-apply"])
 def test_storage_apply_prefix_gate_cannot_hide_future_or_missing_evidence(
-    repo_root, isolated_test_dir, command_runner,
+    repo_root, isolated_test_dir, command_runner, operation,
 ):
-    events = _initialize(repo_root, command_runner, isolated_test_dir, "storage-apply")
-    _append(events, {"schema": 1, "kind": "host", "host": "server-a", "role": "server"},
+    events = _initialize(repo_root, command_runner, isolated_test_dir, operation)
+    _append(events, {"schema": 1, "kind": "host", "host": "server-a",
+                     "role": "openbao-storage" if operation == "openbao-storage-apply" else "server"},
             *_phase("inventory"), *_phase("connectivity"), _recap("connectivity", "server-a"))
     args = [repo_root / "scripts/platform-config-operation-summary", "render", "--input", events,
             "--status", "0", "--through", "connectivity"]
@@ -216,7 +220,24 @@ def test_storage_apply_prefix_gate_cannot_hide_future_or_missing_evidence(
 def test_storage_check_cannot_request_partial_summary(repo_root, isolated_test_dir, command_runner):
     events = _initialize(repo_root, command_runner, isolated_test_dir, "storage-check")
     command_runner.run([repo_root / "scripts/platform-config-operation-summary", "render", "--input", events,
-                        "--status", "0", "--through", "inventory"]).assert_failure()
+                         "--status", "0", "--through", "inventory"]).assert_failure()
+
+
+@pytest.mark.parametrize("fault", ["wrong-role", "extra-host"])
+def test_openbao_apply_summary_rejects_foreign_role_or_multiple_hosts(
+    repo_root, isolated_test_dir, command_runner, fault,
+):
+    events = _initialize(repo_root, command_runner, isolated_test_dir, "openbao-storage-apply")
+    hosts = ["vault-a", "vault-b"] if fault == "extra-host" else ["vault-a"]
+    for host in hosts:
+        _append(events, {"schema": 1, "kind": "host", "host": host,
+                         "role": "server" if fault == "wrong-role" else "openbao-storage"})
+    for phase in ("inventory", "connectivity", "storage-check", "storage-apply", "storage-idempotence", "storage-verify"):
+        _append(events, *_phase(phase))
+        if phase != "inventory":
+            for host in hosts:
+                _append(events, _recap(phase, host))
+    _render(repo_root, command_runner, events, 0).assert_failure()
 
 
 @pytest.mark.parametrize(

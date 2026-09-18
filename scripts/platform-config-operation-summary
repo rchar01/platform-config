@@ -26,6 +26,10 @@ OPERATIONS = {
         "inventory", "connectivity", "storage-check", "storage-apply",
         "storage-idempotence", "storage-verify",
     ),
+    "openbao-storage-apply": (
+        "inventory", "connectivity", "storage-check", "storage-apply",
+        "storage-idempotence", "storage-verify",
+    ),
     "rke2-bootstrap-plan": (
         "inventory",
         "connectivity",
@@ -116,8 +120,9 @@ OPERATIONS = {
     ),
 }
 COUNTERS = ("ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored")
+OPENBAO_STORAGE_OPERATIONS = frozenset({"openbao-storage-check", "openbao-storage-apply"})
 OPENBAO_OPERATIONS = frozenset(
-    name for name in OPERATIONS if name.startswith("openbao-") and name != "openbao-storage-check"
+    name for name in OPERATIONS if name.startswith("openbao-") and name not in OPENBAO_STORAGE_OPERATIONS
 )
 FAILOVER_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-haproxy-failover"))
 FAILOVER_RESULTS = {
@@ -128,7 +133,7 @@ FAILOVER_RESULTS = {
 FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
 TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | {"rke2-deployment-runners-smoke"}
-EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply", "openbao-storage-check"}
+EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply"} | OPENBAO_STORAGE_OPERATIONS
 PREFIX_GATED_OPERATIONS = EVIDENCE_GATED_OPERATIONS | {"rke2-converge-plan", "rke2-bootstrap", "rke2-deploy"}
 UNCHANGED_PHASES = frozenset(
     {
@@ -362,7 +367,7 @@ def command_hosts(args: argparse.Namespace) -> None:
         raise SummaryError
     records = []
     node = getattr(args, "node", None)
-    if operation == "openbao-storage-check":
+    if operation in OPENBAO_STORAGE_OPERATIONS:
         selected = group_hosts(inventory, "openbao_storage")
         excluded = set().union(*(group_hosts(inventory, group) for group in (
             "rke2_cluster", "rke2_servers", "rke2_agents", "rocky", "container_hosts", "openbao",
@@ -387,6 +392,11 @@ def command_hosts(args: argparse.Namespace) -> None:
                     or not values["storage_volumes"]
                     or not isinstance(values.get("storage_volume_layouts", []), list)):
                 raise SummaryError
+            if operation == "openbao-storage-apply":
+                default_state = values.get("storage_volume_default_mount_state", "mounted")
+                if any(not isinstance(volume, dict) or volume.get("state", default_state) != "mounted"
+                       for volume in values["storage_volumes"]):
+                    raise SummaryError
         records.append({"schema": 1, "kind": "host", "host": node, "role": "openbao-storage"})
     elif operation in {"storage-check", "storage-apply"}:
         if (
@@ -512,7 +522,7 @@ def parse_records(path: Path) -> tuple[str, tuple[str, ...], dict[str, str], lis
         exact_keys(record, {"schema", "kind", "host", "role"})
         host = safe_host(record.get("host"))
         role = safe_text(record.get("role"), 16)
-        allowed_roles = {"openbao-storage"} if operation == "openbao-storage-check" else {"server", "agent", "openbao", "N/A"}
+        allowed_roles = {"openbao-storage"} if operation in OPENBAO_STORAGE_OPERATIONS else {"server", "agent", "openbao", "N/A"}
         if role not in allowed_roles or host in hosts:
             raise SummaryError
         hosts[host] = role
@@ -712,7 +722,7 @@ def command_render(args: argparse.Namespace) -> int:
         and args.status == 0
         and (operation not in OPENBAO_OPERATIONS or len(hosts) == 3)
         and (operation != "storage-apply" or len(hosts) == 1)
-        and (operation != "openbao-storage-check" or len(hosts) == 1)
+        and (operation not in OPENBAO_STORAGE_OPERATIONS or len(hosts) == 1)
         and (not any(phase.startswith("rke2-deployment-runners-") for phase in phases)
              or "server" in hosts.values())
         and all(role != "N/A" for role in hosts.values())

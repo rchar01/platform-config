@@ -65,8 +65,21 @@ the full three-host scope, stages only its SSH identities, checks each host
 sequentially and retains any failure. Private bindings own the protected
 environment, immutable sources and Runner routing. Use the same three storage
 File-variable types, never OpenBao status/root/unseal credentials. No
-`openbao-storage-apply` operation is supplied; existing storage apply remains
-RKE2-only. Keep all lifecycle writers excluded during checks.
+unrestricted apply is permitted. `openbao-storage-apply` selects one literal
+member of the same complete scope and requires every member's effective volume
+state to be `mounted` before ping. Per-volume state overrides the host default,
+whose fallback is `mounted`; unresolved or non-mounted values fail closed.
+
+The new apply route shares the exact storage apply sequence below: inventory,
+ping, fresh check, real apply, real zero-change second apply, read-only mounted
+verification. It uses the same transport-only snapshot and complete phase gates,
+has no automatic retries or rollback, and does not enroll services. CI opts in
+with `apply-operation: openbao-storage-apply`; its plan calls
+`openbao-storage-check`. Each private per-node pair needs separate native manual
+approval and only apply holds the shared mutation lock. Complete and review all
+three plans before any apply; a per-pair dependency is not an all-plan barrier.
+Existing `storage-check`/`storage-apply` remain RKE2-only. Keep all lifecycle
+writers excluded during checks and plans.
 
 ## Storage Apply
 
@@ -113,7 +126,8 @@ automatic job retries or concurrent out-of-band storage administration.
 
 ### Controller Variables
 
-For **`storage-apply` and `openbao-storage-check`**, `--controller-vars` must be an owner-private JSON
+For **`storage-apply`, `openbao-storage-check` and `openbao-storage-apply`**,
+`--controller-vars` must be an owner-private JSON
 object without duplicate members. YAML is not accepted by this route. Unknown
 keys are rejected before `ansible-inventory`, including storage definitions,
 devices, initialization settings, and connection endpoint overrides. Storage
