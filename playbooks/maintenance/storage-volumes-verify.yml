@@ -5,13 +5,28 @@
   gather_facts: false
   any_errors_fatal: true
   tasks:
-    - name: Require one RKE2 storage host
+    - name: Require one storage host in the fixed verification scope
       ansible.builtin.assert:
         that:
+          - storage_verify_scope | default('rke2') in ['rke2', 'openbao']
           - ansible_play_hosts_all | length == 1
-          - inventory_hostname in groups.get('rke2_cluster', [])
-          - (inventory_hostname in groups.get('rke2_servers', [])) != (inventory_hostname in groups.get('rke2_agents', []))
           - storage_volumes | default([]) | length > 0
+          - >-
+            (storage_verify_scope | default('rke2') == 'rke2'
+             and inventory_hostname in groups.get('rke2_cluster', [])
+             and ((inventory_hostname in groups.get('rke2_servers', []))
+                  != (inventory_hostname in groups.get('rke2_agents', []))))
+            or
+            (storage_verify_scope | default('rke2') == 'openbao'
+             and inventory_hostname in groups.get('openbao_storage', [])
+             and (groups.get('openbao_storage', []) | length == 3)
+             and (groups.get('openbao_storage', [])
+                  | difference(groups.get('storage_volume_hosts', [])) | length == 0)
+             and (groups.get('openbao_storage', [])
+                  | intersect(groups.get('rocky', []) + groups.get('container_hosts', [])
+                    + groups.get('openbao', []) + groups.get('rke2_cluster', [])
+                    + groups.get('rke2_servers', []) + groups.get('rke2_agents', []))
+                  | length == 0))
 
     - name: Read storage defaults without overriding inventory
       ansible.builtin.include_vars:

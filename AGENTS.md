@@ -133,6 +133,10 @@
   gate every phase on complete evidence. Apply requires mounted intent throughout
   the three-host scope before ping, then reuses the existing fresh check, apply,
   real zero-change second apply and read-only mounted verification sequence.
+  The launcher selects the fixed OpenBao verification scope explicitly; the shared
+  verifier keeps its RKE2 default and rejects an invalid full preparation cohort.
+  Cover the shipped verifier and its real includes in regression tests, not only
+  a substituted successful playbook.
   No all/list targets, retries, rollback or service enrollment. Preserve RKE2-only
   storage routes and inventory-owned layouts; see `docs/storage-check.md`.
 - `storage-apply` uses the same exact-node scope and fixed storage role: inventory,

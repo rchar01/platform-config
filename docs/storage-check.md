@@ -72,8 +72,12 @@ whose fallback is `mounted`; unresolved or non-mounted values fail closed.
 
 The new apply route shares the exact storage apply sequence below: inventory,
 ping, fresh check, real apply, real zero-change second apply, read-only mounted
-verification. It uses the same transport-only snapshot and complete phase gates,
-has no automatic retries or rollback, and does not enroll services. CI opts in
+verification. It uses the same transport-only snapshot and complete phase gates
+and explicitly selects `storage_verify_scope=openbao` for the shared verifier.
+This launcher-owned value is not accepted in controller JSON. The verifier keeps
+RKE2 as its default, checks the OpenBao cohort separately, then runs the same
+read-only mount identity, filesystem and active-option checks.
+The route has no automatic retries or rollback and does not enroll services. CI opts in
 with `apply-operation: openbao-storage-apply`; its plan calls
 `openbao-storage-check`. Each private per-node pair needs separate native manual
 approval and only apply holds the shared mutation lock. Complete and review all

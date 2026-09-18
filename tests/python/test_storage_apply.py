@@ -30,6 +30,16 @@ CI_CONTROLLER_VARS = {
 }
 
 
+def openbao_verification_inventory(mountpoint):
+    return {"all": {"children": {
+        "openbao_storage": {"hosts": {host: {
+            "ansible_connection": "local", "ansible_become": False,
+            "storage_volumes": [{"vg_name": "missing", "lv_name": "missing", "mountpoint": str(mountpoint)}],
+        } for host in ("vault-a", "vault-b", "vault-c")}},
+        "storage_volume_hosts": {"children": {"openbao_storage": {}}},
+    }}}
+
+
 @pytest.fixture
 def launcher(repo_root, isolated_test_dir, command_runner):
     root = isolated_test_dir
@@ -48,7 +58,10 @@ import json, os, pathlib, signal, sys
 name = pathlib.Path(sys.argv[0]).name
 with open(os.environ["FAKE_LOG"], "a") as out:
     out.write(json.dumps([name, *sys.argv[1:]]) + "\\n")
-controller = pathlib.Path(sys.argv[sys.argv.index("--extra-vars") + 1][1:])
+extra_vars = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == "--extra-vars"]
+controller_files = [value[1:] for value in extra_vars if value.startswith("@")]
+assert len(controller_files) == 1
+controller = pathlib.Path(controller_files[0])
 with open(os.environ["CONTROLLER_LOG"], "a") as out:
     out.write(json.dumps(json.loads(controller.read_text())) + "\\n")
 if name == "ansible-inventory":
@@ -63,6 +76,13 @@ if fault == "interrupt":
     os.kill(os.getppid(), signal.SIGTERM)
     signal.pause()
 if os.environ.get("NATIVE") == "1":
+    if phase == "storage-verify" and os.environ.get("REAL_VERIFY") == "1":
+        # Execute the real argv-selected verifier, preserving its fixed scope and includes.
+        args = [os.environ["REAL_PLAYBOOK"], "-i", os.environ["LOCAL_INVENTORY"],
+                sys.argv[sys.argv.index("-i") + 2], "--limit", os.environ["NODE"]]
+        for value in extra_vars:
+            args += ["--extra-vars", value]
+        os.execv(args[0], args)
     args = [os.environ["REAL_PLAYBOOK"], "-i", os.environ["LOCAL_INVENTORY"],
             os.environ["LOCAL_PLAYBOOK"], "--limit", os.environ["NODE"]]
     if "--check" in sys.argv:
@@ -87,7 +107,7 @@ raise SystemExit(7 if fault == "exit" else 0)
         path.chmod(0o755)
 
     def run(node=None, phase="", fault="", native=False, controller=None,
-            hostvars=None, tamper=False, operation="storage-apply", inventory_data=None):
+            hostvars=None, tamper=False, operation="storage-apply", inventory_data=None, real_verify=False):
         node = node or ("vault-a" if operation == "openbao-storage-apply" else "server-a")
         if controller is not None:
             variables.write_text(controller if isinstance(controller, str) else json.dumps(controller))
@@ -105,6 +125,11 @@ raise SystemExit(7 if fault == "exit" else 0)
         if native:
             local_inv = root / "local.yml"
             local_inv.write_text(yaml.safe_dump({"all": {"hosts": {node: {"ansible_connection": "local"}}}}))
+            if real_verify:
+                mountpoint = root / "empty"
+                mountpoint.mkdir()
+                local_inv.write_text(yaml.safe_dump(openbao_verification_inventory(mountpoint)))
+                environment["REAL_VERIFY"] = "1"
             play = root / "local-play.yml"
             play.write_text(yaml.safe_dump([{
                 "hosts": "all", "gather_facts": False,
@@ -139,6 +164,7 @@ def test_storage_apply_fixed_single_node_calls(repo_root, launcher, operation, n
     result.assert_success()
     assert "Overall: PASS" in result.stdout
     common = ["--extra-vars", f"@{variables}"]
+    scope = ["--extra-vars", "storage_verify_scope=openbao"] if operation == "openbao-storage-apply" else []
     play = ["ansible-playbook", "-i", str(inv), str(repo_root / "playbooks/storage-volumes.yml"), "--limit", node]
     assert commands == [
         ["ansible-inventory", "-i", str(inv), "--list", *common],
@@ -147,7 +173,7 @@ def test_storage_apply_fixed_single_node_calls(repo_root, launcher, operation, n
         [*play, *common],
         [*play, *common],
         ["ansible-playbook", "-i", str(inv), str(repo_root / "playbooks/maintenance/storage-volumes-verify.yml"),
-         "--limit", node, *common],
+         "--limit", node, *scope, *common],
     ]
 
 
@@ -166,7 +192,7 @@ def test_storage_apply_accepts_generated_transport_and_direct_key_map(launcher, 
 @pytest.mark.parametrize("key", [
     "storage_volumes", "storage_volume_layouts", "storage_volume_device", "storage_volume_initialize",
     "storage_volume_require_stable_device", "storage_volume_default_mount_state", "initialize",
-    "ansible_host", "ansible_connection", "ansible_become", "arbitrary_variable",
+    "ansible_host", "ansible_connection", "ansible_become", "storage_verify_scope", "arbitrary_variable",
 ])
 def test_storage_apply_rejects_nontransport_controller_vars_before_inventory(launcher, key):
     result, commands, _, _ = launcher(controller={**CI_CONTROLLER_VARS, key: "rejected-secret-value"})
@@ -316,6 +342,50 @@ def test_storage_verifier_real_includes_reject_unmounted_local_directory(repo_ro
     assert list(mountpoint.iterdir()) == []
 
 
+@pytest.mark.parametrize("scenario", ["valid", "default", "unknown", "size", "not-storage", "multiple",
+                                      "rocky", "container_hosts", "openbao", "rke2_cluster", "rke2_servers", "rke2_agents"])
+def test_storage_verifier_openbao_real_playbook(repo_root, isolated_test_dir, command_runner, scenario):
+    mountpoint = isolated_test_dir / "empty"
+    mountpoint.mkdir()
+    data = openbao_verification_inventory(mountpoint)
+    groups = data["all"]["children"]
+    if scenario == "size":
+        del groups["openbao_storage"]["hosts"]["vault-c"]
+    elif scenario == "not-storage":
+        groups["storage_volume_hosts"] = {"hosts": {"vault-a": {}}}
+    elif scenario in ("rocky", "container_hosts", "openbao", "rke2_cluster", "rke2_servers", "rke2_agents"):
+        groups[scenario] = {"hosts": {"vault-c": {}}}
+    inv = isolated_test_dir / "hosts.yml"
+    inv.write_text(yaml.safe_dump(data))
+    scope = [] if scenario == "default" else ["--extra-vars", "storage_verify_scope=" + ("invalid" if scenario == "unknown" else "openbao")]
+    result = command_runner.run([
+        "ansible-playbook", "-i", inv, repo_root / "playbooks/maintenance/storage-volumes-verify.yml",
+        "--limit", "openbao_storage" if scenario == "multiple" else "vault-a", *scope,
+    ])
+    result.assert_failure()
+    if scenario == "valid":
+        assert "must be actively mounted after apply" in result.stdout, result.diagnostics()
+        assert "TASK [Inspect exact storage volume mountpoint]" in result.stdout
+    else:
+        assert "TASK [Read storage defaults" not in result.stdout, result.diagnostics()
+        assert "TASK [Inspect exact storage volume mountpoint]" not in result.stdout
+    assert "changed=0" in result.stdout
+    assert list(mountpoint.iterdir()) == []
+
+
+def test_openbao_apply_reaches_actual_mounted_verifier(launcher, isolated_test_dir):
+    result, commands, _, _ = launcher(operation="openbao-storage-apply", native=True, real_verify=True)
+    result.assert_failure()
+    assert len(commands) == 6
+    assert "must be actively mounted after apply" in result.stdout, result.diagnostics()
+    assert "Overall: FAIL" in result.stdout  # unmounted fixture must never be accepted
+    assert any(line.split()[:4] == ["vault-a", "openbao-storage", "storage-idempotence", "PASS"]
+               for line in result.stdout.splitlines())
+    assert any(line.split()[:4] == ["vault-a", "openbao-storage", "storage-verify", "FAIL"]
+               for line in result.stdout.splitlines())
+    assert list((isolated_test_dir / "empty").iterdir()) == []
+
+
 @pytest.mark.parametrize("changed", [False, True])
 @pytest.mark.parametrize("operation", ["storage-apply", "openbao-storage-apply"])
 def test_storage_apply_native_callback_requires_real_second_apply_unchanged(launcher, changed, operation):
@@ -346,15 +416,17 @@ def test_openbao_apply_refuses_nonmounted_peer_before_ping(launcher):
     assert [call[0] for call in commands] == ["ansible-inventory"]
 
 
-def test_openbao_apply_rejects_intent_override_before_inventory(launcher):
-    result, commands, _, _ = launcher(operation="openbao-storage-apply", controller={"storage_volumes": []})
+@pytest.mark.parametrize("controller", [{"storage_volumes": []}, {"storage_verify_scope": "rke2"}])
+def test_openbao_apply_rejects_intent_override_before_inventory(launcher, controller):
+    result, commands, _, _ = launcher(operation="openbao-storage-apply", controller=controller)
     result.assert_failure()
     assert "transport-only JSON" in result.stderr
     assert commands == []
 
 
 @pytest.mark.parametrize("scenario", ["valid", "options", "wrong-device", "bind", "fstype", "absent", "exec", "override"])
-def test_storage_post_apply_mount_verification(repo_root, isolated_test_dir, command_runner, scenario):
+@pytest.mark.parametrize("scope", ["rke2", "openbao"])
+def test_storage_post_apply_mount_verification(repo_root, isolated_test_dir, command_runner, scenario, scope):
     """Execute shipped assertions/variable resolution with only target probes doubled."""
     root = isolated_test_dir
     plugins = root / "action_plugins"
@@ -428,11 +500,17 @@ class ActionModule(ActionBase):
         values["storage_volume_default_mount_options"] = "rw,noexec"
         values["storage_volumes"] = [{"vg_name": "data", "lv_name": "primary", "mountpoint": "/srv/data"}]
     inv = root / "hosts.yml"
-    inv.write_text(yaml.safe_dump({"all": {"children": {
+    data = {"all": {"children": {
         "rke2_cluster": {"children": {"rke2_servers": {"hosts": {"server-a": values}}}},
         "storage_volume_hosts": {"hosts": {"server-a": {}}},
-    }}}))
-    result = command_runner.run(["ansible-playbook", "-i", inv, playbook, "--limit", "server-a"],
+    }}}
+    node, extra = "server-a", []
+    if scope == "openbao":
+        data = openbao_verification_inventory("/srv/data")
+        data["all"]["children"]["openbao_storage"]["hosts"]["vault-a"] = values
+        node, extra = "vault-a", ["--extra-vars", "storage_verify_scope=openbao"]
+    inv.write_text(yaml.safe_dump(data))
+    result = command_runner.run(["ansible-playbook", "-i", inv, playbook, "--limit", node, *extra],
                                 environment={"ANSIBLE_ACTION_PLUGINS": str(plugins)})
     if scenario in {"valid", "override"}:
         result.assert_success()

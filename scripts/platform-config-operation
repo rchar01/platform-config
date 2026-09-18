@@ -461,7 +461,9 @@ case "$operation" in
     # This is a real second apply, not a prediction or an automatic retry.
     run_playbook storage-idempotence playbooks/storage-volumes.yml "$node"
     require_phase_evidence storage-idempotence
-    run_playbook storage-verify playbooks/maintenance/storage-volumes-verify.yml "$node"
+    storage_verify_args=()
+    [[ $operation != openbao-storage-apply ]] || storage_verify_args=(--extra-vars storage_verify_scope=openbao)
+    run_playbook storage-verify playbooks/maintenance/storage-volumes-verify.yml "$node" "${storage_verify_args[@]}"
     ;;
   rke2-host-aliases-plan | rke2-host-aliases-apply)
     require_phase_evidence inventory
