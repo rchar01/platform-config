@@ -139,14 +139,14 @@
       - >-
         {{ pki_host_local_certificate_state_root }}/trust/{{ pki_host_local_certificate_trust_id }}
     pki_host_local_certificate_filesystem_roots_disjoint: >-
-      {% set namespace = namespace(valid=true) %}
-      {% for root in pki_host_local_certificate_filesystem_protected_roots %}
-      {% if pki_host_local_certificate_filesystem_exchange_root == root
+      {%- set namespace = namespace(valid=true) -%}
+      {%- for root in pki_host_local_certificate_filesystem_protected_roots -%}
+      {%- if pki_host_local_certificate_filesystem_exchange_root == root
             or pki_host_local_certificate_filesystem_exchange_root.startswith(root ~ '/')
-            or root.startswith(pki_host_local_certificate_filesystem_exchange_root ~ '/') %}
-      {% set namespace.valid = false %}
-      {% endif %}
-      {% endfor %}
+            or root.startswith(pki_host_local_certificate_filesystem_exchange_root ~ '/') -%}
+      {%- set namespace.valid = false -%}
+      {%- endif -%}
+      {%- endfor -%}
       {{ namespace.valid }}
     pki_host_local_certificate_all_paths: >-
       {{

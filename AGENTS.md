@@ -32,6 +32,22 @@
   readiness is not endpoint qualification. Keep site pins private and bootstrap
   source preflight unchanged. See [Rocky CA Trust](docs/rocky-ca-trust.md).
 
+## Registry Deployment Boundary
+
+- Fixed `registry-*` operations prepare exactly one fresh registry, with separate
+  client scope. Snapshot transport-only JSON before inventory and gate every
+  command on complete phase evidence. Host/storage/stage reject active or retained
+  lifecycle/data state. Storage reuses the role with a real second zero-change
+  apply and mounted verification; stage requires mounted storage covering the Zot
+  data tree. Preserve the RKE2 storage routes.
+- Registry CI uses filesystem initial issuance only. Keep request/activation plans
+  read-only, defaults separate from inventory, target-local leaf keys, and the
+  offline signing/transfer handoff. Reject issue on active state before request
+  creation. Completed activation replay and interrupted recovery retain existing
+  helper semantics; recovery does not imply success. Smoke writes artifacts and
+  requires a manual action; post-check is zero-change. See
+  [Registry Operations](docs/registry-operations.md).
+
 ## Kubernetes Bastion Boundary
 
 - `platform-config` owns installing and configuring bastion hosts with Ansible.

@@ -175,15 +175,20 @@ def test_legacy_zot_facade_argv_and_bounded_output_remain_exact(
 def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> None:
     assert {
         path.name for path in (repo_root / "playbooks").glob("registry-pki-*.yml")
-    } == {"registry-pki-request.yml", "registry-pki-activate.yml"}
+    } == {"registry-pki-request.yml", "registry-pki-activate.yml", "registry-pki-preflight.yml"}
 
     role_tasks = repo_root / "roles/pki_host_local_certificate/tasks"
     assert {path.name for path in role_tasks.glob("*.yml")} == {
+        "filesystem_preflight.yml",
         "filesystem_request.yml",
         "filesystem_response.yml",
         "gitlab_setup.yml",
         "lifecycle_helper.yml",
         "main.yml",
+        "registry_defaults.yml",
+        "registry_dormant.yml",
+        "registry_pki_preflight.yml",
+        "registry_storage.yml",
         "request_helper.yml",
         "request_publish.yml",
         "response_activate.yml",

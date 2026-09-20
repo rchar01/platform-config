@@ -72,6 +72,12 @@
   ansible.builtin.import_tasks: validate_tls_lifecycle_helper.yml
   when: zot_registry_tls_enabled | bool
 
+- name: Stage Zot TLS lifecycle Python dependency
+  ansible.builtin.package:
+    name: python3-cryptography
+    state: present
+  when: zot_registry_tls_enabled | bool
+
 - name: Install Zot TLS lifecycle helper
   ansible.builtin.copy:
     src: "{{ role_path }}/../pki_host_local_certificate/files/platform-pki-host-local-lifecycle"

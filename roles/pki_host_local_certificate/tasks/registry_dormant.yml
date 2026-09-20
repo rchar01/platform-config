@@ -1,0 +1,37 @@
+---
+- name: Render expected dormant Zot configuration
+  ansible.builtin.set_fact:
+    registry_preflight_config_sha256: >-
+      {{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/zot_registry/templates/config.json.j2') | hash('sha256') }}
+  vars:
+    zot_registry_tls_effective_cert_path: "{{ zot_registry_tls_cert_path }}"
+    zot_registry_tls_effective_key_path: "{{ zot_registry_tls_key_path }}"
+
+- name: Inspect initial registry readiness without changing target state
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/pki_host_local_certificate/files/registry-initial-preflight.py', rstrip=false) }}"
+      - "{{ registry_preflight_inputs | to_json }}"
+  vars:
+    registry_preflight_inputs:
+      request: "{{ registry_preflight_initial_request }}"
+      state: "{{ zot_registry_tls_host_local_state_root }}"
+      pending: "{{ zot_registry_tls_host_local_pending_root }}"
+      versions: "{{ zot_registry_tls_host_local_versions_root }}"
+      config: "{{ zot_registry_config_path }}"
+      config_sha256: "{{ registry_preflight_config_sha256 }}"
+      quadlet: "{{ zot_registry_quadlet_path }}"
+      quadlet_sha256: >-
+        {{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/zot_registry/templates/zot.container.j2') | hash('sha256') }}
+      cert: "{{ zot_registry_tls_cert_path }}"
+      key: "{{ zot_registry_tls_key_path }}"
+      data: "{{ zot_registry_data_dir }}"
+      helper: "{{ zot_registry_tls_host_local_lifecycle_helper_path }}"
+      helper_sha256: >-
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle', rstrip=false) | hash('sha256') }}
+      service: "{{ zot_registry_tls_host_local_service }}"
+      target: "{{ zot_registry_tls_host_local_target }}"
+  changed_when: false
+  check_mode: false

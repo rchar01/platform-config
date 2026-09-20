@@ -1,0 +1,154 @@
+---
+- name: Validate the existing target-local certificate contract
+  ansible.builtin.import_tasks: validate_target_local.yml
+
+- name: Validate the existing trust contract
+  ansible.builtin.import_tasks: validate_trust.yml
+
+- name: Bind PKI inputs to the staged Zot lifecycle
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_state_root == zot_registry_tls_host_local_state_root
+      - pki_host_local_certificate_pending_root == zot_registry_tls_host_local_pending_root
+      - pki_host_local_certificate_versions_root == zot_registry_tls_host_local_versions_root
+      - pki_host_local_certificate_service == zot_registry_tls_host_local_service
+      - pki_host_local_certificate_target == zot_registry_tls_host_local_target
+      - pki_host_local_certificate_lifecycle_helper_path == zot_registry_tls_host_local_lifecycle_helper_path
+      - pki_host_local_certificate_service_config_path == zot_registry_config_path
+    fail_msg: PKI and staged Zot must select the same lifecycle identity and paths.
+
+- name: Validate protected reviewed controller trust and CA sources without transfer
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -c
+      - |
+        import json, sys
+        sys.path.insert(0, sys.argv[1])
+        from platform_pki_secure_source import pin_controller_source
+        values = json.loads(sys.argv[2])
+        for name, path in values['sources'].items():
+            source = pin_controller_source(path, values['sha256'][name])
+            try:
+                source.recheck()
+            finally:
+                source.close()
+        source = pin_controller_source(values['ca'], values['ca_sha256'], maximum=1048576)
+        try:
+            source.recheck()
+        finally:
+            source.close()
+      - "{{ playbook_dir }}/../plugins/module_utils"
+      - "{{ registry_pki_source_inputs | to_json }}"
+  vars:
+    registry_pki_source_inputs:
+      sources: "{{ pki_host_local_certificate_trust_sources }}"
+      sha256: "{{ pki_host_local_certificate_trust_sha256 }}"
+      ca: "{{ pki_host_local_certificate_reviewed_ca_source }}"
+      ca_sha256: "{{ pki_host_local_certificate_reviewed_ca_sha256 }}"
+    ansible_become: false
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: registry_pki_preflight_action | default('request') == 'request'
+
+- name: Validate filesystem exchange readiness without creating directories
+  ansible.builtin.import_tasks: filesystem_preflight.yml
+  when: registry_pki_preflight_action | default('request') == 'request'
+
+- name: Require staged dormant registry for initial request
+  ansible.builtin.include_tasks: registry_dormant.yml
+  vars:
+    registry_preflight_initial_request: true
+  when: registry_pki_preflight_action | default('request') == 'request'
+
+- name: Inspect request signing readiness without reading private key into Ansible
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os, pathlib, shutil, stat, sys
+        import cryptography
+        for tool in ('openssl', 'ssh-keygen'):
+            assert shutil.which(tool)
+        path = pathlib.Path(sys.argv[1])
+        for parent in reversed(path.parents):
+            info = parent.lstat()
+            assert stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+            assert not info.st_mode & 0o022
+        info = path.lstat()
+        assert stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+        assert stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
+        assert 0 < info.st_size <= 65536
+      - "{{ pki_host_local_certificate_request_signing_key_path }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: registry_pki_preflight_action | default('request') == 'request'
+
+- name: Verify exact staged lifecycle helper before response inspection
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import hashlib, pathlib, stat, sys
+        import cryptography
+        path = pathlib.Path(sys.argv[1])
+        for parent in reversed(path.parents):
+            info = parent.lstat()
+            assert stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+            assert not info.st_mode & 0o022
+        info = path.lstat()
+        assert stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+        assert stat.S_IMODE(info.st_mode) == 0o755 and info.st_nlink == 1
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == sys.argv[2]
+      - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+      - >-
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle', rstrip=false) | hash('sha256') }}
+  changed_when: false
+  check_mode: false
+  when: registry_pki_preflight_action | default('request') == 'activate'
+
+# This existing read-only entry accepts pending, recovery, and completed replay.
+# It never imports a response, installs trust, or runs target-recover.
+- name: Authenticate activation readiness with existing lifecycle status
+  ansible.builtin.include_tasks: response_preflight.yml
+  when: registry_pki_preflight_action | default('request') == 'activate'
+
+- name: Reject registry activation that has already reached terminal failure
+  ansible.builtin.assert:
+    that:
+      - (pki_host_local_certificate_initial_status_result.stdout | from_json).status not in ['not-activated', 'rolled-back']
+    fail_msg: Registry activation has reached terminal failure; recovery cleanup cannot make it an actionable activation.
+  when: registry_pki_preflight_action | default('request') == 'activate'
+
+- name: Report interrupted registry activation recovery
+  ansible.builtin.debug:
+    msg: >-
+      Interrupted activation requires recovery. Recovery can restore safety but
+      still end in terminal failure; the activation route requires complete/none.
+  when:
+    - registry_pki_preflight_action | default('request') == 'activate'
+    - (pki_host_local_certificate_initial_status_result.stdout | from_json).status == 'recovery-required'
+
+- name: Validate reviewed CA before actionable registry activation
+  platform_pki_reviewed_ca:
+    source: "{{ pki_host_local_certificate_reviewed_ca_source }}"
+    sha256: "{{ pki_host_local_certificate_reviewed_ca_sha256 }}"
+    dest: "{{ pki_host_local_certificate_reviewed_ca_target_path }}"
+    mode: "{{ pki_host_local_certificate_reviewed_ca_mode }}"
+  check_mode: true
+  changed_when: false
+  when:
+    - registry_pki_preflight_action | default('request') == 'activate'
+    - >-
+      [(pki_host_local_certificate_initial_status_result.stdout | from_json).status,
+       (pki_host_local_certificate_initial_status_result.stdout | from_json).required_action]
+      in [['request-pending', 'await-response'],
+          ['response-ready', 'install-response'],
+          ['response-ready', 'activate-response'],
+          ['activating', 'complete-local-validation']]

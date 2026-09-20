@@ -1,0 +1,39 @@
+---
+- name: Read registry role defaults separately from inventory
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/{{ item.role }}/defaults/main.yml"
+    name: "{{ item.namespace }}"
+  loop:
+    - role: zot_registry
+      namespace: registry_zot_defaults
+    - role: pki_host_local_certificate
+      namespace: registry_pki_defaults
+
+# Resolve one key at a time so dependent Zot defaults retain inventory values.
+- name: Resolve omitted registry defaults without replacing inventory
+  ansible.builtin.set_fact:
+    "{{ item }}": "{{ registry_zot_defaults[item] }}"
+  loop: "{{ registry_zot_defaults.keys() | list }}"
+  when: item not in query('ansible.builtin.varnames', '^' ~ item ~ '$')
+
+- name: Resolve omitted certificate defaults without replacing inventory
+  ansible.builtin.set_fact:
+    "{{ item }}": "{{ registry_pki_defaults[item] }}"
+  loop: "{{ registry_pki_defaults.keys() | list }}"
+  when: item not in query('ansible.builtin.varnames', '^' ~ item ~ '$')
+
+- name: Require the initial filesystem Zot inventory contract
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_transport == 'filesystem'
+      - pki_host_local_certificate_operation == 'issue'
+      - pki_host_local_certificate_service_adapter == 'zot-v1'
+      - zot_registry_service_name == 'zot.service'
+      - zot_registry_quadlet_name == 'zot.container'
+      - zot_registry_tls_enabled is boolean and zot_registry_tls_enabled
+      - zot_registry_tls_cert_src == ''
+      - zot_registry_tls_key_src == ''
+    fail_msg: Registry operations require filesystem initial issuance with no controller TLS sources.
+
+- name: Validate canonical registry TLS inventory
+  ansible.builtin.include_tasks: ../../zot_registry/tasks/validate_tls_custody.yml

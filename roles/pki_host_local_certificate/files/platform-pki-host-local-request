@@ -1613,6 +1613,8 @@ def main():
             completed_request_ids, active_request = inspect_state_root(
                 args.state_root, trust_dir, args
             )
+        if args.operation == "issue" and active_request is not None:
+            fail("issue requires no active predecessor")
         if args.operation == "renew" and (
             active_request is None
             or args.predecessor_request_id != active_request

@@ -4,6 +4,10 @@ This is the canonical operator workflow for one Zot registry target. Complete
 [PKI Exchange Setup](pki-exchange-setup.md) first. Real inventory, trust policy,
 project records, CA files, and secrets remain outside public Git.
 
+For fresh filesystem issuance orchestrated by GitLab, use the fixed
+[Registry Operations](registry-operations.md). The same offline authority and
+host-local exchange boundaries apply.
+
 ## Invariants
 
 - `LIMIT` selects exactly one registry host.
@@ -90,7 +94,7 @@ The smoke check does not participate in activation validation or rollback.
 ## Rejected State
 
 There is no public migrate, reset, cancellation, status, direct/controller-local,
-Ansible-provisioned SSH/SFTP access, controller intake/check/transfer, runner, evidence,
+Ansible-provisioned SSH/SFTP access, controller intake/check/transfer, runner payload transport, evidence,
 deployment, validation-result, or outcome route. Helper-hash predecessor
 migration is also unsupported.
 

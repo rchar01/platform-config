@@ -249,8 +249,10 @@ def test_filesystem_transport_uses_fixed_target_paths(repo_root: Path) -> None:
     request_source = (root / "filesystem_request.yml").read_text(encoding="utf-8")
     response_source = (root / "filesystem_response.yml").read_text(encoding="utf-8")
 
+    preflight = load_yaml(root / "filesystem_preflight.yml")
+    assert request[0]["ansible.builtin.import_tasks"] == "filesystem_preflight.yml"
     ancestor_check = task_named(
-        request, "Require protected target-local filesystem exchange ancestors"
+        preflight, "Require protected target-local filesystem exchange ancestors"
     )
     ancestor_assertions = "\n".join(ancestor_check["ansible.builtin.assert"]["that"])
     for required in (

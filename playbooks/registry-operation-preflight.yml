@@ -1,0 +1,84 @@
+---
+- name: Read-only registry operation preflight
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  strategy: linear
+  vars:
+    registry_operation_registry: "{{ groups.get('registry', []) }}"
+    registry_operation_clients: "{{ groups.get('registry_clients', []) }}"
+    registry_operation_selected: >-
+      {{ registry_operation_clients if registry_operation_action == 'clients'
+         else registry_operation_registry + registry_operation_clients
+         if registry_operation_action == 'smoke' else registry_operation_registry }}
+  tasks:
+    - name: Validate fixed registry operation and complete selected scope
+      ansible.builtin.assert:
+        that:
+          - registry_operation_action | default('') in ['host', 'storage', 'stage', 'clients', 'pki-request', 'pki-activate', 'smoke']
+          - registry_operation_registry | length == 1
+          - registry_operation_registry | difference(groups.get('rocky', [])) | length == 0
+          - registry_operation_registry | difference(groups.get('container_hosts', [])) | length == 0
+          - registry_operation_registry | difference(groups.get('storage_volume_hosts', [])) | length == 0
+          - >-
+            registry_operation_registry | intersect(registry_operation_clients
+            + groups.get('gitlab_runners', []) + groups.get('rke2_cluster', [])
+            + groups.get('rke2_servers', []) + groups.get('rke2_agents', [])
+            + groups.get('openbao', [])) | length == 0
+          - registry_operation_action not in ['clients', 'smoke'] or registry_operation_clients | length > 0
+          - ansible_play_hosts_all | sort == registry_operation_selected | sort
+        fail_msg: Registry operations require the exact coherent singleton or complete client scope.
+
+    - name: Require literal unambiguous selected inventory names
+      ansible.builtin.assert:
+        that:
+          - item is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$')
+          - item is not match('^[0-9.]+$')
+          - item not in groups
+      loop: "{{ (registry_operation_selected + registry_operation_registry) | unique }}"
+
+    - name: Validate registry inventory without inspecting future source files
+      ansible.builtin.include_tasks: ../roles/pki_host_local_certificate/tasks/registry_defaults.yml
+      when: inventory_hostname in registry_operation_registry
+
+    - name: Bind registry data persistence to declared storage
+      ansible.builtin.include_tasks: ../roles/pki_host_local_certificate/tasks/registry_storage.yml
+      when: registry_operation_action in ['storage', 'stage']
+
+    - name: Require fresh registry before host storage or stage changes
+      ansible.builtin.include_tasks: ../roles/pki_host_local_certificate/tasks/registry_dormant.yml
+      vars:
+        registry_preflight_initial_request: false
+      when:
+        - inventory_hostname in registry_operation_registry
+        - registry_operation_action in ['host', 'storage', 'stage']
+
+    - name: Validate selected registry trust inputs
+      ansible.builtin.assert:
+        that:
+          - registry_ca_trust_source | default('') is string
+          - registry_ca_trust_sha256 | default('') is string
+          - >-
+            (registry_ca_trust_source | default('') == '' and registry_ca_trust_sha256 | default('') == '')
+            or (registry_ca_trust_source | default('') is match('^/')
+                and registry_ca_trust_sha256 | default('') is match('^[0-9a-f]{64}$'))
+      when: registry_operation_action in ['stage', 'clients', 'smoke']
+
+    - name: Inspect reviewed registry trust source without installing it
+      platform_pki_reviewed_ca:
+        source: "{{ registry_ca_trust_source }}"
+        sha256: "{{ registry_ca_trust_sha256 }}"
+        dest: "{{ registry_ca_trust_target | default('/etc/pki/ca-trust/source/anchors/platform-registry-ca.crt') }}"
+        mode: "0644"
+      check_mode: true
+      changed_when: false
+      when:
+        - registry_operation_action in ['stage', 'clients', 'smoke']
+        - registry_ca_trust_source | default('') | length > 0
+
+- name: Verify mounted registry storage before staging
+  ansible.builtin.import_playbook: maintenance/storage-volumes-verify.yml
+  vars:
+    storage_verify_scope: registry
+  when: registry_operation_action | default('') == 'stage'

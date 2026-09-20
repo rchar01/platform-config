@@ -15,6 +15,41 @@ from typing import Any
 
 
 OPERATIONS = {
+    "registry-host-plan": (
+        "inventory", "connectivity", "registry-preflight", "registry-bootstrap-check", "registry-base-os-check",
+    ),
+    "registry-host-apply": (
+        "inventory", "connectivity", "registry-preflight",
+        "registry-bootstrap-check", "registry-bootstrap-apply", "registry-bootstrap-post-check",
+        "registry-base-os-check", "registry-base-os-apply", "registry-base-os-post-check",
+    ),
+    "registry-storage-plan": ("inventory", "connectivity", "registry-preflight", "storage-check"),
+    "registry-storage-apply": (
+        "inventory", "connectivity", "registry-preflight", "storage-check", "storage-apply",
+        "storage-idempotence", "storage-verify",
+    ),
+    "registry-stage-plan": ("inventory", "connectivity", "registry-preflight", "registry-stage-check"),
+    "registry-stage-apply": (
+        "inventory", "connectivity", "registry-preflight", "registry-stage-check",
+        "registry-stage-apply", "registry-stage-post-check",
+    ),
+    "registry-clients-plan": ("inventory", "connectivity", "registry-preflight", "registry-clients-check"),
+    "registry-clients-apply": (
+        "inventory", "connectivity", "registry-preflight", "registry-clients-check",
+        "registry-clients-apply", "registry-clients-post-check",
+    ),
+    "registry-pki-request-plan": ("inventory", "connectivity", "registry-preflight", "registry-pki-preflight"),
+    "registry-pki-request": (
+        "inventory", "connectivity", "registry-preflight", "registry-pki-preflight", "registry-pki-request",
+    ),
+    "registry-pki-activate-plan": ("inventory", "connectivity", "registry-preflight", "registry-pki-preflight"),
+    "registry-pki-activate": (
+        "inventory", "connectivity", "registry-preflight", "registry-pki-preflight", "registry-pki-activate",
+    ),
+    "registry-smoke-plan": ("inventory", "connectivity", "registry-preflight"),
+    "registry-smoke": (
+        "inventory", "connectivity", "registry-preflight", "registry-smoke", "registry-smoke-post-check",
+    ),
     "rke2-host-aliases-plan": ("inventory", "connectivity", "host-aliases-check"),
     "rke2-host-aliases-apply": (
         "inventory", "connectivity", "host-aliases-check", "host-aliases-apply",
@@ -132,11 +167,19 @@ FAILOVER_RESULTS = {
 }
 FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
-TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | {"rke2-deployment-runners-smoke"}
+REGISTRY_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("registry-"))
+TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | REGISTRY_OPERATIONS | {"rke2-deployment-runners-smoke"}
 EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply"} | OPENBAO_STORAGE_OPERATIONS
 PREFIX_GATED_OPERATIONS = EVIDENCE_GATED_OPERATIONS | {"rke2-converge-plan", "rke2-bootstrap", "rke2-deploy"}
 UNCHANGED_PHASES = frozenset(
     {
+        "registry-preflight",
+        "registry-pki-preflight",
+        "registry-bootstrap-post-check",
+        "registry-base-os-post-check",
+        "registry-stage-post-check",
+        "registry-clients-post-check",
+        "registry-smoke-post-check",
         "failover-plan",
         "host-aliases-post-check",
         "host-aliases-verify",
@@ -429,6 +472,49 @@ def command_hosts(args: argparse.Namespace) -> None:
                         "role": "server" if node in servers else "agent"})
     elif node is not None:
         raise SummaryError
+    elif operation in REGISTRY_OPERATIONS:
+        registry = group_hosts(inventory, "registry")
+        clients = group_hosts(inventory, "registry_clients")
+        excluded = clients | set().union(*(group_hosts(inventory, group) for group in (
+            "gitlab_runners", "rke2_cluster", "rke2_servers", "rke2_agents", "openbao",
+        )))
+        if (len(registry) != 1 or registry & excluded
+                or any(not registry <= group_hosts(inventory, group)
+                       for group in ("rocky", "container_hosts", "storage_volume_hosts"))):
+            raise SummaryError
+        needs_clients = operation.startswith(("registry-clients-", "registry-smoke"))
+        if needs_clients and not clients:
+            raise SummaryError
+        selected = (clients if operation.startswith("registry-clients-")
+                    else registry | clients if needs_clients else registry)
+        # Reject patterns, IPs and group collisions before using literal limits.
+        for host in selected | registry:
+            if (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", host) is None
+                    or host in inventory or host in {"all", "ungrouped"}):
+                raise SummaryError
+            safe_host(host)
+        if operation.startswith("registry-storage-"):
+            metadata = inventory.get("_meta", {})
+            hostvars = metadata.get("hostvars", {}) if isinstance(metadata, dict) else {}
+            values = hostvars.get(next(iter(registry))) if isinstance(hostvars, dict) else None
+            if (not isinstance(values, dict) or not isinstance(values.get("storage_volumes"), list)
+                    or not values["storage_volumes"]
+                    or any(not isinstance(volume, dict) for volume in values["storage_volumes"])
+                    or not isinstance(values.get("storage_volume_layouts", []), list)):
+                raise SummaryError
+            if operation == "registry-storage-apply":
+                default_state = values.get("storage_volume_default_mount_state", "mounted")
+                if any(volume.get("state", default_state) != "mounted" for volume in values["storage_volumes"]):
+                    raise SummaryError
+        if getattr(args, "controller_vars", None) is None:
+            raise SummaryError
+        values = transport_controller_vars(args.controller_vars)
+        if ("platform_ci_ssh_private_key_files" in values
+                and selected - values["platform_ci_ssh_private_key_files"].keys()):
+            raise SummaryError
+        for host in sorted(selected):
+            records.append({"schema": 1, "kind": "host", "host": host,
+                            "role": "registry" if host in registry else "registry-client"})
     elif operation in OPENBAO_OPERATIONS:
         for host in sorted(group_hosts(inventory, "openbao")):
             records.append({"schema": 1, "kind": "host", "host": host, "role": "openbao"})
@@ -523,10 +609,21 @@ def parse_records(path: Path) -> tuple[str, tuple[str, ...], dict[str, str], lis
         host = safe_host(record.get("host"))
         role = safe_text(record.get("role"), 16)
         allowed_roles = {"openbao-storage"} if operation in OPENBAO_STORAGE_OPERATIONS else {"server", "agent", "openbao", "N/A"}
+        if operation in REGISTRY_OPERATIONS:
+            allowed_roles = {"registry", "registry-client"}
         if role not in allowed_roles or host in hosts:
             raise SummaryError
         hosts[host] = role
     return operation, phases, hosts, remaining
+
+
+def command_registry_limit(args: argparse.Namespace) -> None:
+    operation, _, hosts, _ = parse_records(args.input)
+    if operation not in REGISTRY_OPERATIONS or not hosts:
+        raise SummaryError
+    # The launcher calls this only after successful inventory evidence gating.
+    # In particular, PKI receives the canonical hostname, never a group alias.
+    print(",".join(sorted(hosts)))
 
 
 def applicable(role: str, phase: str) -> bool:
@@ -677,7 +774,7 @@ def command_render(args: argparse.Namespace) -> int:
                     if (
                         recap["failures"] > 0
                         or recap["unreachable"] > 0
-                        or (operation in ALIAS_OPERATIONS and recap["ok"] == 0)
+                        or (operation in ALIAS_OPERATIONS | REGISTRY_OPERATIONS and recap["ok"] == 0)
                         or ((operation in EVIDENCE_GATED_OPERATIONS or phase.startswith("rke2-deployment-runners-"))
                             and (recap["ignored"] > 0 or recap["rescued"] > 0))
                         or (phase in UNCHANGED_PHASES and recap["changed"] > 0)
@@ -799,6 +896,8 @@ def parser() -> argparse.ArgumentParser:
     transport = subparsers.add_parser("transport-controller-vars", add_help=False)
     transport.add_argument("--input", required=True, type=Path)
     transport.add_argument("--output", required=True, type=Path)
+    registry_limit = subparsers.add_parser("registry-limit", add_help=False)
+    registry_limit.add_argument("--input", required=True, type=Path)
     phase = subparsers.add_parser("phase", add_help=False)
     phase.add_argument("--output", required=True, type=Path)
     phase.add_argument("--phase", required=True)
@@ -822,6 +921,8 @@ def main() -> int:
             command_storage_apply_controller_vars(args)
         elif args.command == "transport-controller-vars":
             command_transport_controller_vars(args)
+        elif args.command == "registry-limit":
+            command_registry_limit(args)
         elif args.command == "phase":
             command_phase(args)
         elif args.command == "render":

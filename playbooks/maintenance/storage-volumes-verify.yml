@@ -8,7 +8,7 @@
     - name: Require one storage host in the fixed verification scope
       ansible.builtin.assert:
         that:
-          - storage_verify_scope | default('rke2') in ['rke2', 'openbao']
+          - storage_verify_scope | default('rke2') in ['rke2', 'openbao', 'registry']
           - ansible_play_hosts_all | length == 1
           - storage_volumes | default([]) | length > 0
           - >-
@@ -27,6 +27,15 @@
                     + groups.get('openbao', []) + groups.get('rke2_cluster', [])
                     + groups.get('rke2_servers', []) + groups.get('rke2_agents', []))
                   | length == 0))
+            or
+            (storage_verify_scope | default('rke2') == 'registry'
+             and groups.get('registry', []) == [inventory_hostname]
+             and inventory_hostname in groups.get('rocky', [])
+             and inventory_hostname in groups.get('container_hosts', [])
+             and inventory_hostname not in (groups.get('registry_clients', [])
+                 + groups.get('gitlab_runners', []) + groups.get('rke2_cluster', [])
+                 + groups.get('rke2_servers', []) + groups.get('rke2_agents', [])
+                 + groups.get('openbao', [])))
 
     - name: Read storage defaults without overriding inventory
       ansible.builtin.include_vars:

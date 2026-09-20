@@ -3,7 +3,8 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage routes only)]' \
+    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (RKE2/OpenBao storage routes only)]' \
+    'Registry operations (no additional arguments): registry-host-plan, registry-host-apply, registry-storage-plan, registry-storage-apply, registry-stage-plan, registry-stage-apply, registry-clients-plan, registry-clients-apply, registry-pki-request-plan, registry-pki-request, registry-pki-activate-plan, registry-pki-activate, registry-smoke-plan, registry-smoke' \
     'Fixed operations: storage-check, storage-apply, openbao-storage-check, openbao-storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, rke2-deployment-runners-smoke, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
 }
 
@@ -81,6 +82,7 @@ truncate_summary_output() {
 operation=$1
 shift
 case "$operation" in
+  registry-host-plan | registry-host-apply | registry-storage-plan | registry-storage-apply | registry-stage-plan | registry-stage-apply | registry-clients-plan | registry-clients-apply | registry-pki-request-plan | registry-pki-request | registry-pki-activate-plan | registry-pki-activate | registry-smoke-plan | registry-smoke) ;;
   storage-check | storage-apply | openbao-storage-check | openbao-storage-apply) ;;
   rke2-host-aliases-plan | rke2-host-aliases-apply) ;;
   rke2-deployment-runners-smoke) ;;
@@ -233,7 +235,7 @@ if [[ $operation == storage-apply || $operation == openbao-storage-check || $ope
     fail "$operation controller-vars must be transport-only JSON"
   controller_vars="$summary_dir/controller-vars.json"
 fi
-if [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
+if [[ $operation == registry-* || $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   "$summary_tool" transport-controller-vars --input "$controller_vars" \
     --output "$summary_dir/controller-vars.json" ||
     fail "$operation controller-vars must be transport-only JSON"
@@ -274,7 +276,7 @@ extra_vars=(--extra-vars "@$controller_vars")
 summary_host_args=()
 if [[ $operation == storage-check || $operation == storage-apply || $operation == openbao-storage-check || $operation == openbao-storage-apply ]]; then
   summary_host_args=(--node "$node")
-elif [[ $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
+elif [[ $operation == registry-* || $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   summary_host_args=(--controller-vars "$controller_vars")
 fi
 
@@ -440,6 +442,85 @@ case "$operation" in
 esac
 
 case "$operation" in
+  registry-*)
+    require_phase_evidence inventory
+    registry_limit=$("$summary_tool" registry-limit --input "$summary_events")
+    registry_action=${operation#registry-}
+    registry_action=${registry_action%-plan}
+    registry_action=${registry_action%-apply}
+    ping_group connectivity "$registry_limit"
+    require_phase_evidence connectivity
+    # Read-only scope/input checks; only initial host/storage/stage actions
+    # require inactive Zot. Smoke and authenticated PKI may inspect active state.
+    run_playbook registry-preflight playbooks/registry-operation-preflight.yml "$registry_limit" \
+      --extra-vars "registry_operation_action=$registry_action"
+    require_phase_evidence registry-preflight
+    case "$registry_action" in
+      host)
+        run_playbook registry-bootstrap-check playbooks/bootstrap.yml "$registry_limit" --check --diff
+        require_phase_evidence registry-bootstrap-check
+        if [[ $operation == registry-host-apply ]]; then
+          run_playbook registry-bootstrap-apply playbooks/bootstrap.yml "$registry_limit"
+          require_phase_evidence registry-bootstrap-apply
+          run_playbook registry-bootstrap-post-check playbooks/bootstrap.yml "$registry_limit" --check --diff
+          require_phase_evidence registry-bootstrap-post-check
+        fi
+        run_playbook registry-base-os-check playbooks/base-os.yml "$registry_limit" --check --diff
+        require_phase_evidence registry-base-os-check
+        if [[ $operation == registry-host-apply ]]; then
+          run_playbook registry-base-os-apply playbooks/base-os.yml "$registry_limit"
+          require_phase_evidence registry-base-os-apply
+          run_playbook registry-base-os-post-check playbooks/base-os.yml "$registry_limit" --check --diff
+          require_phase_evidence registry-base-os-post-check
+        fi
+        ;;
+      storage)
+        run_playbook storage-check playbooks/storage-volumes.yml "$registry_limit" --check --diff
+        require_phase_evidence storage-check
+        if [[ $operation == registry-storage-apply ]]; then
+          run_playbook storage-apply playbooks/storage-volumes.yml "$registry_limit"
+          require_phase_evidence storage-apply
+          run_playbook storage-idempotence playbooks/storage-volumes.yml "$registry_limit"
+          require_phase_evidence storage-idempotence
+          run_playbook storage-verify playbooks/maintenance/storage-volumes-verify.yml "$registry_limit" \
+            --extra-vars storage_verify_scope=registry
+          require_phase_evidence storage-verify
+        fi
+        ;;
+      stage | clients)
+        registry_playbook=playbooks/registry.yml
+        [[ $registry_action != clients ]] || registry_playbook=playbooks/registry-clients.yml
+        run_playbook "registry-$registry_action-check" "$registry_playbook" "$registry_limit" --check --diff
+        require_phase_evidence "registry-$registry_action-check"
+        if [[ $operation == *-apply ]]; then
+          run_playbook "registry-$registry_action-apply" "$registry_playbook" "$registry_limit"
+          require_phase_evidence "registry-$registry_action-apply"
+          run_playbook "registry-$registry_action-post-check" "$registry_playbook" "$registry_limit" --check --diff
+          require_phase_evidence "registry-$registry_action-post-check"
+        fi
+        ;;
+      pki-request | pki-activate)
+        registry_pki_vars=()
+        if [[ $registry_action == pki-activate ]]; then
+          registry_pki_vars=(--extra-vars registry_pki_preflight_action=activate)
+        fi
+        run_playbook registry-pki-preflight playbooks/registry-pki-preflight.yml "$registry_limit" "${registry_pki_vars[@]}"
+        require_phase_evidence registry-pki-preflight
+        if [[ $operation != *-plan ]]; then
+          run_playbook "$operation" "playbooks/$operation.yml" "$registry_limit"
+          require_phase_evidence "$operation"
+        fi
+        ;;
+      smoke)
+        if [[ $operation == registry-smoke ]]; then
+          run_playbook registry-smoke playbooks/registry-smoke.yml "$registry_limit"
+          require_phase_evidence registry-smoke
+          run_playbook registry-smoke-post-check playbooks/registry.yml "$registry_limit" --check --diff
+          require_phase_evidence registry-smoke-post-check
+        fi
+        ;;
+    esac
+    ;;
   openbao-storage-check)
     require_phase_evidence inventory
     ping_group connectivity "$node"

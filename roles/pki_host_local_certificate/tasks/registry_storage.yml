@@ -1,0 +1,63 @@
+---
+- name: Read storage defaults separately from registry inventory
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/storage_volume/defaults/main.yml"
+    name: registry_storage_defaults
+
+- name: Validate registry data path and storage collections
+  ansible.builtin.assert:
+    that:
+      - zot_registry_data_dir is string
+      - zot_registry_data_dir is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - zot_registry_data_dir is not search('(^|/)\.\.?(/|$)')
+      - storage_volumes | default([]) is sequence
+      - storage_volumes is not string and storage_volumes is not mapping
+      - storage_volumes | length > 0
+      - storage_volumes | select('mapping') | list | length == storage_volumes | length
+      - storage_volume_layouts | default([]) is sequence
+      - storage_volume_layouts | default([]) is not string and storage_volume_layouts | default([]) is not mapping
+    fail_msg: Registry storage requires a canonical non-root data path and declared volumes.
+
+- name: Require canonical non-root declared storage mountpoints
+  ansible.builtin.assert:
+    that:
+      - item.mountpoint is defined and item.mountpoint is string
+      - item.mountpoint is match('^/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - item.mountpoint is not search('(^|/)\.\.?(/|$)')
+    fail_msg: Registry storage mountpoints must be canonical absolute non-root paths.
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    label: "{{ item.mountpoint | default('invalid-volume') }}"
+
+- name: Reset registry data storage selection
+  ansible.builtin.set_fact:
+    registry_data_storage_volumes: []
+
+- name: Select declared storage overlapping the registry data tree
+  ansible.builtin.set_fact:
+    registry_data_storage_volumes: "{{ registry_data_storage_volumes + [item] }}"
+  loop: "{{ storage_volumes }}"
+  loop_control:
+    label: "{{ item.mountpoint }}"
+  when: >-
+    zot_registry_data_dir == item.mountpoint
+    or zot_registry_data_dir.startswith(item.mountpoint ~ '/')
+    or item.mountpoint.startswith(zot_registry_data_dir ~ '/')
+
+- name: Require exactly one declared registry data volume
+  ansible.builtin.assert:
+    that:
+      - registry_data_storage_volumes | length == 1
+    fail_msg: Registry data must bind exactly one declared volume without overlapping parent or child mounts.
+
+- name: Require mounted intent covering the complete registry data tree
+  ansible.builtin.assert:
+    that:
+      - >-
+        zot_registry_data_dir == registry_data_storage_volumes[0].mountpoint
+        or zot_registry_data_dir.startswith(registry_data_storage_volumes[0].mountpoint ~ '/')
+      - >-
+        registry_data_storage_volumes[0].state
+        | default(storage_volume_default_mount_state | default(registry_storage_defaults.storage_volume_default_mount_state))
+        == 'mounted'
+    fail_msg: The registry data volume must equal or contain the data directory and declare mounted intent.

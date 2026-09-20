@@ -181,6 +181,14 @@ closes with activation, handoff, VIP smoke, a separately approved HAProxy-owner
 failover/restore check, and named-administrator handoff. It does not establish
 production/DR readiness or RKE2 workload secret integration.
 
+### Registry
+
+The fixed [registry operations](docs/registry-operations.md) cover fresh host,
+storage, dormant Zot, client trust, directory-based PKI and acceptance through
+plan/manual GitLab jobs. Private keys remain on the registry host; offline
+approval/signing separates request export from certificate activation. Full
+registry smoke writes test artifacts. The filesystem lane is initial-issue only.
+
 ## Repository Family
 
 | Repository | Purpose |

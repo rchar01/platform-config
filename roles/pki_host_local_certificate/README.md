@@ -1,9 +1,14 @@
 # pki_host_local_certificate
 
-Provides operator-only, target-local certificate lifecycles for the fixed
+Provides target-local certificate lifecycles for the fixed
 `zot-v1` and `openbao-pristine-v1` service adapters. Normal convergence does not
 invoke this role. Its default task entry point fails closed; the two public
 routes per fixed adapter select the request or activation task file.
+
+Fresh Zot filesystem issuance is also exposed through fixed
+[registry CI operations](../../docs/registry-operations.md), with read-only
+preflights and a separate offline signing/transfer handoff. CI invokes host-local
+actions and never carries request/response payloads or signer/leaf keys.
 
 ## Operator Routes
 

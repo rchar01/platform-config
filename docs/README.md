@@ -76,6 +76,8 @@ and other secrets belong outside Git.
 
 ## Operations
 
+- [Registry Operations](registry-operations.md): Fresh host/storage/Zot setup,
+  target-directory certificate handoff and fixed GitLab plan/manual jobs.
 - [RKE2 Operations](rke2-operations.md): Fixed CI launcher, attended bootstrap
   link, serial readiness gates, operational image, native RPM repository trust,
   and smoke limitations.

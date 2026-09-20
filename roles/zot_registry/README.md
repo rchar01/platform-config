@@ -12,11 +12,16 @@ authenticated active version derives host-local custody for either `issue` or
 `renew`; a renewal request derives its predecessor from that active state.
 Dormant convergence renders the canonical TLS configuration and Quadlet,
 requires absent managed TLS destinations, and keeps Zot masked and stopped. The
-role installs the shipped lifecycle helper as `root:root` mode `0755`, then uses
+role installs `python3-cryptography` and the shipped lifecycle helper as
+`root:root` mode `0755`, then uses
 its read-only `zot-custody` result under the shared lifecycle lock. Completed
 activation selects only the authenticated immutable `fullchain.crt` and
 `tls.key` paths bound by target state. Predecessor workflow state is not
 migrated; it requires separately authorized reset or target recreation.
+
+The standard `rocky_repository_policy` dependency runs before package operations,
+including the lifecycle Python dependency; its inventory-selected policy applies
+to focused Zot convergence as well as the full registry playbook.
 
 Lifecycle lookup inputs are `zot_registry_tls_host_local_state_root`, `zot_registry_tls_host_local_pending_root`, `zot_registry_tls_host_local_versions_root`, `zot_registry_tls_host_local_service`, `zot_registry_tls_host_local_target`, and `zot_registry_tls_host_local_zot_config_path`. The target defaults to the exact inventory hostname; helper, Zot configuration, managed TLS, and `registry-dev` lifecycle paths are fixed. Unsafe helper source or destination metadata, helper failure, unresolved journals, malformed or ambiguous state, and configuration mismatch fail closed and are never reinterpreted as another custody mode. The lifecycle helper remains the sole owner of host-local Zot configuration changes, so normal convergence previews and refuses host-local configuration drift. Zot serves the authenticated full chain so strict external validation can observe the intermediate certificate.
 

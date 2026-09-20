@@ -4,8 +4,9 @@ The dev registry is a Zot OCI registry deployed by `zot_registry` on hosts in th
 
 ## Host-Local PKI Development
 
-The host-local lifecycle is operator-only and is not imported by `site.yml`.
-Use only these routes, with `LIMIT` selecting one registry host:
+The host-local lifecycle is not imported by `site.yml`. Fresh filesystem issuance
+also has fixed [GitLab registry operations](registry-operations.md). For the
+operator lane, use these routes with `LIMIT` selecting one registry host:
 
 ```bash
 make registry-pki-request-publish ENV=dev LIMIT=<one-host> [REQUEST_TTL_SECONDS=1..604800]
@@ -49,7 +50,7 @@ before mutation, activates and validates Zot locally, and rolls back on failure.
 It succeeds only with final `status=complete` and `required_action=none`.
 
 Direct/controller-local transport, Ansible-provisioned SSH/SFTP access,
-controller intake or transfer, operator-supplied Ansible coordinates, runners,
+controller intake or transfer, operator-supplied Ansible coordinates, runner payload transport,
 evidence/outcome
 packages, migration operations, and helper-hash predecessor migration are not
 supported. Old workflow state is rejected and requires a separately authorized
@@ -57,9 +58,10 @@ reset or target recreation. See
 [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md) and
 [PKI Exchange Setup](pki-exchange-setup.md).
 
-GitLab CE `18.11.3-ce.0` live token and Generic Package behavior remains an
-explicit, unqualified rollout gate. Do not use these routes for a live rollout
-until that exact environment has passed the separate qualification.
+GitLab CE `18.11.3-ce.0` live token and Generic Package behavior requires
+environment-specific qualification. Retain dated private evidence for the exact
+version, token and project; historical qualification does not prove current token
+validity. Filesystem exchange does not use GitLab package transport.
 
 `make smoke-registry ENV=dev` remains a separate external check. It does not
 participate in activation rollback.

@@ -1,0 +1,21 @@
+---
+- name: Read-only registry certificate preflight
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the literal singleton registry PKI scope
+      ansible.builtin.assert:
+        that:
+          - registry_pki_preflight_action | default('request') in ['request', 'activate']
+          - groups.get('registry', []) | length == 1
+          - ansible_play_hosts_all == groups.get('registry', [])
+          - ansible_limit | default('') == inventory_hostname
+        fail_msg: Registry PKI preflight requires the literal registry hostname.
+
+    - name: Resolve registry defaults separately from inventory
+      ansible.builtin.include_tasks: ../roles/pki_host_local_certificate/tasks/registry_defaults.yml
+
+    - name: Validate read-only registry certificate readiness
+      ansible.builtin.include_tasks: ../roles/pki_host_local_certificate/tasks/registry_pki_preflight.yml
