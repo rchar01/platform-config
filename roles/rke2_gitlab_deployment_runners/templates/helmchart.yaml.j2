@@ -86,8 +86,8 @@ spec:
             privileged = false
             allow_privilege_escalation = false
             cap_drop = ["ALL"]
-            pull_policy = ["always"]
-            allowed_pull_policies = ["always"]
+            pull_policy = [{{ _dr.pull_policy | to_json }}]
+            allowed_pull_policies = [{{ _dr.pull_policy | to_json }}]
             cpu_request = "100m"
             cpu_limit = "1"
             memory_request = "128Mi"

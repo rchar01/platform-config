@@ -81,6 +81,13 @@
     - {src: "{{ _dr.tls_ca_cert_src }}", sha: "{{ _dr.tls_ca_cert_sha256 }}", optional: false}
     - {src: "{{ _dr.chart_repo_ca_src }}", sha: "{{ _dr.chart_repo_ca_sha256 }}", optional: true}
 
+- name: Validate deployment Runner pull policy
+  ansible.builtin.assert:
+    that:
+      - _dr.pull_policy is string
+      - _dr.pull_policy in ['always', 'if-not-present']
+    fail_msg: Deployment Runner pull policy must be exactly always or if-not-present.
+
 - name: Validate pinned chart images and required egress
   ansible.builtin.assert:
     that:

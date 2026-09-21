@@ -86,6 +86,14 @@
   complete per-server phase evidence; post-check must report zero changes. See
   [Deployment Runners](roles/rke2_gitlab_deployment_runners/README.md).
 
+- `rke2_gitlab_deployment_runner_pull_policy` accepts exactly `always` and
+  `if-not-present`, default `always`. Render both executor policy and its
+  singleton allowlist; manager Pods remain `Always`. Manual preload requires
+  exact digest-reference CRI lookup in RKE2 containerd on every eligible worker,
+  plus helper availability. Missing images still pull. Keep CI `expected-image`
+  aligned with private `job_image`; switching to Zot uses its verified destination
+  digest and restores `always`. No automatic import, push or CI policy override.
+
 - Standalone kube-vip and Runner smoke must resolve optional role defaults in
   a separate namespace, with explicit inventory values taking precedence.
   Do not invoke role convergence or load defaults over inventory to obtain them.

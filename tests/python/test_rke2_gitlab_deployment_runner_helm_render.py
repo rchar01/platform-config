@@ -16,7 +16,8 @@ from test_rke2_gitlab_deployment_runners import PREFIX, ROLE, variables
 
 
 @pytest.mark.parametrize('profile', ['apps', 'platform'])
-def test_chart_0883_real_render_matches_manager_smoke(repo_root, isolated_test_dir, command_runner, profile):
+@pytest.mark.parametrize('pull_policy', ['always', 'if-not-present'])
+def test_chart_0883_real_render_matches_manager_smoke(repo_root, isolated_test_dir, command_runner, profile, pull_policy):
     helm = os.environ.get('PLATFORM_CONFIG_TEST_HELM')
     chart = os.environ.get('PLATFORM_CONFIG_TEST_GITLAB_RUNNER_CHART')
     if not helm and not chart:
@@ -32,6 +33,7 @@ def test_chart_0883_real_render_matches_manager_smoke(repo_root, isolated_test_d
     role = repo_root / 'roles' / ROLE
     defaults = yaml.safe_load((role / 'defaults/main.yml').read_text())
     config = variables(root)
+    config[PREFIX + 'pull_policy'] = pull_policy
     dr = {key.removeprefix(PREFIX): value for key, value in (defaults | config).items() if key.startswith(PREFIX)}
     runner = next(item for item in config[ROLE] if item['profile'] == profile)
     release = 'rke2-gitlab-' + profile
@@ -64,6 +66,7 @@ def test_chart_0883_real_render_matches_manager_smoke(repo_root, isolated_test_d
     assert spec['serviceAccountName'] == release
     assert spec['automountServiceAccountToken'] is True
     assert container['image'] == dr['manager_image']
+    assert container['imagePullPolicy'] == 'Always'
     assert container['securityContext'] == values['securityContext']
     assert container['resources'] == values['resources']
     assert spec['affinity'] == values['affinity']
@@ -73,6 +76,7 @@ def test_chart_0883_real_render_matches_manager_smoke(repo_root, isolated_test_d
     assert executor['automount_service_account_token'] is True
     assert executor['image'] == dr['job_image']
     assert executor['helper_image'] == dr['helper_image']
+    assert executor['pull_policy'] == executor['allowed_pull_policies'] == [pull_policy]
 
     # Chart 0.88.3 omits replicas. Model Kubernetes 1.35 SetDefaults_Deployment
     # (one replica), plus synthetic API readiness, without changing any rendered

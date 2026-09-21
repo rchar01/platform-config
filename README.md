@@ -134,6 +134,9 @@ add isolated `apps` and `platform` acceptance profiles, externally owned RBAC,
 NetworkPolicies and native Pod admission. Their empty default preserves the
 existing Runner. Real job/API acceptance is separate from read-only Ansible smoke;
 the initial permissions cover fixed canaries, not general application deployment.
+For a temporary registry-free job image, use the documented
+[manual preload and Zot handoff](roles/rke2_gitlab_deployment_runners/README.md#temporary-manual-image-preload)
+with the private `if-not-present` exception; the public pull-policy default stays `always`.
 
 See the [legacy in-cluster Runner](roles/rke2_gitlab_runner/README.md) for private
 Helm repository and checkout-origin overrides, and the docs index for

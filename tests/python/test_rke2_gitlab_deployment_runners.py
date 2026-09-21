@@ -95,8 +95,12 @@ def test_empty_defaults_both_entry_points_are_noops(harness):
     assert not list((fixture / 'manifests').iterdir())
 
 
-def test_real_convergence_check_idempotence_render_and_read_only_smoke(harness):
+@pytest.mark.parametrize('pull_policy', [None, 'if-not-present'], ids=['default', 'preload'])
+def test_real_convergence_check_idempotence_render_and_read_only_smoke(harness, pull_policy):
     _, fixture, config, run = harness
+    if pull_policy is not None:
+        config[PREFIX + 'pull_policy'] = pull_policy
+    expected_policy = pull_policy or 'always'
     run(check=True).assert_success()
     assert not (fixture / 'state.json').exists()
     assert not list((fixture / 'manifests').iterdir())
@@ -136,6 +140,8 @@ def test_real_convergence_check_idempotence_render_and_read_only_smoke(harness):
         assert 'services_limit' not in executor  # Docker-only, ignored by Kubernetes.
         assert executor['allowed_services'] == ['!']
         assert executor['allowed_images'] == [config[PREFIX + 'job_image']]
+        assert executor['pull_policy'] == executor['allowed_pull_policies'] == [expected_policy]
+        assert values['imagePullPolicy'] == 'Always'
         assert executor['namespace_overwrite_allowed'] == executor['service_account_overwrite_allowed'] == ''
         assert executor['cap_drop'] == ['ALL'] and executor['privileged'] is False
         assert 'glrt-synthetic' not in json.dumps(chart)
@@ -167,6 +173,22 @@ def test_real_convergence_check_idempotence_render_and_read_only_smoke(harness):
     assert len(token_reads) == 3
     assert all(any(arg.startswith('-o=go-template=') for arg in call) for call in token_reads)
     assert any('customresourcedefinitions.apiextensions.k8s.io/runnerchecks.acceptance.platform.example' in call for call in calls)
+    # A stale selected policy must fail standalone smoke without repairing it.
+    path = fixture / 'manifests/rke2-gitlab-apps.yaml'
+    original = path.read_bytes()
+    stale_policy = 'always' if expected_policy == 'if-not-present' else 'if-not-present'
+    chart = yaml.safe_load(original)
+    chart['spec']['valuesContent'] = chart['spec']['valuesContent'].replace(
+        f'pull_policy = ["{expected_policy}"]', f'pull_policy = ["{stale_policy}"]')
+    values = yaml.safe_load(chart['spec']['valuesContent'])
+    assert tomllib.loads(values['runners']['config'])['runners'][0]['kubernetes']['pull_policy'] == [stale_policy]
+    path.write_text(yaml.safe_dump(chart))
+    drifted = path.read_bytes()
+    rejected = run(smoke=True, check=True).assert_failure()
+    assert 'Require the exact Helm source values and selected repository CA' in rejected.stdout
+    assert path.read_bytes() == drifted
+    assert (fixture / 'state.json').read_bytes() == before
+    path.write_bytes(original)
     (fixture / 'leak-auth').touch()
     run(smoke=True).assert_failure()
 
@@ -190,6 +212,8 @@ def test_invalid_inputs_fail_before_api_or_credentials(harness, command_runner):
         {PREFIX + 'clone_url': 'https://user:password@gitlab.example.test'},
         {PREFIX + 'chart_repo_ca_src': '/synthetic/not-read.pem'},
     ]
+    cases += [{PREFIX + 'pull_policy': value}
+              for value in ('never', 'Always', 'always ', '', True, ['always'], {}, None)]
     # Batch through the real validator task file in one Ansible process, with
     # independent expected-failure blocks; no task-position extraction.
     defaults = yaml.safe_load((root / 'roles' / ROLE / 'defaults/main.yml').read_text())

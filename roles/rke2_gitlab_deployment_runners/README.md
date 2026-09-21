@@ -67,6 +67,7 @@ All common settings below use the prefix **`rke2_gitlab_deployment_runner_`**:
 | `manager_image` | Legacy role's digest-pinned `alpine-v18.11.3` manager |
 | `helper_image` | Legacy role's digest-pinned `x86_64-v18.11.3` helper |
 | `job_image` | Empty and required: scheme-free `registry/repository[:tag]@sha256:<64 hex>` tool image |
+| `pull_policy` | `always`; exactly `always` or `if-not-present`, applied to both executor policy and its singleton allowlist |
 | `acceptance_namespace` | Empty and required: apps ConfigMap acceptance namespace |
 | `platform_acceptance_namespace` | Empty and required: platform's CI-created canary Namespace name |
 | `egress` | Empty and required: list of exact `{address: IPv4literal, ports: [TCP integers]}` mappings |
@@ -88,6 +89,53 @@ The job image must contain `kubectl`, `sh` and `git` and support the selected
 runner/helper environment. Input validation establishes digest syntax only;
 runtime tool availability and strict TLS access require separate qualification.
 Clone origin selection affects Runner checkout, not controller source access.
+
+### Temporary Manual Image Preload
+
+While a registry such as Zot is being prepared, an operator may preload the
+reviewed job image and select this private inventory exception:
+
+```yaml
+rke2_gitlab_deployment_runner_pull_policy: if-not-present
+```
+
+The default remains `always`. The exception applies to both profiles' job,
+helper and supported init containers; manager Pods retain `imagePullPolicy:
+Always`. Missing images still trigger a pull. Exact image pins, admission,
+namespaces and permissions are unchanged.
+
+Before enabling jobs:
+
+1. Verify the OCI archive checksum and transfer it manually to every eligible
+   worker. Import into **RKE2's containerd `k8s.io` store**, not Podman. RKE2
+   supports [tarball imports](https://docs.rke2.io/add-ons/import-images) through
+   `/var/lib/rancher/rke2/agent/images` with its default data directory.
+2. Select `rke2_gitlab_deployment_runner_job_image` as an exact
+   `repository@sha256:...` reference. Verify CRI lookup of that full reference on
+   every worker and qualify a workload using the local image without registry
+   access. Import success or a local tag alone does not prove digest lookup;
+   an archive checksum or image config ID is not the manifest digest.
+3. Ensure the pinned helper image is preloaded or pullable on those workers.
+   Manager and Helm installation images still require their own availability.
+4. Bind both CI acceptance profiles' `expected-image` inputs to the same exact
+   job image. The component inherits the configured Runner policy and needs no
+   job-level pull-policy override. Apply through the reviewed external workflow,
+   require smoke and a zero-change post-check, then run both acceptance profiles.
+
+Node replacement or image garbage collection can require another manual import.
+The role and CI do not transfer/import images or publish to a registry.
+
+### Switching to Zot
+
+After manual publication, verify the **destination** repository digest and
+worker strict-TLS/authenticated pull access as applicable. Do not infer that
+digest from the archive checksum or the earlier local import. Pause job intake
+and finish existing jobs; image changes must satisfy the existing retained-Pod
+guards. Update private `rke2_gitlab_deployment_runner_job_image` and both CI
+`expected-image` bindings together, then restore
+`rke2_gitlab_deployment_runner_pull_policy: always`. Review the plan, apply,
+verify rollout/smoke and a zero-change post-check, and repeat apps/platform
+acceptance. The CI component needs no registry-specific code or push credentials.
 
 ## Fixed Execution and Permission Contract
 
@@ -230,14 +278,15 @@ inspect GitLab API settings or submit GitLab jobs.
 ## Offline Verification
 
 ```bash
-PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container timeout 540s \
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container timeout 1800s \
   python -m pytest -n 0 -x --durations=10 \
   tests/python/test_rke2_gitlab_deployment_runners.py \
   tests/python/test_rke2_gitlab_deployment_runner_admission.py
 ```
 
 The fixtures execute the real Ansible task chain with isolated target paths and
-a stateful fake kubectl. They establish orchestration and rendering behavior;
+a stateful fake kubectl, covering default/preload policies and smoke drift
+rejection. They establish orchestration and rendering behavior;
 they do not evaluate Kubernetes CEL or establish live admission enforcement,
 Helm/chart compatibility, networking, token projection, GitLab protection settings
 or acceptance-job success. Native policy compilation and actual API admission
