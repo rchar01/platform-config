@@ -1,0 +1,8 @@
+---
+- name: Install host-local certificate lifecycle helper
+  ansible.builtin.copy:
+    src: platform-pki-host-local-lifecycle
+    dest: "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"

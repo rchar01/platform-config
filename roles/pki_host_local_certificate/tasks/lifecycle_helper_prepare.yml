@@ -1,0 +1,65 @@
+---
+# Preparation predicts installation on a fresh host. Lifecycle consumers retain
+# lifecycle_helper.yml's requirement for the exact installed helper in check mode.
+- name: Require the fixed lifecycle helper preparation destination
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_lifecycle_helper_path == '/usr/local/libexec/platform-pki-host-local-lifecycle'
+
+- name: Inspect lifecycle helper preparation paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /usr/local
+    - /usr/local/libexec
+    - "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+  register: pki_helper_prepare_paths
+
+- name: Reject unsafe existing lifecycle helper preparation paths
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or
+        (not item.stat.islnk and item.stat.uid == 0 and item.stat.gid == 0
+         and item.stat.mode == '0755'
+         and ((item.item != pki_host_local_certificate_lifecycle_helper_path and item.stat.isdir)
+              or (item.item == pki_host_local_certificate_lifecycle_helper_path
+                  and item.stat.isreg and item.stat.nlink == 1)))
+  loop: "{{ pki_helper_prepare_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Probe lifecycle helper preparation Python runtime
+  ansible.builtin.command:
+    argv: [/usr/bin/env, python3, -c, import cryptography]
+  register: pki_helper_prepare_python
+  changed_when: false
+  failed_when: pki_helper_prepare_python.rc not in [0, 1]
+  check_mode: false
+
+- name: Prepare lifecycle helper Python runtime
+  ansible.builtin.package:
+    name: python3-cryptography
+    state: present
+  when: pki_helper_prepare_python.rc != 0
+
+- name: Prepare lifecycle helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Predict helper installation into an absent directory
+  ansible.builtin.debug:
+    msg: The shipped lifecycle helper would be installed after directory creation.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - not pki_helper_prepare_paths.results[1].stat.exists
+
+- name: Prepare shipped lifecycle helper bytes
+  ansible.builtin.include_tasks: lifecycle_helper_install.yml
+  when: not ansible_check_mode or pki_helper_prepare_paths.results[1].stat.exists

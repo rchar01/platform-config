@@ -258,7 +258,7 @@ registry-pki-response-activate: _guard-pki-env _guard-pki-limit
 
 ## Publish one OpenBao node PKI request (requires one-host LIMIT)
 openbao-pki-request-publish: _guard-pki-env _guard-pki-limit _guard-pki-request-ttl
-	@$(MAKE) apply PLAYBOOK=playbooks/openbao-pki-request.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,-e openbao_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS))
+	@$(MAKE) apply PLAYBOOK=playbooks/openbao-pki-request.yml ENV=$(call sh_quote,$(ENV)) LIMIT=$(call sh_quote,$(LIMIT)) EXTRA_ARGS=$(call sh_quote,-e "{\"openbao_pki_request_ttl_seconds\":$(REQUEST_TTL_SECONDS)}")
 
 ## Activate one OpenBao node PKI response and restore its staging mask
 openbao-pki-response-activate: _guard-pki-env _guard-pki-limit

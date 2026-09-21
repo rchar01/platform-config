@@ -1,0 +1,27 @@
+---
+- name: Inspect fixed CI initial OpenBao deployment inputs without mutation
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  strategy: linear
+  tasks:
+    - name: Validate initial OpenBao CI scope and controller bindings
+      ansible.builtin.import_tasks: ../roles/openbao/tasks/initial_inputs.yml
+
+    - name: Resolve optional OpenBao defaults without replacing inventory
+      ansible.builtin.include_tasks: ../roles/openbao/tasks/preparation_defaults.yml
+      loop: [openbao, pki_host_local_certificate]
+      loop_control:
+        loop_var: openbao_preparation_role
+
+    - name: Validate canonical OpenBao identity and staging contract
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: validate.yml
+
+    - name: Inspect initial OpenBao filesystem PKI readiness
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: initial_pki_preflight.yml
+      when: openbao_initial_action in ['pki-request', 'pki-activate']

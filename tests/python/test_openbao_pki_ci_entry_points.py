@@ -59,7 +59,7 @@ def test_make_exposes_two_coordinate_free_openbao_pki_routes(
         "_guard-pki-request-ttl",
     ]
     assert "PLAYBOOK=playbooks/openbao-pki-request.yml" in request_recipe
-    assert "openbao_pki_request_ttl_seconds=$(REQUEST_TTL_SECONDS)" in request_recipe
+    assert r'\"openbao_pki_request_ttl_seconds\":$(REQUEST_TTL_SECONDS)' in request_recipe
     assert "$(EXTRA_ARGS)" not in request_recipe
 
     activation_prerequisites, activation_recipe = make_target(
@@ -120,9 +120,8 @@ def test_request_ttl_is_the_only_operator_value_forwarded(repo_root: Path) -> No
     action = plays[1]
 
     assert action["vars"] == {
-        "openbao_pki_request_ttl_seconds": 3600,
         "pki_host_local_certificate_request_ttl_seconds": (
-            "{{ openbao_pki_request_ttl_seconds | int }}"
+            "{{ openbao_pki_request_ttl_seconds | default(3600) }}"
         ),
         "pki_host_local_certificate_rollback_seconds": 0,
     }
@@ -297,6 +296,16 @@ def test_openbao_pki_help_distinguishes_node_and_cluster_limits(
     assert "restore its staging mask" in result.stdout
     assert "start-openbao-bootstrap" in result.stdout
     assert "full-cluster LIMIT" in result.stdout
+
+
+@pytest.mark.parametrize("playbook_name", PLAYBOOKS)
+def test_action_playbooks_reject_check_before_target_io(repo_root, command_runner, playbook_name):
+    result = command_runner.run([
+        "ansible-playbook", "-i", repo_root / "inventories/dev/hosts.yml.example",
+        repo_root / "playbooks" / playbook_name, "--limit", "openbao-example-01", "--check",
+    ])
+    assert_failed_with(result, "normal apply mode")
+    assert "TASK [Require the admitted one-host" not in result.stdout
 
 
 @pytest.mark.parametrize("ttl", ("0", "01", "604801", "invalid"))

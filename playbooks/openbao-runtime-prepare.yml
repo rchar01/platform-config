@@ -1,0 +1,21 @@
+---
+- name: Recheck inactive OpenBao preparation before runtime work
+  ansible.builtin.import_playbook: openbao-operation-preflight.yml
+  vars:
+    openbao_preparation_action: host
+
+- name: Prepare only OpenBao runtime and lifecycle helper prerequisites
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  strategy: linear
+  tasks:
+    - name: Prepare the existing Podman host role
+      ansible.builtin.include_role:
+        name: podman_host
+
+    - name: Prepare the fixed lifecycle helper without PKI operations
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: lifecycle_helper_prepare.yml

@@ -14,6 +14,8 @@ def load_yaml(path: Path):
 def test_podman_host_requires_exact_nevra_and_versionlock(repo_root: Path) -> None:
     defaults = load_yaml(repo_root / "roles/podman_host/defaults/main.yml")
     tasks = load_yaml(repo_root / "roles/podman_host/tasks/main.yml")
+    assert tasks[0]["ansible.builtin.import_tasks"] == "validate.yml"
+    tasks = load_yaml(repo_root / "roles/podman_host/tasks/validate.yml") + tasks
     by_name = {task["name"]: task for task in tasks}
 
     assert defaults["podman_host_package_nevra"] == ""
@@ -175,7 +177,7 @@ def test_podman_host_rejects_unsafe_versionlock_paths(repo_root: Path) -> None:
 
 
 def test_podman_host_storage_contract_is_fail_closed(repo_root: Path) -> None:
-    main = load_yaml(repo_root / "roles/podman_host/tasks/main.yml")
+    main = load_yaml(repo_root / "roles/podman_host/tasks/validate.yml")
     tasks = load_yaml(repo_root / "roles/podman_host/tasks/storage.yml")
     validation = {
         task["name"]: task for task in main

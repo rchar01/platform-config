@@ -144,6 +144,18 @@ Helm repository and checkout-origin overrides, and the docs index for
 
 ### OpenBao
 
+- **CI preparation and inactive staging:** the four fixed
+  [OpenBao preparation routes](docs/openbao-preparation.md) select the complete
+  canonical three-host Rocky cluster. Host preparation combines bootstrap/base
+  OS, Podman and the lifecycle helper without storage convergence; staging uses
+  the pinned public validation CA and existing pristine playbook. All applies
+  require fresh checks and zero-change post-checks, with complete phase evidence.
+- **CI initial deployment:** seven fixed [PKI and bootstrap routes](docs/openbao-initial-deployment.md)
+  provide one-node filesystem issue/activation plans and actions, whole-cluster
+  bootstrap start, and zero-change completion qualification before persistence.
+  Fixed CA/trust/status inputs and complete phase evidence bind each operation;
+  offline signing and the attended initialization/unseal ceremony stay separate.
+
 **Never run ordinary `playbooks/openbao.yml` staging against an active or
 initialized cluster**, including as an idempotency check. Use the fixed active
 maintenance and acceptance procedures.

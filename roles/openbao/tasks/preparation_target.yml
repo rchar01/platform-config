@@ -1,0 +1,36 @@
+---
+- name: Inspect inactive OpenBao paths services storage and retained records
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/openbao/files/preparation-preflight.py', rstrip=false) }}"
+      - "{{ openbao_preparation_inputs | to_json }}"
+  vars:
+    openbao_preparation_inputs:
+      stage: "{{ openbao_preparation_action == 'stage' }}"
+      mounts: "{{ openbao_required_mounts }}"
+      data: "{{ openbao_data_dir }}"
+      marker: "{{ openbao_bootstrap_marker_path }}"
+      rolling: "{{ openbao_rolling_transaction_dir }}"
+      state: "{{ pki_host_local_certificate_state_root }}"
+      pending: "{{ pki_host_local_certificate_pending_root }}"
+      versions: "{{ pki_host_local_certificate_versions_root }}"
+      artifacts:
+        - "{{ openbao_quadlet_path }}"
+        - "{{ openbao_validator_path }}"
+        - "{{ openbao_haproxy_config_path }}"
+        - "{{ openbao_haproxy_backend_ca_path }}"
+        - "{{ keepalived_vip_config_path }}"
+        - "{{ keepalived_vip_script_path }}"
+        - "{{ keepalived_vip_service_drop_in_path }}"
+      helper_sha256: >-
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle',
+                  rstrip=false) | hash('sha256') }}
+  register: openbao_preparation_probe
+  changed_when: false
+  check_mode: false
+
+- name: Record authenticated helper availability
+  ansible.builtin.set_fact:
+    openbao_preparation_observation: "{{ openbao_preparation_probe.stdout | from_json }}"

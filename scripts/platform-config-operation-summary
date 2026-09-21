@@ -15,6 +15,32 @@ from typing import Any
 
 
 OPERATIONS = {
+    "openbao-pki-request-plan": ("inventory", "connectivity", "openbao-initial-preflight"),
+    "openbao-pki-request": ("inventory", "connectivity", "openbao-initial-preflight", "openbao-pki-request"),
+    "openbao-pki-activate-plan": ("inventory", "connectivity", "openbao-initial-preflight"),
+    "openbao-pki-activate": ("inventory", "connectivity", "openbao-initial-preflight", "openbao-pki-activate"),
+    "openbao-bootstrap-start": ("inventory", "connectivity", "openbao-initial-preflight", "openbao-bootstrap-start"),
+    "openbao-bootstrap-complete-plan": (
+        "inventory", "connectivity", "openbao-initial-preflight", "openbao-bootstrap-complete-check",
+    ),
+    "openbao-bootstrap-complete": (
+        "inventory", "connectivity", "openbao-initial-preflight", "openbao-bootstrap-complete-check", "openbao-bootstrap-complete",
+    ),
+    "openbao-host-plan": (
+        "inventory", "connectivity", "openbao-preflight", "openbao-bootstrap-check",
+        "openbao-base-os-check", "openbao-runtime-check",
+    ),
+    "openbao-host-apply": (
+        "inventory", "connectivity", "openbao-preflight",
+        "openbao-bootstrap-check", "openbao-bootstrap-apply", "openbao-bootstrap-post-check",
+        "openbao-base-os-check", "openbao-base-os-apply", "openbao-base-os-post-check",
+        "openbao-runtime-check", "openbao-runtime-apply", "openbao-runtime-post-check",
+    ),
+    "openbao-stage-plan": ("inventory", "connectivity", "openbao-preflight", "openbao-stage-check"),
+    "openbao-stage-apply": (
+        "inventory", "connectivity", "openbao-preflight", "openbao-stage-check",
+        "openbao-stage-apply", "openbao-stage-post-check",
+    ),
     "registry-host-plan": (
         "inventory", "connectivity", "registry-preflight", "registry-bootstrap-check", "registry-base-os-check",
     ),
@@ -168,11 +194,23 @@ FAILOVER_RESULTS = {
 FAILOVER_TIMES = {"failover_elapsed_seconds", "transaction_elapsed_seconds"}
 ALIAS_OPERATIONS = frozenset({"rke2-host-aliases-plan", "rke2-host-aliases-apply"})
 REGISTRY_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("registry-"))
-TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | REGISTRY_OPERATIONS | {"rke2-deployment-runners-smoke"}
+OPENBAO_PREPARATION_OPERATIONS = frozenset({
+    "openbao-host-plan", "openbao-host-apply", "openbao-stage-plan", "openbao-stage-apply",
+})
+OPENBAO_PKI_OPERATIONS = frozenset(name for name in OPERATIONS if name.startswith("openbao-pki-"))
+OPENBAO_INITIAL_OPERATIONS = OPENBAO_PKI_OPERATIONS | frozenset(name for name in OPERATIONS if name.startswith("openbao-bootstrap-"))
+TRANSPORT_OPERATIONS = ALIAS_OPERATIONS | REGISTRY_OPERATIONS | OPENBAO_PREPARATION_OPERATIONS | OPENBAO_INITIAL_OPERATIONS | {"rke2-deployment-runners-smoke"}
 EVIDENCE_GATED_OPERATIONS = TRANSPORT_OPERATIONS | {"storage-apply"} | OPENBAO_STORAGE_OPERATIONS
 PREFIX_GATED_OPERATIONS = EVIDENCE_GATED_OPERATIONS | {"rke2-converge-plan", "rke2-bootstrap", "rke2-deploy"}
 UNCHANGED_PHASES = frozenset(
     {
+        "openbao-initial-preflight",
+        "openbao-bootstrap-complete-check",
+        "openbao-preflight",
+        "openbao-bootstrap-post-check",
+        "openbao-base-os-post-check",
+        "openbao-runtime-post-check",
+        "openbao-stage-post-check",
         "registry-preflight",
         "registry-pki-preflight",
         "registry-bootstrap-post-check",
@@ -470,7 +508,7 @@ def command_hosts(args: argparse.Namespace) -> None:
                 raise SummaryError
         records.append({"schema": 1, "kind": "host", "host": node,
                         "role": "server" if node in servers else "agent"})
-    elif node is not None:
+    elif node is not None and operation not in OPENBAO_PKI_OPERATIONS:
         raise SummaryError
     elif operation in REGISTRY_OPERATIONS:
         registry = group_hosts(inventory, "registry")
@@ -516,7 +554,47 @@ def command_hosts(args: argparse.Namespace) -> None:
             records.append({"schema": 1, "kind": "host", "host": host,
                             "role": "registry" if host in registry else "registry-client"})
     elif operation in OPENBAO_OPERATIONS:
-        for host in sorted(group_hosts(inventory, "openbao")):
+        selected = group_hosts(inventory, "openbao")
+        if operation in OPENBAO_PREPARATION_OPERATIONS | OPENBAO_INITIAL_OPERATIONS:
+            excluded = set().union(*(group_hosts(inventory, group) for group in (
+                "rke2_cluster", "rke2_servers", "rke2_agents", "registry", "registry_clients",
+                "gitlab", "gitlab_runners", "monitoring", "bastion", "k8s_bastion",
+                "load_balancers", "haproxy", "openbao_storage",
+            )))
+            if len(selected) != 3 or selected & excluded or not selected <= group_hosts(inventory, "rocky"):
+                raise SummaryError
+            if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", host) is None
+                   or host in inventory or re.fullmatch(r"[0-9.]+", host) for host in selected):
+                raise SummaryError
+            if operation in OPENBAO_INITIAL_OPERATIONS:
+                metadata = inventory.get("_meta", {})
+                hostvars = metadata.get("hostvars", {}) if isinstance(metadata, dict) else {}
+                if not isinstance(hostvars, dict):
+                    raise SummaryError
+                canonical = None
+                for host in sorted(selected):
+                    host_values = hostvars.get(host)
+                    if not isinstance(host_values, dict):
+                        raise SummaryError
+                    members = host_values.get("openbao_cluster_members")
+                    if (not isinstance(members, list) or len(members) != 3
+                            or any(not isinstance(member, dict) or not isinstance(member.get("name"), str)
+                                   for member in members)
+                            or sorted(member["name"] for member in members) != sorted(selected)
+                            or (canonical is not None and members != canonical)):
+                        raise SummaryError
+                    canonical = members
+                if operation in OPENBAO_PKI_OPERATIONS:
+                    if args.node not in selected:
+                        raise SummaryError
+                    selected = {args.node}
+            if getattr(args, "controller_vars", None) is None:
+                raise SummaryError
+            values = transport_controller_vars(args.controller_vars)
+            if ("platform_ci_ssh_private_key_files" in values
+                    and selected - values["platform_ci_ssh_private_key_files"].keys()):
+                raise SummaryError
+        for host in sorted(selected):
             records.append({"schema": 1, "kind": "host", "host": host, "role": "openbao"})
     else:
         selected = group_hosts(inventory, "rke2_cluster")
@@ -774,7 +852,7 @@ def command_render(args: argparse.Namespace) -> int:
                     if (
                         recap["failures"] > 0
                         or recap["unreachable"] > 0
-                        or (operation in ALIAS_OPERATIONS | REGISTRY_OPERATIONS and recap["ok"] == 0)
+                        or (operation in ALIAS_OPERATIONS | REGISTRY_OPERATIONS | OPENBAO_PREPARATION_OPERATIONS | OPENBAO_INITIAL_OPERATIONS and recap["ok"] == 0)
                         or ((operation in EVIDENCE_GATED_OPERATIONS or phase.startswith("rke2-deployment-runners-"))
                             and (recap["ignored"] > 0 or recap["rescued"] > 0))
                         or (phase in UNCHANGED_PHASES and recap["changed"] > 0)
@@ -817,7 +895,7 @@ def command_render(args: argparse.Namespace) -> int:
         bool(hosts)
         and not invalid
         and args.status == 0
-        and (operation not in OPENBAO_OPERATIONS or len(hosts) == 3)
+        and (operation not in OPENBAO_OPERATIONS or len(hosts) == (1 if operation in OPENBAO_PKI_OPERATIONS else 3))
         and (operation != "storage-apply" or len(hosts) == 1)
         and (operation not in OPENBAO_STORAGE_OPERATIONS or len(hosts) == 1)
         and (not any(phase.startswith("rke2-deployment-runners-") for phase in phases)

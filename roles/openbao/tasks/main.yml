@@ -168,8 +168,24 @@
         owner: root
         group: root
         mode: "0644"
-      register: openbao_tls_ca_result
+      register: openbao_tls_ca_unpinned_result
       notify: Restart OpenBao HA service
+      when: openbao_tls_ca_sha256 is not defined
+
+    - name: Install digest-bound OpenBao public validation CA
+      platform_pki_reviewed_ca:
+        source: "{{ openbao_tls_ca_src }}"
+        sha256: "{{ openbao_tls_ca_sha256 }}"
+        dest: "{{ openbao_tls_ca_path }}"
+        mode: "0644"
+      register: openbao_tls_ca_pinned_result
+      notify: Restart OpenBao HA service
+      when: openbao_tls_ca_sha256 is defined
+
+    - name: Record OpenBao CA staging readiness
+      ansible.builtin.set_fact:
+        openbao_tls_ca_result: >-
+          {{ openbao_tls_ca_pinned_result if openbao_tls_ca_sha256 is defined else openbao_tls_ca_unpinned_result }}
 
     - name: Check exact OpenBao image availability
       ansible.builtin.command:

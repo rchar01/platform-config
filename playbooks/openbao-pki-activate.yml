@@ -8,6 +8,7 @@
       ansible.builtin.assert:
         that:
           - ansible_limit is defined
+          - not ansible_check_mode
           - ansible_limit | default('') | length > 0
           - openbao_pki_selected_hosts == [ansible_limit | default('')]
           - >-
@@ -15,8 +16,8 @@
             | difference(groups.get('openbao', []))
             | length == 0
         fail_msg: >-
-          OpenBao PKI activation requires an explicit limit naming exactly one
-          canonical OpenBao inventory host and no other inventory host.
+          OpenBao PKI activation requires normal apply mode and an explicit limit
+          naming exactly one canonical OpenBao inventory host and no other inventory host.
       vars:
         openbao_pki_selected_hosts: >-
           {{ query('ansible.builtin.inventory_hostnames', ansible_limit | default('all')) }}

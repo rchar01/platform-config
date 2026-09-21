@@ -186,6 +186,8 @@ def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> 
         "filesystem_response.yml",
         "gitlab_setup.yml",
         "lifecycle_helper.yml",
+        "lifecycle_helper_install.yml",
+        "lifecycle_helper_prepare.yml",
         "main.yml",
         "registry_defaults.yml",
         "registry_dormant.yml",

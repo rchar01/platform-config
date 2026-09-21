@@ -1,0 +1,63 @@
+---
+- name: Require exact canonical three-host Rocky scope and CI preparation intent
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'CI') == 'true'
+      - openbao_preparation_action | default('') in ['host', 'stage']
+      - groups.get('openbao', []) | length == 3
+      - ansible_play_hosts_all | sort == groups.get('openbao', []) | sort
+      - groups.get('openbao', []) | difference(groups.get('rocky', [])) | length == 0
+      - >-
+        groups.get('openbao', []) | intersect(
+          groups.get('rke2_cluster', []) + groups.get('rke2_servers', []) + groups.get('rke2_agents', [])
+          + groups.get('registry', []) + groups.get('registry_clients', []) + groups.get('gitlab', [])
+          + groups.get('gitlab_runners', []) + groups.get('monitoring', []) + groups.get('bastion', [])
+          + groups.get('k8s_bastion', []) + groups.get('load_balancers', []) + groups.get('haproxy', [])
+          + groups.get('openbao_storage', [])
+        ) | length == 0
+      - openbao_cluster_members | map(attribute='name') | list | sort == groups['openbao'] | sort
+      - openbao_cluster_members == hostvars[groups['openbao'] | first].openbao_cluster_members
+      - openbao_orchestration_ready is boolean and openbao_orchestration_ready
+      - openbao_enabled is boolean and openbao_enabled
+      - openbao_haproxy_enabled is boolean and openbao_haproxy_enabled
+      - keepalived_vip_enabled is boolean and keepalived_vip_enabled
+      - openbao_service_enabled is boolean and not openbao_service_enabled
+      - openbao_service_state == 'stopped'
+      - openbao_haproxy_service_enabled is boolean and not openbao_haproxy_service_enabled
+      - openbao_haproxy_service_state == 'stopped'
+      - keepalived_vip_service_enabled is boolean and not keepalived_vip_service_enabled
+      - keepalived_vip_service_state == 'stopped'
+      - openbao_lifecycle_preflight_mode | default('inactive-custody') == 'inactive-custody'
+      - openbao_service_name | default('openbao.service') == 'openbao.service'
+      - keepalived_vip_service_name | default('keepalived.service') == 'keepalived.service'
+      - openbao_quadlet_name | default('openbao.container') == 'openbao.container'
+      - openbao_tls_ca_path | default('/etc/openbao/tls/ca.crt') == '/etc/openbao/tls/ca.crt'
+    fail_msg: Preparation requires the complete disjoint canonical Rocky cluster and explicit inactive inventory intent.
+
+- name: Require unambiguous literal OpenBao inventory names
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$')
+      - item is not match('^[0-9.]+$')
+      - item not in groups
+  loop: "{{ groups['openbao'] }}"
+
+- name: Reject bootstrap or edge authorization during inactive preparation
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.vars', item, default=false) is boolean
+      - not lookup('ansible.builtin.vars', item, default=false)
+  loop:
+    - openbao_bootstrap_ready
+    - openbao_bootstrap_complete_ready
+    - openbao_audit_migration_ready
+    - openbao_haproxy_activation_ready
+    - openbao_keepalived_activation_ready
+
+- name: Prevent base OS storage mutation during host preparation
+  ansible.builtin.assert:
+    that:
+      - root_lvm_enabled is boolean and not root_lvm_enabled
+      - platform_common_directories | default([]) == []
+    fail_msg: Host preparation requires explicit root_lvm_enabled false and no common directory mutations.
+  when: openbao_preparation_action == 'host'

@@ -161,7 +161,7 @@ def test_node_argument_is_rejected_by_other_routes(repo_root, isolated_test_dir,
     result = command_runner.run([repo_root / "scripts/platform-config-operation", "rke2-bootstrap-plan",
                                  "--inventory", path, "--controller-vars", path, "--node", "server-a"])
     result.assert_failure()
-    assert "only accepted by the fixed storage routes" in result.stderr
+    assert "only accepted by the fixed storage or OpenBao PKI routes" in result.stderr
 
 
 @pytest.mark.parametrize("operation", ["storage-check", "storage-apply", "openbao-storage-check", "openbao-storage-apply"])

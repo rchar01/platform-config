@@ -8,6 +8,7 @@
       ansible.builtin.assert:
         that:
           - ansible_limit is defined
+          - not ansible_check_mode
           - ansible_limit | default('') | length > 0
           - openbao_pki_selected_hosts == [ansible_limit | default('')]
           - >-
@@ -15,8 +16,8 @@
             | difference(groups.get('openbao', []))
             | length == 0
         fail_msg: >-
-          OpenBao PKI requests require an explicit limit naming exactly one
-          canonical OpenBao inventory host and no other inventory host.
+          OpenBao PKI requests require normal apply mode and an explicit limit
+          naming exactly one canonical OpenBao inventory host and no other inventory host.
       vars:
         openbao_pki_selected_hosts: >-
           {{ query('ansible.builtin.inventory_hostnames', ansible_limit | default('all')) }}
@@ -28,9 +29,8 @@
   gather_facts: false
   any_errors_fatal: true
   vars:
-    openbao_pki_request_ttl_seconds: 3600
     pki_host_local_certificate_request_ttl_seconds: >-
-      {{ openbao_pki_request_ttl_seconds | int }}
+      {{ openbao_pki_request_ttl_seconds | default(3600) }}
     pki_host_local_certificate_rollback_seconds: 0
   tasks:
     - name: Require the admitted one-host OpenBao request selection

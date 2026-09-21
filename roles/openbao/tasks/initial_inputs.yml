@@ -1,0 +1,74 @@
+---
+- name: Require fixed CI initial OpenBao deployment selection
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'CI') == 'true'
+      - not ansible_check_mode
+      - openbao_initial_action in ['pki-request', 'pki-activate', 'bootstrap-start', 'bootstrap-complete']
+      - groups.get('openbao', []) | length == 3
+      - groups['openbao'] | difference(groups.get('rocky', [])) | length == 0
+      - >-
+        groups['openbao'] | intersect(
+          groups.get('rke2_cluster', []) + groups.get('rke2_servers', []) + groups.get('rke2_agents', [])
+          + groups.get('registry', []) + groups.get('registry_clients', []) + groups.get('gitlab', [])
+          + groups.get('gitlab_runners', []) + groups.get('monitoring', []) + groups.get('bastion', [])
+          + groups.get('k8s_bastion', []) + groups.get('load_balancers', []) + groups.get('haproxy', [])
+          + groups.get('openbao_storage', [])
+        ) | length == 0
+      - >-
+        (openbao_initial_action in ['pki-request', 'pki-activate']
+         and ansible_play_hosts_all == [inventory_hostname] and ansible_limit == inventory_hostname)
+        or (openbao_initial_action in ['bootstrap-start', 'bootstrap-complete']
+            and ansible_play_hosts_all | sort == groups['openbao'] | sort
+            and query('ansible.builtin.inventory_hostnames', ansible_limit) | sort == groups['openbao'] | sort)
+      - openbao_orchestration_ready is boolean and openbao_orchestration_ready
+      - openbao_enabled is boolean and openbao_enabled
+      - openbao_service_enabled is boolean and not openbao_service_enabled
+      - openbao_service_state == 'stopped'
+      - openbao_lifecycle_preflight_mode | default('inactive-custody') == 'inactive-custody'
+      - openbao_service_name | default('openbao.service') == 'openbao.service'
+      - openbao_tls_ca_path | default('/etc/openbao/tls/ca.crt') == '/etc/openbao/tls/ca.crt'
+    fail_msg: Initial deployment requires the exact disjoint canonical Rocky cohort and inactive CI intent.
+
+- name: Require coherent canonical identity throughout the OpenBao cohort
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$')
+      - item is not match('^[0-9.]+$')
+      - item not in groups
+      - hostvars[item].openbao_cluster_members == openbao_cluster_members
+      - hostvars[item].openbao_cluster_members | map(attribute='name') | sort == groups['openbao'] | sort
+      - hostvars[item].openbao_node_name == openbao_initial_member.node_id
+      - hostvars[item].openbao_node_address == openbao_initial_member.address
+      - hostvars[item].openbao_node_dns == openbao_initial_member.dns
+  loop: "{{ groups['openbao'] }}"
+  vars:
+    openbao_initial_member: "{{ openbao_cluster_members | selectattr('name', 'equalto', item) | first }}"
+
+- name: Bind the fixed initial deployment public validation CA
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') is match('^/.+')
+      - >-
+        openbao_tls_ca_src == lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR')
+        ~ '/openbao/validation-ca.pem'
+      - openbao_tls_ca_sha256 | default('') is match('^[0-9a-f]{64}$')
+
+- name: Validate initial deployment pinned CA bytes without installing trust
+  platform_pki_reviewed_ca:
+    source: "{{ openbao_tls_ca_src }}"
+    sha256: "{{ openbao_tls_ca_sha256 }}"
+    dest: /etc/openbao/tls/ca.crt
+    mode: "0644"
+  check_mode: true
+  changed_when: false
+
+- name: Bind completion to the fixed environment status token path
+  ansible.builtin.assert:
+    that:
+      - platform_environment is match('^[a-z0-9][a-z0-9._-]{0,62}$')
+      - >-
+        openbao_status_token_src == lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR')
+        ~ '/openbao/' ~ platform_environment ~ '/status.token'
+    fail_msg: Completion requires the fixed environment-scoped least-privilege status token.
+  when: openbao_initial_action == 'bootstrap-complete'

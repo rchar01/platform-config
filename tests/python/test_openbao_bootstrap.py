@@ -839,7 +839,8 @@ def test_openbao_haproxy_rejects_running_keepalived_before_approval(
         variables={"openbao_haproxy_test_keepalived_running": True},
     )
     assert haproxy_code != 0
-    assert "inactive edge services and ready firewall safety gates" in haproxy_output
+    assert "actual inactive and boot-disabled edge services" in haproxy_output
+    assert "Observed Keepalived state=running status=disabled" in haproxy_output
     assert 'Type exactly' not in haproxy_output
     assert not list(isolated_test_dir.glob('*-edge-lock'))
 

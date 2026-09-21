@@ -1,0 +1,40 @@
+---
+- name: Require exact Podman package and versionlock inputs
+  ansible.builtin.assert:
+    that:
+      - podman_host_package_name == 'podman'
+      - >-
+        podman_host_package_nevra is match(
+          '^podman-[0-9]+:[0-9][A-Za-z0-9_.+~-]*-[A-Za-z0-9_.+~-]+[.]x86_64$'
+        )
+      - podman_host_versionlock_package == 'python3-dnf-plugin-versionlock'
+      - podman_host_versionlock_path == '/etc/dnf/plugins/versionlock.list'
+      - podman_host_storage_contract_enabled is boolean
+    fail_msg: >-
+      podman_host requires one exact x86_64 Podman NEVRA and the qualified DNF
+      versionlock provider and path.
+
+- name: Validate Podman storage contract inputs
+  ansible.builtin.assert:
+    that:
+      - podman_host_storage_mountpoint is string
+      - podman_host_storage_mountpoint.startswith('/')
+      - podman_host_storage_mountpoint != '/'
+      - not podman_host_storage_mountpoint.endswith('/')
+      - not podman_host_storage_mountpoint.endswith('/..')
+      - not podman_host_storage_mountpoint.endswith('/.')
+      - "'//' not in podman_host_storage_mountpoint"
+      - "'/../' not in podman_host_storage_mountpoint"
+      - "'/./' not in podman_host_storage_mountpoint"
+      - podman_host_graphroot is string
+      - podman_host_graphroot.startswith(podman_host_storage_mountpoint ~ '/')
+      - not podman_host_graphroot.endswith('/')
+      - not podman_host_graphroot.endswith('/..')
+      - not podman_host_graphroot.endswith('/.')
+      - "'//' not in podman_host_graphroot"
+      - "'/../' not in podman_host_graphroot"
+      - "'/./' not in podman_host_graphroot"
+    fail_msg: >-
+      The Podman storage contract requires canonical absolute mountpoint and
+      graphroot paths, with graphroot below the mountpoint.
+  when: podman_host_storage_contract_enabled | bool

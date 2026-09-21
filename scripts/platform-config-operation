@@ -3,8 +3,10 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (RKE2/OpenBao storage routes only)]' \
+    'Usage: platform-config-operation OPERATION --inventory PATH --controller-vars PATH [--plan PATH] [--node HOST (storage or OpenBao PKI routes only)]' \
     'Registry operations (no additional arguments): registry-host-plan, registry-host-apply, registry-storage-plan, registry-storage-apply, registry-stage-plan, registry-stage-apply, registry-clients-plan, registry-clients-apply, registry-pki-request-plan, registry-pki-request, registry-pki-activate-plan, registry-pki-activate, registry-smoke-plan, registry-smoke' \
+    'CI-only inactive OpenBao preparation: openbao-host-plan, openbao-host-apply, openbao-stage-plan, openbao-stage-apply' \
+    'CI-only initial OpenBao deployment: openbao-pki-request-plan, openbao-pki-request, openbao-pki-activate-plan, openbao-pki-activate, openbao-bootstrap-start, openbao-bootstrap-complete-plan, openbao-bootstrap-complete' \
     'Fixed operations: storage-check, storage-apply, openbao-storage-check, openbao-storage-apply, rke2-host-aliases-plan, rke2-host-aliases-apply, rke2-bootstrap-plan, rke2-converge-plan, rke2-bootstrap, rke2-deploy, rke2-deployment-runners-smoke, openbao-status, openbao-restart-plan, openbao-restart, openbao-converge-plan, openbao-deploy, openbao-haproxy-plan, openbao-haproxy-activate, openbao-keepalived-plan, openbao-keepalived-activate, openbao-smoke, openbao-vip-smoke, openbao-haproxy-failover-plan, openbao-haproxy-failover, openbao-haproxy-failover-recover' >&2
 }
 
@@ -82,6 +84,8 @@ truncate_summary_output() {
 operation=$1
 shift
 case "$operation" in
+  openbao-pki-request-plan | openbao-pki-request | openbao-pki-activate-plan | openbao-pki-activate | openbao-bootstrap-start | openbao-bootstrap-complete-plan | openbao-bootstrap-complete) ;;
+  openbao-host-plan | openbao-host-apply | openbao-stage-plan | openbao-stage-apply) ;;
   registry-host-plan | registry-host-apply | registry-storage-plan | registry-storage-apply | registry-stage-plan | registry-stage-apply | registry-clients-plan | registry-clients-apply | registry-pki-request-plan | registry-pki-request | registry-pki-activate-plan | registry-pki-activate | registry-smoke-plan | registry-smoke) ;;
   storage-check | storage-apply | openbao-storage-check | openbao-storage-apply) ;;
   rke2-host-aliases-plan | rke2-host-aliases-apply) ;;
@@ -221,21 +225,33 @@ done
 
 [[ -n $inventory ]] || fail "--inventory is required"
 [[ -n $controller_vars ]] || fail "--controller-vars is required"
-if [[ $operation == storage-check || $operation == storage-apply || $operation == openbao-storage-check || $operation == openbao-storage-apply ]]; then
+if [[ $operation == storage-check || $operation == storage-apply || $operation == openbao-storage-check || $operation == openbao-storage-apply || $operation == openbao-pki-* ]]; then
   [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$ && $node != all && $node != ungrouped ]] ||
     fail "$operation requires --node with one literal inventory hostname"
 else
-  [[ -z $node ]] || fail "--node is only accepted by the fixed storage routes"
+  [[ -z $node ]] || fail "--node is only accepted by the fixed storage or OpenBao PKI routes"
 fi
 require_private_file inventory "$inventory"
 require_owner_private_file controller-vars "$controller_vars"
+openbao_preparation=false
+openbao_initial=false
+case "$operation" in
+  openbao-pki-* | openbao-bootstrap-*)
+    [[ ${CI:-} == true ]] || fail "OpenBao initial deployment routes require the CI lane"
+    openbao_initial=true
+    ;;
+  openbao-host-plan | openbao-host-apply | openbao-stage-plan | openbao-stage-apply)
+    [[ ${CI:-} == true ]] || fail "OpenBao preparation routes require the CI lane"
+    openbao_preparation=true
+    ;;
+esac
 if [[ $operation == storage-apply || $operation == openbao-storage-check || $operation == openbao-storage-apply ]]; then
   "$summary_tool" storage-apply-controller-vars --input "$controller_vars" \
     --output "$summary_dir/controller-vars.json" --node "$node" ||
     fail "$operation controller-vars must be transport-only JSON"
   controller_vars="$summary_dir/controller-vars.json"
 fi
-if [[ $operation == registry-* || $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
+if [[ $openbao_initial == true || $openbao_preparation == true || $operation == registry-* || $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   "$summary_tool" transport-controller-vars --input "$controller_vars" \
     --output "$summary_dir/controller-vars.json" ||
     fail "$operation controller-vars must be transport-only JSON"
@@ -276,8 +292,9 @@ extra_vars=(--extra-vars "@$controller_vars")
 summary_host_args=()
 if [[ $operation == storage-check || $operation == storage-apply || $operation == openbao-storage-check || $operation == openbao-storage-apply ]]; then
   summary_host_args=(--node "$node")
-elif [[ $operation == registry-* || $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
+elif [[ $openbao_initial == true || $openbao_preparation == true || $operation == registry-* || $operation == rke2-host-aliases-plan || $operation == rke2-host-aliases-apply || $operation == rke2-deployment-runners-smoke ]]; then
   summary_host_args=(--controller-vars "$controller_vars")
+  [[ $operation != openbao-pki-* ]] || summary_host_args+=(--node "$node")
 fi
 
 forward_signal() {
@@ -442,6 +459,66 @@ case "$operation" in
 esac
 
 case "$operation" in
+  openbao-pki-* | openbao-bootstrap-*)
+    require_phase_evidence inventory
+    openbao_limit=${node:-openbao}
+    openbao_action=${operation#openbao-}
+    openbao_action=${openbao_action%-plan}
+    ping_group connectivity "$openbao_limit"
+    require_phase_evidence connectivity
+    run_playbook openbao-initial-preflight playbooks/openbao-initial-preflight.yml "$openbao_limit" \
+      --extra-vars "openbao_initial_action=$openbao_action"
+    require_phase_evidence openbao-initial-preflight
+    case "$openbao_action" in
+      pki-request | pki-activate)
+        if [[ $operation != *-plan ]]; then
+          run_playbook "openbao-$openbao_action" "playbooks/openbao-$openbao_action.yml" "$node"
+          require_phase_evidence "openbao-$openbao_action"
+        fi
+        ;;
+      bootstrap-start)
+        run_playbook openbao-bootstrap-start playbooks/maintenance/openbao-bootstrap-start.yml openbao
+        require_phase_evidence openbao-bootstrap-start
+        ;;
+      bootstrap-complete)
+        run_playbook openbao-bootstrap-complete-check playbooks/maintenance/openbao-bootstrap-complete.yml openbao --check --diff
+        require_phase_evidence openbao-bootstrap-complete-check
+        if [[ $operation != *-plan ]]; then
+          run_playbook openbao-bootstrap-complete playbooks/maintenance/openbao-bootstrap-complete.yml openbao
+          require_phase_evidence openbao-bootstrap-complete
+        fi
+        ;;
+    esac
+    ;;
+  openbao-host-plan | openbao-host-apply | openbao-stage-plan | openbao-stage-apply)
+    require_phase_evidence inventory
+    ping_group connectivity openbao
+    require_phase_evidence connectivity
+    openbao_action=${operation#openbao-}
+    openbao_action=${openbao_action%-*}
+    run_playbook openbao-preflight playbooks/openbao-operation-preflight.yml openbao \
+      --extra-vars "openbao_preparation_action=$openbao_action"
+    require_phase_evidence openbao-preflight
+    if [[ $openbao_action == host ]]; then
+      openbao_steps=(bootstrap base-os runtime)
+      openbao_plays=(playbooks/bootstrap.yml playbooks/base-os.yml playbooks/openbao-runtime-prepare.yml)
+    else
+      openbao_steps=(stage)
+      openbao_plays=(playbooks/openbao.yml)
+    fi
+    for index in "${!openbao_steps[@]}"; do
+      step="openbao-${openbao_steps[$index]}"
+      play=${openbao_plays[$index]}
+      run_playbook "$step-check" "$play" openbao --check --diff
+      require_phase_evidence "$step-check"
+      if [[ $operation == *-apply ]]; then
+        run_playbook "$step-apply" "$play" openbao
+        require_phase_evidence "$step-apply"
+        run_playbook "$step-post-check" "$play" openbao --check --diff
+        require_phase_evidence "$step-post-check"
+      fi
+    done
+    ;;
   registry-*)
     require_phase_evidence inventory
     registry_limit=$("$summary_tool" registry-limit --input "$summary_events")

@@ -27,6 +27,17 @@ See the [OpenBao Artifact and Egress Matrix](../../docs/openbao-egress.md) for
 package sources, registry remapping, external fetch boundaries, and
 qualification steps.
 
+The fixed [CI preparation and inactive staging routes](../../docs/openbao-preparation.md)
+prepare the complete three-node scope with an installed lifecycle helper before
+staging. Stage inventory selects the fixed controller public CA input and pins
+its bytes with `openbao_tls_ca_sha256`; when defined, this digest is enforced by
+the descriptor-pinned CA install action as well as preparation preflight.
+
+The seven [CI initial deployment routes](../../docs/openbao-initial-deployment.md)
+wrap per-node filesystem PKI and the existing whole-cluster bootstrap playbooks.
+Their preflight is read-only; bootstrap start retains its double preflight and
+rollback, while completion requires a real zero-change check before persistence.
+
 ## Required Inputs
 
 Set `openbao_enabled: true` only after the public CA source and all four service

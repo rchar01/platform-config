@@ -92,6 +92,10 @@ and other secrets belong outside Git.
   separately approved apply, second-apply idempotence, and mounted-state checks.
 - [OpenBao Storage Preparation](storage-check.md#openbao-storage-preparation):
   Separate check-only initial three-host scope, one literal host per invocation.
+- [OpenBao CI Preparation](openbao-preparation.md): Whole-cluster host/runtime/helper
+  preparation and inactive staging, fixed public CA input, and complete phase evidence.
+- [OpenBao CI Initial Deployment](openbao-initial-deployment.md): Per-node filesystem
+  PKI and whole-cluster bootstrap routes, fixed controller inputs and ceremony handoff.
 - [OpenBao Edge and VIP Acceptance](operator-runbook.md#openbao-edge-plans):
   Source-bound activation plans, approvals, guard recovery, active desired-state
   handoff, and the standalone dev endpoint release boundary.

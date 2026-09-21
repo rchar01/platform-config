@@ -1,0 +1,58 @@
+---
+- name: Guard complete inactive OpenBao preparation before mutation
+  hosts: openbao
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  strategy: linear
+  tasks:
+    - name: Validate OpenBao preparation scope and explicit inventory intent
+      ansible.builtin.import_tasks: ../roles/openbao/tasks/preparation_intent.yml
+
+    - name: Resolve OpenBao preparation defaults without replacing inventory
+      ansible.builtin.include_tasks: ../roles/openbao/tasks/preparation_defaults.yml
+      loop: [openbao, pki_host_local_certificate, openbao_haproxy, keepalived_vip, podman_host]
+      loop_control:
+        loop_var: openbao_preparation_role
+
+    - name: Validate existing OpenBao source and identity contracts
+      ansible.builtin.include_role:
+        name: "{{ item }}"
+        tasks_from: validate.yml
+      loop: [openbao, openbao_haproxy, keepalived_vip]
+
+    - name: Guard target OpenBao preparation state
+      ansible.builtin.include_tasks: ../roles/openbao/tasks/preparation_target.yml
+
+    - name: Validate runtime inputs without invoking Podman dependencies
+      ansible.builtin.include_tasks: ../roles/podman_host/tasks/validate.yml
+
+    - name: Authenticate retained dormant or trust-only OpenBao state
+      ansible.builtin.include_role:
+        name: openbao
+        tasks_from: lifecycle_preflight.yml
+      when: openbao_preparation_observation.helper
+
+    - name: Validate existing Rocky package source policy before preparation
+      ansible.builtin.include_role:
+        name: rocky_repository_policy
+
+    - name: Bind the fixed CI public validation CA source
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR') is match('^/.+')
+          - >-
+            openbao_tls_ca_src == lookup('ansible.builtin.env', 'PLATFORM_INFRASTRUCTURE_CONFIG_DIR')
+            ~ '/openbao/validation-ca.pem'
+          - openbao_tls_ca_sha256 | default('') is match('^[0-9a-f]{64}$')
+      when: openbao_preparation_action == 'stage'
+
+    - name: Validate pinned controller CA bytes without installing trust
+      platform_pki_reviewed_ca:
+        source: "{{ openbao_tls_ca_src }}"
+        sha256: "{{ openbao_tls_ca_sha256 }}"
+        dest: "{{ openbao_tls_ca_path }}"
+        mode: "0644"
+      check_mode: true
+      changed_when: false
+      when: openbao_preparation_action == 'stage'

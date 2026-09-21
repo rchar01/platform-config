@@ -228,6 +228,41 @@
 
 ## OpenBao Activation Boundary
 
+- Seven CI-only initial deployment routes add per-node `openbao-pki-request-plan`,
+  `openbao-pki-request`, `openbao-pki-activate-plan`, `openbao-pki-activate` and
+  full-cohort `openbao-bootstrap-start`, `openbao-bootstrap-complete-plan`,
+  `openbao-bootstrap-complete`. Validate/snapshot transport JSON before inventory,
+  guard the whole canonical disjoint Rocky cohort (including storage-only exclusion),
+  and require complete selected-host evidence at every phase. PKI is filesystem
+  ISSUE-only. Read-only preflight uses task-only PKI validators, exact staged helper,
+  preprovisioned trust and stopped/masked custody; preserve activation replay/recovery
+  and stop/remask semantics. Start uses the existing double-preflight/rollback play
+  with no check/plan; completion uses its real zero-change check then normal apply.
+  Bind fixed service CA, four public trust sources (PKI only), and environment status
+  token (completion only), separate from source Git CA. Preserve the 3600 request TTL
+  default and typed integer inventory override, without CLI/JSON TTL selectors.
+  Keep offline signing/transfer and attended initialization/unseal outside CI;
+  reuse the private writer lock plus procedural ceremony/lifecycle exclusion.
+  No helper protocol, locks or activation SSH-source guard changes. See
+  [Initial Deployment](docs/openbao-initial-deployment.md).
+
+- The four CI-only `openbao-host-plan/apply` and `openbao-stage-plan/apply`
+  routes select the exact canonical three-host Rocky cohort, disjoint from
+  `openbao_storage` and other service groups; `container_hosts` membership is not
+  required. The reviewed private group handoff removes storage-only membership
+  while retaining approved layouts and allowed `storage_volume_hosts` membership. Snapshot
+  transport-only JSON before inventory and gate every phase on complete
+  per-host evidence. Require explicit inactive inventory intent, orchestration
+  readiness, existing mounts, pristine data and no retained lifecycle/edge state.
+  Host preparation reuses bootstrap/base OS with root LVM disabled and no common
+  directory mutations, then Podman and the narrow check-safe helper preparation
+  entry point. Preserve ordinary PKI check-mode helper requirements. Stage reuses
+  `openbao.yml`, requires the exact installed helper, and binds the fixed
+  `$PLATFORM_INFRASTRUCTURE_CONFIG_DIR/openbao/validation-ca.pem` public input to
+  private `openbao_tls_ca_src`/`openbao_tls_ca_sha256`. Keep Git source trust
+  separate. No storage convergence, tokens, requests, initialization or activation;
+  post-checks require zero changes. See [OpenBao Preparation](docs/openbao-preparation.md).
+
 - `openbao-haproxy-failover-plan`/`openbao-haproxy-failover` require an exact
   owner-bound private plan; `openbao-haproxy-failover-recover` discovers retained
   target records without an artifact. Require complete three-host baseline and

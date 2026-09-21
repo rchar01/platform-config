@@ -1,0 +1,11 @@
+---
+- name: Read optional preparation defaults into a separate namespace
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/{{ openbao_preparation_role }}/defaults/main.yml"
+    name: openbao_preparation_defaults
+
+- name: Resolve omitted preparation defaults with inventory precedence
+  ansible.builtin.set_fact:
+    "{{ item }}": "{{ openbao_preparation_defaults[item] }}"
+  loop: "{{ openbao_preparation_defaults.keys() | list }}"
+  when: item not in query('ansible.builtin.varnames', '^' ~ item ~ '$')

@@ -28,6 +28,11 @@ containers through systemd units unless inventory explicitly enables the API
 socket. The kernel prerequisite does not alter Podman packages, Quadlets, socket
 settings, or the Podman storage driver.
 
+`tasks/validate.yml` holds the shared package/storage input assertions. The
+OpenBao preparation preflight includes these tasks directly with separately
+resolved defaults, avoiding role dependencies and runtime convergence during
+its read-only guard.
+
 The [`podman_registry_remaps` dependency](../podman_registry_remaps/README.md)
 optionally maps logical image prefixes to physical registry locations before
 Podman package convergence. Direct `location` remapping has no fallback to the

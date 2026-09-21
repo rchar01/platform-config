@@ -12,6 +12,21 @@ Fresh Zot filesystem issuance is also exposed through fixed
 preflights and a separate offline signing/transfer handoff. CI invokes host-local
 actions and never carries request/response payloads or signer/leaf keys.
 
+OpenBao has separate [CI initial deployment routes](../../docs/openbao-initial-deployment.md)
+with filesystem issue-only scope, one literal node and fixed public controller
+inputs. The OpenBao request play honors integer inventory
+`openbao_pki_request_ttl_seconds` (`1..604800`, default `3600`). Its plan reuses
+read-only validation tasks; activation preserves existing replay/recovery and
+stop/remask behavior.
+
+The separate `lifecycle_helper_prepare.yml` entry point installs only the fixed
+lifecycle helper and its Python cryptography prerequisite for
+[OpenBao host preparation](../../docs/openbao-preparation.md). Fresh check mode
+predicts installation and rejects unsafe existing paths. It shares the helper
+copy task with `lifecycle_helper.yml`, whose ordinary PKI check-mode requirement
+for an already installed exact helper is preserved. Preparation creates no PKI
+state, request, transport configuration or service action.
+
 The agreed [monitoring PKI direction](../../docs/pki-exchange-setup.md#monitoring-pki-direction)
 reuses this model: one exchange, two certificate profiles, service-specific
 activation. The generic `client-p384-sha384-v1` profile is supported by the
