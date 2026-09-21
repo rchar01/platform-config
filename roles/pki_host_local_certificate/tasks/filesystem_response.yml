@@ -59,9 +59,12 @@
     (pki_host_local_certificate_filesystem_import_result.stdout | from_json).status
     == 'imported'
   no_log: true
-  when: >-
-    (pki_host_local_certificate_filesystem_prepare_result.stdout | from_json).status
-    != 'installed'
+  when:
+    - (pki_host_local_certificate_filesystem_prepare_result.stdout | from_json).status != 'installed'
+    - >-
+      pki_host_local_certificate_service_adapter != 'client-stage-v1'
+      or (pki_host_local_certificate_actionable_status_result.stdout | from_json).status
+         in ['request-pending', 'response-partial']
 
 - name: Validate filesystem response import result
   ansible.builtin.assert:
@@ -93,7 +96,7 @@
   register: pki_host_local_certificate_filesystem_install_result
   changed_when: >-
     (pki_host_local_certificate_filesystem_install_result.stdout | from_json).status
-    == 'installed'
+    in ['installed', 'staged']
   no_log: true
   when: >-
     (pki_host_local_certificate_filesystem_prepare_result.stdout | from_json).status
@@ -107,7 +110,10 @@
         pki_host_local_certificate_filesystem_install.keys() | list | sort
         == ['artifact_sha256', 'certificate_sha256',
             'certificate_spki_sha256', 'request_id', 'status', 'version_path']
-      - pki_host_local_certificate_filesystem_install.status in ['installed', 'existing']
+      - >-
+        pki_host_local_certificate_filesystem_install.status in
+        (['staged'] if pki_host_local_certificate_service_adapter == 'client-stage-v1'
+         else ['installed', 'existing'])
       - >-
         pki_host_local_certificate_filesystem_install.request_id
         == (pki_host_local_certificate_filesystem_prepare_result.stdout

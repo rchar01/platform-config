@@ -1,0 +1,26 @@
+---
+# Controller-only pre-CSR review using the reviewed public tools byte parser.
+# Requires its pinned artifact, but no target observation, stage or native validation.
+- name: Validate Grafana Alloy initial boundary variables
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_plan: "{{ vars | grafana_alloy_initial_validate(true) }}"
+  no_log: true
+
+- name: Read the exact reviewed non-secret inventory and public tools artifact on the controller
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_sources: "{{ vars | grafana_alloy_initial_sources(true) }}"
+  no_log: true
+
+- name: Generate Grafana Alloy pre-CSR writer boundary digests
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_boundary_digests: >-
+      {{ grafana_alloy_initial_plan | grafana_alloy_initial_boundary(
+           grafana_alloy_initial_sources,
+           lookup('ansible.builtin.template', 'config.alloy.j2',
+                  template_vars=grafana_alloy_initial_plan.template_vars),
+           lookup('ansible.builtin.template', 'alloy.service.override.conf.j2')) }}
+  no_log: true
+
+- name: Report Grafana Alloy boundary digests for reviewed inventory insertion
+  ansible.builtin.debug:
+    var: grafana_alloy_initial_boundary_digests

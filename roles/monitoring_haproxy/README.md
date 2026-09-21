@@ -13,6 +13,16 @@ under `/etc/haproxy/monitoring-bundles`; an atomic
 package-standard `/etc/haproxy/haproxy.cfg` symlink. A failed active reload
 restores the prior generation pointer.
 
+Every reused or newly published generation must contain exactly the seven
+expected files. Before native validation or pointer selection, the role compares
+SHA-256 digests with the controller PKI and final-path template rendering and
+requires exact file ownership/modes, regular non-symlink files with one hard link,
+and a root-owned `0750` generation directory. These checks also run in check mode
+for existing generations. Drift rejects the generation without repairing its
+contents or switching pointers; only a newly published invalid generation is
+removed by the publication failure path. Exclude concurrent out-of-band bundle
+edits: these observations are not a filesystem lock.
+
 The role also adds required SELinux HTTP port labels and reconciles only its own
 manifest-backed firewalld rich rules. Activation requires coherent `started` and
 enabled service selectors plus live managed-firewall readiness. The default
@@ -54,6 +64,15 @@ and is produced through `platform-tools`; the role never generates production
 certificates. Enabling the role in a playbook and authorizing managed-host
 activation remain separate rollout decisions.
 
+The agreed [monitoring PKI direction](../../docs/pki-exchange-setup.md#monitoring-pki-direction)
+will reuse OpenBao's host-local key custody and signed exchange model with
+monitoring-specific profiles and adapters. This role still consumes controller
+PKI source files; target-local issuance and bundle handoff are not implemented.
+Any future handoff must preserve the seven-file integrity/atomic-selection
+contract without exporting host keys or adding a competing active selector.
+Loki and Mimir writers require distinct client identities; their certificates
+do not replace HAProxy's frontend or backend TLS identities.
+
 `playbooks/monitoring-haproxy.yml` is the focused three-node staging lane. It
 requires all monitoring members, validates the role contracts, confirms that
 controller PKI sources are safe regular files, stops any existing HAProxy, and
@@ -70,3 +89,15 @@ not an authorization boundary.
 Run `make test-monitoring-haproxy-capabilities` for rendered policy behavior and
 `make test-monitoring-haproxy-rocky` for package, bundle, rollback, firewall,
 service, check-mode, and idempotency coverage in disposable Rocky systemd.
+
+The default-suite bundle regressions run the real Ansible bundle entry point in
+an isolated root namespace, with synthetic PKI and native validation stubbed:
+
+```bash
+PLATFORM_CONFIG_CONTAINER_PROFILE=test ./scripts/in-container python -m pytest -n 0 -x --durations=10 \
+  tests/python/test_monitoring_haproxy_bundle.py
+```
+
+They cover byte/metadata drift, missing/extra files, symlinks/hard links, pointer
+preservation, idempotency, and check mode. Native PKI parsing and service behavior
+remain covered by the separate disposable Rocky checks.

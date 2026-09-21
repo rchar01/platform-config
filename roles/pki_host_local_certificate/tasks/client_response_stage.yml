@@ -1,0 +1,144 @@
+---
+- name: Validate the issue-only client staging contract
+  ansible.builtin.import_tasks: validate_client_stage.yml
+
+- name: Install or validate reviewed client protocol trust and helpers
+  ansible.builtin.import_tasks: trust.yml
+
+- name: Install client GitLab transport components
+  ansible.builtin.import_tasks: gitlab_setup.yml
+  when: pki_host_local_certificate_transport == 'gitlab'
+
+- name: Build bounded client staging arguments
+  ansible.builtin.set_fact:
+    pki_host_local_certificate_lifecycle_common_argv:
+      - --state-root
+      - "{{ pki_host_local_certificate_state_root }}"
+      - --pending-root
+      - "{{ pki_host_local_certificate_pending_root }}"
+      - --versions-root
+      - "{{ pki_host_local_certificate_versions_root }}"
+      - --service
+      - "{{ pki_host_local_certificate_service }}"
+      - --target
+      - "{{ pki_host_local_certificate_target }}"
+      - --service-adapter
+      - client-stage-v1
+    pki_host_local_certificate_lifecycle_candidate_argv:
+      - --trust-id
+      - "{{ pki_host_local_certificate_trust_id }}"
+      - --subject-cn
+      - "{{ pki_host_local_certificate_subject_cn }}"
+      - --subject-ou
+      - "{{ pki_host_local_certificate_subject_ou }}"
+      - --subject-o
+      - "{{ pki_host_local_certificate_subject_o }}"
+      - --subject-c
+      - "{{ pki_host_local_certificate_subject_c }}"
+      - --validity-days
+      - "{{ pki_host_local_certificate_validity_days | string }}"
+      - --minimum-remaining-lifetime-seconds
+      - "{{ pki_host_local_certificate_minimum_remaining_lifetime_seconds | string }}"
+
+- name: Authenticate the only pending client request and staged state
+  ansible.builtin.command:
+    argv: >-
+      {{ [pki_host_local_certificate_lifecycle_helper_path, 'target-stage-status']
+         + pki_host_local_certificate_lifecycle_common_argv
+         + pki_host_local_certificate_lifecycle_candidate_argv }}
+  register: pki_host_local_certificate_actionable_status_result
+  changed_when: false
+  no_log: true
+
+- name: Require actionable client staging state
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_actionable_status_result.stderr | length == 0
+      - pki_host_local_certificate_client_status.kind == 'platform-config-target-local-certificate-stage-status'
+      - pki_host_local_certificate_client_status.schema == '2'
+      - pki_host_local_certificate_client_status.status in ['request-pending', 'response-partial', 'response-ready', 'staged-pending', 'staged']
+      - pki_host_local_certificate_client_status.service == pki_host_local_certificate_service
+      - pki_host_local_certificate_client_status.target == pki_host_local_certificate_target
+      - pki_host_local_certificate_client_status.request_id is match('\A[0-9a-f]{32}\Z')
+    fail_msg: Client staging has no authenticated actionable request.
+  vars:
+    pki_host_local_certificate_client_status: "{{ pki_host_local_certificate_actionable_status_result.stdout | from_json }}"
+  no_log: true
+
+- name: Download and stage the authenticated client response through GitLab
+  ansible.builtin.command:
+    argv:
+      - "{{ pki_host_local_certificate_gitlab_helper_path }}"
+      - response-download
+      - --config
+      - "{{ pki_host_local_certificate_gitlab_config_path }}"
+  register: pki_host_local_certificate_client_download
+  changed_when: (pki_host_local_certificate_client_download.stdout | from_json).status == 'installed'
+  no_log: true
+  when:
+    - pki_host_local_certificate_transport == 'gitlab'
+    - (pki_host_local_certificate_actionable_status_result.stdout | from_json).status != 'staged'
+
+- name: Validate the client GitLab staging result
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_client_download.stderr | length == 0
+      - pki_host_local_certificate_client_download_status.keys() | list | sort == ['command', 'kind', 'schema', 'status']
+      - pki_host_local_certificate_client_download_status.schema == 2
+      - pki_host_local_certificate_client_download_status.kind == 'platform-config-target-local-gitlab-status'
+      - pki_host_local_certificate_client_download_status.command == 'response-download'
+      - pki_host_local_certificate_client_download_status.status in ['installed', 'existing']
+    fail_msg: Client GitLab staging returned inconsistent evidence.
+  vars:
+    pki_host_local_certificate_client_download_status: "{{ pki_host_local_certificate_client_download.stdout | from_json }}"
+  no_log: true
+  when: not pki_host_local_certificate_client_download.skipped | default(false)
+
+- name: Import and stage the authenticated client filesystem response
+  ansible.builtin.import_tasks: filesystem_response.yml
+  when:
+    - pki_host_local_certificate_transport == 'filesystem'
+    - (pki_host_local_certificate_actionable_status_result.stdout | from_json).status != 'staged'
+
+- name: Prove a clean authenticated staged version without activation
+  ansible.builtin.command:
+    argv: >-
+      {{ [pki_host_local_certificate_lifecycle_helper_path, 'target-stage-status']
+         + pki_host_local_certificate_lifecycle_common_argv
+         + pki_host_local_certificate_lifecycle_candidate_argv }}
+  register: pki_host_local_certificate_client_final_status
+  changed_when: false
+  no_log: true
+
+- name: Require complete client staging evidence
+  ansible.builtin.assert:
+    that:
+      - pki_host_local_certificate_client_final_status.stderr | length == 0
+      - >-
+        pki_host_local_certificate_client_status.keys() | list | sort
+        == ['artifact_sha256', 'certificate_sha256', 'certificate_spki_sha256',
+            'kind', 'request_id', 'required_action', 'schema', 'service', 'status',
+            'target', 'version_path']
+      - pki_host_local_certificate_client_status.schema == '2'
+      - pki_host_local_certificate_client_status.kind == 'platform-config-target-local-certificate-stage-status'
+      - pki_host_local_certificate_client_status.status == 'staged'
+      - pki_host_local_certificate_client_status.required_action == 'none'
+      - pki_host_local_certificate_client_status.service == pki_host_local_certificate_service
+      - pki_host_local_certificate_client_status.target == pki_host_local_certificate_target
+      - >-
+        pki_host_local_certificate_client_status.request_id
+        == (pki_host_local_certificate_actionable_status_result.stdout | from_json).request_id
+      - >-
+        pki_host_local_certificate_client_status.version_path
+        == pki_host_local_certificate_versions_root ~ '/' ~ pki_host_local_certificate_client_status.request_id
+      - pki_host_local_certificate_client_status.artifact_sha256 is match('\A[0-9a-f]{64}\Z')
+      - pki_host_local_certificate_client_status.certificate_sha256 is match('\A[0-9a-f]{64}\Z')
+      - pki_host_local_certificate_client_status.certificate_spki_sha256 is match('\A[0-9a-f]{64}\Z')
+    fail_msg: Client staging did not produce a clean authenticated immutable version.
+  vars:
+    pki_host_local_certificate_client_status: "{{ pki_host_local_certificate_client_final_status.stdout | from_json }}"
+  no_log: true
+
+- name: Report client staging without claiming activation
+  ansible.builtin.debug:
+    msg: "{{ pki_host_local_certificate_client_final_status.stdout | from_json }}"

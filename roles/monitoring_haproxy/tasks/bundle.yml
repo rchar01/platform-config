@@ -148,6 +148,7 @@
           and monitoring_haproxy_final_bundle_stat.stat.pw_name == 'root'
           and monitoring_haproxy_final_bundle_stat.stat.gr_name
               == monitoring_haproxy_group
+          and monitoring_haproxy_final_bundle_stat.stat.mode == '0750'
         )
     fail_msg: >-
       The content-addressed monitoring HAProxy bundle path is unsafe.
@@ -287,6 +288,9 @@
       monitoring_haproxy_final_bundle_stat.stat.exists
       or not ansible_check_mode
   block:
+    - name: Verify published monitoring HAProxy bundle integrity
+      ansible.builtin.include_tasks: verify_bundle.yml
+
     - name: Validate published monitoring HAProxy configuration
       ansible.builtin.command:
         argv:

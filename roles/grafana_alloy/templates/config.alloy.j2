@@ -42,6 +42,20 @@ prometheus.remote_write "platform_metrics" {
 loki.write "default" {
   endpoint {
     url = {{ grafana_alloy_loki_url | to_json }}
+    follow_redirects = false
+{% if grafana_alloy_loki_ca_file | length > 0 %}
+
+    tls_config {
+      ca_file              = {{ grafana_alloy_loki_ca_file | to_json }}
+      server_name          = {{ grafana_alloy_loki_server_name | to_json }}
+      insecure_skip_verify = false
+      min_version          = "TLS12"
+{% if grafana_alloy_loki_client_cert_file | length > 0 %}
+      cert_file = {{ grafana_alloy_loki_client_cert_file | to_json }}
+      key_file  = {{ grafana_alloy_loki_client_key_file | to_json }}
+{% endif %}
+    }
+{% endif %}
   }
 }
 

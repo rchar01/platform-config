@@ -111,6 +111,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
 ) -> None:
     root = repo_root / "roles/pki_host_local_certificate/tasks"
     request = load_yaml(root / "request_publish.yml")
+    exchange = load_yaml(root / "request_exchange.yml")
     preflight = load_yaml(root / "response_preflight.yml")
     activation = load_yaml(root / "response_activate.yml")
 
@@ -120,18 +121,26 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         if "ansible.builtin.import_tasks" in task
     ] == [
         "validate_target_local.yml",
+        "request_exchange.yml",
+    ]
+    assert request[0]["ansible.builtin.import_tasks"] == "validate_target_local.yml"
+    assert [
+        task["ansible.builtin.import_tasks"]
+        for task in exchange
+        if "ansible.builtin.import_tasks" in task
+    ] == [
         "trust.yml",
         "gitlab_setup.yml",
         "filesystem_request.yml",
     ]
     gitlab_setup = task_named(
-        request, "Install target-local GitLab certificate components"
+        exchange, "Install target-local GitLab certificate components"
     )
     assert gitlab_setup["when"] == (
         "pki_host_local_certificate_transport == 'gitlab'"
     )
     publish = task_named(
-        request, "Create and publish the target-local schema-2 request"
+        exchange, "Create and publish the target-local schema-2 request"
     )
     assert publish["ansible.builtin.command"]["argv"] == [
         "{{ pki_host_local_certificate_gitlab_helper_path }}",
@@ -141,7 +150,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
     ]
     assert publish["no_log"] is True
     validation = task_named(
-        request, "Validate target-local request publication result"
+        exchange, "Validate target-local request publication result"
     )
     checks = validation["ansible.builtin.assert"]["that"]
     assert (
@@ -152,7 +161,7 @@ def test_target_local_task_chains_use_facades_and_recover_before_download(
         "pki_host_local_certificate_request_publish.request_id "
         "is match('^[0-9a-f]{32}$')"
     ) in checks
-    report = task_named(request, "Report authenticated target-local request ID")
+    report = task_named(exchange, "Report authenticated target-local request ID")
     assert report["ansible.builtin.debug"] == {
         "msg": {
             "request_id": "{{ pki_host_local_certificate_authenticated_request_id }}"

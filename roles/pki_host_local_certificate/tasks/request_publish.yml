@@ -11,53 +11,5 @@
     mode: "0750"
   when: pki_host_local_certificate_service_adapter == 'openbao-pristine-v1'
 
-- name: Install target-local certificate trust
-  ansible.builtin.import_tasks: trust.yml
-
-- name: Install target-local GitLab certificate components
-  ansible.builtin.import_tasks: gitlab_setup.yml
-  when: pki_host_local_certificate_transport == 'gitlab'
-
-- name: Create and publish the target-local schema-2 request
-  ansible.builtin.command:
-    argv:
-      - "{{ pki_host_local_certificate_gitlab_helper_path }}"
-      - request-publish
-      - --config
-      - "{{ pki_host_local_certificate_gitlab_config_path }}"
-  register: pki_host_local_certificate_request_publish_result
-  changed_when: >-
-    (pki_host_local_certificate_request_publish_result.stdout | from_json).status == 'published'
-  no_log: true
-  when: pki_host_local_certificate_transport == 'gitlab'
-
-- name: Validate target-local request publication result
-  ansible.builtin.assert:
-    that:
-      - pki_host_local_certificate_request_publish_result.stderr | length == 0
-      - pki_host_local_certificate_request_publish.keys() | list | sort == ['command', 'kind', 'request_id', 'schema', 'status']
-      - pki_host_local_certificate_request_publish.schema == 2
-      - pki_host_local_certificate_request_publish.kind == 'platform-config-target-local-gitlab-status'
-      - pki_host_local_certificate_request_publish.command == 'request-publish'
-      - pki_host_local_certificate_request_publish.status in ['existing', 'published']
-      - pki_host_local_certificate_request_publish.request_id is match('^[0-9a-f]{32}$')
-    fail_msg: Target-local GitLab request publication returned unsafe metadata.
-  vars:
-    pki_host_local_certificate_request_publish: >-
-      {{ pki_host_local_certificate_request_publish_result.stdout | from_json }}
-  when: pki_host_local_certificate_transport == 'gitlab'
-
-- name: Record authenticated GitLab request ID
-  ansible.builtin.set_fact:
-    pki_host_local_certificate_authenticated_request_id: >-
-      {{ (pki_host_local_certificate_request_publish_result.stdout | from_json).request_id }}
-  when: pki_host_local_certificate_transport == 'gitlab'
-
-- name: Create and export the target-local filesystem request
-  ansible.builtin.import_tasks: filesystem_request.yml
-  when: pki_host_local_certificate_transport == 'filesystem'
-
-- name: Report authenticated target-local request ID
-  ansible.builtin.debug:
-    msg:
-      request_id: "{{ pki_host_local_certificate_authenticated_request_id }}"
+- name: Publish the validated target-local request through the shared exchange
+  ansible.builtin.import_tasks: request_exchange.yml

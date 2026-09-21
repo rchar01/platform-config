@@ -128,6 +128,61 @@ idempotent_output="$(run_playbook)"
 grep -qE 'changed=0.*failed=0' <<<"$idempotent_output" \
   || fail 'Second staged monitoring HAProxy convergence was not idempotent'
 
+# Real chown coverage belongs here: unshare -Ur cannot represent other owners.
+ownership_snapshot() {
+  podman exec --interactive "$CONTAINER" python3 - "$initial_bundle" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/workspace/tests/fixtures/monitoring-haproxy-bundle")
+from bundle_state import snapshot
+
+paths = [Path(sys.argv[1]).parent, *map(Path, (
+    "/etc/haproxy/monitoring-current",
+    "/etc/haproxy/haproxy.cfg",
+    "/etc/haproxy/monitoring-current.next",
+))]
+print(json.dumps({str(path): snapshot(path) if os.path.lexists(path) else None for path in paths}, sort_keys=True))
+PY
+}
+
+check_bundle_ownership() (
+  local path="${initial_bundle}${1:+/$1}"
+  local original before after output status=0
+  original="$(podman exec "$CONTAINER" stat -c '%u:%g' "$path")"
+  # Restore even if rejection or no-repair assertions fail in this subshell.
+  trap 'podman exec "$CONTAINER" chown "$original" "$path"' EXIT
+  podman exec "$CONTAINER" chown "$2" "$path"
+  [[ "$(podman exec "$CONTAINER" stat -c '%U:%G' "$path")" == "$2" ]] \
+    || fail "Could not establish ownership drift: ${path} ($2)"
+  [[ "$(podman exec "$CONTAINER" stat -c '%u:%g' "$path")" != "$original" ]] \
+    || fail "Ownership case did not change owner/group: ${path} ($2)"
+  before="$(ownership_snapshot)"
+  output="$(podman exec \
+    --env ANSIBLE_COLLECTIONS_PATH=/root/.ansible/collections \
+    --env ANSIBLE_ROLES_PATH=/workspace/roles \
+    --workdir /workspace "$CONTAINER" \
+    timeout 120s ansible-playbook -i localhost, -c local "$FIXTURE" 2>&1)" || status=$?
+  after="$(ownership_snapshot)"
+  [[ "$status" -eq 2 ]] \
+    || fail "Ownership drift did not produce an Ansible rejection: ${path} ($2), status ${status}"
+  grep -Fq "$3" <<<"$output" \
+    || fail "Ownership drift failed outside the bundle guard: ${path} ($2)"
+  [[ "$after" == "$before" ]] \
+    || fail "Ownership rejection repaired a bundle or changed a pointer: ${path} ($2)"
+)
+
+check_bundle_ownership '' haproxy:haproxy \
+  'content-addressed monitoring HAProxy bundle path is unsafe'
+check_bundle_ownership '' root:root \
+  'content-addressed monitoring HAProxy bundle path is unsafe'
+check_bundle_ownership frontend.pem haproxy:haproxy \
+  'Monitoring HAProxy rejected the published immutable bundle'
+check_bundle_ownership client-ca.crt root:haproxy \
+  'Monitoring HAProxy rejected the published immutable bundle'
+
 check_bundle_before="$(current_bundle)"
 check_versionlock_before="$(podman exec "$CONTAINER" sha256sum \
   /etc/dnf/plugins/versionlock.list)"

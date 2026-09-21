@@ -48,6 +48,47 @@
   requires a manual action; post-check is zero-change. See
   [Registry Operations](docs/registry-operations.md).
 
+## Monitoring Boundary
+
+- Client PKI request/staging reuses `pki_host_local_certificate` with the fixed
+  issue-only `client-stage-v1` adapter and `client-p384-sha384-v1` profile. Preserve
+  existing server adapters, signed exchange schema and target-local keys. Stage
+  exact protected versions only; never create active/current/terminal state,
+  change service configuration or invoke service actions. Unknown retained stages
+  fail closed without cleanup; exact published-version/complete-ingress recovery
+  must reauthenticate before cleanup and success. Keep native signing interop
+  separate from production transfer, live GitLab and activation qualification.
+
+- Monitoring HAProxy content-addressed bundles must match the exact seven-file
+  set, PKI SHA-256 inputs and final-path template bytes, root ownership, exact
+  groups/modes and single-link regular files before native validation or pointer
+  selection. Existing-bundle check mode enforces the same integrity contract.
+  Reject drift without repair or pointer changes; retain publication rollback
+  behavior. Exclude concurrent out-of-band bundle edits. Full monitoring and CI
+  qualification remain separate; see `roles/monitoring_haproxy/README.md`.
+
+- Host-native Alloy Loki TLS settings are optional empty defaults, with paired
+  CA/server-name and certificate/key references. Validate typed URL/path inputs
+  and protected direct files before lifecycle changes, also in check mode.
+  Keep strict TLS and redirects disabled; do not share Mimir client paths. Reject
+  symlinks until an authenticated PKI selector handoff is implemented. Metadata
+  readiness and synthetic sender tests do not establish certificate lifecycle,
+  real Loki/HAProxy acceptance or dev CI qualification. See `roles/grafana_alloy/README.md`.
+
+- Alloy initial start is a separate fixed, initial-only process receipt: exact
+  protected signer snapshot, signed request bindings and normalized pre-CSR config
+  boundary; direct immutable version paths, no selectors or PKI active records.
+  Reuse the pinned tools parser and lifecycle validation. Start only the prepared
+  inactive/disabled RPM unit, journal before enable/start, and require signed hold
+  plus one day remaining on the leaf and authenticated client chain. Recover only
+  to verified disabled/inactive; retain failed
+  or uncertain evidence. Exclude ordinary convergence during takeover and all
+  out-of-band mutations; after process-owner protection exists, ordinary tasks
+  and handlers must fail closed before repository policy or host mutation.
+  Initial replay/readiness does not establish renewal, revocation, ingestion or
+  post-completion rollback. Task-only boundary/status paths must not invoke role
+  dependencies. See `roles/grafana_alloy/README.md#guarded-initial-start`.
+
 ## Kubernetes Bastion Boundary
 
 - `platform-config` owns installing and configuring bastion hosts with Ansible.

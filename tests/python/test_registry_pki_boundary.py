@@ -179,6 +179,8 @@ def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> 
 
     role_tasks = repo_root / "roles/pki_host_local_certificate/tasks"
     assert {path.name for path in role_tasks.glob("*.yml")} == {
+        "client_request_publish.yml",
+        "client_response_stage.yml",
         "filesystem_preflight.yml",
         "filesystem_request.yml",
         "filesystem_response.yml",
@@ -190,10 +192,12 @@ def test_only_target_local_registry_pki_entry_points_remain(repo_root: Path) -> 
         "registry_pki_preflight.yml",
         "registry_storage.yml",
         "request_helper.yml",
+        "request_exchange.yml",
         "request_publish.yml",
         "response_activate.yml",
         "response_preflight.yml",
         "trust.yml",
+        "validate_client_stage.yml",
         "validate_target_local.yml",
         "validate_trust.yml",
     }

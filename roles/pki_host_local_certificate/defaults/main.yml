@@ -10,6 +10,10 @@ pki_host_local_certificate_requester_principal: ""
 pki_host_local_certificate_response_principal: ""
 
 pki_host_local_certificate_common_name: ""
+pki_host_local_certificate_subject_cn: ""
+pki_host_local_certificate_subject_ou: ""
+pki_host_local_certificate_subject_o: ""
+pki_host_local_certificate_subject_c: ""
 pki_host_local_certificate_dns_sans: []
 pki_host_local_certificate_ip_sans: []
 pki_host_local_certificate_validity_days: 0

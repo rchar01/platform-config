@@ -1,0 +1,107 @@
+---
+# Derive expected bytes from reviewed inputs, never from an installed manifest.
+# Published configuration references the final generation, not the candidate or
+# current symlink. Preserve trailing newlines exactly as the template module does.
+- name: Derive expected monitoring HAProxy bundle files
+  ansible.builtin.set_fact:
+    monitoring_haproxy_expected_bundle_files:
+      - path: frontend.pem
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+        checksum: "{{ monitoring_haproxy_bundle_source_stats.results[0].stat.checksum }}"
+      - path: client-ca.crt
+        group: root
+        mode: "0644"
+        checksum: "{{ monitoring_haproxy_bundle_source_stats.results[1].stat.checksum }}"
+      - path: client-ca.crl
+        group: root
+        mode: "0644"
+        checksum: "{{ monitoring_haproxy_bundle_source_stats.results[2].stat.checksum }}"
+      - path: backend-ca.crt
+        group: root
+        mode: "0644"
+        checksum: "{{ monitoring_haproxy_bundle_source_stats.results[3].stat.checksum }}"
+      - path: backend-client.pem
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+        checksum: "{{ monitoring_haproxy_bundle_source_stats.results[4].stat.checksum }}"
+      - path: roles.map
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+        checksum: >-
+          {{ lookup('ansible.builtin.template', role_path ~ '/templates/monitoring-roles.map.j2', rstrip=false) | hash('sha256') }}
+      - path: haproxy.cfg
+        group: "{{ monitoring_haproxy_group }}"
+        mode: "0640"
+        checksum: >-
+          {{ lookup('ansible.builtin.template', role_path ~ '/templates/haproxy.cfg.j2', rstrip=false) | hash('sha256') }}
+  vars:
+    monitoring_haproxy_render_frontend_pem_path: "{{ monitoring_haproxy_bundle_path }}/frontend.pem"
+    monitoring_haproxy_render_client_ca_path: "{{ monitoring_haproxy_bundle_path }}/client-ca.crt"
+    monitoring_haproxy_render_client_crl_path: "{{ monitoring_haproxy_bundle_path }}/client-ca.crl"
+    monitoring_haproxy_render_backend_ca_path: "{{ monitoring_haproxy_bundle_path }}/backend-ca.crt"
+    monitoring_haproxy_render_backend_client_pem_path: "{{ monitoring_haproxy_bundle_path }}/backend-client.pem"
+    monitoring_haproxy_render_identity_map_path: "{{ monitoring_haproxy_bundle_path }}/roles.map"
+  no_log: true
+
+- name: Enumerate immutable monitoring HAProxy bundle entries
+  ansible.builtin.find:
+    paths:
+      - "{{ monitoring_haproxy_bundle_path }}"
+    file_type: any
+    hidden: true
+    recurse: false
+    follow: false
+  register: monitoring_haproxy_bundle_entries
+  check_mode: false
+
+# The format is flat: any subdirectory is already an unexpected entry, so do not
+# descend into untrusted directories to establish the exact seven-file set.
+- name: Require exact monitoring HAProxy bundle entries
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_bundle_entries.skipped_paths | length == 0
+      - >-
+        monitoring_haproxy_bundle_entries.files | map(attribute='path')
+        | map('basename') | sort
+        == monitoring_haproxy_expected_bundle_files | map(attribute='path') | sort
+    fail_msg: Monitoring HAProxy immutable bundle contains missing or unexpected entries.
+
+- name: Inspect immutable monitoring HAProxy bundle files
+  ansible.builtin.stat:
+    path: "{{ monitoring_haproxy_bundle_path }}/{{ monitoring_haproxy_bundle_file.path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+    get_mime: false
+  loop: "{{ monitoring_haproxy_expected_bundle_files }}"
+  loop_control:
+    loop_var: monitoring_haproxy_bundle_file
+    label: "{{ monitoring_haproxy_bundle_file.path }}"
+  register: monitoring_haproxy_bundle_file_stats
+  check_mode: false
+  no_log: true
+
+- name: Require exact monitoring HAProxy bundle content and metadata
+  ansible.builtin.assert:
+    that:
+      - monitoring_haproxy_bundle_file_stat.stat.exists
+      - monitoring_haproxy_bundle_file_stat.stat.isreg
+      - not monitoring_haproxy_bundle_file_stat.stat.islnk
+      - monitoring_haproxy_bundle_file_stat.stat.nlink == 1
+      - monitoring_haproxy_bundle_file_stat.stat.uid == 0
+      - >-
+        monitoring_haproxy_bundle_file_stat.stat.gr_name
+        == monitoring_haproxy_bundle_file_stat.monitoring_haproxy_bundle_file.group
+      - >-
+        monitoring_haproxy_bundle_file_stat.stat.mode
+        == monitoring_haproxy_bundle_file_stat.monitoring_haproxy_bundle_file.mode
+      - >-
+        monitoring_haproxy_bundle_file_stat.stat.checksum
+        == monitoring_haproxy_bundle_file_stat.monitoring_haproxy_bundle_file.checksum
+    fail_msg: Monitoring HAProxy immutable bundle content or metadata differs from reviewed inputs.
+  loop: "{{ monitoring_haproxy_bundle_file_stats.results }}"
+  loop_control:
+    loop_var: monitoring_haproxy_bundle_file_stat
+    label: "{{ monitoring_haproxy_bundle_file_stat.monitoring_haproxy_bundle_file.path }}"
+  no_log: true

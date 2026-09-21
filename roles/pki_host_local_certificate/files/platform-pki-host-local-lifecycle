@@ -115,6 +115,7 @@ CERTIFICATE_NAMES = frozenset(("tls.crt", "ca-chain.crt", "fullchain.crt"))
 REQUEST_NAMESPACE_V2 = "platform-pki-csr-request-v2"
 RESPONSE_NAMESPACE_V2 = "platform-pki-csr-response-v2"
 PROFILE = "server-p384-sha384-v1"
+CLIENT_PROFILE = "client-p384-sha384-v1"
 MIN_ROLLBACK_SECONDS = 1209600
 LOCAL_READY_SECONDS = 30
 MAX_SIZE = 1024 * 1024
@@ -128,7 +129,12 @@ OPENBAO_GENERATED_UNIT_FRAGMENT = "/run/systemd/generator/openbao.service"
 OPENBAO_QUADLET_SOURCE = "/etc/containers/systemd/openbao.container"
 ZOT_ADAPTER = "zot-v1"
 OPENBAO_ADAPTER = "openbao-pristine-v1"
-SERVICE_ADAPTERS = (ZOT_ADAPTER, OPENBAO_ADAPTER)
+CLIENT_ADAPTER = "client-stage-v1"
+SERVICE_ADAPTERS = (ZOT_ADAPTER, OPENBAO_ADAPTER, CLIENT_ADAPTER)
+CLIENT_COMMANDS = frozenset((
+    "target-request-export", "target-response-prepare", "target-response-import",
+    "target-response-install", "target-stage-status",
+))
 HEX_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
 IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z", re.ASCII)
@@ -869,6 +875,31 @@ def private_key_spki(data: bytes) -> str:
     return spki_digest(key.public_key())
 
 
+def client_subject(cn: str, ou: str, organization: str, country: str) -> x509.Name:
+    for value in (cn, ou, organization):
+        if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value, re.ASCII) is None:
+            fail("client subject CN, OU and O must use the exact tools subject format")
+    if not isinstance(country, str) or re.fullmatch(r"[A-Z]{2}", country, re.ASCII) is None:
+        fail("client subject C must be two uppercase ASCII letters")
+    return x509.Name(tuple(x509.NameAttribute(oid, value) for oid, value in (
+        (NameOID.COUNTRY_NAME, country), (NameOID.ORGANIZATION_NAME, organization),
+        (NameOID.ORGANIZATIONAL_UNIT_NAME, ou), (NameOID.COMMON_NAME, cn),
+    )))
+
+
+def validate_client_csr(data: bytes, subject: x509.Name | None = None):
+    csr, spki = validate_csr(data)
+    if len(csr.attributes) or len(csr.extensions):
+        fail("client CSR must not contain attributes or extensions")
+    values = list(csr.subject)
+    if len(values) != 4:
+        fail("client CSR subject must contain exactly C, O, OU, CN")
+    canonical = client_subject(*(attribute.value for attribute in reversed(values)))
+    if csr.subject != canonical or (subject is not None and csr.subject != subject):
+        fail("client CSR subject differs from the exact reviewed subject")
+    return csr, spki
+
+
 def pem_certificates(
     data: bytes, count: int | None, label: str
 ) -> tuple[x509.Certificate, ...]:
@@ -934,6 +965,7 @@ def validate_pending(
     now: int | None = None,
     expected_request_id: str | None = None,
     allowed_ancestor_gid: int | None = None,
+    profile: str = PROFILE,
 ) -> dict[str, object]:
     directory, files, identities = open_exact_tree(
         path,
@@ -956,7 +988,7 @@ def validate_pending(
         require_request_id(request["request_id"])
         require_service(request["service"])
         require_identity(request["target"], "pending target")
-        if request["requester_principal"] != request["target"] or request["profile"] != PROFILE:
+        if request["requester_principal"] != request["target"] or request["profile"] != profile:
             fail("pending request principal or profile is invalid")
         created = require_epoch(request["created_epoch"], "pending created epoch")
         expires = require_epoch(request["expires_epoch"], "pending expiry epoch")
@@ -966,6 +998,12 @@ def validate_pending(
         if request["csr_sha256"] != sha256(files["tls.csr"]):
             fail("pending CSR digest binding is invalid")
         _csr, csr_spki = validate_csr(files["tls.csr"])
+        if profile == CLIENT_PROFILE:
+            validate_client_csr(files["tls.csr"])
+            if request["operation"] != "issue" or request["current_cert_sha256"] != "none" or request["predecessor_request_id"] != "none":
+                fail("client staging supports initial issue only")
+            require_digest(request["nonce"], "request nonce")
+            require_digest(request["inventory_sha256"], "inventory digest")
         key_spki = private_key_spki(files["tls.key"])
         if request["csr_spki_sha256"] != csr_spki or key_spki != csr_spki:
             fail("pending key and CSR SPKI binding is invalid")
@@ -1054,38 +1092,56 @@ def validate_response_files(files: Mapping[str, bytes], pending: Mapping[str, ob
     verify_certificate_signature(root, root, "root certificate")
     require_ca(intermediate, 0, "intermediate certificate")
     require_ca(root, 1, "root certificate")
-    common, dns, ips = validate_sans(args.common_name, args.dns_san, args.ip_san)
+    client = service_adapter(args) == CLIENT_ADAPTER
+    if client:
+        subject = client_subject(args.subject_cn, args.subject_ou, args.subject_o, args.subject_c)
+        validate_client_csr(request_files["tls.csr"], subject)
+        for certificate in (intermediate, root):
+            if not int(certificate.not_valid_before_utc.timestamp()) <= current < int(certificate.not_valid_after_utc.timestamp()):
+                fail("client certificate CA chain is not currently valid")
+    else:
+        common, dns, ips = validate_sans(args.common_name, args.dns_san, args.ip_san)
+        subject = x509.Name((x509.NameAttribute(NameOID.COMMON_NAME, common),))
     key = leaf.public_key()
     if (
         leaf.version is not x509.Version.v3 or not isinstance(key, ec.EllipticCurvePublicKey)
         or not isinstance(key.curve, ec.SECP384R1) or not isinstance(leaf.signature_hash_algorithm, hashes.SHA384)
-        or leaf.subject != x509.Name((x509.NameAttribute(NameOID.COMMON_NAME, common),))
+        or leaf.subject != subject
     ):
-        fail("leaf certificate is not the exact P-384 server profile")
+        fail("leaf certificate is not the exact P-384 client profile" if client else "leaf certificate is not the exact P-384 server profile")
     try:
         basic = leaf.extensions.get_extension_for_class(x509.BasicConstraints)
         usage = leaf.extensions.get_extension_for_class(x509.KeyUsage)
         eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
-        san = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        san = None if client else leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName)
         ski = leaf.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
         aki = leaf.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
         issuer_ski = intermediate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
     except x509.ExtensionNotFound:
         fail("leaf certificate is missing a required extension")
-    expected_sans = tuple(x509.DNSName(value) for value in dns) + tuple(x509.IPAddress(ipaddress.ip_address(value)) for value in ips)
+    expected_sans = () if client else tuple(x509.DNSName(value) for value in dns) + tuple(x509.IPAddress(ipaddress.ip_address(value)) for value in ips)
     if (
-        len(leaf.extensions) != 6 or not basic.critical or basic.value.ca or basic.value.path_length is not None
+        len(leaf.extensions) != (5 if client else 6) or not basic.critical or basic.value.ca or basic.value.path_length is not None
         or not usage.critical or not usage.value.digital_signature or usage.value.content_commitment
         or usage.value.key_encipherment or usage.value.data_encipherment or usage.value.key_agreement
         or usage.value.key_cert_sign or usage.value.crl_sign or eku.critical
-        or tuple(eku.value) != (ExtendedKeyUsageOID.SERVER_AUTH,) or san.critical
-        or tuple(san.value) != expected_sans or ski.critical or aki.critical
+        or tuple(eku.value) != ((ExtendedKeyUsageOID.CLIENT_AUTH,) if client else (ExtendedKeyUsageOID.SERVER_AUTH,))
+        or (san is not None and (san.critical or tuple(san.value) != expected_sans)) or ski.critical or aki.critical
         or aki.value.key_identifier != issuer_ski.value.digest
     ):
-        fail("leaf certificate extensions do not match the exact server profile")
+        fail("leaf certificate extensions do not match the exact client profile" if client else "leaf certificate extensions do not match the exact server profile")
+    if client and (
+        ski.value != x509.SubjectKeyIdentifier.from_public_key(key)
+        or aki.value.authority_cert_issuer is not None
+        or aki.value.authority_cert_serial_number is not None
+    ):
+        fail("client certificate key identifiers do not match the exact profile")
     certificate_spki = spki_digest(key)
     pending_key_spki = private_key_spki(request_files["tls.key"])
-    _csr, csr_spki = validate_csr(request_files["tls.csr"], args.common_name, args.dns_san, args.ip_san)
+    _csr, csr_spki = (
+        validate_client_csr(request_files["tls.csr"], subject) if client
+        else validate_csr(request_files["tls.csr"], args.common_name, args.dns_san, args.ip_san)
+    )
     if certificate_spki != response["certificate_spki_sha256"] or certificate_spki != pending_key_spki or certificate_spki != csr_spki:
         fail("certificate, local key, and CSR public keys differ")
     serial = format(leaf.serial_number, "X")
@@ -1093,6 +1149,8 @@ def validate_response_files(files: Mapping[str, bytes], pending: Mapping[str, ob
         serial = "0" + serial
     not_before = int(leaf.not_valid_before_utc.timestamp())
     not_after = int(leaf.not_valid_after_utc.timestamp())
+    if client and (type(args.validity_days) is not int or not 1 <= args.validity_days <= 365000 or not_after - not_before != args.validity_days * 86400):
+        fail("client certificate lifetime differs from explicit validity days")
     created = require_epoch(response["created_epoch"], "response created epoch")
     response_before = require_epoch(response["not_before_epoch"], "response not-before epoch")
     response_after = require_epoch(response["not_after_epoch"], "response not-after epoch")
@@ -1117,7 +1175,18 @@ def service_adapter(args) -> str:
     return getattr(args, "service_adapter", ZOT_ADAPTER)
 
 
+def request_profile(args) -> str:
+    return CLIENT_PROFILE if service_adapter(args) == CLIENT_ADAPTER else PROFILE
+
+
+def require_server_adapter(args) -> None:
+    if service_adapter(args) not in {ZOT_ADAPTER, OPENBAO_ADAPTER}:
+        fail("active lifecycle requires a fixed server adapter")
+
+
 def version_modes(adapter: str = ZOT_ADAPTER) -> dict[str, int]:
+    if adapter == CLIENT_ADAPTER:
+        return dict.fromkeys(VERSION_NAMES, 0o600)
     modes = {name: (0o644 if name in CERTIFICATE_NAMES else 0o600) for name in VERSION_NAMES}
     if adapter == OPENBAO_ADAPTER:
         modes["tls.key"] = 0o640
@@ -1136,7 +1205,7 @@ def open_versions_root(args, label: str = "versions root") -> PinnedDirectory:
     adapter = service_adapter(args)
     mode, gid = version_directory_metadata(adapter)
     directory = PinnedDirectory.open(
-        args.versions_root, label, private=adapter == ZOT_ADAPTER,
+        args.versions_root, label, private=adapter in {ZOT_ADAPTER, CLIENT_ADAPTER},
         allowed_owner_gids=(
             trusted_ancestor_owners() | {OPENBAO_GID}
             if adapter == OPENBAO_ADAPTER else None
@@ -1151,7 +1220,7 @@ def open_versions_root(args, label: str = "versions root") -> PinnedDirectory:
 
 def create_versions_root(args) -> None:
     adapter = service_adapter(args)
-    if adapter == ZOT_ADAPTER:
+    if adapter in {ZOT_ADAPTER, CLIENT_ADAPTER}:
         create_private_directory(args.versions_root, "versions root")
         return
     parent = PinnedDirectory.open(
@@ -1453,6 +1522,8 @@ def state_entries(state: PinnedDirectory) -> set[str]:
 
 
 def common_open(args, *, shared: bool = False):
+    if service_adapter(args) == CLIENT_ADAPTER and args.command not in CLIENT_COMMANDS:
+        fail("client-stage-v1 forbids active lifecycle commands")
     validate_roots(args.state_root, args.pending_root, args.versions_root)
     require_service(args.service)
     require_identity(args.target, "target")
@@ -1460,12 +1531,84 @@ def common_open(args, *, shared: bool = False):
     lock, lock_identity = acquire_lock(state, shared=shared)
     state.recheck("state root")
     require_snapshot(state, "lock", lock_identity, "lifecycle lock")
+    if service_adapter(args) == CLIENT_ADAPTER:
+        try:
+            client_staging_preflight(state, args)
+        except BaseException:
+            os.close(lock)
+            state.close()
+            raise
     return state, lock
 
 
 def require_adapter_operation(args, request: Mapping[str, str]) -> None:
+    if request["profile"] != request_profile(args):
+        fail("request profile differs from the selected adapter")
+    if service_adapter(args) == CLIENT_ADAPTER and (
+        request["operation"] != "issue" or request["current_cert_sha256"] != "none"
+        or request["predecessor_request_id"] != "none"
+    ):
+        fail("client-stage-v1 supports initial issue only")
     if service_adapter(args) == OPENBAO_ADAPTER and request["operation"] != "issue":
         fail("openbao-pristine-v1 supports issue only; renewal is forbidden")
+
+
+def client_staging_preflight(state: PinnedDirectory, args) -> None:
+    # No recovery journal: only a published version and its complete matching
+    # ingress have a provable continuation. Unknown stages remain for review.
+    if state_entries(state) != {"lock", "trust"}:
+        fail("client staging requires exact trust-only lifecycle state")
+    if os.fstat(state.fd).st_gid != 0:
+        fail("client state root must be root:root")
+    pending_root = PinnedDirectory.open(args.pending_root, "client pending root")
+    try:
+        if os.fstat(pending_root.fd).st_gid != 0:
+            fail("client pending root must be root:root")
+    finally:
+        pending_root.close()
+    request_id = target_pending_request_id(args)
+    trust, policy = load_trust(state, args.trust_id, args.target)
+    pending = validate_pending(
+        os.path.join(args.pending_root, request_id), trust, profile=CLIENT_PROFILE,
+    )
+    request = pending["record"]
+    require_adapter_operation(args, request)
+    if request["service"] != args.service or request["target"] != args.target or request["response_principal"] != policy["response_principal"]:
+        fail("client pending request differs from selected identity")
+    if not os.path.lexists(args.versions_root):
+        require_absent_canonical_path(args.versions_root, "client versions root")
+        return
+    versions = open_versions_root(args)
+    try:
+        entries = set(scan(versions, "client versions root"))
+        ingress_name = f".ingress-{request_id}"
+        if not entries.issubset({request_id, ingress_name}):
+            fail("client versions root contains retained or unexpected state; review required")
+        if request_id in entries:
+            version, files, _ = validate_version(
+                os.path.join(args.versions_root, request_id), request_id, CLIENT_ADAPTER,
+            )
+            version.close()
+            if any(files[name] != pending["files"][name] for name in ("tls.key", "tls.csr")):
+                fail("client version differs from retained pending key or CSR")
+        if ingress_name in entries:
+            ingress = PinnedDirectory.open(
+                os.path.join(args.versions_root, ingress_name), "client response ingress",
+            )
+            try:
+                names = set(scan(ingress, "client response ingress"))
+                if os.fstat(ingress.fd).st_gid != 0 or not names.issubset(RESPONSE_NAMES):
+                    fail("client response ingress has unsafe metadata or unexpected entries")
+                ingress_files = {name: read_at(ingress, name, f"client ingress {name}")[0] for name in names}
+                if request_id in entries and (
+                    names != set(RESPONSE_NAMES)
+                    or any(ingress_files[name] != files[name] for name in RESPONSE_NAMES)
+                ):
+                    fail("client published version conflicts with incomplete or different retained ingress")
+            finally:
+                ingress.close()
+    finally:
+        versions.close()
 
 
 def json_output(value: Mapping[str, object]) -> None:
@@ -1549,7 +1692,8 @@ def collection_prepare(args) -> None:
         trust, policy = load_trust(state, args.trust_id, args.target)
         pending_path = os.path.join(args.pending_root, require_request_id(args.request_id))
         pending = validate_pending(
-            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args)
+            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args),
+            profile=request_profile(args),
         )
         if pending["expired"]:
             fail("expired pending request cannot be collected")
@@ -1568,6 +1712,7 @@ def collection_prepare(args) -> None:
                 pending_path,
                 trust,
                 allowed_ancestor_gid=pending_ancestor_gid(args),
+                profile=request_profile(args),
             ),
         )
         json_output({"status": status_value, "request_id": args.request_id, "request_sha256": sha256(pending["files"]["request"]), "csr_sha256": sha256(pending["files"]["tls.csr"]), "request_signature_sha256": sha256(pending["files"]["request.sig"])})
@@ -1591,7 +1736,7 @@ def response_prepare(args) -> None:
         versions = open_versions_root(args)
         ingress_name = f".ingress-{request_id}"
         entries = scan(versions, "versions root")
-        if request_id in entries:
+        if request_id in entries and service_adapter(args) != CLIENT_ADAPTER:
             validate_version(
                 os.path.join(args.versions_root, request_id), request_id,
                 service_adapter(args),
@@ -1604,6 +1749,7 @@ def response_prepare(args) -> None:
             trust,
             expected_request_id=request_id,
             allowed_ancestor_gid=pending_ancestor_gid(args),
+            profile=request_profile(args),
         )
         if pending["expired"]:
             fail("expired pending request cannot receive a response")
@@ -1614,6 +1760,8 @@ def response_prepare(args) -> None:
         ):
             fail("pending request differs from response preparation bindings")
         if ingress_name not in entries:
+            if service_adapter(args) == CLIENT_ADAPTER and request_id in entries:
+                fail("published client version requires authenticated target-stage-status")
             if args.check:
                 json_output({"status": "would-prepare", "request_id": request_id, "ingress_dir": os.path.join(args.versions_root, ingress_name)})
                 return
@@ -1673,7 +1821,8 @@ def response_install(args) -> None:
         require_digest(args.artifact_sha256, "artifact pin")
         pending_path = os.path.join(args.pending_root, request_id)
         pending = validate_pending(
-            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args)
+            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args),
+            profile=request_profile(args),
         )
         if pending["expired"]:
             fail("expired pending request cannot consume a response")
@@ -1707,7 +1856,7 @@ def response_install(args) -> None:
                 remove_exact_tree(versions, ingress_name, ingress, ingress_identities, "response ingress")
                 ingress.close()
                 ingress = None
-            json_output({"status": "existing", "request_id": request_id, "version_path": destination, "artifact_sha256": validated["artifact_sha256"], "certificate_sha256": validated["certificate_sha256"], "certificate_spki_sha256": validated["certificate_spki_sha256"]})
+            json_output({"status": ("would-install" if args.check else "staged") if service_adapter(args) == CLIENT_ADAPTER else "existing", "request_id": request_id, "version_path": destination, "artifact_sha256": validated["artifact_sha256"], "certificate_sha256": validated["certificate_sha256"], "certificate_spki_sha256": validated["certificate_spki_sha256"]})
             return
         if args.check:
             json_output({"status": "would-install", "request_id": request_id, "version_path": destination, "artifact_sha256": validated["artifact_sha256"], "certificate_sha256": validated["certificate_sha256"], "certificate_spki_sha256": validated["certificate_spki_sha256"]})
@@ -1731,7 +1880,7 @@ def response_install(args) -> None:
         os.fsync(versions.fd)
         stage = PinnedDirectory.open(
             os.path.join(args.versions_root, stage_name), "version stage",
-            private=service_adapter(args) == ZOT_ADAPTER,
+            private=service_adapter(args) in {ZOT_ADAPTER, CLIENT_ADAPTER},
             allowed_owner_gids=(
                 trusted_ancestor_owners() | {OPENBAO_GID}
                 if service_adapter(args) == OPENBAO_ADAPTER else None
@@ -1752,13 +1901,15 @@ def response_install(args) -> None:
         if staged_files != publication:
             fail("staged version bytes changed")
         validate_pending(
-            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args)
+            pending_path, trust, allowed_ancestor_gid=pending_ancestor_gid(args),
+            profile=request_profile(args),
         )
         for name, identity in ingress_identities.items():
             require_snapshot(ingress, name, identity, f"response ingress file {name}")
         fault("before-version-publication")
         rename_noreplace(versions, stage_name, request_id, "version publication")
         os.fsync(versions.fd)
+        fault("after-version-publication")
         stage.path = destination
         if dir_identity(os.stat(request_id, dir_fd=versions.fd, follow_symlinks=False)) != stage_identity:
             fail("published version identity changed")
@@ -1766,7 +1917,7 @@ def response_install(args) -> None:
         remove_exact_tree(versions, ingress_name, ingress, ingress_identities, "response ingress")
         ingress.close()
         ingress = None
-        json_output({"status": "installed", "request_id": request_id, "version_path": destination, "artifact_sha256": validated["artifact_sha256"], "certificate_sha256": validated["certificate_sha256"], "certificate_spki_sha256": validated["certificate_spki_sha256"]})
+        json_output({"status": "staged" if service_adapter(args) == CLIENT_ADAPTER else "installed", "request_id": request_id, "version_path": destination, "artifact_sha256": validated["artifact_sha256"], "certificate_sha256": validated["certificate_sha256"], "certificate_spki_sha256": validated["certificate_spki_sha256"]})
     finally:
         if pending_directory is not None:
             pending_directory.close()
@@ -1930,6 +2081,7 @@ def require_openbao_generated_unit(args) -> None:
 
 
 def service_action(args, action: str) -> None:
+    require_server_adapter(args)
     if action not in {"restart", "start", "stop", "enable-start", "disable-stop"}:
         fail("service recovery action is invalid")
     unit = service_unit(args)
@@ -2488,6 +2640,7 @@ def activation_records(args, validated: Mapping[str, object], version: PinnedDir
 
 
 def activate_start(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args)
     version: PinnedDirectory | None = None
     try:
@@ -2643,6 +2796,7 @@ def activate_start(args) -> None:
 
 
 def active_paths(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args, shared=True)
     try:
         if state_entries(state) & {"activation-journal", "request.journal", "trust-install.journal"}:
@@ -2664,6 +2818,7 @@ def active_paths(args) -> None:
 
 
 def zot_custody(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args, shared=True)
     try:
         entries = state_entries(state)
@@ -2772,6 +2927,7 @@ def require_active_rollback(
 
 
 def openbao_custody(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args, shared=True)
     try:
         entries = state_entries(state)
@@ -2956,7 +3112,7 @@ def pending_ancestor_gid(args) -> int | None:
 
 
 def target_pending_request_id(args) -> str:
-    request_ids = target_pending_request_ids(args)
+    request_ids = target_pending_request_ids(args, set() if service_adapter(args) == CLIENT_ADAPTER else None)
     if len(request_ids) != 1:
         fail("target-local operation requires exactly one nonterminal pending request")
     return request_ids[0]
@@ -3009,6 +3165,7 @@ def target_response_import(args) -> None:
         pending = validate_pending(
             pending_path, trust, expected_request_id=request_id,
             allowed_ancestor_gid=pending_ancestor_gid(args),
+            profile=request_profile(args),
         )
         request = pending["record"]
         assert isinstance(request, dict)
@@ -3119,6 +3276,7 @@ def target_response_import(args) -> None:
             repeated_pending = validate_pending(
                 pending_path, repeated_trust, expected_request_id=request_id,
                 allowed_ancestor_gid=pending_ancestor_gid(args),
+                profile=request_profile(args),
             )
             repeated_request = repeated_pending["record"]
             assert isinstance(repeated_request, dict)
@@ -3179,11 +3337,21 @@ def target_response_import(args) -> None:
 
 def target_response_install(args) -> None:
     args.request_id = target_pending_request_id(args)
+    if service_adapter(args) == CLIENT_ADAPTER and not os.path.lexists(os.path.join(args.versions_root, f".ingress-{args.request_id}")):
+        # Reauthenticate retained pending and installed bytes on every replay.
+        # Status never turns an incomplete or absent response into success.
+        staged = authenticated_client_stage_status(args, require_staged=True)
+        json_output({name: staged[name] for name in (
+            "status", "request_id", "version_path", "artifact_sha256",
+            "certificate_sha256", "certificate_spki_sha256",
+        )})
+        return
     args.artifact_sha256 = target_artifact_digest(args, args.request_id, ingress=True)
     response_install(args)
 
 
 def target_activate_start(args) -> None:
+    require_server_adapter(args)
     args.request_id = target_pending_request_id(args)
     args.artifact_sha256 = target_artifact_digest(args, args.request_id, ingress=False)
     current_request_id = args.request_id
@@ -3497,6 +3665,7 @@ def publish_target_failure(
 
 
 def target_activate_complete(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args)
     try:
         entries = state_entries(state)
@@ -3615,6 +3784,7 @@ def target_activate_complete(args) -> None:
 
 
 def target_recover(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args)
     try:
         if service_adapter(args) == OPENBAO_ADAPTER:
@@ -3680,6 +3850,7 @@ def target_recover(args) -> None:
 
 
 def target_status(args) -> None:
+    require_server_adapter(args)
     state, lock = common_open(args, shared=True)
     try:
         entries = state_entries(state)
@@ -3751,6 +3922,78 @@ def target_status(args) -> None:
         state.close()
 
 
+def authenticated_client_stage_status(args, *, require_staged: bool = False) -> dict[str, object]:
+    if service_adapter(args) != CLIENT_ADAPTER:
+        fail("target-stage-status supports client-stage-v1 only")
+    state, lock = common_open(args, shared=True)
+    try:
+        request_id = target_pending_request_id(args)
+        trust, _policy = load_trust(state, args.trust_id, args.target)
+        pending = validate_pending(
+            os.path.join(args.pending_root, request_id), trust, profile=CLIENT_PROFILE,
+        )
+        validate_client_csr(pending["files"]["tls.csr"], client_subject(
+            args.subject_cn, args.subject_ou, args.subject_o, args.subject_c,
+        ))
+        destination = os.path.join(args.versions_root, request_id)
+        ingress_path = os.path.join(args.versions_root, f".ingress-{request_id}")
+        published = os.path.lexists(destination)
+        retained_ingress = os.path.lexists(ingress_path)
+        validated = None
+        selected, action = "request-pending", "await-response"
+        if published:
+            version, files, _ = validate_version(destination, request_id, CLIENT_ADAPTER)
+            try:
+                validated = validate_response_files(files, pending, trust, args)
+            finally:
+                version.close()
+            selected, action = ("staged-pending", "install-response") if retained_ingress else ("staged", "none")
+        elif pending["expired"]:
+            fail("expired pending client request cannot receive a response")
+        if retained_ingress:
+            ingress = PinnedDirectory.open(ingress_path, "client response ingress")
+            try:
+                names = set(scan(ingress, "client response ingress"))
+                if os.fstat(ingress.fd).st_gid != 0 or not names.issubset(RESPONSE_NAMES):
+                    fail("client response ingress has unsafe metadata or unexpected entries")
+                files = {name: read_at(ingress, name, f"client ingress {name}")[0] for name in names}
+                ingress.recheck("client response ingress")
+                if set(scan(ingress, "client response ingress")) != names:
+                    fail("client response ingress changed during status inspection")
+                if names == set(RESPONSE_NAMES):
+                    validated = validate_response_files(files, pending, trust, args)
+                    if not published:
+                        selected, action = "response-ready", "install-response"
+                elif published:
+                    fail("published client version has incomplete retained ingress; review required")
+                else:
+                    # Safe transfer-in-progress metadata is not response authority.
+                    selected, action = "response-partial", "await-response"
+            finally:
+                ingress.close()
+        if require_staged and selected != "staged":
+            fail("client installation has no authenticated clean staged version")
+        result = {
+            "schema": "2", "kind": "platform-config-target-local-certificate-stage-status",
+            "status": selected, "service": args.service, "target": args.target,
+            "request_id": request_id, "required_action": action,
+        }
+        if validated is not None:
+            result.update({name: validated[name] for name in (
+                "artifact_sha256", "certificate_sha256", "certificate_spki_sha256",
+            )})
+        if published:
+            result["version_path"] = destination
+        return result
+    finally:
+        os.close(lock)
+        state.close()
+
+
+def target_stage_status(args) -> None:
+    json_output(authenticated_client_stage_status(args))
+
+
 def add_common(parser: argparse.ArgumentParser, *, config: bool = False) -> None:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--pending-root", required=True)
@@ -3776,9 +4019,12 @@ def add_common(parser: argparse.ArgumentParser, *, config: bool = False) -> None
 
 def add_target_candidate(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--trust-id", required=True)
-    parser.add_argument("--common-name", required=True)
+    parser.add_argument("--common-name", default="")
     parser.add_argument("--dns-san", action="append", default=[])
     parser.add_argument("--ip-san", action="append", default=[])
+    for name in ("cn", "ou", "o", "c"):
+        parser.add_argument(f"--subject-{name}", default="")
+    parser.add_argument("--validity-days", type=int)
     parser.add_argument("--minimum-remaining-lifetime-seconds", type=int, required=True)
 
 
@@ -3824,6 +4070,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_target_candidate(target_install)
     target_install.add_argument("--check", action="store_true")
     target_install.set_defaults(function=target_response_install)
+
+    stage_status = commands.add_parser(
+        "target-stage-status", help="read-only authentication of initial client staging",
+    )
+    add_common(stage_status)
+    add_target_candidate(stage_status)
+    stage_status.set_defaults(function=target_stage_status)
 
     target_start = commands.add_parser(
         "target-activate-start",
@@ -3903,6 +4156,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def validate_arguments(args) -> None:
+    client = service_adapter(args) == CLIENT_ADAPTER
+    if client and args.command not in CLIENT_COMMANDS:
+        fail("client-stage-v1 forbids active lifecycle commands")
+    if args.command == "target-stage-status" and not client:
+        fail("target-stage-status supports client-stage-v1 only")
+    if hasattr(args, "common_name"):
+        subjects = tuple(getattr(args, f"subject_{name}") for name in ("cn", "ou", "o", "c"))
+        if client:
+            if args.common_name or args.dns_san or args.ip_san:
+                fail("client staging requires empty common-name and SAN inputs")
+            client_subject(*subjects)
+            if type(args.validity_days) is not int or not 1 <= args.validity_days <= 365000:
+                fail("client staging requires explicit integer validity days in 1..365000")
+        elif any(subjects) or args.validity_days is not None:
+            fail("server adapters do not accept client subject or validity-day inputs")
+        else:
+            validate_sans(args.common_name, args.dns_san, args.ip_san)
     if hasattr(args, "request_id") and args.request_id is not None:
         require_request_id(args.request_id)
     if hasattr(args, "artifact_sha256") and args.artifact_sha256 is not None:
@@ -3934,6 +4204,10 @@ def validate_arguments(args) -> None:
         "backend_port", "cluster_port", "container_versions_root",
         "base_config_dir", "raft_data_dir", "bootstrap_marker_path",
     )
+    if client:
+        if any(getattr(args, name) is not None for name in openbao_names):
+            fail("client-stage-v1 does not accept service adapter arguments")
+        return
     if service_adapter(args) == ZOT_ADAPTER:
         if args.command == "openbao-custody":
             fail("openbao-custody supports openbao-pristine-v1 only")

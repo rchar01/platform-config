@@ -34,6 +34,96 @@ uses `platform-pki gitlab-package`; filesystem mode moves only the exact request
 and response payloads and uses existing `platform-pki offline-csr approve|sign`
 operations. Transport success never replaces signed-record authentication.
 
+One exchange, two certificate profiles, service-specific activation. The signer
+supports the exact server profile and the generic client profile through the
+same three public request and six public response files, schema-2 records and
+v2 signature namespaces. Commands, trust and replay rules stay the same; no new
+exchange framework is needed, and leaf keys never leave their consuming hosts.
+
+## Monitoring PKI Direction
+
+Monitoring will reuse the target-local key custody and signed exchange model
+used for OpenBao. The current
+[`pki_host_local_certificate` role](../roles/pki_host_local_certificate/README.md)
+preserves fixed Zot/pristine OpenBao server adapters and adds issue-only
+`client-stage-v1` request/import/staging entry points. It does not yet provide
+an Alloy renewal adapter or live monitoring operation route. The Alloy role now
+has a separate [guarded initial start](../roles/grafana_alloy/README.md#guarded-initial-start)
+that consumes staged direct paths and an exact protected inventory snapshot.
+`server-p384-sha384-v1` remains the CN-only subject/`serverAuth` profile;
+client staging accepts only `client-p384-sha384-v1`.
+Pristine OpenBao and filesystem exchange are currently issue-only; their
+existence does not establish monitoring renewal support.
+
+The host-native monitoring lifecycle will retain these boundaries:
+
+1. Generate the leaf key on its consuming host; keep it out of request/response
+   packages, Ansible variables and controller workspaces.
+2. Publish an authenticated CSR/request through inventory-selected
+   `platform-pki gitlab-package` transport or the fixed filesystem exchange.
+3. Review and sign offline through `platform-tools`, binding the approved
+   identity/profile to the request. Transport remains untrusted for authorization.
+4. Verify the signed response against local request/key state, install a
+   protected immutable version, and use a fixed service-specific activation
+   adapter with validation and rollback.
+
+Monitoring uses separate leaf keys/certificates, not OpenBao's identities. Alloy
+will use `client-p384-sha384-v1`, whose exact controlled RFC2253 subject DN
+matches HAProxy's `CN=...,OU=...,O=...,C=...` allowlist. A collector sending both
+logs and metrics needs separate Loki-writer and Mimir-writer certificate/key
+pairs, mapped to `alloy_loki_writer` and `alloy_mimir_writer` respectively.
+These mappings are service-specific authorization, not a writer field or
+Loki/Mimir enum in tools inventory or review. The client profile keeps
+P-384/SHA-384, a full structured DN, no SAN or CSR attributes, exactly five
+clientAuth-only leaf extensions and fresh-key renewal. The exact server profile
+is unchanged.
+
+Alloy verifies the HAProxy server certificate and hostname; HAProxy verifies the
+collector certificate, CRL and exact role mapping. HAProxy-to-backend TLS uses
+separate identities and trust. Runtime CA trust and the public keys authenticating
+exchange records are separate trust selections. No running OpenBao service is
+needed for this offline signing model.
+
+`platform-tools` now supports `client-p384-sha384-v1` inventory,
+signing/fresh-key renewal, certificate export and schema-2 package validation.
+The unreleased predecessor profile has no compatibility alias. Client inventory
+requires explicit numeric `days` from 1 through 365000 and a canonical positive
+rollback-hold declaration. Issued and historical client validity must match the
+exact signed inventory duration; historical/current selected-service equality
+remains required. Request and approval have no issuer field; the response binds
+the actual issuer.
+
+Target client request/import and immutable staging now reuse the existing helpers
+and transport. Staging never selects a current certificate or changes service
+state. Initial Alloy process activation can authenticate that snapshot against
+the signed requests and start the preconfigured service with failure recovery;
+it does not create PKI active/predecessor records. Rotation, overlapping renewal
+and CA-side CRL generation/distribution remain unimplemented. The monitoring design calls for a dedicated client CA hierarchy and
+397-day leaves. Begin renewal preparation approximately 45 days before expiry;
+activate the replacement at least 30 days before predecessor expiry and preserve
+at least 30 days of valid, trusted, unrevoked overlap and rollback availability
+after successful activation. Keep the predecessor key until that hold and
+delivery verification pass. Emergency revocation overrides normal overlap and
+removes the identity from every HAProxy role map before deploying the updated
+CRL; never restore a revoked predecessor for rollback. This is the agreed
+monitoring policy, not implemented renewal behavior or a change to OpenBao's
+current adapter. Monitoring's 397-day choice and at least 30-day overlap/rollback
+must be enforced by its target adapters; tools enforce the signed inventory
+duration and positive rollback declaration without a generic 30-day minimum.
+CA lifetimes remain separate. Current HAProxy/etcd roles
+still copy controller PKI sources; they have not migrated to target-local custody.
+Alloy now consumes separate Mimir and Loki TLS file references. Loki consumption
+has local input/file and native-client synthetic delivery coverage; signed
+certificate lifecycle integration and authenticated version selectors remain
+unimplemented. See [Alloy TLS inputs](../roles/grafana_alloy/README.md#loki-tls-inputs).
+Main acceptance testing of the simplified client support remains pending; this
+documentation does not establish live qualification.
+
+Kubernetes Alloy requires a separate key-custody and Secret delivery/rotation
+contract. Do not export a host's private key or reuse its identity to populate
+cluster workloads. No monitoring-specific command or variable is introduced by
+this design documentation.
+
 ## Filesystem Exchange
 
 Select the transport only through private inventory:

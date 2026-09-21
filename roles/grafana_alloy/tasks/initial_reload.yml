@@ -1,0 +1,7 @@
+---
+- name: Guard Grafana Alloy reload handler
+  ansible.builtin.import_tasks: initial_guard.yml
+
+- name: Reload systemd for ordinary Grafana Alloy
+  ansible.builtin.systemd_service:
+    daemon_reload: true

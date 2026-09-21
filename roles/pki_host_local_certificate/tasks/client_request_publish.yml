@@ -1,0 +1,6 @@
+---
+- name: Validate the issue-only client staging contract
+  ansible.builtin.import_tasks: validate_client_stage.yml
+
+- name: Publish the validated client request through the shared exchange
+  ansible.builtin.import_tasks: request_exchange.yml

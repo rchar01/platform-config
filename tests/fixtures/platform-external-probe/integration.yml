@@ -138,3 +138,33 @@
     - name: Converge the single staged Alloy process owner
       ansible.builtin.include_role:
         name: grafana_alloy
+
+- name: Render only the production Loki journal sender for native runtime tests
+  hosts: localhost
+  gather_facts: false
+  tags: [never, loki]
+  vars_files:
+    - ../../../roles/grafana_alloy/defaults/main.yml
+  tasks:
+    # Intentionally bypass convergence/preflight: negative cases must reach the
+    # pinned Alloy client's TLS/key parser and HTTP response handling themselves.
+    - name: Render the role template without probe or Mimir contributions
+      ansible.builtin.template:
+        src: ../../../roles/grafana_alloy/templates/config.alloy.j2
+        dest: /etc/platform-test-loki/config.alloy
+        owner: root
+        group: root
+        mode: "0644"
+      vars:
+        grafana_alloy_prometheus_remote_write_url: ""
+        grafana_alloy_feature_config: ""
+        grafana_alloy_loki_url: "https://127.0.0.1:18543/loki/api/v1/push"
+        grafana_alloy_loki_ca_file: "{{ loki_test_ca_file | default('/etc/platform-test-pki/ca.crt') }}"
+        grafana_alloy_loki_server_name: "{{ loki_test_server_name | default('monitoring.example.invalid') }}"
+        grafana_alloy_loki_client_cert_file: "{{ loki_test_cert_file | default('/etc/platform-test-pki/loki-writer.crt') }}"
+        grafana_alloy_loki_client_key_file: "{{ loki_test_key_file | default('/etc/platform-test-pki/loki-writer.key') }}"
+        grafana_alloy_journal_max_age: 1s
+        grafana_alloy_environment: disposable-loki-test
+        grafana_alloy_vm_name: disposable-alloy
+        grafana_alloy_ip: 127.0.0.1
+        grafana_alloy_platform_role: test

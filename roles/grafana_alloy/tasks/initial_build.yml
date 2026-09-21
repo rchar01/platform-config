@@ -1,0 +1,19 @@
+---
+- name: Validate Grafana Alloy immutable initial inputs
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_plan: "{{ vars | grafana_alloy_initial_validate }}"
+  no_log: true
+
+- name: Snapshot reviewed controller sources with exact byte hashes
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_sources: "{{ vars | grafana_alloy_initial_sources }}"
+  no_log: true
+
+- name: Build the fixed Grafana Alloy initial context and immutable file set
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_inputs: >-
+      {{ grafana_alloy_initial_plan | grafana_alloy_initial_build(
+           grafana_alloy_initial_sources,
+           lookup('ansible.builtin.template', 'config.alloy.j2', rstrip=false),
+           lookup('ansible.builtin.template', 'alloy.service.override.conf.j2', rstrip=false)) }}
+  no_log: true

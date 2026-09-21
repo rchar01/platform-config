@@ -138,6 +138,16 @@ def test_request_route_prepares_only_the_fixed_openbao_parent(repo_root: Path) -
         / "roles/pki_host_local_certificate/tasks/request_publish.yml"
     )
     prepare = task_named(tasks, "Prepare fixed OpenBao PKI parent directory")
+    assert tasks[0]["ansible.builtin.import_tasks"] == "validate_target_local.yml"
+    assert tasks[1] == prepare
+    assert tasks[2]["ansible.builtin.import_tasks"] == "request_exchange.yml"
+    exchange = load_yaml(
+        repo_root / "roles/pki_host_local_certificate/tasks/request_exchange.yml"
+    )
+    assert [
+        task["ansible.builtin.import_tasks"]
+        for task in exchange if "ansible.builtin.import_tasks" in task
+    ] == ["trust.yml", "gitlab_setup.yml", "filesystem_request.yml"]
 
     assert prepare["ansible.builtin.file"] == {
         "path": "/etc/openbao",

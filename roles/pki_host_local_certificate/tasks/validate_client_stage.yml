@@ -1,0 +1,131 @@
+---
+- name: Validate issue-only client inputs before target mutation
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all == [inventory_hostname]
+      - not ansible_check_mode
+      - pki_host_local_certificate_service is match('\A[a-z0-9][a-z0-9-]{0,62}\Z')
+      - pki_host_local_certificate_target == inventory_hostname
+      - pki_host_local_certificate_requester_principal == inventory_hostname
+      - pki_host_local_certificate_operation == 'issue'
+      - pki_host_local_certificate_profile == 'client-p384-sha384-v1'
+      - pki_host_local_certificate_service_adapter == 'client-stage-v1'
+      - pki_host_local_certificate_transport in ['filesystem', 'gitlab']
+      - pki_host_local_certificate_common_name == ''
+      - pki_host_local_certificate_dns_sans == []
+      - pki_host_local_certificate_ip_sans == []
+      - pki_host_local_certificate_current_cert_sha256 == 'none'
+      - pki_host_local_certificate_current_cert_path == ''
+      - pki_host_local_certificate_request_namespace == 'platform-pki-csr-request-v2'
+      - pki_host_local_certificate_inventory_sha256 is string
+      - pki_host_local_certificate_inventory_sha256 is match('\A[0-9a-f]{64}\Z')
+      - pki_host_local_certificate_subject_cn is string
+      - pki_host_local_certificate_subject_ou is string
+      - pki_host_local_certificate_subject_o is string
+      - pki_host_local_certificate_subject_c is string
+      - pki_host_local_certificate_subject_cn is match('\A[A-Za-z0-9._-]{1,64}\Z')
+      - pki_host_local_certificate_subject_ou is match('\A[A-Za-z0-9._-]{1,64}\Z')
+      - pki_host_local_certificate_subject_o is match('\A[A-Za-z0-9._-]{1,64}\Z')
+      - pki_host_local_certificate_subject_c is match('\A[A-Z]{2}\Z')
+      - pki_host_local_certificate_validity_days is integer
+      - pki_host_local_certificate_validity_days >= 1
+      - pki_host_local_certificate_validity_days <= 365000
+      - pki_host_local_certificate_minimum_remaining_lifetime_seconds is integer
+      - pki_host_local_certificate_minimum_remaining_lifetime_seconds > 0
+      - pki_host_local_certificate_request_ttl_seconds is integer
+      - pki_host_local_certificate_request_ttl_seconds >= 1
+      - pki_host_local_certificate_request_ttl_seconds <= 604800
+      - pki_host_local_certificate_roots_disjoint
+    fail_msg: Client staging requires one literal host, an issue-only client profile and reviewed identity/validity inputs.
+  vars:
+    pki_host_local_certificate_roots_disjoint: >-
+      {%- set ns = namespace(valid=true) -%}
+      {%- set roots = [pki_host_local_certificate_state_root,
+                      pki_host_local_certificate_pending_root,
+                      pki_host_local_certificate_versions_root]
+          + ([pki_host_local_certificate_filesystem_exchange_root]
+             if pki_host_local_certificate_transport == 'filesystem'
+             else [pki_host_local_certificate_gitlab_spool_root]) -%}
+      {%- for i in range(roots | length) -%}
+        {%- for j in range(i + 1, roots | length) -%}
+          {%- if roots[i] == roots[j] or roots[i].startswith(roots[j] ~ '/')
+                 or roots[j].startswith(roots[i] ~ '/') -%}
+            {%- set ns.valid = false -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.valid }}
+
+- name: Validate fixed client lifecycle paths
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('\A/[A-Za-z0-9_@%+=:,.-]+(/[A-Za-z0-9_@%+=:,.-]+)*\Z')
+      - item is not search('(^|/)\.\.?(/|$)')
+    fail_msg: Client staging requires canonical absolute paths.
+  loop: >-
+    {{ [pki_host_local_certificate_state_root, pki_host_local_certificate_pending_root,
+        pki_host_local_certificate_versions_root, pki_host_local_certificate_request_signing_key_path,
+        pki_host_local_certificate_request_helper_path, pki_host_local_certificate_lifecycle_helper_path]
+       + ([pki_host_local_certificate_filesystem_exchange_root]
+          if pki_host_local_certificate_transport == 'filesystem'
+          else [pki_host_local_certificate_gitlab_config_path, pki_host_local_certificate_gitlab_spool_root,
+                pki_host_local_certificate_gitlab_helper_path, pki_host_local_certificate_platform_pki_path,
+                pki_host_local_certificate_gitlab_project_record_source, pki_host_local_certificate_gitlab_project_record_path,
+                pki_host_local_certificate_gitlab_token_path, pki_host_local_certificate_gitlab_ca_source,
+                pki_host_local_certificate_gitlab_ca_path, pki_host_local_certificate_platform_pki_source]) }}
+
+- name: Validate selected client transport inputs
+  ansible.builtin.assert:
+    that:
+      - >-
+        pki_host_local_certificate_transport != 'filesystem' or
+        (pki_host_local_certificate_filesystem_owner_uid is integer
+         and pki_host_local_certificate_filesystem_owner_uid > 0)
+      - >-
+        pki_host_local_certificate_transport != 'gitlab' or
+        (pki_host_local_certificate_platform_pki_sha256 is match('\A[0-9a-f]{64}\Z')
+         and pki_host_local_certificate_gitlab_timeout is integer
+         and 1 <= pki_host_local_certificate_gitlab_timeout <= 120
+         and pki_host_local_certificate_gitlab_processing_attempts is integer
+         and 1 <= pki_host_local_certificate_gitlab_processing_attempts <= 20
+         and pki_host_local_certificate_gitlab_processing_interval is integer
+         and 0 <= pki_host_local_certificate_gitlab_processing_interval <= 60)
+    fail_msg: Client staging transport inputs are missing or unsafe.
+
+- name: Validate reviewed public trust before client staging
+  ansible.builtin.import_tasks: validate_trust.yml
+
+- name: Reject client helper and transport paths that alias protected state
+  ansible.builtin.assert:
+    that:
+      - pki_client_destination_paths | unique | length == pki_client_destination_paths | length
+      - pki_client_external_paths_disjoint
+    fail_msg: Client helper, signer, trust and transport destinations must be distinct and must not overwrite lifecycle state.
+  vars:
+    pki_client_external_paths: >-
+      {{ [pki_host_local_certificate_request_signing_key_path,
+          pki_host_local_certificate_request_helper_path,
+          pki_host_local_certificate_trust_helper_path,
+          pki_host_local_certificate_lifecycle_helper_path]
+         + ([pki_host_local_certificate_gitlab_helper_path,
+             pki_host_local_certificate_gitlab_config_path,
+             pki_host_local_certificate_gitlab_project_record_path,
+             pki_host_local_certificate_gitlab_token_path,
+             pki_host_local_certificate_gitlab_ca_path,
+             pki_host_local_certificate_platform_pki_path]
+            if pki_host_local_certificate_transport == 'gitlab' else []) }}
+    pki_client_destination_paths: >-
+      {{ pki_client_external_paths + (pki_host_local_certificate_trust_paths.values() | list) }}
+    pki_client_external_paths_disjoint: >-
+      {%- set ns = namespace(valid=true) -%}
+      {%- for path in pki_client_external_paths -%}
+        {%- for root in [pki_host_local_certificate_state_root,
+                        pki_host_local_certificate_pending_root,
+                        pki_host_local_certificate_versions_root] -%}
+          {%- if path == root or path.startswith(root ~ '/') or root.startswith(path ~ '/') -%}
+            {%- set ns.valid = false -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.valid }}

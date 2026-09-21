@@ -75,6 +75,7 @@
   no_log: true
 
 - name: Install target-local GitLab facade configuration
+  when: pki_host_local_certificate_service_adapter != 'client-stage-v1'
   ansible.builtin.copy:
     content: "{{ pki_host_local_certificate_gitlab_config | to_nice_json }}\n"
     dest: "{{ pki_host_local_certificate_gitlab_config_path }}"
@@ -136,6 +137,57 @@
       common_name: "{{ pki_host_local_certificate_common_name }}"
       dns_sans: "{{ pki_host_local_certificate_dns_sans }}"
       ip_sans: "{{ pki_host_local_certificate_ip_sans }}"
+      response_principal: "{{ pki_host_local_certificate_response_principal }}"
+      request_ttl_seconds: "{{ pki_host_local_certificate_request_ttl_seconds | int }}"
+      request_signing_key: "{{ pki_host_local_certificate_request_signing_key_path }}"
+      trust_id: "{{ pki_host_local_certificate_trust_id }}"
+      state_root: "{{ pki_host_local_certificate_state_root }}"
+      pending_root: "{{ pki_host_local_certificate_pending_root }}"
+      versions_root: "{{ pki_host_local_certificate_versions_root }}"
+      minimum_remaining_lifetime_seconds: "{{ pki_host_local_certificate_minimum_remaining_lifetime_seconds | int }}"
+      project_record: "{{ pki_host_local_certificate_gitlab_project_record_path }}"
+      token_file: "{{ pki_host_local_certificate_gitlab_token_path }}"
+      ca_file: "{{ pki_host_local_certificate_gitlab_ca_path }}"
+      spool_root: "{{ pki_host_local_certificate_gitlab_spool_root }}"
+      request_helper: "{{ pki_host_local_certificate_request_helper_path }}"
+      lifecycle_helper: "{{ pki_host_local_certificate_lifecycle_helper_path }}"
+      platform_pki: "{{ pki_host_local_certificate_platform_pki_path }}"
+      timeout: "{{ pki_host_local_certificate_gitlab_timeout | int }}"
+      processing_attempts: "{{ pki_host_local_certificate_gitlab_processing_attempts | int }}"
+      processing_interval: "{{ pki_host_local_certificate_gitlab_processing_interval | int }}"
+
+- name: Install target-local GitLab client-stage facade configuration
+  when: pki_host_local_certificate_service_adapter == 'client-stage-v1'
+  ansible.builtin.copy:
+    content: "{{ pki_host_local_certificate_gitlab_config | to_nice_json }}\n"
+    dest: "{{ pki_host_local_certificate_gitlab_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    pki_host_local_certificate_gitlab_config:
+      schema: 4
+      kind: platform-config-target-local-gitlab
+      service: "{{ pki_host_local_certificate_service }}"
+      service_adapter: "{{ pki_host_local_certificate_service_adapter }}"
+      target: "{{ pki_host_local_certificate_target }}"
+      operation: "{{ pki_host_local_certificate_operation }}"
+      profile: "{{ pki_host_local_certificate_profile }}"
+      inventory_sha256: "{{ pki_host_local_certificate_inventory_sha256 }}"
+      current_cert_sha256: >-
+        {{ 'none' if pki_host_local_certificate_operation == 'issue'
+           else pki_host_local_certificate_current_cert_sha256 }}
+      current_cert_path: >-
+        {{ 'none' if pki_host_local_certificate_operation == 'issue'
+           else pki_host_local_certificate_current_cert_path }}
+      common_name: "{{ pki_host_local_certificate_common_name }}"
+      dns_sans: "{{ pki_host_local_certificate_dns_sans }}"
+      ip_sans: "{{ pki_host_local_certificate_ip_sans }}"
+      subject_cn: "{{ pki_host_local_certificate_subject_cn | default('') }}"
+      subject_ou: "{{ pki_host_local_certificate_subject_ou | default('') }}"
+      subject_o: "{{ pki_host_local_certificate_subject_o | default('') }}"
+      subject_c: "{{ pki_host_local_certificate_subject_c | default('') }}"
+      validity_days: "{{ pki_host_local_certificate_validity_days }}"
       response_principal: "{{ pki_host_local_certificate_response_principal }}"
       request_ttl_seconds: "{{ pki_host_local_certificate_request_ttl_seconds | int }}"
       request_signing_key: "{{ pki_host_local_certificate_request_signing_key_path }}"

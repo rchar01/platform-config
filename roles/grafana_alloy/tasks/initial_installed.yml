@@ -1,0 +1,8 @@
+---
+- name: Build the reviewed fixed initial source identity
+  ansible.builtin.import_tasks: initial_build.yml
+
+- name: Require exact installed immutable initial inputs
+  ansible.builtin.include_tasks: initial_verify.yml
+  vars:
+    grafana_alloy_initial_allow_absent: false

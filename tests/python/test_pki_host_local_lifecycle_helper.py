@@ -132,6 +132,7 @@ def test_target_local_parser_routes_do_not_accept_manual_coordinates(
         "target-activate-complete",
         "target-recover",
         "target-status",
+        "target-stage-status",
         "active-paths",
         "zot-custody",
         "openbao-custody",

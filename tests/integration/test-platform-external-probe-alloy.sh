@@ -646,6 +646,33 @@ assert_probe_result mimir_ready https://127.0.0.1:18443/ready-wrong-body 0 \
 assert_probe_result mimir_ready https://127.0.0.1:18443/status 0 \
   'Mimir HTTP 503 readiness rejection'
 
+# Batch real direct-file guards in both execution modes while the native Alloy
+# service is active. The full-role missing-key case must not stop or rewrite it.
+for preflight_mode in apply check; do
+  preflight_args=()
+  if [[ "$preflight_mode" == check ]]; then
+    preflight_args+=(--check)
+  fi
+  if ! preflight_output="$(podman exec \
+    --env ANSIBLE_COLLECTIONS_PATH=/workspace/.ansible/collections \
+    --env ANSIBLE_ROLES_PATH=/workspace/roles \
+    --workdir /workspace "$CONTAINER" timeout --kill-after=5s 300s \
+    ansible-playbook -i localhost, -c local \
+    /workspace/tests/fixtures/platform-external-probe/loki-preflight.yml \
+    "${preflight_args[@]}" 2>&1)"; then
+    printf '%s\n' "$preflight_output" >&2
+    fail "Real Loki filesystem preflight ${preflight_mode} matrix failed"
+  fi
+  grep -q '18/18 cases (2 accepted, 16 rejected)' <<<"$preflight_output" \
+    || fail "Incomplete Loki filesystem preflight ${preflight_mode} evidence"
+  if [[ "$preflight_mode" == check ]]; then
+    grep -qE 'changed=0.*failed=0' <<<"$preflight_output" \
+      || fail 'Loki check-mode preflight reported mutation'
+  fi
+  printf 'Loki direct-file preflight %s: 18/18 (2 accepted, 16 rejected); snapshots unchanged\n' "$preflight_mode"
+done
+printf '%s\n' 'Loki full-role missing-key apply: rejected before config or active-service mutation (1/1).'
+
 # shellcheck disable=SC2016  # Expansion is deferred to the generated stub.
 printf '%s\n' \
   '#!/bin/bash' \
@@ -832,5 +859,72 @@ if ! grep -qE 'changed=0.*failed=0' <<<"$handoff_output"; then
   printf '%s\n' "$handoff_output" >&2
   fail 'Second native-to-Quadlet handoff convergence was not idempotent'
 fi
+
+# All base-lane predicates above remain independent of the Loki sender tests.
+# Reuse the checksum/NEVRA-qualified native RPM and disposable CA, but give Loki
+# its own writer key/DN, distinct from both Mimir and the existing probe client.
+podman exec "$CONTAINER" systemctl stop alloy.service
+podman exec "$CONTAINER" install -d -o root -g root -m 0755 \
+  /etc/platform-test-pki /etc/platform-test-loki /var/log/journal
+podman exec "$CONTAINER" install -d -o root -g root -m 0700 \
+  /var/lib/platform-test-loki
+for identity in loki-writer mimir-writer; do
+  podman exec "$CONTAINER" openssl req -newkey rsa:2048 -nodes \
+    -subj "/CN=platform-${identity}" \
+    -addext extendedKeyUsage=clientAuth \
+    -keyout "/etc/platform-test-pki/${identity}.key" \
+    -out "/etc/platform-test-pki/${identity}.csr" >/dev/null 2>&1
+  podman exec "$CONTAINER" openssl x509 -req -days 1 \
+    -in "/etc/platform-test-pki/${identity}.csr" \
+    -CA /etc/platform-test-pki/ca.crt \
+    -CAkey /etc/platform-test-pki/ca.key \
+    -CAcreateserial -copy_extensions copy \
+    -out "/etc/platform-test-pki/${identity}.crt" >/dev/null 2>&1
+done
+podman exec "$CONTAINER" openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -subj /CN=untrusted-loki-test-ca \
+  -keyout /etc/platform-test-pki/untrusted-ca.key \
+  -out /etc/platform-test-pki/untrusted-ca.crt >/dev/null 2>&1
+podman exec "$CONTAINER" install -o root -g root -m 0600 \
+  /dev/null /etc/platform-test-pki/invalid.key
+printf '%s\n' 'disposable deliberately invalid private key' \
+  | podman exec --interactive "$CONTAINER" tee /etc/platform-test-pki/invalid.key >/dev/null
+podman exec "$CONTAINER" chmod 0600 \
+  /etc/platform-test-pki/loki-writer.key /etc/platform-test-pki/mimir-writer.key \
+  /etc/platform-test-pki/untrusted-ca.key /etc/platform-test-pki/invalid.key
+podman exec "$CONTAINER" chmod 0644 \
+  /etc/platform-test-pki/ca.crt /etc/platform-test-pki/server.crt \
+  /etc/platform-test-pki/loki-writer.crt /etc/platform-test-pki/mimir-writer.crt \
+  /etc/platform-test-pki/client.crt /etc/platform-test-pki/untrusted-ca.crt
+# The production template reads this persistent native journal directory. Flush
+# before starting Alloy, then each case emits and proves its own live record.
+podman exec "$CONTAINER" systemctl restart systemd-journald.service
+podman exec "$CONTAINER" journalctl --flush
+
+for loki_case in accepted untrusted-ca wrong-hostname mimir-identity probe-identity \
+  missing-client invalid-key mismatched-key redirect; do
+  loki_vars='{}'
+  case "$loki_case" in
+    untrusted-ca)
+      loki_vars='{"loki_test_ca_file":"/etc/platform-test-pki/untrusted-ca.crt"}' ;;
+    wrong-hostname)
+      loki_vars='{"loki_test_server_name":"wrong.example.invalid"}' ;;
+    mimir-identity)
+      loki_vars='{"loki_test_cert_file":"/etc/platform-test-pki/mimir-writer.crt","loki_test_key_file":"/etc/platform-test-pki/mimir-writer.key"}' ;;
+    probe-identity)
+      loki_vars='{"loki_test_cert_file":"/etc/platform-test-pki/client.crt","loki_test_key_file":"/etc/platform-test-pki/client.key"}' ;;
+    missing-client)
+      loki_vars='{"loki_test_cert_file":"","loki_test_key_file":""}' ;;
+    invalid-key)
+      loki_vars='{"loki_test_key_file":"/etc/platform-test-pki/invalid.key"}' ;;
+    mismatched-key)
+      loki_vars='{"loki_test_key_file":"/etc/platform-test-pki/mimir-writer.key"}' ;;
+  esac
+  run_playbook --tags loki --extra-vars "$loki_vars" >/dev/null
+  podman exec "$CONTAINER" timeout --kill-after=5s 65s python3 \
+    /workspace/tests/fixtures/platform-external-probe/loki_fixture.py "$loki_case" \
+    || fail "Native Alloy Loki sender case failed: ${loki_case}"
+done
+printf '%s\n' 'Loki fixture proved native client delivery and rejection; HTTP 204 is synthetic acceptance, not real Loki storage.'
 
 printf 'Platform external probe Alloy 1.18.1 integration check passed\n'

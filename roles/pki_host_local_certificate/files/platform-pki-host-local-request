@@ -47,6 +47,7 @@ TRUST_NAMES = (
     "responses.allowed_signers",
 )
 PROFILE = "server-p384-sha384-v1"
+CLIENT_PROFILE = "client-p384-sha384-v1"
 REQUEST_NAMESPACE = "platform-pki-csr-request-v2"
 HEX_256_RE = re.compile(r"[0-9a-f]{64}\Z")
 IDENTITY_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}\Z")
@@ -468,22 +469,39 @@ def validate_arguments(args):
         fail("target and requester principal must be identical")
     if args.operation not in {"issue", "renew"}:
         fail("operation must be issue or renew")
-    if args.profile != PROFILE or args.request_namespace != REQUEST_NAMESPACE:
+    if args.profile not in {PROFILE, CLIENT_PROFILE} or args.request_namespace != REQUEST_NAMESPACE:
         fail("profile or request namespace is not the frozen value")
     if not HEX_256_RE.fullmatch(args.inventory_sha256):
         fail("inventory digest is not canonical SHA-256")
     args.request_ttl_seconds = canonical_decimal(
         args.request_ttl_seconds, "request TTL", 1, 604800
     )
-    validate_dns(args.common_name, "common name")
-    if not args.dns_san:
-        fail("at least one DNS SAN is required")
-    for value in args.dns_san:
-        validate_dns(value, "DNS SAN")
-    for value in args.ip_san:
-        validate_ipv4(value, "IP SAN")
-    if len(set(args.dns_san)) != len(args.dns_san) or len(set(args.ip_san)) != len(args.ip_san):
-        fail("SAN values must not be repeated")
+    if args.profile == CLIENT_PROFILE:
+        if args.operation != "issue":
+            fail("client profile supports issue only")
+        if args.common_name or args.dns_san or args.ip_san:
+            fail("client profile forbids common name and SANs")
+        for value, label in (
+            (args.subject_cn, "CN"), (args.subject_ou, "OU"), (args.subject_o, "O"),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value):
+                fail(f"client subject {label} must be 1..64 ASCII letters, digits, dots, underscores or hyphens")
+        if not isinstance(args.subject_c, str) or not re.fullmatch(r"[A-Z]{2}", args.subject_c):
+            fail("client subject C must be two uppercase ASCII letters")
+    else:
+        if any(value is not None for value in (
+            args.subject_cn, args.subject_ou, args.subject_o, args.subject_c,
+        )):
+            fail("server profile forbids client subject flags")
+        validate_dns(args.common_name, "common name")
+        if not args.dns_san:
+            fail("at least one DNS SAN is required")
+        for value in args.dns_san:
+            validate_dns(value, "DNS SAN")
+        for value in args.ip_san:
+            validate_ipv4(value, "IP SAN")
+        if len(set(args.dns_san)) != len(args.dns_san) or len(set(args.ip_san)) != len(args.ip_san):
+            fail("SAN values must not be repeated")
 
     args.state_root = canonical_path(args.state_root, "state root")
     args.pending_root = canonical_path(args.pending_root, "pending root")
@@ -883,7 +901,51 @@ def public_spki_from_csr(csr_reference, descriptors):
     )
 
 
-def validate_csr(key_path, csr_path, common_name, dns_sans, ip_sans):
+def der_fields(data):
+    """Read bounded DER TLVs at one level, without interpreting their contents."""
+    fields = []
+    offset = 0
+    while offset < len(data):
+        if offset + 2 > len(data):
+            fail("CSR DER structure is malformed")
+        tag, size = data[offset : offset + 2]
+        offset += 2
+        if tag & 0x1F == 0x1F:
+            fail("CSR DER tag is unsupported")
+        if size & 0x80:
+            count = size & 0x7F
+            if not 1 <= count <= 4 or offset + count > len(data) or data[offset] == 0:
+                fail("CSR DER length is malformed")
+            size = int.from_bytes(data[offset : offset + count], "big")
+            offset += count
+            if size < 128:
+                fail("CSR DER length is noncanonical")
+        if offset + size > len(data):
+            fail("CSR DER value is truncated")
+        fields.append((tag, data[offset : offset + size]))
+        offset += size
+    return fields
+
+
+def validate_client_csr_attributes(der):
+    # OpenSSL's text display conflates an empty extensionRequest with no
+    # extensions. Require the actual PKCS#10 attributes set to be empty.
+    outer = der_fields(der)
+    if len(outer) != 1 or outer[0][0] != 0x30:
+        fail("CSR DER structure is malformed")
+    request = der_fields(outer[0][1])
+    if [tag for tag, _ in request] != [0x30, 0x30, 0x03]:
+        fail("CSR DER structure is malformed")
+    info = der_fields(request[0][1])
+    if (
+        [tag for tag, _ in info] != [0x02, 0x30, 0x30, 0xA0]
+        or info[0][1] != b"\x00"
+        or info[3][1] != b""
+    ):
+        fail("client CSR must contain zero ASN.1 attributes")
+
+
+def validate_csr(key_path, csr_path, args):
     key_descriptor, key_snapshot = open_safe_descriptor(key_path, "private key")
     try:
         csr_descriptor, csr_snapshot = open_safe_descriptor(csr_path, "CSR")
@@ -913,6 +975,13 @@ def validate_csr(key_path, csr_path, common_name, dns_sans, ip_sans):
             "CSR profile inspection",
             pass_fds=descriptors,
         ).decode("ascii", "strict")
+        if args.profile == CLIENT_PROFILE:
+            der = run_command(
+                ["openssl", "req", "-in", csr_reference, "-outform", "DER"],
+                "CSR DER inspection",
+                pass_fds=descriptors,
+            )
+            validate_client_csr_attributes(der)
         key_spki = public_spki_from_key(key_reference, descriptors)
         csr_spki = public_spki_from_csr(csr_reference, descriptors)
     finally:
@@ -922,42 +991,47 @@ def validate_csr(key_path, csr_path, common_name, dns_sans, ip_sans):
             os.close(staged_key)
         os.close(csr_descriptor)
         os.close(key_descriptor)
-    if subject != f"subject=CN={common_name}":
-        fail("CSR common name does not match the request")
+    expected_subject = (
+        f"subject=CN={args.subject_cn},OU={args.subject_ou},O={args.subject_o},C={args.subject_c}"
+        if args.profile == CLIENT_PROFILE else f"subject=CN={args.common_name}"
+    )
+    if subject != expected_subject:
+        fail("CSR subject does not match the request")
     if "Public-Key: (384 bit)" not in text or "ASN1 OID: secp384r1" not in text:
         fail("CSR key profile is not EC P-384")
     if len(re.findall(r"^\s*Signature Algorithm: ecdsa-with-SHA384\s*$", text, re.MULTILINE)) != 1:
         fail("CSR signature profile is not SHA-384")
-    extensions = re.findall(r"^\s+X509v3 ([^:]+):( critical)?\s*$", text, re.MULTILINE)
-    if extensions != [("Subject Alternative Name", "")]:
-        fail("CSR contains unexpected requested extensions")
-    lines = text.splitlines()
-    try:
-        attribute_start = lines.index("        Attributes:")
-        signature_start = next(
-            index
-            for index, line in enumerate(lines[attribute_start + 1 :], attribute_start + 1)
-            if line.startswith("    Signature Algorithm:")
+    if args.profile == PROFILE:
+        extensions = re.findall(r"^\s+X509v3 ([^:]+):( critical)?\s*$", text, re.MULTILINE)
+        if extensions != [("Subject Alternative Name", "")]:
+            fail("CSR contains unexpected requested extensions")
+        lines = text.splitlines()
+        try:
+            attribute_start = lines.index("        Attributes:")
+            signature_start = next(
+                index
+                for index, line in enumerate(lines[attribute_start + 1 :], attribute_start + 1)
+                if line.startswith("    Signature Algorithm:")
+            )
+        except (ValueError, StopIteration):
+            fail("CSR attribute structure is malformed")
+        headers = [
+            line.strip()
+            for line in lines[attribute_start + 1 : signature_start]
+            if line.startswith("            ") and not line.startswith("                ")
+        ]
+        if headers != ["Requested Extensions:"]:
+            fail("CSR contains unexpected attributes")
+        san_index = next(
+            (index for index, line in enumerate(lines) if "X509v3 Subject Alternative Name:" in line),
+            None,
         )
-    except (ValueError, StopIteration):
-        fail("CSR attribute structure is malformed")
-    headers = [
-        line.strip()
-        for line in lines[attribute_start + 1 : signature_start]
-        if line.startswith("            ") and not line.startswith("                ")
-    ]
-    if headers != ["Requested Extensions:"]:
-        fail("CSR contains unexpected attributes")
-    san_index = next(
-        (index for index, line in enumerate(lines) if "X509v3 Subject Alternative Name:" in line),
-        None,
-    )
-    if san_index is None or san_index + 1 >= len(lines):
-        fail("CSR SAN extension is missing")
-    san_values = [value.strip() for value in lines[san_index + 1].strip().split(",")]
-    expected = [f"DNS:{value}" for value in dns_sans] + [f"IP Address:{value}" for value in ip_sans]
-    if san_values != expected:
-        fail("CSR SANs do not exactly match the request")
+        if san_index is None or san_index + 1 >= len(lines):
+            fail("CSR SAN extension is missing")
+        san_values = [value.strip() for value in lines[san_index + 1].strip().split(",")]
+        expected = [f"DNS:{value}" for value in args.dns_san] + [f"IP Address:{value}" for value in args.ip_san]
+        if san_values != expected:
+            fail("CSR SANs do not exactly match the request")
 
     if key_spki != csr_spki:
         fail("private key and CSR public keys differ")
@@ -1083,9 +1157,7 @@ def validate_pending_directory(path, args, requesters_path, expected_request_id=
     spki_digest = validate_csr(
         os.path.join(path, "tls.key"),
         os.path.join(path, "tls.csr"),
-        args.common_name,
-        args.dns_san,
-        args.ip_san,
+        args,
     )
     if record["csr_spki_sha256"] != spki_digest:
         fail("pending CSR SPKI digest binding is invalid")
@@ -1143,7 +1215,8 @@ def validate_retained_pending_directory(path, args, requesters_path, request_id)
             record["current_cert_sha256"] != "none"
             and not HEX_256_RE.fullmatch(record["current_cert_sha256"])
         )
-        or record["profile"] != PROFILE
+        or record["profile"] != args.profile
+        or (record["profile"] == CLIENT_PROFILE and record["operation"] != "issue")
         or record["response_principal"] != args.response_principal
         or record["csr_sha256"] != sha256(contents["tls.csr"])
         or (
@@ -1408,6 +1481,15 @@ def create_request(
     config = (
         "[req]\n"
         "prompt = no\n"
+        "distinguished_name = dn\n\n"
+        "[dn]\n"
+        f"C = {args.subject_c}\n"
+        f"O = {args.subject_o}\n"
+        f"OU = {args.subject_ou}\n"
+        f"CN = {args.subject_cn}\n"
+    ) if args.profile == CLIENT_PROFILE else (
+        "[req]\n"
+        "prompt = no\n"
         "distinguished_name = dn\n"
         "req_extensions = ext\n\n"
         "[dn]\n"
@@ -1416,13 +1498,13 @@ def create_request(
         "subjectAltName = "
         + ",".join([f"DNS:{value}" for value in args.dns_san] + [f"IP:{value}" for value in args.ip_san])
         + "\n"
-    ).encode("ascii")
+    )
     config_path = os.path.join(stage, "request.cnf")
     key_path = os.path.join(stage, "tls.key")
     csr_path = os.path.join(stage, "tls.csr")
     manifest_path = os.path.join(stage, "request")
     signature_path = os.path.join(stage, "request.sig")
-    write_new_file(config_path, config)
+    write_new_file(config_path, config.encode("ascii"))
     run_command(
         [
             "openssl",
@@ -1456,9 +1538,7 @@ def create_request(
     secure_generated_file(csr_path, "CSR")
     request_fault("after-csr")
     csr_data, _ = read_safe_file(csr_path, "staged CSR", 0o600)
-    spki_digest = validate_csr(
-        key_path, csr_path, args.common_name, args.dns_san, args.ip_san
-    )
+    spki_digest = validate_csr(key_path, csr_path, args)
     created = int(time.time())
     values = {
         "schema": "2",
@@ -1558,7 +1638,11 @@ def build_parser():
     request.add_argument("--current-cert-sha256", required=True)
     request.add_argument("--current-cert-path")
     request.add_argument("--predecessor-request-id", default="none")
-    request.add_argument("--common-name", required=True)
+    request.add_argument("--common-name", default="")
+    request.add_argument("--subject-cn")
+    request.add_argument("--subject-ou")
+    request.add_argument("--subject-o")
+    request.add_argument("--subject-c")
     request.add_argument("--dns-san", action="append", default=[])
     request.add_argument("--ip-san", action="append", default=[])
     request.add_argument("--response-principal", required=True)

@@ -1,14 +1,90 @@
 # pki_host_local_certificate
 
 Provides target-local certificate lifecycles for the fixed
-`zot-v1` and `openbao-pristine-v1` service adapters. Normal convergence does not
-invoke this role. Its default task entry point fails closed; the two public
-routes per fixed adapter select the request or activation task file.
+`zot-v1` and `openbao-pristine-v1` service adapters, plus initial client request
+and immutable staging through `client-stage-v1`. Normal convergence does not
+invoke this role. Its default task entry point fails closed; the existing public
+server routes select request or activation tasks, while client staging uses the
+two explicit role entry points documented below.
 
 Fresh Zot filesystem issuance is also exposed through fixed
 [registry CI operations](../../docs/registry-operations.md), with read-only
 preflights and a separate offline signing/transfer handoff. CI invokes host-local
 actions and never carries request/response payloads or signer/leaf keys.
+
+The agreed [monitoring PKI direction](../../docs/pki-exchange-setup.md#monitoring-pki-direction)
+reuses this model: one exchange, two certificate profiles, service-specific
+activation. The generic `client-p384-sha384-v1` profile is supported by the
+`platform-tools` signer and transport with no alias for its unreleased
+predecessor. It uses the same three public request/six public response files and
+schema-2/v2 signature, trust and replay contracts; leaf keys never leave the host.
+Tools require explicit inventory days and a positive inventory-bound rollback
+hold, with no writer field, service enum or generic 30-day minimum. Monitoring
+selects 397 days, renewal preparation around 45 days before expiry and at least
+30 days of valid, trusted, unrevoked overlap/rollback after activation.
+Retention enforcement belongs to the pending rotation/renewal adapter. The role
+now creates client requests and stages authenticated responses, but never starts
+Alloy, selects a current certificate, or claims monitoring activation/renewal.
+The separate Alloy [initial-start entry points](../grafana_alloy/README.md#guarded-initial-start)
+can consume these staged versions using a protected exact inventory snapshot and
+direct paths. Their process receipt does not convert staging into a PKI active
+lineage. Its exact server profile and existing public server routes remain unchanged.
+
+## Initial Client Request And Staging
+
+Use `tasks_from: client_request_publish` and `tasks_from: client_response_stage`
+from a reviewed play targeting exactly one literal host. These are role entry
+points, not new operator Make/CI routes. Both require apply mode, `operation:
+issue`, `profile: client-p384-sha384-v1`, and `service_adapter: client-stage-v1`.
+Renewal and all active lifecycle operations are rejected for this adapter.
+
+Alongside existing service/target, trust, signing-key, protected-root and transport
+inputs, supply `pki_host_local_certificate_subject_cn`, `_subject_ou`, `_subject_o`
+and `_subject_c`, explicit `pki_host_local_certificate_validity_days`, and a
+positive `pki_host_local_certificate_minimum_remaining_lifetime_seconds`.
+The subject fields follow the signer's controlled CN/OU/O/C grammar. Common name,
+DNS/IP SANs and current-certificate path must be empty; current certificate digest
+must be `none`. Use separate dedicated state/pending/versions roots per identity
+with pre-provisioned protected parents, disjoint from the exchange and helpers.
+The generic stage checks inventory-selected duration; it does not hard-code a
+397-day validity or implement the monitoring overlap policy.
+
+The existing request helper creates the P-384 private key locally and publishes
+only the three signed public request files. Offline approval/signing remains in
+`platform-tools`. The existing filesystem or GitLab transport returns the same
+six public response files. GitLab client configuration uses a strict local
+schema 4 for the structured subject and duration; server config schemas 2/3 and
+exchange schema-2 records are unchanged.
+
+The lifecycle helper authenticates request/response signatures, exact profile/DN,
+chain, artifact, key/CSR/certificate binding, validity and metadata before publishing
+the exact eight-file immutable version. Keys remain target-local: both pending
+and version trees retain protected copies. No `active`, `rollback`, terminal,
+`current` selector or service configuration is created or changed, and no service
+action is called. Read-only `target-stage-status` reports `staged`, never activated.
+Clean install replay returns the same six-field install result after revalidation.
+
+Unpublished partial ingress can resume through the fixed transport. A published
+version with its exact complete matching ingress can finish cleanup after
+reauthentication. Unknown `.stage-*` directories, conflicting data and incomplete
+published state are retained and rejected for reviewed recovery. There is no
+automatic cleanup/reset of ambiguous interrupted state and no new staging journal.
+Staging success requires a clean authenticated version, not merely a prior rename.
+
+Focused request/staging/orchestration tests use the normal test container. The
+optional cross-repository proof runs real target helpers and the generated signer
+with both public sources read-only and networking disabled:
+
+```bash
+PLATFORM_TOOLS_TEST_SOURCE=/absolute/path/to/public/platform-tools \
+PLATFORM_PKI_INTEROP_TEST_IMAGE=sha256:<reviewed-local-config-test-image-id> \
+  bash tests/integration/test-pki-client-staging-interop.sh
+```
+
+The image must already contain the config test dependencies, including
+`cryptography`; this runner builds or installs nothing. Its UID-namespace exchange
+owner is test-only and does not qualify production transfer permissions, live
+GitLab, service activation or certificate rotation.
 
 ## Operator Routes
 

@@ -1,0 +1,117 @@
+---
+- name: Require explicit single-host inactive initial preparation intent
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - ansible_play_hosts_all == [inventory_hostname]
+      - ansible_limit | default('') == inventory_hostname
+      - grafana_alloy_enabled is sameas true
+      - grafana_alloy_service_enabled is sameas false
+      - grafana_alloy_service_state == 'stopped'
+    fail_msg: Initial preparation requires apply mode, one literal host limit and enabled role with disabled/stopped service intent.
+
+- name: Build reviewed immutable initial preparation inputs
+  ansible.builtin.import_tasks: initial_build.yml
+
+- name: Observe the complete inactive Alloy unit before any preparation writes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - alloy.service
+      - --no-pager
+      - --property=LoadState,FragmentPath,SourcePath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState
+  register: grafana_alloy_initial_unit
+  changed_when: false
+  check_mode: false
+
+- name: Require the loaded inactive disabled exact native Alloy unit
+  ansible.builtin.assert:
+    that:
+      - >-
+        grafana_alloy_initial_unit.stdout_lines | sort ==
+        ['LoadState=loaded', 'FragmentPath=/usr/lib/systemd/system/alloy.service',
+         'SourcePath=', 'DropInPaths=/etc/systemd/system/alloy.service.d/platform.conf',
+         'NeedDaemonReload=no', 'ActiveState=inactive', 'UnitFileState=disabled'] | sort
+    fail_msg: Initial preparation requires the already installed complete native unit, inactive and disabled without pending reload.
+
+- name: Verify existing initial inputs before creating anything
+  ansible.builtin.include_tasks: initial_verify.yml
+  vars:
+    grafana_alloy_initial_allow_absent: true
+
+- name: Inspect retained initial process state including hidden entries
+  ansible.builtin.find:
+    paths: /var/lib/platform-config/pki/alloy/process-owner
+    recurse: false
+    hidden: true
+    file_type: any
+    follow: false
+  register: grafana_alloy_initial_retained
+  when: >-
+    grafana_alloy_initial_directories.results | selectattr('item', 'equalto',
+      '/var/lib/platform-config/pki/alloy/process-owner') | selectattr('stat.exists') | list | length > 0
+  check_mode: false
+
+- name: Reject any existing activation record or unknown retained state
+  ansible.builtin.assert:
+    that:
+      - grafana_alloy_initial_retained.skipped_paths | default({}) | length == 0
+      - >-
+        grafana_alloy_initial_retained.files | default([]) | map(attribute='path') | list
+        | difference(['/var/lib/platform-config/pki/alloy/process-owner/lock']) | length == 0
+    fail_msg: Preparation cannot reset retained initial activation state; use initial_status.yml or initial_recover.yml.
+
+# These checks are point-in-time observations, not role locks. Exclude ordinary
+# convergence and all out-of-band edits throughout exclusive initial takeover.
+- name: Create only absent protected initial control directories
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ '0700' if item.item.startswith('/var/lib/platform-config') or item.item == '/etc/alloy/pki' else '0755' }}"
+  loop: "{{ grafana_alloy_initial_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: Publish only absent exact reviewed initial control inputs
+  ansible.builtin.copy:
+    content: "{{ (item.item.content | b64decode) if item.item.base64 | default(false) else item.item.content }}"
+    dest: "{{ item.item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.item.mode }}"
+    force: false
+  loop: "{{ grafana_alloy_initial_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  when: not item.stat.exists
+  diff: false
+  no_log: true
+
+- name: Recheck published immutable initial inputs
+  ansible.builtin.include_tasks: initial_verify.yml
+  vars:
+    grafana_alloy_initial_allow_absent: false
+
+- name: Authenticate complete staged writers without starting Alloy
+  ansible.builtin.command:
+    argv: [/usr/local/libexec/platform-alloy-initial-activate, check, --config, /etc/alloy/pki/initial-activation.json]
+  register: grafana_alloy_initial_command
+  changed_when: false
+  check_mode: false
+
+- name: Validate and record the exact initial preparation check outcome
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_result: "{{ grafana_alloy_initial_command.stdout | from_json | grafana_alloy_initial_outcome('check') }}"
+
+- name: Require prepared initial status
+  ansible.builtin.assert:
+    that:
+      - grafana_alloy_initial_result.status == 'prepared'
+      - not grafana_alloy_initial_result.changed
+
+- name: Report initial preparation result
+  ansible.builtin.import_tasks: initial_report.yml

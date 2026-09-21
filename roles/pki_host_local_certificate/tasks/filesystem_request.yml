@@ -52,7 +52,15 @@
         + (pki_host_local_certificate_dns_sans
            | map('regex_replace', '^', '--dns-san=') | list)
         + (pki_host_local_certificate_ip_sans
-           | map('regex_replace', '^', '--ip-san=') | list)
+            | map('regex_replace', '^', '--ip-san=') | list)
+        + (
+          ['--subject-cn', pki_host_local_certificate_subject_cn,
+           '--subject-ou', pki_host_local_certificate_subject_ou,
+           '--subject-o', pki_host_local_certificate_subject_o,
+           '--subject-c', pki_host_local_certificate_subject_c]
+          if pki_host_local_certificate_profile == 'client-p384-sha384-v1'
+          else []
+        )
       }}
   register: pki_host_local_certificate_filesystem_request_result
   changed_when: >-

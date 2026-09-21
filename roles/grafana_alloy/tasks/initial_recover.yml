@@ -1,0 +1,32 @@
+---
+- name: Require explicit single-host initial recovery
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - ansible_play_hosts_all == [inventory_hostname]
+      - ansible_limit | default('') == inventory_hostname
+    fail_msg: Initial recovery requires apply mode and one literal host limit.
+
+- name: Verify installed initial recovery sources
+  ansible.builtin.import_tasks: initial_installed.yml
+
+- name: Run the fixed initial recovery command
+  ansible.builtin.command:
+    argv: [/usr/local/libexec/platform-alloy-initial-activate, recover, --config, /etc/alloy/pki/initial-activation.json]
+  register: grafana_alloy_initial_command
+  changed_when: >-
+    grafana_alloy_initial_command.rc == 0 and
+    (grafana_alloy_initial_command.stdout | from_json | grafana_alloy_initial_outcome('recover')).changed
+  check_mode: false
+
+- name: Validate and record the exact initial recovery outcome
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_result: "{{ grafana_alloy_initial_command.stdout | from_json | grafana_alloy_initial_outcome('recover') }}"
+
+- name: Report initial recovery result
+  ansible.builtin.import_tasks: initial_report.yml
+
+- name: Report failed activation distinctly after verified recovery
+  ansible.builtin.debug:
+    msg: Initial activation remains failed; recovery is not activation success and does not authorize another start.
+  when: grafana_alloy_initial_result.status == 'failed'

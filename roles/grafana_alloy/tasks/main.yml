@@ -1,6 +1,14 @@
 ---
+- name: Guard ordinary Grafana Alloy process ownership before preflight
+  ansible.builtin.import_tasks: initial_guard.yml
+
 - name: Preflight Grafana Alloy inputs
   ansible.builtin.include_tasks: preflight.yml
+
+- name: Validate repository policy for ordinary Grafana Alloy convergence
+  ansible.builtin.include_role:
+    name: rocky_repository_policy
+    public: true
 
 - name: Check for previously managed native Grafana Alloy lifecycle
   ansible.builtin.stat:

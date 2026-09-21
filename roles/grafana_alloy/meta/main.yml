@@ -1,3 +1,4 @@
 ---
-dependencies:
-  - role: rocky_repository_policy
+# Ordinary convergence validates repositories after its ownership/input guards.
+# Task-only initial entry points must never invoke repository-policy target I/O.
+dependencies: []

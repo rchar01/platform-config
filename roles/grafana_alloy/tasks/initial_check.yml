@@ -1,0 +1,17 @@
+---
+- name: Verify installed initial check sources
+  ansible.builtin.import_tasks: initial_installed.yml
+
+- name: Run the fixed read-only initial check
+  ansible.builtin.command:
+    argv: [/usr/local/libexec/platform-alloy-initial-activate, check, --config, /etc/alloy/pki/initial-activation.json]
+  register: grafana_alloy_initial_command
+  changed_when: false
+  check_mode: false
+
+- name: Validate and record the exact initial check outcome
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_result: "{{ grafana_alloy_initial_command.stdout | from_json | grafana_alloy_initial_outcome('check') }}"
+
+- name: Report initial check result
+  ansible.builtin.import_tasks: initial_report.yml

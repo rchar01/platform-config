@@ -1,0 +1,14 @@
+---
+- name: Exercise only the real monitoring HAProxy bundle entry point
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../monitoring-haproxy/contract.yml
+  tasks:
+    - name: Converge the production bundle
+      ansible.builtin.include_role:
+        name: monitoring_haproxy
+        tasks_from: bundle.yml
+
+    - name: End before service handlers can flush
+      ansible.builtin.meta: end_play

@@ -1,0 +1,9 @@
+---
+- name: Report authenticated initial outcome and reviewed source identity
+  ansible.builtin.debug:
+    msg:
+      outcome: "{{ grafana_alloy_initial_result }}"
+      inventory_sha256: "{{ grafana_alloy_initial_inputs.context.inventory_sha256 }}"
+      platform_pki_sha256: "{{ grafana_alloy_initial_inputs.context.platform_pki_sha256 }}"
+      lifecycle_helper_sha256: "{{ grafana_alloy_initial_inputs.context.lifecycle_helper_sha256 }}"
+      initial_helper_sha256: "{{ grafana_alloy_initial_sources.helper_sha256 }}"

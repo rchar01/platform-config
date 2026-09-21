@@ -26,6 +26,10 @@ grafana_alloy_conflicting_unit_paths:
   - /usr/share/containers/systemd/monitoring-alloy.container
 
 grafana_alloy_loki_url: ""
+grafana_alloy_loki_ca_file: ""
+grafana_alloy_loki_server_name: ""
+grafana_alloy_loki_client_cert_file: ""
+grafana_alloy_loki_client_key_file: ""
 grafana_alloy_prometheus_remote_write_url: ""
 grafana_alloy_prometheus_remote_write_ca_file: ""
 grafana_alloy_prometheus_remote_write_server_name: ""
@@ -50,3 +54,10 @@ grafana_alloy_platform_role: >-
     'vm'
   }}
 grafana_alloy_journal_max_age: 12h
+
+# Initial takeover only; reviewed non-secret snapshot and public tools zipapp.
+grafana_alloy_initial_inventory_src: ""
+grafana_alloy_initial_inventory_sha256: ""
+grafana_alloy_initial_platform_pki_src: ""
+grafana_alloy_initial_platform_pki_sha256: ""
+grafana_alloy_initial_writers: {}

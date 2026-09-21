@@ -1,0 +1,84 @@
+---
+- name: Inspect every immutable control input ancestor without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: "{{ grafana_alloy_initial_inputs.directories }}"
+  register: grafana_alloy_initial_directories
+  check_mode: false
+
+- name: Reject unsafe existing control directories without repair
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists or grafana_alloy_initial_allow_absent
+      - >-
+        not item.stat.exists or
+        (item.stat.isdir | default(false) and not item.stat.islnk | default(false)
+         and item.stat.uid == 0 and item.stat.gid == 0
+         and not item.stat.wgrp and not item.stat.woth
+         and (item.item != '/var/lib/platform-config/pki/alloy/process-owner' or item.stat.mode == '0700'))
+    fail_msg: Initial control directories must be protected direct root-owned directories; no repair is permitted.
+  loop: "{{ grafana_alloy_initial_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect immutable initial file metadata before bounded digest reads
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: "{{ grafana_alloy_initial_inputs.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: grafana_alloy_initial_files
+  check_mode: false
+  no_log: true
+
+- name: Reject missing prerequisites and unsafe immutable file metadata
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists or (grafana_alloy_initial_allow_absent and not item.item.required | default(false))
+      - >-
+        not item.stat.exists or
+        (item.stat.isreg | default(false) and not item.stat.islnk | default(false)
+         and item.stat.uid == 0 and item.stat.gid == 0 and item.stat.nlink == 1
+         and item.stat.mode == item.item.mode and item.stat.size <= 8388608
+         and (item.stat.size > 0 or item.item.path == '/var/lib/platform-config/pki/alloy/process-owner/lock'))
+    fail_msg: Initial inputs must be exact protected direct files; install the shipped lifecycle helper separately.
+  loop: "{{ grafana_alloy_initial_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  no_log: true
+
+- name: Read existing bounded immutable file digests
+  ansible.builtin.stat:
+    path: "{{ item.item.path }}"
+    follow: false
+    checksum_algorithm: sha256
+    get_mime: false
+    get_attributes: false
+  loop: "{{ grafana_alloy_initial_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  when: item.stat.exists
+  register: grafana_alloy_initial_file_digests
+  check_mode: false
+  no_log: true
+
+- name: Reject any existing immutable source or context drift
+  ansible.builtin.assert:
+    that:
+      - item.stat.checksum == item.item.item.sha256
+    fail_msg: >-
+      Initial input digest drift is retained for review; no overwrite is permitted.
+      Check, status and recovery require the original reviewed configuration inputs.
+  loop: "{{ grafana_alloy_initial_file_digests.results }}"
+  loop_control:
+    label: "{{ item.item.item.path }}"
+  when: not item.skipped | default(false)
+  no_log: true

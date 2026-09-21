@@ -1,0 +1,21 @@
+---
+# Point-in-time exclusion only. Initial takeover requires exclusive procedural
+# ownership; ordinary convergence and out-of-band lifecycle work must be excluded.
+- name: Inspect Grafana Alloy initial process-owner root without following links
+  ansible.builtin.stat:
+    path: /var/lib/platform-config/pki/alloy/process-owner
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: grafana_alloy_initial_owner
+  check_mode: false
+
+- name: Reject ordinary Grafana Alloy convergence after initial takeover
+  ansible.builtin.assert:
+    that:
+      - not grafana_alloy_initial_owner.stat.exists
+      - not grafana_alloy_initial_owner.stat.islnk | default(false)
+    fail_msg: >-
+      Initial process-owner protection exists or is unsafe. Use initial_status.yml
+      or initial_check.yml; ordinary convergence and handlers cannot bypass takeover.

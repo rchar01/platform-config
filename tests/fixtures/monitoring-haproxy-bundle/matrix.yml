@@ -1,0 +1,32 @@
+---
+- name: Batch immutable bundle tampering through the production entry point
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../monitoring-haproxy/contract.yml
+  tasks:
+    - name: Publish one healthy bundle with real Ansible modules
+      ansible.builtin.include_role:
+        name: monitoring_haproxy
+        tasks_from: bundle.yml
+      when: not ansible_check_mode
+
+    - name: Save the healthy publication for independent tamper cases
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_python_interpreter }}"
+          - "{{ playbook_dir }}/bundle_state.py"
+          - save
+          - "{{ bundle_test_root }}"
+      changed_when: false
+      check_mode: false
+
+    - name: Exercise all tamper cases without restarting Ansible or republishing
+      ansible.builtin.include_tasks: tamper.yml
+      loop: "{{ bundle_test_cases }}"
+      loop_control:
+        loop_var: bundle_test_case
+        label: "{{ bundle_test_case | to_json }}"
+
+    - name: End before service handlers can flush
+      ansible.builtin.meta: end_play

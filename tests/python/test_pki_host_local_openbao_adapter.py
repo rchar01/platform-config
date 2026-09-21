@@ -223,6 +223,7 @@ def test_openbao_pristine_preconditions(
         args, "/openbao/config/tls/tls.crt", "/openbao/config/tls/tls.key"
     )
     request = {
+        "profile": "server-p384-sha384-v1",
         "operation": "issue", "current_cert_sha256": "none",
         "predecessor_request_id": "none",
     }
@@ -243,6 +244,10 @@ def test_openbao_pristine_preconditions(
     with pytest.raises(helper.LifecycleError, match="inactive, unmasked"):
         helper.validate_openbao_preconditions(args, request, None, None, prior)
     service["state"] = "inactive"
+    with pytest.raises(helper.LifecycleError, match="profile differs"):
+        helper.validate_openbao_preconditions(
+            args, {**request, "profile": "client-p384-sha384-v1"}, None, None, prior
+        )
     with pytest.raises(helper.LifecycleError, match="issue only"):
         helper.validate_openbao_preconditions(
             args, {**request, "operation": "renew"}, None, None, prior

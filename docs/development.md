@@ -347,6 +347,34 @@ download, and a missing or invalid cache entry is downloaded again.
 The controlled HTTPS fixture also proves the locked Grafana `13.1.3`, Loki
 `3.7.6`, and Mimir `3.1.4` semantic profiles accept their exact healthy response
 contracts and reject degraded or non-ready bodies.
+
+Guarded Alloy initial-start qualification is a separate opt-in lane:
+
+```bash
+PLATFORM_TOOLS_TEST_SOURCE=/absolute/path/to/reviewed/public/platform-tools \
+PLATFORM_ALLOY_TEST_IMAGE=sha256:<reviewed-local-config-dev-image-id> \
+  bash tests/integration/test-alloy-initial-activation.sh
+```
+
+It uses actual Rocky systemd and the locked Alloy RPM, a protected signer snapshot,
+signed stages and direct immutable paths. It tests start/readiness, no-change
+replay, failed-start stop/disable and interrupted-intent recovery. Synthetic keys
+are prepared separately; it does not qualify live ingestion or renewal. See the
+[fixture contract and isolation limits](../tests/fixtures/alloy-initial-activation/README.md).
+The helper's Python tests require the generated tools zipapp via the explicit
+`PLATFORM_ALLOY_TEST_PKI_ZIPAPP` input in a read-only artifact-mounted test container;
+without it they skip. Initial-role default tests use exact-input orchestration
+stubs; select the real artifact for parser and binary-publication qualification.
+The external-probe/Alloy lane also renders the production Loki output and runs the pinned native
+Alloy journal sender against a strict synthetic mTLS receiver. It decodes a
+unique journal canary, verifies writer/SNI/Host and HTTP 204 evidence, rejects
+wrong CA/hostname/identity, missing certificates and malformed/mismatched keys,
+and proves redirects do not contact a second receiver. Real filesystem matrices
+exercise Loki preflight in apply/check mode and prove missing-key rejection before
+full-role lifecycle mutation. This proves client transport and direct-file
+readiness, not real Loki storage, HAProxy role enforcement or signed PKI lifecycle.
+The test checks TLS12 configuration/native acceptance with a strict TLS server;
+it does not independently test rejection of an obsolete-protocol-only peer.
 The same lane executes the rendered read-only PostgreSQL primary collector
 against a controlled PostgreSQL 18 `psql` interface. It verifies the exact
 certificate-only `verify-full` environment, DNS VIP identity, bounded timeouts,

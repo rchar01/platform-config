@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from conftest import NamespaceRootRunner
 
@@ -116,6 +117,7 @@ elif argv and argv[0] == "gitlab-package":
 else:
     role = "lifecycle-helper"
 control = json.loads(CONTROL.read_text(encoding="ascii"))
+INSTALLED = VERSIONS / (REQUEST_ID if control.get("profile") == "client-p384-sha384-v1" else ".installed")
 with LOG.open("a", encoding="ascii") as stream:
     stream.write(json.dumps({"role": role, "argv": argv}, sort_keys=True) + "\n")
 
@@ -131,7 +133,11 @@ def options(tokens):
     result = {}
     index = 0
     while index < len(tokens):
-        if tokens[index].startswith("--") and index + 1 < len(tokens):
+        if tokens[index].startswith("--") and "=" in tokens[index]:
+            name, value = tokens[index].split("=", 1)
+            result.setdefault(name, []).append(value)
+            index += 1
+        elif tokens[index].startswith("--") and index + 1 < len(tokens):
             result.setdefault(tokens[index], []).append(tokens[index + 1])
             index += 2
         else:
@@ -213,7 +219,7 @@ elif role == "lifecycle-helper":
             "csr_spki_sha256": DIGEST,
             "current_cert_sha256": control.get("current_digest", "none"),
             "predecessor_request_id": control.get("predecessor", "none"),
-            "profile": "server-p384-sha384-v1",
+            "profile": control.get("profile", "server-p384-sha384-v1"),
             "response_principal": "response.test",
         }
         for name, data in {
@@ -231,9 +237,47 @@ elif role == "lifecycle-helper":
             "request_sha256": DIGEST, "csr_sha256": DIGEST,
             "request_signature_sha256": DIGEST,
         }, sort_keys=True, separators=(",", ":")))
-    elif command == "target-response-prepare":
-        marker = VERSIONS / ".installed"
+    elif command == "target-stage-status":
+        if values.get("--service-adapter") != ["client-stage-v1"]:
+            raise SystemExit(36)
+        if VERSIONS.exists() and any(p.name.startswith(".stage") for p in VERSIONS.iterdir()):
+            raise SystemExit(37)
+        marker = INSTALLED
+        ingress = VERSIONS / f".ingress-{REQUEST_ID}"
+        if ingress.exists() and set(p.name for p in ingress.iterdir()) != set(RESPONSE_FILES):
+            raise SystemExit(38)
+        if marker.exists() and control.get("invalid_installed_tree"):
+            raise SystemExit(39)
+        selected = (
+            "staged-pending" if ingress.exists() else "staged"
+        ) if marker.exists() else (
+            "response-ready" if ingress.exists() else "request-pending"
+        )
+        output = {
+            "schema": "2", "kind": "platform-config-target-local-certificate-stage-status",
+            "status": selected, "service": "registry-test", "target": "target.test",
+            "request_id": REQUEST_ID,
+            "required_action": {
+                "request-pending": "await-response", "response-ready": "install-response",
+                "staged-pending": "install-response", "staged": "none",
+            }[selected],
+        }
+        if selected != "request-pending":
+            output.update({name: DIGEST for name in (
+                "artifact_sha256", "certificate_sha256", "certificate_spki_sha256",
+            )})
         if marker.exists():
+            output["version_path"] = str(VERSIONS / REQUEST_ID)
+            output.update(control.get("stage_status_updates", {}))
+        print(json.dumps(output, sort_keys=True, separators=(",", ":")))
+    elif command == "target-response-prepare":
+        marker = INSTALLED
+        client = values.get("--service-adapter") == ["client-stage-v1"]
+        if client and VERSIONS.exists() and any(p.name.startswith(".stage") for p in VERSIONS.iterdir()):
+            raise SystemExit(37)
+        if marker.exists() and client and not (VERSIONS / f".ingress-{REQUEST_ID}").exists():
+            raise SystemExit(40)
+        if marker.exists() and not client:
             print(json.dumps({
                 "status": "installed", "request_id": REQUEST_ID,
                 "ingress_dir": "none",
@@ -258,13 +302,18 @@ elif role == "lifecycle-helper":
         if control.get("fail_install"):
             print(f"install failure {TOKEN} {REQUEST_ID} {DIGEST}", file=sys.stderr)
             raise SystemExit(32)
+        if control.get("fail_after_publication"):
+            INSTALLED.write_text("installed\n", encoding="ascii")
+            INSTALLED.chmod(0o600)
+            raise SystemExit(41)
         for item in ingress.iterdir():
             item.unlink()
         ingress.rmdir()
-        (VERSIONS / ".installed").write_text("installed\n", encoding="ascii")
-        (VERSIONS / ".installed").chmod(0o600)
+        INSTALLED.write_text("installed\n", encoding="ascii")
+        INSTALLED.chmod(0o600)
         print(json.dumps({
-            "status": "installed", "request_id": REQUEST_ID,
+            "status": "staged" if values.get("--service-adapter") == ["client-stage-v1"] else "installed",
+            "request_id": REQUEST_ID,
             "version_path": str(VERSIONS / REQUEST_ID),
             "artifact_sha256": DIGEST, "certificate_sha256": DIGEST,
             "certificate_spki_sha256": DIGEST,
@@ -481,6 +530,9 @@ def call(case: GitLabCase, role: str, command: str) -> dict[str, Any]:
 
 
 def option(argv: list[str], name: str) -> str:
+    for value in argv:
+        if value.startswith(name + "="):
+            return value[len(name) + 1:]
     return argv[argv.index(name) + 1]
 
 
@@ -977,3 +1029,258 @@ def test_source_files_are_root_owned_single_link_regular_files(
         assert metadata.st_uid == os.geteuid()
         assert metadata.st_nlink == 1
         assert stat.S_ISREG(metadata.st_mode)
+
+
+CLIENT_CONFIG_KEYS = {
+    "schema", "kind", "service", "target", "operation", "profile",
+    "inventory_sha256", "current_cert_sha256", "current_cert_path",
+    "common_name", "dns_sans", "ip_sans", "response_principal",
+    "request_ttl_seconds", "request_signing_key", "trust_id", "state_root",
+    "pending_root", "versions_root", "minimum_remaining_lifetime_seconds",
+    "project_record", "token_file", "ca_file", "spool_root", "request_helper",
+    "lifecycle_helper", "platform_pki", "timeout", "processing_attempts",
+    "processing_interval", "service_adapter", "subject_cn", "subject_ou",
+    "subject_o", "subject_c", "validity_days",
+}
+
+
+@pytest.fixture
+def client_case(gitlab_case: GitLabCase) -> GitLabCase:
+    del gitlab_case.config["zot_config"]
+    gitlab_case.config.update({
+        "schema": 4, "service_adapter": "client-stage-v1",
+        "profile": "client-p384-sha384-v1", "common_name": "",
+        "dns_sans": [], "ip_sans": [], "subject_cn": "sender.test",
+        "subject_ou": "Telemetry", "subject_o": "Example", "subject_c": "US",
+        "validity_days": 397,
+    })
+    gitlab_case.control(profile="client-p384-sha384-v1")
+    gitlab_case.write_config()
+    return gitlab_case
+
+
+def test_client_roundtrip_preserves_public_results_and_binds_helper_arguments(
+    client_case: GitLabCase, repo_root: Path,
+) -> None:
+    case = client_case
+    case.config["subject_cn"] = "--sender.test"
+    case.write_config()
+    assert set(case.config) == CLIENT_CONFIG_KEYS
+    assert_bounded(case.run("request-publish"), "request-publish", "published", REQUEST_ID)
+    case.control(request_status="existing", publish_status="existing")
+    assert_bounded(case.run("request-publish"), "request-publish", "existing", REQUEST_ID)
+    assert_bounded(case.run("response-download"), "response-download", "installed")
+    assert_bounded(case.run("response-download"), "response-download", "existing")
+    lifecycle = runpy.run_path(str(
+        repo_root / "roles/pki_host_local_certificate/files/platform-pki-host-local-lifecycle"
+    ))
+    request = runpy.run_path(str(
+        repo_root / "roles/pki_host_local_certificate/files/platform-pki-host-local-request"
+    ))
+    for item in case.calls():
+        argv = item["argv"]
+        assert not set(argv) & {
+            "active-paths", "target-activate-start", "target-activate-complete", "target-recover",
+            "--zot-config", "--service-unit", "--service-config", "--endpoint",
+        }
+        if item["role"] == "lifecycle-helper":
+            assert option(argv, "--service-adapter") == "client-stage-v1"
+            parsed = lifecycle["build_parser"]().parse_args(argv)
+            lifecycle["validate_arguments"](parsed)
+        if item["role"] == "request-helper" or argv[0] in {"target-response-install", "target-stage-status"}:
+            for name in ("cn", "ou", "o", "c"):
+                assert option(argv, f"--subject-{name}") == case.config[f"subject_{name}"]
+            assert option(argv, "--common-name") == ""
+            assert "--dns-san" not in argv and "--ip-san" not in argv
+            if item["role"] == "request-helper":
+                assert option(argv, "--profile") == "client-p384-sha384-v1"
+                assert option(argv, "--operation") == "issue"
+                assert option(argv, "--current-cert-sha256") == "none"
+                assert option(argv, "--predecessor-request-id") == "none"
+                assert option(argv, "--request-namespace") == "platform-pki-csr-request-v2"
+                assert "--current-cert-path" not in argv and "--validity-days" not in argv
+                parsed = request["build_parser"]().parse_args(argv)
+                request["validate_arguments"](parsed)
+            else:
+                assert option(argv, "--validity-days") == "397"
+                assert option(argv, "--minimum-remaining-lifetime-seconds") == "60"
+    commands = [item["argv"][0] for item in case.calls() if item["role"] == "lifecycle-helper"]
+    assert commands == [
+        "target-request-export", "target-request-export",
+        "target-response-prepare", "target-response-install", "target-stage-status",
+        "target-stage-status",
+    ]
+    assert len([item for item in case.calls() if item["role"] == "platform-pki" and item["argv"][1] == "download"]) == 1
+    assert set(path.name for path in case.spool.iterdir()) == {"lock"}
+
+
+def test_client_config_rejects_inexact_and_mixed_shapes(client_case: GitLabCase) -> None:
+    namespace = runpy.run_path(str(client_case.facade))
+    validate = namespace["validate_config"]
+    config = client_case.config
+    assert validate(dict(config)) == config
+    invalid = [{key: value for key, value in config.items() if key != missing} for missing in config]
+    invalid.extend({**config, key: value} for key, values in {
+        "schema": (2, 3, 4.0, "4", True),
+        "profile": ("server-p384-sha384-v1", "client"),
+        "service_adapter": ("zot-v1", "openbao-pristine-v1", "client"),
+        "operation": ("renew", "activate"),
+        "current_cert_sha256": ("", None, DIGEST, "derived"),
+        "current_cert_path": ("", None, "/etc/client/tls.crt", "derived"),
+        "common_name": ("sender.test", None),
+        "dns_sans": (["sender.test"], "", None),
+        "ip_sans": (["192.0.2.1"], "", None),
+        "subject_cn": ("", None, "x" * 65, "x y", "x\ny", "x/y", "é"),
+        "subject_ou": ("", None, "x,y", "x=y"),
+        "subject_o": ("", None, 42, "x\\y"),
+        "subject_c": ("", "us", "USA", "U1", None),
+        "validity_days": (0, -1, 365001, True, 397.0, "397", None),
+    }.items() for value in values)
+    # Every server activation field is forbidden, even with a null value.
+    invalid.extend({**config, key: None} for key in (
+        set(namespace["CONFIG_FIELDS_V3"]) - CLIENT_CONFIG_KEYS
+    ) | {"zot_config", "request_id", "package_version", "endpoint", "rollback_seconds"})
+    for value in invalid:
+        with pytest.raises(namespace["FacadeError"]):
+            validate(value)
+
+
+@pytest.mark.parametrize("command", ["request-publish", "response-download"])
+@pytest.mark.parametrize("updates", [
+    {"service_unit": None}, {"profile": "server-p384-sha384-v1"},
+    {"subject_cn": "ambiguous/name"}, {"dns_sans": ["sender.test"]},
+    {"operation": "renew"}, {"validity_days": True},
+])
+def test_client_bad_config_fails_before_any_helper_command(
+    client_case: GitLabCase, command: str, updates: dict[str, Any],
+) -> None:
+    client_case.config.update(updates)
+    client_case.write_config()
+    assert_redacted_failure(client_case.run(command))
+    assert client_case.calls() == []
+    assert list(client_case.spool.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["fail_install", "fail_after_publication"])
+def test_client_failed_staging_retains_spool_and_complete_ingress_then_resumes(
+    client_case: GitLabCase, failure: str,
+) -> None:
+    case = client_case
+    case.control(**{failure: True})
+    assert_redacted_failure(case.run("response-download"))
+    download = case.spool / "response-download"
+    ingress = case.versions / f".ingress-{REQUEST_ID}"
+    snapshot = {path.name: path.read_bytes() for path in download.iterdir()}
+    assert set(snapshot) == set(DOWNLOAD_FILES)
+    assert {path.name: path.read_bytes() for path in ingress.iterdir()} == {
+        name: snapshot[name] for name in RESPONSE_FILES
+    }
+    case.control(**{failure: False})
+    assert_bounded(case.run("response-download"), "response-download", "installed")
+    assert not download.exists() and not ingress.exists()
+    assert_bounded(case.run("response-download"), "response-download", "existing")
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_client_resumes_incomplete_ingress_through_existing_copy_path(
+    client_case: GitLabCase, count: int,
+) -> None:
+    case = client_case
+    ingress = private_dir(private_dir(case.versions) / f".ingress-{REQUEST_ID}")
+    for name in RESPONSE_FILES[:count]:
+        private_file(ingress / name, f"payload:{name}\n")
+    assert_bounded(case.run("response-download"), "response-download", "installed")
+    assert not ingress.exists()
+    assert not (case.spool / "response-download").exists()
+    assert case.calls()[0]["argv"][0] == "target-response-prepare"
+    assert case.calls()[-1]["argv"][0] == "target-stage-status"
+
+
+@pytest.mark.parametrize("updates", [
+    {"schema": 2}, {"kind": "wrong"}, {"request_id": ACTIVE_ID},
+    {"service": "wrong"}, {"target": "wrong.test"}, {"required_action": "activate-response"},
+    {"status": "complete"}, {"version_path": "/wrong/version"},
+    {"artifact_sha256": "bad"}, {"certificate_sha256": "b" * 64}, {"extra": None},
+])
+def test_client_inexact_final_status_preserves_spool(
+    client_case: GitLabCase, updates: dict[str, Any],
+) -> None:
+    case = client_case
+    case.control(stage_status_updates=updates)
+    assert_redacted_failure(case.run("response-download"))
+    assert (case.spool / "response-download").is_dir()
+    case.control(stage_status_updates={})
+    assert_bounded(case.run("response-download"), "response-download", "existing")
+    assert not (case.spool / "response-download").exists()
+
+
+def test_client_replay_reauthenticates_installed_tree_before_cleanup(client_case: GitLabCase) -> None:
+    case = client_case
+    case.control(invalid_installed_tree=True)
+    assert_redacted_failure(case.run("response-download"))
+    download = case.spool / "response-download"
+    snapshot = {path.name: path.read_bytes() for path in download.iterdir()}
+    calls_before = len(case.calls())
+    assert_redacted_failure(case.run("response-download"))
+    assert case.calls()[calls_before:][0]["argv"][0] == "target-stage-status"
+    assert len(case.calls()) == calls_before + 1
+    assert {path.name: path.read_bytes() for path in download.iterdir()} == snapshot
+    case.control(invalid_installed_tree=False)
+    assert_bounded(case.run("response-download"), "response-download", "existing")
+    assert not download.exists()
+
+
+def test_client_retained_stage_fails_without_cleanup_or_install(client_case: GitLabCase) -> None:
+    case = client_case
+    case.control(fail_install=True)
+    assert_redacted_failure(case.run("response-download"))
+    stage = private_dir(case.versions / f".stage-{REQUEST_ID}-retained")
+    leaf = private_file(stage / "tls.key", "retained key\n")
+    calls_before = len(case.calls())
+    case.control(fail_install=False)
+    assert_redacted_failure(case.run("response-download"))
+    assert len(case.calls()) == calls_before + 1
+    assert leaf.read_text() == "retained key\n"
+    assert (case.spool / "response-download").is_dir()
+    assert (case.versions / f".ingress-{REQUEST_ID}").is_dir()
+
+
+def test_client_setup_renders_exact_config_and_selects_only_client_copy(
+    client_case: GitLabCase, repo_root: Path, command_runner, isolated_test_dir: Path,
+) -> None:
+    tasks = yaml.safe_load((repo_root / "roles/pki_host_local_certificate/tasks/gitlab_setup.yml").read_text())
+    copies = [task for task in tasks if "pki_host_local_certificate_gitlab_config" in task.get("vars", {})]
+    assert len(copies) == 2
+    namespace = runpy.run_path(str(client_case.facade))
+    assert set(copies[0]["vars"]["pki_host_local_certificate_gitlab_config"]) == set(namespace["CONFIG_FIELDS_V3"])
+    assert [task["ansible.builtin.import_tasks"] for task in tasks if "ansible.builtin.import_tasks" in task] == [
+        "lifecycle_helper.yml", "request_helper.yml",
+    ]
+    config = copies[1]["vars"]["pki_host_local_certificate_gitlab_config"]
+    assert set(config) == CLIENT_CONFIG_KEYS
+    variables = yaml.safe_load((repo_root / "roles/pki_host_local_certificate/defaults/main.yml").read_text())
+    # Populate inventory variables through the actual config bindings, preserving types.
+    for key, expression in config.items():
+        if key in {"schema", "kind", "current_cert_sha256", "current_cert_path"}:
+            continue
+        variable = expression.split()[1]
+        variables[variable] = client_case.config[key]
+    output = isolated_test_dir / "client-config.json"
+    variables["pki_host_local_certificate_gitlab_config_path"] = str(output)
+    for task in copies:
+        # Exercise real conditions, content and mode locally without chown/root.
+        del task["ansible.builtin.copy"]["owner"]
+        del task["ansible.builtin.copy"]["group"]
+    playbook = isolated_test_dir / "render-client-config.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "name": "Render client GitLab configuration", "hosts": "localhost",
+        "connection": "local", "gather_facts": False, "vars": variables, "tasks": copies,
+    }], sort_keys=False))
+    result = command_runner.run([
+        "ansible-playbook", "-i", "localhost,", str(playbook),
+    ], timeout=60)
+    result.assert_success()
+    assert "skipped=1" in result.stdout
+    rendered = json.loads(output.read_text())
+    assert rendered == client_case.config
+    assert namespace["validate_config"](rendered) == client_case.config

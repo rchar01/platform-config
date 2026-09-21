@@ -41,6 +41,12 @@ CONFIG_FIELDS_V3 = tuple(
     "node_address", "backend_port", "cluster_port", "container_versions_root",
     "base_config_dir", "raft_data_dir", "bootstrap_marker_path",
 )
+CONFIG_FIELDS_V4 = tuple(
+    field for field in CONFIG_FIELDS_V2 if field != "zot_config"
+) + (
+    "service_adapter", "subject_cn", "subject_ou", "subject_o", "subject_c",
+    "validity_days",
+)
 REQUEST_FIELDS = (
     "schema", "request_id", "nonce", "created_epoch", "expires_epoch",
     "operation", "service", "target", "requester_principal",
@@ -332,6 +338,9 @@ def validate_config(value: object) -> dict[str, object]:
     elif value.get("schema") == 3:
         if set(value) != set(CONFIG_FIELDS_V3):
             fail()
+    elif value.get("schema") == 4:
+        if type(value["schema"]) is not int or set(value) != set(CONFIG_FIELDS_V4):
+            fail()
     else:
         fail()
     if value["kind"] != "platform-config-target-local-gitlab":
@@ -342,11 +351,27 @@ def validate_config(value: object) -> dict[str, object]:
         fail()
     if value["operation"] not in {"issue", "renew"}:
         fail()
-    if value["profile"] != "server-p384-sha384-v1":
+    client = value["schema"] == 4
+    if client:
+        if (
+            value["profile"] != "client-p384-sha384-v1"
+            or value["operation"] != "issue"
+            or value["service_adapter"] != "client-stage-v1"
+            or value["common_name"] != ""
+            or value["dns_sans"] != [] or value["ip_sans"] != []
+        ):
+            fail()
+        for field in ("subject_cn", "subject_ou", "subject_o"):
+            if not isinstance(value[field], str) or re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value[field], re.ASCII) is None:
+                fail()
+        if not isinstance(value["subject_c"], str) or re.fullmatch(r"[A-Z]{2}", value["subject_c"], re.ASCII) is None:
+            fail()
+        require_int(value["validity_days"], 1, 365000)
+    elif value["profile"] != "server-p384-sha384-v1":
         fail()
     if not isinstance(value["inventory_sha256"], str) or DIGEST.fullmatch(value["inventory_sha256"]) is None:
         fail()
-    for field in ("common_name", "response_principal", "trust_id"):
+    for field in (("response_principal", "trust_id") if client else ("common_name", "response_principal", "trust_id")):
         if not isinstance(value[field], str) or not value[field] or not value[field].isascii():
             fail()
     if IDENTITY.fullmatch(value["response_principal"]) is None:
@@ -355,7 +380,7 @@ def validate_config(value: object) -> dict[str, object]:
         fail()
     for field in ("dns_sans", "ip_sans"):
         items = value[field]
-        if not isinstance(items, list) or (field == "dns_sans" and not items):
+        if not isinstance(items, list) or (not client and field == "dns_sans" and not items):
             fail()
         if any(not isinstance(item, str) or not item or not item.isascii() for item in items):
             fail()
@@ -373,7 +398,7 @@ def validate_config(value: object) -> dict[str, object]:
     ]
     if value["schema"] == 2:
         path_fields.append("zot_config")
-    else:
+    elif value["schema"] == 3:
         adapter = value["service_adapter"]
         if adapter == "zot-v1":
             if (
@@ -492,7 +517,7 @@ def common_lifecycle(config: Mapping[str, object]) -> list[str]:
         "--service", str(config["service"]),
         "--target", str(config["target"]),
     ]
-    if config["schema"] == 3:
+    if config["schema"] in {3, 4}:
         arguments.extend(("--service-adapter", str(config["service_adapter"])))
         if config["service_adapter"] == "openbao-pristine-v1":
             for option, field in (
@@ -708,6 +733,7 @@ def request_arguments(
     ]
     if current_path != "none":
         arguments.extend(("--current-cert-path", current_path))
+    arguments.extend(subject_arguments(config))
     for name in TRUST_FILES:
         arguments.extend((
             "--trust-binding", name, trust[name].path,
@@ -931,6 +957,15 @@ def copy_response(
         ingress.close()
 
 
+def subject_arguments(config: Mapping[str, object]) -> list[str]:
+    arguments: list[str] = []
+    if config["schema"] == 4:
+        for name in ("cn", "ou", "o", "c"):
+            # The frozen subject alphabet permits leading hyphens.
+            arguments.append(f"--subject-{name}={config[f'subject_{name}']}")
+    return arguments
+
+
 def candidate_arguments(config: Mapping[str, object]) -> list[str]:
     result = [
         "--trust-id", str(config["trust_id"]), "--common-name",
@@ -941,14 +976,76 @@ def candidate_arguments(config: Mapping[str, object]) -> list[str]:
         result.extend(("--dns-san", str(value)))
     for value in config["ip_sans"]:
         result.extend(("--ip-san", str(value)))
+    result.extend(subject_arguments(config))
+    if config["schema"] == 4:
+        result.extend(("--validity-days", str(config["validity_days"])))
     return result
+
+
+def client_stage_status(
+    config: Mapping[str, object], lifecycle: PinnedFile,
+) -> dict[str, object]:
+    value = load_json(run_process(lifecycle, [
+        "target-stage-status", *common_lifecycle(config), *candidate_arguments(config),
+    ]))
+    if not isinstance(value, dict):
+        fail()
+    actions = {
+        "request-pending": "await-response", "response-partial": "await-response",
+        "response-ready": "install-response",
+        "staged-pending": "install-response", "staged": "none",
+    }
+    selected = value.get("status")
+    if not isinstance(selected, str) or selected not in actions:
+        fail()
+    fields = {"schema", "kind", "status", "service", "target", "request_id", "required_action"}
+    if selected not in {"request-pending", "response-partial"}:
+        for name in ("artifact_sha256", "certificate_sha256", "certificate_spki_sha256"):
+            fields.add(name)
+            if not isinstance(value.get(name), str) or DIGEST.fullmatch(value[name]) is None:
+                fail()
+    request_id = value.get("request_id")
+    if (
+        value.get("schema") != "2"
+        or value.get("kind") != "platform-config-target-local-certificate-stage-status"
+        or value.get("service") != config["service"] or value.get("target") != config["target"]
+        or not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None
+        or value.get("required_action") != actions[selected]
+    ):
+        fail()
+    if selected in {"staged", "staged-pending"}:
+        fields.add("version_path")
+        if value.get("version_path") != os.path.join(str(config["versions_root"]), request_id):
+            fail()
+    if set(value) != fields:
+        fail()
+    return value
 
 
 def download_response(
     config: Mapping[str, object], spool: PinnedDirectory,
     lifecycle: PinnedFile, platform: PinnedFile, project: PinnedFile,
 ) -> str:
-    prepared_value = load_json(run_process(lifecycle, [
+    client = config["schema"] == 4
+    client_status = None
+    if client and os.path.lexists(str(config["versions_root"])):
+        versions = PinnedDirectory(str(config["versions_root"]))
+        try:
+            # Discovery only: authenticate published bytes through lifecycle.
+            # Incomplete ingress keeps the existing prepare/copy resume path.
+            published = any(REQUEST_ID.fullmatch(name) for name in versions.names())
+        finally:
+            versions.close()
+        if published:
+            client_status = client_stage_status(config, lifecycle)
+    if client_status is not None and client_status["status"] == "staged":
+        # Client preparation cannot authenticate an already published version.
+        prepared_value = {
+            "status": "installed", "request_id": client_status["request_id"],
+            "ingress_dir": "none",
+        }
+    else:
+        prepared_value = load_json(run_process(lifecycle, [
             "target-response-prepare", *common_lifecycle(config), "--trust-id",
             str(config["trust_id"]),
         ]))
@@ -958,9 +1055,13 @@ def download_response(
     request_id = prepared["request_id"]
     if not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None:
         fail()
+    if client_status is not None and request_id != client_status["request_id"]:
+        fail()
     download_path = os.path.join(spool.path, "response-download")
     if prepared["status"] == "installed":
         if set(prepared) != {"status", "request_id", "ingress_dir"} or prepared["ingress_dir"] != "none":
+            fail()
+        if client and (client_status is None or client_status["status"] != "staged"):
             fail()
         if os.path.lexists(download_path):
             downloaded = PinnedDirectory(download_path)
@@ -1013,10 +1114,26 @@ def download_response(
             "target-response-install", *common_lifecycle(config),
             *candidate_arguments(config),
         ]))
-        if not isinstance(installed, dict) or installed.get("status") not in {"installed", "existing"}:
+        if client:
+            if (
+                not isinstance(installed, dict)
+                or set(installed) != {
+                    "status", "request_id", "version_path", "artifact_sha256",
+                    "certificate_sha256", "certificate_spki_sha256",
+                }
+                or installed["status"] != "staged"
+                or installed["request_id"] != request_id
+            ):
+                fail()
+            verified = client_stage_status(config, lifecycle)
+            if verified["status"] != "staged" or any(
+                installed[name] != verified[name] for name in installed
+            ):
+                fail()
+        elif not isinstance(installed, dict) or installed.get("status") not in {"installed", "existing"}:
             fail()
         remove_tree(downloaded, exact=DOWNLOAD_FILES)
-        return "installed" if installed["status"] == "installed" else "existing"
+        return "installed" if installed["status"] in {"installed", "staged"} else "existing"
     finally:
         for source in files.values():
             source.close()

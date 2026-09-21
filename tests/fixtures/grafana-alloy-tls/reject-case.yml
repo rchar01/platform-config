@@ -1,0 +1,59 @@
+---
+- name: Reset rejection evidence for this input
+  ansible.builtin.set_fact:
+    alloy_tls_case_rejected: false
+
+- name: Exercise real preflight with one invalid Loki input
+  block:
+    - name: Run the production Grafana Alloy preflight
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: preflight.yml
+  rescue:
+    - name: Collect every failed scalar or loop assertion
+      ansible.builtin.set_fact:
+        alloy_tls_failed_assertions: >-
+          {{
+            (ansible_failed_result.results
+             | selectattr('failed', 'defined')
+             | rejectattr('failed', 'sameas', false) | list)
+            if ansible_failed_result.results is defined
+            else [ansible_failed_result]
+          }}
+
+    - name: Require an intentional Loki assertion rather than a task or template error
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_task.action == 'ansible.builtin.assert'
+          - ansible_failed_result.failed is sameas true
+          # ansible-core adds this exact marker to ordinary assertion failures.
+          - ansible_failed_result.exception | default('(traceback unavailable)') == '(traceback unavailable)'
+          - ansible_failed_result.error is not defined
+          - alloy_tls_failed_assertions | length > 0
+        fail_msg: "Unexpected failure for {{ tls_case.name }}: {{ ansible_failed_result }}"
+
+    - name: Require every failed item to be an exact Loki input assertion
+      ansible.builtin.assert:
+        that:
+          - alloy_tls_failure.failed is sameas true
+          - alloy_tls_failure.assertion is string
+          - alloy_tls_failure.evaluated_to is sameas false
+          - "'grafana_alloy_loki_' in alloy_tls_failure.assertion"
+          - alloy_tls_failure.exception | default('(traceback unavailable)') == '(traceback unavailable)'
+          - alloy_tls_failure.error is not defined
+          - alloy_tls_failure.results is not defined
+          - not alloy_tls_failure.changed | default(false)
+        fail_msg: "Unexpected failure for {{ tls_case.name }}: {{ alloy_tls_failure }}"
+      loop: "{{ alloy_tls_failed_assertions }}"
+      loop_control:
+        loop_var: alloy_tls_failure
+
+    - name: Record the expected rejection
+      ansible.builtin.set_fact:
+        alloy_tls_case_rejected: true
+
+- name: Require rejection of this specific input
+  ansible.builtin.assert:
+    that:
+      - alloy_tls_case_rejected
+    fail_msg: "Preflight accepted invalid Loki input {{ tls_case.name }}"

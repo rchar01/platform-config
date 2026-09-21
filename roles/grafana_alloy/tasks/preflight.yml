@@ -1,4 +1,7 @@
 ---
+- name: Guard standalone Grafana Alloy preflight process ownership
+  ansible.builtin.import_tasks: initial_guard.yml
+
 - name: Validate Grafana Alloy lifecycle selector
   ansible.builtin.assert:
     that:
@@ -15,6 +18,68 @@
       - "'..' not in grafana_alloy_config_dir.split('/')"
       - "'..' not in grafana_alloy_storage_dir.split('/')"
     fail_msg: "Grafana Alloy lifecycle inputs must identify one safe systemd service."
+
+- name: Validate Grafana Alloy Loki input types
+  ansible.builtin.assert:
+    that:
+      - grafana_alloy_loki_url is string
+      - grafana_alloy_loki_ca_file is string
+      - grafana_alloy_loki_server_name is string
+      - grafana_alloy_loki_client_cert_file is string
+      - grafana_alloy_loki_client_key_file is string
+    fail_msg: Grafana Alloy Loki endpoint and TLS inputs must be strings.
+  when: grafana_alloy_enabled | bool
+
+- name: Validate Grafana Alloy Loki TLS contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        grafana_alloy_loki_url | length == 0 or grafana_alloy_loki_url | grafana_alloy_https_url_valid
+      - >-
+        (grafana_alloy_loki_ca_file | length > 0)
+        == (grafana_alloy_loki_server_name | length > 0)
+      - >-
+        (grafana_alloy_loki_client_cert_file | length > 0)
+        == (grafana_alloy_loki_client_key_file | length > 0)
+      - grafana_alloy_loki_client_cert_file | length == 0 or grafana_alloy_loki_ca_file | length > 0
+      - >-
+        grafana_alloy_loki_url | length > 0 or
+        [grafana_alloy_loki_ca_file, grafana_alloy_loki_server_name,
+         grafana_alloy_loki_client_cert_file, grafana_alloy_loki_client_key_file]
+        | reject('equalto', '') | list | length == 0
+      - grafana_alloy_loki_server_name | length <= 253
+      - >-
+        grafana_alloy_loki_server_name | length == 0 or grafana_alloy_loki_server_name is
+        match('\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\Z')
+      - >-
+        grafana_alloy_loki_client_cert_file | length == 0 or
+        grafana_alloy_loki_client_cert_file != grafana_alloy_loki_client_key_file
+      - >-
+        grafana_alloy_loki_client_cert_file | length == 0 or
+        grafana_alloy_loki_client_cert_file not in
+        [grafana_alloy_prometheus_remote_write_client_cert_file, grafana_alloy_prometheus_remote_write_client_key_file]
+      - >-
+        grafana_alloy_loki_client_key_file | length == 0 or
+        grafana_alloy_loki_client_key_file not in
+        [grafana_alloy_prometheus_remote_write_client_cert_file, grafana_alloy_prometheus_remote_write_client_key_file]
+    fail_msg: >-
+      Grafana Alloy Loki requires an HTTPS endpoint, paired CA/server name and
+      certificate/key references, and separate Loki and Mimir client paths.
+  when: grafana_alloy_enabled | bool
+
+- name: Validate Grafana Alloy Loki file paths
+  ansible.builtin.assert:
+    that:
+      - grafana_alloy_loki_input_path is match('\A/(?:[A-Za-z0-9_@%+=:,.-]+/)*[A-Za-z0-9_@%+=:,.-]+\Z')
+      - "'.' not in grafana_alloy_loki_input_path.split('/')"
+      - "'..' not in grafana_alloy_loki_input_path.split('/')"
+    fail_msg: Grafana Alloy Loki TLS references must be safe canonical absolute file paths.
+  loop: >-
+    {{ [grafana_alloy_loki_ca_file, grafana_alloy_loki_client_cert_file,
+        grafana_alloy_loki_client_key_file] | reject('equalto', '') | list }}
+  loop_control:
+    loop_var: grafana_alloy_loki_input_path
+  when: grafana_alloy_enabled | bool
 
 - name: Validate enabled Grafana Alloy inputs
   ansible.builtin.assert:
@@ -53,3 +118,9 @@
       or active service state, at least one output, and strict outside-Git file
       references for authenticated remote write.
   when: grafana_alloy_enabled | bool
+
+- name: Preflight Grafana Alloy Loki TLS files before lifecycle mutation
+  ansible.builtin.include_tasks: loki_tls_files.yml
+  when:
+    - grafana_alloy_enabled | bool
+    - grafana_alloy_loki_ca_file | length > 0

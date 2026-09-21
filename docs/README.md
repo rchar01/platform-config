@@ -57,7 +57,10 @@ and other secrets belong outside Git.
 - [Host-Local Registry PKI Workflow](registry-host-local-pki-workflow.md): Exact
   two-route target-local request publication and response activation workflow.
 - [PKI Exchange Setup](pki-exchange-setup.md): Prepare the target-local token,
-  reviewed public inputs, and one private GitLab Generic Package project.
+  reviewed public inputs, and GitLab or filesystem transport; records the
+  [monitoring PKI direction](pki-exchange-setup.md#monitoring-pki-direction)
+  with implemented issue-only client staging and guarded Alloy initial start;
+  certificate rotation and overlap enforcement remain pending.
 - [Manual GitLab Runner Deployment](gitlab-runner-manual-deployment.md):
   Reproduce the Podman Quadlet runner service without Ansible, including TLS,
   registration, verification, migration, and Kubernetes-tooling boundaries.

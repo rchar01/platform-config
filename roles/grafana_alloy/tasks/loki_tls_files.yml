@@ -1,0 +1,82 @@
+---
+# This is a metadata/readiness check, not certificate issuance or chain proof.
+# Until the fixed PKI adapter exists, accept direct files only; an unowned current
+# selector must not become a way to bypass the no-symlink contract.
+- name: Build Grafana Alloy Loki TLS file contract
+  ansible.builtin.set_fact:
+    grafana_alloy_loki_tls_files: >-
+      {{
+        [{'path': grafana_alloy_loki_ca_file, 'modes': ['0400', '0440', '0444', '0600', '0640', '0644']}]
+        + ([
+          {'path': grafana_alloy_loki_client_cert_file, 'modes': ['0400', '0440', '0444', '0600', '0640', '0644']},
+          {'path': grafana_alloy_loki_client_key_file, 'modes': ['0400', '0600']}
+        ] if grafana_alloy_loki_client_cert_file | length > 0 else [])
+      }}
+
+- name: Derive Grafana Alloy Loki TLS ancestor paths
+  ansible.builtin.set_fact:
+    grafana_alloy_loki_tls_directories: >-
+      {%- set ns = namespace(paths=[]) -%}
+      {%- for entry in grafana_alloy_loki_tls_files -%}
+        {%- set parts = entry.path.split('/') -%}
+        {%- for depth in range(1, parts | length) -%}
+          {%- set ns.paths = ns.paths + [(parts[:depth] | join('/')) or '/'] -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.paths | unique | list }}
+
+- name: Inspect Grafana Alloy Loki TLS ancestors without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: "{{ grafana_alloy_loki_tls_directories }}"
+  register: grafana_alloy_loki_tls_directory_stats
+  check_mode: false
+
+- name: Require protected Grafana Alloy Loki TLS ancestors
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode is match('^[0-7][0-7][0145][0145]$')
+    fail_msg: Grafana Alloy Loki TLS ancestors must be root-owned non-symlink directories without group or other write access.
+  loop: "{{ grafana_alloy_loki_tls_directory_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect Grafana Alloy Loki TLS files without reading their contents
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: "{{ grafana_alloy_loki_tls_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: grafana_alloy_loki_tls_file_stats
+  check_mode: false
+
+- name: Require protected Grafana Alloy Loki TLS files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.nlink == 1
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.size > 0
+      - item.stat.mode in item.item.modes
+    fail_msg: >-
+      Grafana Alloy Loki TLS inputs must be nonempty root-owned single-link regular
+      files, with owner-only client keys and no group or other write access.
+  loop: "{{ grafana_alloy_loki_tls_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"

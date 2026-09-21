@@ -1,0 +1,82 @@
+---
+- name: Exercise real direct-file Loki preflight in disposable Rocky
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../../roles/grafana_alloy/defaults/main.yml
+  vars:
+    loki_test_root: /etc/platform-test-loki/preflight
+    loki_test_cases:
+      - good-ca
+      - good-mtls
+      - missing-key
+      - missing-ca
+      - directory
+      - fifo
+      - symlink-leaf
+      - hardlink
+      - key-public
+      - file-uid
+      - file-gid
+      - ancestor-uid
+      - ancestor-gid
+      - ancestor-group-write
+      - ancestor-other-write
+      - ancestor-symlink
+      - empty-ca
+      - empty-key
+    loki_test_helper: /workspace/tests/fixtures/platform-external-probe/loki_preflight_fixture.py
+  tasks:
+    - name: Prepare real filesystem cases once before apply and check matrices
+      ansible.builtin.command:
+        argv: [python3, "{{ loki_test_helper }}", prepare, "{{ loki_test_cases | to_json }}"]
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: Snapshot direct files and active native Alloy before preflight
+      ansible.builtin.command:
+        argv: [python3, "{{ loki_test_helper }}", snapshot]
+      register: loki_test_before
+      changed_when: false
+      check_mode: false
+
+    - name: Initialize exact matrix evidence
+      ansible.builtin.set_fact:
+        loki_test_results: []
+
+    - name: Batch cases through the real role preflight
+      ansible.builtin.include_tasks: loki-preflight-case.yml
+      loop: "{{ loki_test_cases }}"
+      loop_control:
+        loop_var: loki_test_case
+      vars:
+        loki_test_full_role: false
+
+    # One full-role apply is deliberately asked to stop the currently active
+    # native service. A missing key must reject it at the file gate, before any
+    # configuration, package, drop-in, or lifecycle mutation.
+    - name: Prove the full role rejects a missing key before mutation
+      ansible.builtin.include_tasks: loki-preflight-case.yml
+      vars:
+        loki_test_case: missing-key
+        loki_test_full_role: true
+      when: not ansible_check_mode
+
+    - name: Snapshot direct files and native lifecycle after all rejected inputs
+      ansible.builtin.command:
+        argv: [python3, "{{ loki_test_helper }}", snapshot]
+      register: loki_test_after
+      changed_when: false
+      check_mode: false
+
+    - name: Require exact complete evidence and no preflight filesystem or lifecycle mutation
+      ansible.builtin.assert:
+        that:
+          - loki_test_results | length == loki_test_cases | length + (0 if ansible_check_mode else 1)
+          - loki_test_before.stdout == loki_test_after.stdout
+        success_msg: >-
+          Direct-file Loki preflight {{ 'check' if ansible_check_mode else 'apply' }}:
+          18/18 cases (2 accepted, 16 rejected),
+          {{ 0 if ansible_check_mode else 1 }} full-role missing-key rejection;
+          config hashes, fixture metadata and active native lifecycle unchanged.
+          Managed current selectors remain unsupported pending the authenticated PKI adapter.

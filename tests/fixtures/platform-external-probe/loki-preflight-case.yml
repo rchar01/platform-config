@@ -1,0 +1,44 @@
+---
+- name: Reset per-case preflight evidence
+  ansible.builtin.set_fact:
+    loki_test_accepted: false
+
+- name: Exercise and classify the real Loki preflight
+  vars:
+    grafana_alloy_enabled: true
+    grafana_alloy_service_enabled: false
+    grafana_alloy_service_state: stopped
+    grafana_alloy_loki_url: https://127.0.0.1:18543/loki/api/v1/push
+    grafana_alloy_loki_server_name: monitoring.example.invalid
+    grafana_alloy_loki_ca_file: "{{ loki_test_root }}/{{ loki_test_case }}/direct/ca.crt"
+    grafana_alloy_loki_client_cert_file: "{{ '' if loki_test_case == 'good-ca' else loki_test_root ~ '/' ~ loki_test_case ~ '/direct/client.crt' }}"
+    grafana_alloy_loki_client_key_file: "{{ '' if loki_test_case == 'good-ca' else loki_test_root ~ '/' ~ loki_test_case ~ '/direct/client.key' }}"
+  block:
+    - name: Invoke production role preflight or the one full-role case
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: "{{ 'main.yml' if loki_test_full_role else 'preflight.yml' }}"
+
+    - name: Record successful production preflight
+      ansible.builtin.set_fact:
+        loki_test_accepted: true
+  rescue:
+    - name: Require the intended filesystem gate rather than an unrelated failure
+      ansible.builtin.assert:
+        that:
+          - loki_test_case not in ['good-ca', 'good-mtls']
+          - >-
+            ansible_failed_task.name ==
+            ('Require protected Grafana Alloy Loki TLS ancestors'
+             if loki_test_case is match('^ancestor-')
+             else 'Require protected Grafana Alloy Loki TLS files')
+
+- name: Require the exact per-case acceptance result
+  ansible.builtin.assert:
+    that:
+      - loki_test_accepted == (loki_test_case in ['good-ca', 'good-mtls'])
+    success_msg: "{{ loki_test_case }}: {{ 'accepted' if loki_test_accepted else 'rejected at filesystem gate' }}"
+
+- name: Record complete case evidence
+  ansible.builtin.set_fact:
+    loki_test_results: "{{ loki_test_results + [loki_test_case ~ ('/full-role' if loki_test_full_role else '/preflight')] }}"

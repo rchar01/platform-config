@@ -1,0 +1,657 @@
+#!/usr/bin/python3 -I
+"""Fixed, initial-only Alloy process receipt. No PKI selection or renewal.
+
+The signed boundary reviews the complete config bytes; the narrow write-block
+recognizer below is deliberately not an Alloy parser. Native validation is still
+required. Exclude ordinary convergence and out-of-band edits for this operation.
+"""
+
+import argparse
+import hashlib
+import http.client
+import io
+import json
+import os
+import re
+import signal
+import stat
+import sys
+import time
+import types
+import zipfile
+from collections.abc import Mapping
+from urllib.parse import urlsplit
+
+
+NEVRA = "alloy-0:1.18.1-1.x86_64"
+CONTEXT = "/etc/alloy/pki/initial-activation.json"
+STATE = "/var/lib/platform-config/pki/alloy/process-owner"
+HELPER = "/usr/local/libexec/platform-pki-host-local-lifecycle"
+PKI = "/usr/local/bin/platform-pki"
+UNIT = "/usr/lib/systemd/system/alloy.service"
+CONFIG = "/etc/alloy/config.alloy"
+DROPIN = "/etc/systemd/system/alloy.service.d/platform.conf"
+PROFILE = "client-p384-sha384-v1"
+MAXIMUM = 8 * 1024 * 1024
+
+
+class Rejected(RuntimeError):
+    pass
+
+
+def require(condition, reason):
+    if not condition:
+        raise Rejected(reason)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii") + b"\n"
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_inventory_parser(artifact_bytes: bytes) -> types.ModuleType:
+    """Load the fixed tools inventory module from caller-verified artifact bytes.
+
+    The caller must first verify the artifact's expected SHA-256. No package
+    import, filesystem extraction, or artifact-path reopening occurs here.
+    The returned module exposes parse_inventory(raw_inventory_bytes).
+    """
+    require(type(artifact_bytes) is bytes and 0 < len(artifact_bytes) <= MAXIMUM,
+            "invalid platform-pki artifact bytes")
+    entry = "platform_pki/inventory.py"
+    try:
+        with zipfile.ZipFile(io.BytesIO(artifact_bytes)) as archive:
+            entries = [info for info in archive.infolist() if info.filename == entry]
+            require(len(entries) == 1, "archive must contain exactly one tools inventory module")
+            info = entries[0]
+            require(info.orig_filename == entry and not info.is_dir() and not info.flag_bits & 1
+                    and stat.S_IFMT(info.external_attr >> 16) in (0, stat.S_IFREG)
+                    and 0 < info.file_size <= MAXIMUM and 0 < info.compress_size <= MAXIMUM,
+                    "unsafe tools inventory module entry")
+            with archive.open(info) as stream:
+                source = stream.read(MAXIMUM + 1)
+            require(len(source) == info.file_size, "tools inventory module size mismatch")
+    except (zipfile.BadZipFile, NotImplementedError):
+        raise Rejected("invalid platform-pki inventory archive") from None
+    name = "_platform_alloy_inventory_" + digest(artifact_bytes)
+    module = types.ModuleType(name)
+    module.__file__ = name + "/" + entry
+    # Dataclasses resolve their defining module through sys.modules. Always
+    # execute the verified snapshot rather than reuse a cached parser object.
+    sys.modules[name] = module
+    try:
+        exec(compile(source, module.__file__, "exec"), module.__dict__)
+        require(callable(getattr(module, "parse_inventory", None)), "tools inventory parser is missing")
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
+def boundary_digests(
+    target: str,
+    subjects: Mapping[str, str],
+    writers: Mapping[str, Mapping[str, str]],
+    normalized_config_bytes: bytes,
+    dropin_bytes: bytes,
+) -> dict[str, str]:
+    """Hash validated boundary inputs without loading artifacts or doing I/O.
+
+    subjects maps each writer name to its full inventory subject_dn. The caller
+    supplies the complete writer context mapping and config bytes whose direct
+    version paths have already been replaced by their @VERSION@ equivalents.
+    """
+    writer_values = {name: dict(writer) for name, writer in writers.items()}
+    return {
+        name: digest(canonical({
+            "schema": 1, "kind": "alloy-initial-boundary", "writer": name,
+            "service": writer["service"], "target": target, "profile": PROFILE,
+            "subject_dn": subjects[name], "package_nevra": NEVRA,
+            "config_sha256": digest(normalized_config_bytes), "dropin_sha256": digest(dropin_bytes),
+            "ca_sha256": writer["ca_sha256"], "writers": writer_values,
+        }))
+        for name, writer in writer_values.items()
+    }
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def decode(data):
+    return json.loads(data, object_pairs_hook=unique)
+
+
+def path(value):
+    require(type(value) is str and re.fullmatch(r"/[A-Za-z0-9_./-]+", value)
+            and os.path.normpath(value) == value and "//" not in value, "noncanonical path")
+    return value
+
+
+def sha(value):
+    require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value), "invalid SHA-256")
+    return value
+
+
+def test_root():
+    value = os.environ.get("PLATFORM_ALLOY_INITIAL_TEST_ROOT", "")
+    if value:
+        require(os.geteuid() == 0 and os.environ.get("PLATFORM_ALLOY_INITIAL_TESTING") == "1",
+                "test root requires explicit root-only testing")
+        path(value)
+        info = os.lstat(value)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+                and stat.S_IMODE(info.st_mode) == 0o700, "unsafe test root")
+    return value
+
+
+def bootstrap_read(filename, mode):
+    """Minimal trust bootstrap, before the pinned lifecycle module can be loaded."""
+    path(filename)
+    owners = {0}
+    if test_root():
+        # Same user-namespace ancestor exception as lifecycle.PinnedDirectory.
+        with open("/proc/sys/kernel/overflowuid", encoding="ascii") as stream:
+            owners.add(int(stream.read()))
+    descriptors = [os.open("/", os.O_RDONLY | os.O_DIRECTORY)]
+    try:
+        for component in filename.split("/")[1:-1]:
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         dir_fd=descriptors[-1])
+            descriptors.append(fd)
+            info = os.fstat(fd)
+            require(info.st_uid in owners and info.st_gid in owners
+                    and (not info.st_mode & 0o022 or info.st_mode & stat.S_ISVTX), "unsafe source ancestor")
+        fd = os.open(os.path.basename(filename), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME,
+                     dir_fd=descriptors[-1])
+        descriptors.append(fd)
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+                and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == mode
+                and 0 < info.st_size <= MAXIMUM, "unsafe source metadata")
+        chunks = []
+        remaining = MAXIMUM + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        require(len(data) == info.st_size and os.fstat(fd) == info
+                and os.stat(os.path.basename(filename), dir_fd=descriptors[-2], follow_symlinks=False) == info,
+                "source changed while loading")
+        return data
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+class Initial:
+    def __init__(self, filename):
+        require(os.geteuid() == 0, "root required")
+        self.root = test_root()
+        require(filename == self.fixed(CONTEXT), "context path is fixed")
+        self.filename = filename
+        context_bytes = bootstrap_read(filename, 0o600)
+        self.context = decode(context_bytes)
+        self.validate_context()
+        source = bootstrap_read(self.context["lifecycle_helper_path"], 0o755)
+        require(digest(source) == self.context["lifecycle_helper_sha256"], "lifecycle source digest mismatch")
+        self.lc = types.ModuleType("platform_alloy_pinned_lifecycle")
+        exec(compile(source, self.context["lifecycle_helper_path"], "exec"), self.lc.__dict__)
+        self.sources = {}
+        self.rpm_files = {}
+        self.writer_locks = []
+        require(self.read(filename, 0o600) == context_bytes, "context changed during bootstrap")
+        require(self.read(self.context["lifecycle_helper_path"], 0o755) == source,
+                "lifecycle source changed during bootstrap")
+        artifact = self.read(self.context["platform_pki_path"], 0o755)
+        require(digest(artifact) == self.context["platform_pki_sha256"], "platform-pki digest mismatch")
+        parser = load_inventory_parser(artifact)
+        self.recheck_sources()
+        inventory = self.read(self.context["inventory_path"], 0o600)
+        require(digest(inventory) == self.context["inventory_sha256"], "inventory digest mismatch")
+        services = {entry.name: entry for entry in parser.parse_inventory(inventory).services}
+        self.services = {}
+        for name, writer in self.context["writers"].items():
+            service = services.get(writer["service"])
+            require(service is not None and service.target == self.context["target"]
+                    and service.profile == PROFILE and service.key_custody == "host-local"
+                    and service.days is not None and service.rollback_hold_seconds is not None,
+                    "inventory client policy mismatch")
+            require(int(service.rollback_hold_seconds) > 0, "hold must be positive")
+            self.services[name] = service
+        require(len({s.subject_dn for s in self.services.values()}) == len(self.services), "writer subjects collide")
+
+    def fixed(self, value):
+        return self.root + value
+
+    def validate_context(self):
+        c = self.context
+        fields = {"schema", "target", "inventory_path", "inventory_sha256", "platform_pki_path",
+                  "platform_pki_sha256", "lifecycle_helper_path", "lifecycle_helper_sha256",
+                  "config_path", "dropin_path", "state_root", "package_nevra", "writers"}
+        require(type(c) is dict and set(c) == fields and type(c["schema"]) is int and c["schema"] == 1,
+                "invalid context schema")
+        require(type(c["target"]) is str and re.fullmatch(r"[a-z0-9][a-z0-9.-]*", c["target"]), "invalid target")
+        for field, expected in {"config_path": CONFIG, "dropin_path": DROPIN, "state_root": STATE,
+                                "lifecycle_helper_path": HELPER, "platform_pki_path": PKI,
+                                "inventory_path": "/etc/alloy/pki/inventory.yml"}.items():
+            require(c[field] == self.fixed(expected), "context path slot mismatch")
+        for field in ("inventory_sha256", "platform_pki_sha256", "lifecycle_helper_sha256"):
+            sha(c[field])
+        require(c["package_nevra"] == NEVRA, "package identity mismatch")
+        writers = c["writers"]
+        require(type(writers) is dict and writers and set(writers) <= {"loki", "mimir"}, "invalid writers")
+        for name, w in writers.items():
+            require(type(w) is dict and set(w) == {"service", "trust_id", "state_root", "pending_root",
+                                                  "versions_root", "ca_file", "ca_sha256"}, "invalid writer fields")
+            for field in ("service", "trust_id"):
+                require(type(w[field]) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", w[field]),
+                        "invalid writer identity")
+            for field, expected in {"state_root": f"/var/lib/platform-config/pki/alloy/{name}",
+                                    "pending_root": f"/etc/alloy/pki/{name}/tls-pending",
+                                    "versions_root": f"/etc/alloy/pki/{name}/tls-versions"}.items():
+                require(w[field] == self.fixed(expected), "writer path slot mismatch")
+            path(w["ca_file"])
+            require(w["ca_file"].startswith(self.fixed("/etc/alloy/pki/")), "CA outside Alloy PKI")
+            sha(w["ca_sha256"])
+        require(len({w["service"] for w in writers.values()}) == len(writers), "writer services collide")
+
+    def read(self, filename, mode):
+        require(stat.S_ISREG(os.lstat(filename).st_mode), "input must be a direct regular file")
+        data, identity = self.lc.read_path(filename, "activation input", mode=mode, maximum=MAXIMUM)
+        value = {"identity": list(identity), "sha256": digest(data), "mode": mode}
+        require(filename not in self.sources or self.sources[filename] == value, "input snapshot changed")
+        self.sources[filename] = value
+        return data
+
+    def recheck_sources(self):
+        for directory, _lock, identity in self.writer_locks:
+            directory.recheck("writer state")
+            self.lc.require_snapshot(directory, "lock", identity, "writer lock")
+        for filename, value in list(self.sources.items()):
+            self.read(filename, value["mode"])
+
+    def config_boundary(self):
+        c = self.context
+        config = self.read(c["config_path"], 0o640).decode("ascii")
+        dropin = self.read(c["dropin_path"], 0o644)
+        expected = ("[Service]\nUser=root\nGroup=root\nExecStart=\n"
+                    f"ExecStart=/usr/bin/alloy run {CONFIG} --storage.path=/var/lib/alloy/data "
+                    "--server.http.listen-addr=127.0.0.1:12345\nRestart=always\nNoNewPrivileges=true\n"
+                    "PrivateTmp=true\nProtectHome=true\nProtectSystem=full\n").encode("ascii")
+        require(dropin == expected, "unsupported Alloy drop-in")
+        # Fixed role-rendered blocks only. Arbitrary feature bytes remain signed
+        # review input, not a claim that this recognizer understands Alloy syntax.
+        require("/*" not in config and "*/" not in config and not re.search(r"(?m)^\s*//", config),
+                "comments unsupported in initial config")
+        quoted = r'"[^"\\\x00-\x1f]*"'
+        tls = (r'\s*tls_config\s*\{\s*ca_file\s*=\s*(?P<ca>' + quoted + r')'
+               r'\s*server_name\s*=\s*(?P<server>' + quoted + r')'
+               r'\s*insecure_skip_verify\s*=\s*false\s*min_version\s*=\s*"TLS12"'
+               r'\s*cert_file\s*=\s*(?P<cert>' + quoted + r')\s*key_file\s*=\s*(?P<key>' + quoted + r')\s*\}')
+        endpoint = r'\s*endpoint\s*\{\s*url\s*=\s*(?P<url>' + quoted + r')\s*follow_redirects\s*=\s*false' + tls + r'\s*\}'
+        patterns = {
+            "loki": r'loki\.write "default" \{' + endpoint + r'\s*\}',
+            "mimir": (r'prometheus\.remote_write "platform_metrics" \{\s*external_labels\s*=\s*\{(?:\s*'
+                      + quoted + r'\s*=\s*' + quoted + r',)*\s*\}' + endpoint
+                      + r'\s*wal\s*\{\s*max_keepalive_time\s*=\s*"[1-9][0-9]*[hms]"\s*\}\s*\}'),
+        }
+        require(len(re.findall(r'\b(?:loki\.write|prometheus\.remote_write)\s*"', config)) == len(c["writers"]),
+                "all write components must be bound")
+        require(len(re.findall(r'\bcert_file\s*=', config)) == len(c["writers"])
+                and len(re.findall(r'\bkey_file\s*=', config)) == len(c["writers"]), "unbound client credential settings")
+        normalized = config
+        self.version_ids = {}
+        for name, w in c["writers"].items():
+            matches = list(re.finditer(patterns[name], config))
+            require(len(matches) == 1, "unsupported managed write block")
+            values = {key: json.loads(value) for key, value in matches[0].groupdict().items()}
+            url = urlsplit(values["url"])
+            require(url.scheme == "https" and url.hostname and (url.port is None or 1 <= url.port <= 65535)
+                    and url.username is None and url.password is None and not url.query and not url.fragment,
+                    "writer endpoint must be strict HTTPS")
+            self.lc.validate_dns(url.hostname, "endpoint hostname")
+            self.lc.validate_dns(values["server"], "TLS server name")
+            require(values["ca"] == w["ca_file"], "writer CA path mismatch")
+            ca_mode = stat.S_IMODE(os.lstat(w["ca_file"]).st_mode)
+            require(ca_mode in {0o600, 0o644}, "unsafe CA mode")
+            require(digest(self.read(w["ca_file"], ca_mode)) == w["ca_sha256"], "CA digest mismatch")
+            match = re.fullmatch(re.escape(w["versions_root"]) + r'/([0-9a-f]{32})/fullchain\.crt', values["cert"])
+            require(match is not None, "certificate is not a canonical immutable version path")
+            request_id = match.group(1)
+            require(values["key"] == w["versions_root"] + "/" + request_id + "/tls.key", "key version mismatch")
+            self.version_ids[name] = request_id
+            for field, basename in (("cert", "fullchain.crt"), ("key", "tls.key")):
+                old = json.dumps(values[field], ensure_ascii=True)
+                require(config.count(old) == 1, "version path must occur exactly once")
+                normalized = normalized.replace(old, json.dumps(w["versions_root"] + "/@VERSION@/" + basename))
+        self.boundaries = boundary_digests(
+            c["target"], {name: service.subject_dn for name, service in self.services.items()},
+            c["writers"], normalized.encode("ascii"), dropin,
+        )
+        self.recheck_sources()
+        return self.boundaries
+
+    def authenticate(self):
+        self.config_boundary()
+        receipts = {}
+        self.not_after = {}
+        for name, w in self.context["writers"].items():
+            service = self.services[name]
+            require(service.validation_boundary_sha256 == self.boundaries[name], "signed boundary mismatch")
+            argv = ["target-stage-status", "--service-adapter", "client-stage-v1", "--target", self.context["target"],
+                    "--minimum-remaining-lifetime-seconds", "1", "--validity-days", str(int(service.days))]
+            for field in ("service", "trust_id", "state_root", "pending_root", "versions_root"):
+                argv.extend(("--" + field.replace("_", "-"), w[field]))
+            for field in ("cn", "ou", "o", "c"):
+                argv.extend(("--subject-" + field, getattr(service, "subject_" + field)))
+            args = self.lc.build_parser().parse_args(argv)
+            self.lc.validate_arguments(args)
+            staged = self.lc.authenticated_client_stage_status(args, require_staged=True)
+            require(staged["request_id"] == self.version_ids[name], "config does not select authenticated stage")
+            pending = w["pending_root"] + "/" + staged["request_id"]
+            request_bytes = self.read(pending + "/request", 0o600)
+            request = self.lc.parse_record(request_bytes, self.lc.REQUEST_V2_FIELDS, "authenticated request")
+            require(request["inventory_sha256"] == self.context["inventory_sha256"], "request inventory mismatch")
+            # Include protected trust and exact independent writer metadata in the
+            # process receipt; keys stay target-local and are never serialized.
+            for filename in self.lc.TRUST_NAMES:
+                self.read(w["state_root"] + "/trust/" + w["trust_id"] + "/" + filename, 0o600)
+            for directory, names in ((pending, self.lc.PENDING_NAMES), (staged["version_path"], self.lc.VERSION_NAMES)):
+                for filename in names:
+                    if filename != "tls.key":
+                        self.read(directory + "/" + filename, 0o600)
+            # The shared writer lock and snapshots retain the exact response
+            # and client chain authenticated above. Admission must cover every
+            # certificate whose expiry could prevent authenticated rollback.
+            response = self.lc.parse_record(
+                self.read(staged["version_path"] + "/response", 0o600),
+                self.lc.RESPONSE_V2_FIELDS, "authenticated response",
+            )
+            chain = self.lc.pem_certificates(
+                self.read(staged["version_path"] + "/ca-chain.crt", 0o600),
+                2, "authenticated client CA chain",
+            )
+            self.not_after[name] = min(
+                int(response["not_after_epoch"]),
+                *(int(certificate.not_valid_after_utc.timestamp()) for certificate in chain),
+            )
+            metadata = {}
+            for label, directory in (("pending", pending), ("version", staged["version_path"])):
+                opened = self.lc.PinnedDirectory.open(directory, "client directory")
+                try:
+                    metadata[label] = list(self.lc.dir_identity(os.fstat(opened.fd)))
+                    key = os.stat("tls.key", dir_fd=opened.fd, follow_symlinks=False)
+                    require(stat.S_ISREG(key.st_mode) and key.st_uid == key.st_gid == 0
+                            and key.st_nlink == 1 and stat.S_IMODE(key.st_mode) == 0o600, "unsafe client key metadata")
+                    metadata[label + "_key"] = list(self.lc.file_identity(key))
+                    opened.recheck("client directory")
+                finally:
+                    opened.close()
+            receipts[name] = {**staged, "metadata": metadata, "request_sha256": digest(request_bytes), "subject_dn": service.subject_dn,
+                              "validity_days": int(service.days), "rollback_hold_seconds": service.rollback_hold_seconds,
+                              "validation_boundary_sha256": self.boundaries[name]}
+        require(len({r["certificate_spki_sha256"] for r in receipts.values()}) == len(receipts), "writer keys collide")
+        self.recheck_sources()
+        return {"target": self.context["target"], "package_nevra": NEVRA, "writers": receipts,
+                "sources": dict(self.sources), "rpm_files": dict(self.rpm_files)}
+
+    def require_start_margin(self):
+        # Admission for a new start only; never re-age a receipt or condition
+        # authenticated stop-only recovery on retaining the original margin.
+        now = int(time.time())
+        for name, service in self.services.items():
+            require(self.not_after[name] - now >= int(service.rollback_hold_seconds) + 86400,
+                    "insufficient remaining lifetime for initial hold plus one-day buffer")
+
+    def command(self, binary, *arguments):
+        return self.lc.run((self.fixed(binary), *arguments), "fixed Alloy command").stdout.decode("ascii").rstrip("\n")
+
+    def unit(self, desired=None):
+        output = self.command("/usr/bin/systemctl", "show", "alloy.service", "--no-pager",
+                              "--property=LoadState,FragmentPath,SourcePath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState")
+        values = unique(line.split("=", 1) for line in output.splitlines())
+        expected = {"LoadState": "loaded", "FragmentPath": self.fixed(UNIT), "SourcePath": "",
+                    "DropInPaths": self.context["dropin_path"], "NeedDaemonReload": "no"}
+        require(set(values) == set(expected) | {"ActiveState", "UnitFileState"}
+                and all(values[k] == v for k, v in expected.items()), "unit ownership mismatch")
+        require(values["UnitFileState"] in {"enabled", "disabled"}, "unit must be unmasked with known enablement")
+        if desired:
+            require((values["ActiveState"], values["UnitFileState"]) == desired, "unexpected Alloy service state")
+        self.read(self.fixed(UNIT), 0o644)
+        identity = self.command("/usr/bin/rpm", "-qf", "--qf", "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n",
+                                self.fixed(UNIT), self.fixed("/usr/bin/alloy"))
+        require(identity.splitlines() == [NEVRA, NEVRA], "unit or executable RPM identity mismatch")
+        # Query RPM's SHA-256 manifest rather than verifying mutable package
+        # configuration (the role intentionally replaces that configuration).
+        manifest = self.command("/usr/bin/rpm", "-q", "--qf",
+                                "%{FILEDIGESTALGO}\n[%{FILENAMES}\t%{FILEDIGESTS}\n]", "alloy").splitlines()
+        require(manifest and manifest[0] == "8", "RPM must use SHA-256 file digests")
+        files = unique(line.split("\t", 1) for line in manifest[1:])
+        for filename, mode in ((self.fixed(UNIT), 0o644), (self.fixed("/usr/bin/alloy"), 0o755)):
+            require(filename in files, "RPM file manifest incomplete")
+            sha(files[filename])
+            parent = self.lc.PinnedDirectory.open(os.path.dirname(filename), "RPM file parent", private=False)
+            fd = None
+            try:
+                fd = os.open(os.path.basename(filename), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME,
+                             dir_fd=parent.fd)
+                info = os.fstat(fd)
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0 and info.st_nlink == 1
+                        and stat.S_IMODE(info.st_mode) == mode and 0 < info.st_size <= 512 * 1024 * 1024,
+                        "unsafe RPM file metadata")
+                value = hashlib.sha256()
+                remaining = info.st_size
+                while remaining:
+                    chunk = os.read(fd, min(65536, remaining))
+                    require(chunk, "short RPM file read")
+                    value.update(chunk)
+                    remaining -= len(chunk)
+                require(value.hexdigest() == files[filename], "RPM file digest mismatch")
+                identity = self.lc.file_identity(info)
+                require(self.lc.file_identity(os.fstat(fd)) == identity, "RPM file changed during read")
+                self.lc.require_snapshot(parent, os.path.basename(filename), identity, "RPM file")
+                parent.recheck("RPM file parent")
+                observation = {"identity": list(identity), "sha256": value.hexdigest()}
+                require(filename not in self.rpm_files or self.rpm_files[filename] == observation, "RPM file snapshot changed")
+                self.rpm_files[filename] = observation
+            finally:
+                if fd is not None:
+                    os.close(fd)
+                parent.close()
+
+    def native_validate(self):
+        self.command("/usr/bin/alloy", "validate", self.context["config_path"])
+        self.recheck_sources()
+
+    def ready(self):
+        # http.client has neither redirects nor proxy-environment handling.
+        # A per-attempt wall-clock alarm also bounds a slow/trickling response.
+        def expired(_signal, _frame):
+            raise TimeoutError("readiness deadline")
+        previous = signal.signal(signal.SIGALRM, expired)
+        try:
+            for attempt in range(10):
+                connection = http.client.HTTPConnection("127.0.0.1", 12345, timeout=1)
+                try:
+                    signal.setitimer(signal.ITIMER_REAL, 2)
+                    connection.request("GET", "/-/ready")
+                    response = connection.getresponse()
+                    body = response.read(4097)
+                    if response.status == 200 and len(body) <= 4096:
+                        return
+                except (OSError, http.client.HTTPException):
+                    pass
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    connection.close()
+                if attempt < 9:
+                    time.sleep(1)
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+        raise Rejected("Alloy readiness failed")
+
+    def records(self, state, evidence):
+        entries = self.lc.scan(state, "process state")
+        names = set(entries)
+        require(names in ({"lock"}, {"lock", "journal.json"}, {"lock", "journal.json", "complete.json"},
+                          {"lock", "journal.json", "failed.json"}), "unknown process state retained")
+        state.recheck("process state")
+        journal = None
+        terminal = None
+        for name in sorted(names - {"lock"}):
+            require(stat.S_ISREG(entries[name].st_mode), "process record must be a direct regular file")
+            raw, _ = self.lc.read_at(state, name, "process record")
+            value = decode(raw)
+            status = {"journal.json": "intent", "complete.json": "complete", "failed.json": "failed"}[name]
+            require(type(value) is dict and set(value) == {"schema", "kind", "status", "evidence"}
+                    and type(value["schema"]) is int and value["schema"] == 1
+                    and value["kind"] == "alloy-initial-activation" and value["status"] == status
+                    and value["evidence"] == evidence and canonical(value) == raw,
+                    "process record authentication mismatch; retained")
+            if name == "journal.json":
+                journal = value
+            else:
+                terminal = status
+        return journal, terminal
+
+    def write_record(self, state, status, evidence):
+        name = "journal.json" if status == "intent" else status + ".json"
+        value = {"schema": 1, "kind": "alloy-initial-activation", "status": status, "evidence": evidence}
+        state.recheck("process state")
+        self.lc.atomic_replace_at(state, name, canonical(value), "process record")
+
+    def crash(self, point):
+        if self.root and os.environ.get("PLATFORM_ALLOY_INITIAL_CRASH_AT") == point:
+            os._exit(91)
+
+    def stop(self, state, evidence):
+        require(self.authenticate() == evidence, "inputs drifted; recovery required")
+        journal, terminal = self.records(state, evidence)
+        require(journal is not None and terminal is None, "stop requires an exact nonterminal intent")
+        self.unit()
+        self.recheck_sources()
+        self.command("/usr/bin/systemctl", "disable", "--now", "alloy.service")
+        self.unit(("inactive", "disabled"))
+        require(self.authenticate() == evidence, "inputs drifted after stop; retained")
+        journal, terminal = self.records(state, evidence)
+        require(journal is not None and terminal is None, "intent changed after stop; retained")
+        self.write_record(state, "failed", evidence)
+
+    def execute(self, action):
+        if action == "boundary":
+            return self.config_boundary()
+        state = self.lc.PinnedDirectory.open(self.context["state_root"], "process state")
+        lock = None
+        try:
+            require(os.fstat(state.fd).st_gid == 0, "process state must be root:root")
+            lock, lock_identity = self.lc.acquire_lock(state)
+            # Retain shared writer locks for the whole process transaction. The
+            # nested authenticated stage checks also take compatible shared locks.
+            for root in sorted(writer["state_root"] for writer in self.context["writers"].values()):
+                directory = self.lc.PinnedDirectory.open(root, "writer state")
+                try:
+                    writer_lock, identity = self.lc.acquire_lock(directory, shared=True)
+                except BaseException:
+                    directory.close()
+                    raise
+                self.writer_locks.append((directory, writer_lock, identity))
+            self.recheck_sources()
+            evidence = self.authenticate()
+            self.unit()
+            # Unit bytes are part of the durable journal too.
+            evidence = self.authenticate()
+            journal, terminal = self.records(state, evidence)
+            self.lc.require_snapshot(state, "lock", lock_identity, "process lock")
+            if terminal == "complete":
+                self.unit(("active", "enabled"))
+                self.native_validate()
+                self.ready()
+                require(self.authenticate() == evidence, "completed inputs drifted")
+                return {"schema": 1, "status": "complete", "changed": False}
+            if terminal == "failed":
+                self.unit(("inactive", "disabled"))
+                require(action != "activate", "failed terminal requires review; automatic reuse forbidden")
+                return {"schema": 1, "status": "failed", "changed": False}
+            if journal:
+                if action == "recover":
+                    try:
+                        self.stop(state, evidence)
+                    except Exception:
+                        raise Rejected("rollback unverified; intent retained; recovery required") from None
+                    return {"schema": 1, "status": "failed", "changed": True}
+                require(action == "status", "interrupted intent requires recover")
+                return {"schema": 1, "status": "recovery-required", "changed": False}
+            self.unit(("inactive", "disabled"))
+            self.native_validate()
+            require(self.authenticate() == evidence, "pre-start inputs drifted")
+            if action != "activate":
+                if action == "check":
+                    self.require_start_margin()
+                return {"schema": 1, "status": "prepared", "changed": False}
+            self.records(state, evidence)
+            self.unit(("inactive", "disabled"))
+            self.require_start_margin()
+            self.write_record(state, "intent", evidence)
+            self.crash("after-journal")
+            try:
+                require(self.authenticate() == evidence, "inputs drifted before start")
+                self.unit(("inactive", "disabled"))
+                self.recheck_sources()
+                self.require_start_margin()
+                self.command("/usr/bin/systemctl", "enable", "--now", "alloy.service")
+                self.crash("after-start")
+                self.unit(("active", "enabled"))
+                self.ready()
+                require(self.authenticate() == evidence, "inputs drifted before completion")
+                self.unit(("active", "enabled"))
+                self.records(state, evidence)
+                self.recheck_sources()
+                self.write_record(state, "complete", evidence)
+            except Exception:
+                try:
+                    self.stop(state, evidence)
+                except Exception:
+                    raise Rejected("rollback unverified; intent retained; recovery required") from None
+                raise Rejected("initial activation failed; verified inactive and disabled; review required") from None
+            return {"schema": 1, "status": "complete", "changed": True}
+        finally:
+            for directory, writer_lock, _identity in reversed(self.writer_locks):
+                os.close(writer_lock)
+                directory.close()
+            self.writer_locks.clear()
+            if lock is not None:
+                os.close(lock)
+            state.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("boundary", "check", "activate", "recover", "status"))
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+    try:
+        result = Initial(args.config).execute(args.action)
+        sys.stdout.buffer.write(canonical(result))
+    except Rejected as error:
+        print(f"Alloy initial activation rejected: {error}", file=sys.stderr)
+        return 1
+    except Exception:
+        # No source/config/PKI contents or parser diagnostics in operator output.
+        print("Alloy initial activation rejected; retained state requires inspection", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

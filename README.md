@@ -192,6 +192,21 @@ plan/manual GitLab jobs. Private keys remain on the registry host; offline
 approval/signing separates request export from certificate activation. Full
 registry smoke writes test artifacts. The filesystem lane is initial-issue only.
 
+### Monitoring
+
+The replacement monitoring stack remains gated. The focused
+[monitoring HAProxy role](roles/monitoring_haproxy/README.md) verifies bundle
+contents and metadata against reviewed inputs before reuse, including in check
+mode; drift is rejected rather than repaired. This does not establish full-stack
+deployment or dev GitLab qualification.
+The host-native [Alloy role](roles/grafana_alloy/README.md#loki-tls-inputs) supports
+separate Loki mTLS file references with early input/file checks. The shared
+[PKI role](roles/pki_host_local_certificate/README.md#initial-client-request-and-staging)
+supports issue-only client requests and authenticated immutable staging. Alloy's
+[guarded initial start](roles/grafana_alloy/README.md#guarded-initial-start) consumes
+those direct paths with signed inventory binding and failed-start recovery.
+Renewal, overlap enforcement and full monitoring delivery qualification remain pending.
+
 ## Repository Family
 
 | Repository | Purpose |
