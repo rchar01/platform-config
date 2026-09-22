@@ -45,6 +45,8 @@ and other secrets belong outside Git.
 
 ## Services
 
+- [Fresh Alloy Installation](alloy-initial-install.md): Fixed single-host initial
+  client issuance, stopped installation and guarded first-start sequence.
 - [Registry](registry.md): Zot registry access, host-local certificate lifecycle,
   authentication, OCI smoke tests, client tools, Kubernetes pulls, and
   image-signing considerations.

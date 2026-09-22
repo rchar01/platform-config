@@ -50,6 +50,9 @@ activate/check/status/recover replays including the same PID and invocation.
 Config, certificate, key, trust, inventory, helper, and stage snapshots must remain
 unchanged. Tampered config boundary, inventory bytes, and inventory bytes with a
 rebound local context digest must reject before enable/start or journal creation.
+Read-only `renewal-preflight` rejects prepared state, then authenticates both
+writer selections after completion with matching receipt/inventory bindings,
+positive validity, unchanged input/record metadata and the same PID/invocation.
 
 `fault.py` traces the unmodified helper at native paths. For readiness failure it
 first proves actual Alloy HTTP 200, pauses that process with SIGSTOP, and resumes
@@ -66,5 +69,6 @@ Synthetic private keys are generated in the preparer and transferred to the
 target. This lane makes **no new host-local key-custody proof**; native signing
 interoperability is a separate qualification. HTTP 200 proves local readiness,
 not ingestion, real Loki/Mimir or HAProxy acceptance. These tests qualify initial
-start only, not renewal, selectors, Ansible orchestration, managed-host SELinux,
-production networking, or complete monitoring/CI deployment.
+start and read-only first-predecessor observation, not renewal, selectors,
+Ansible orchestration, managed-host SELinux, production networking, or complete
+monitoring/CI deployment.

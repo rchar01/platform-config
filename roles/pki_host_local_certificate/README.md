@@ -47,11 +47,13 @@ lineage. Its exact server profile and existing public server routes remain uncha
 
 ## Initial Client Request And Staging
 
-Use `tasks_from: client_request_publish` and `tasks_from: client_response_stage`
-from a reviewed play targeting exactly one literal host. These are role entry
-points, not new operator Make/CI routes. Both require apply mode, `operation:
+The fixed `playbooks/pki-client-request.yml` and `playbooks/pki-client-stage.yml`
+invoke `tasks_from: client_request_publish` and `tasks_from: client_response_stage`
+for one literal host limit. Both require apply mode, `operation:
 issue`, `profile: client-p384-sha384-v1`, and `service_adapter: client-stage-v1`.
 Renewal and all active lifecycle operations are rejected for this adapter.
+The [fresh Alloy workflow](../../docs/alloy-initial-install.md) documents the
+per-writer root bindings and separate offline signing handoff.
 
 Alongside existing service/target, trust, signing-key, protected-root and transport
 inputs, supply `pki_host_local_certificate_subject_cn`, `_subject_ou`, `_subject_o`

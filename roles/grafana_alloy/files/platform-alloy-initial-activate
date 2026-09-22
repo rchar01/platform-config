@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Fixed, initial-only Alloy process receipt. No PKI selection or renewal.
+"""Initial Alloy receipt and read-only renewal preflight. No PKI renewal writes.
 
 The signed boundary reviews the complete config bytes; the narrow write-block
 recognizer below is deliberately not an Alloy parser. Native validation is still
@@ -346,6 +346,7 @@ class Initial:
         self.config_boundary()
         receipts = {}
         self.not_after = {}
+        self.expiries = {}
         for name, w in self.context["writers"].items():
             service = self.services[name]
             require(service.validation_boundary_sha256 == self.boundaries[name], "signed boundary mismatch")
@@ -382,10 +383,11 @@ class Initial:
                 self.read(staged["version_path"] + "/ca-chain.crt", 0o600),
                 2, "authenticated client CA chain",
             )
-            self.not_after[name] = min(
+            self.expiries[name] = (
                 int(response["not_after_epoch"]),
-                *(int(certificate.not_valid_after_utc.timestamp()) for certificate in chain),
+                min(int(certificate.not_valid_after_utc.timestamp()) for certificate in chain),
             )
+            self.not_after[name] = min(self.expiries[name])
             metadata = {}
             for label, directory in (("pending", pending), ("version", staged["version_path"])):
                 opened = self.lc.PinnedDirectory.open(directory, "client directory")
@@ -548,7 +550,42 @@ class Initial:
         require(journal is not None and terminal is None, "intent changed after stop; retained")
         self.write_record(state, "failed", evidence)
 
-    def execute(self, action):
+    def renewal_observation(self, state, evidence, writer, lock_identity):
+        # This path runs only after completed-state native validation/readiness.
+        # Recheck records and unit too: readiness must not hide concurrent drift.
+        self.unit(("active", "enabled"))
+        require(self.authenticate() == evidence, "renewal predecessor inputs drifted")
+        journal, terminal = self.records(state, evidence)
+        require(journal is not None and terminal == "complete", "renewal preflight requires a completed initial receipt")
+        self.lc.require_snapshot(state, "lock", lock_identity, "process lock")
+        observed = int(time.time())
+        require(observed > 0, "invalid observation time")
+        writers = {}
+        for name, prior in evidence["writers"].items():
+            leaf_expiry, chain_expiry = self.expiries[name]
+            remaining = min(leaf_expiry, chain_expiry) - observed
+            require(remaining > 0, "renewal predecessor expired during observation")
+            writers[name] = {field: prior[field] for field in (
+                "service", "subject_dn", "request_id", "request_sha256", "certificate_sha256",
+                "certificate_spki_sha256", "version_path", "validation_boundary_sha256",
+            )}
+            writers[name].update(profile=PROFILE, rollback_hold_seconds=int(prior["rollback_hold_seconds"]),
+                                 leaf_not_after_epoch=leaf_expiry, client_chain_not_after_epoch=chain_expiry,
+                                 remaining_lifetime_seconds=remaining)
+        # records() proved these canonical bytes match complete.json. Observed
+        # times stay out of the immutable initial evidence and confer no authority.
+        receipt = {"schema": 1, "kind": "alloy-initial-activation", "status": "complete", "evidence": evidence}
+        return {"schema": 1, "kind": "alloy-initial-renewal-preflight", "status": "predecessor-verified",
+                "changed": False, "target": self.context["target"], "writer": writer,
+                "initial_receipt_sha256": digest(canonical(receipt)), "inventory_sha256": self.context["inventory_sha256"],
+                "observed_at_epoch": observed, "writers": writers}
+
+    def execute(self, action, *, writer=None):
+        require(action in {"boundary", "check", "activate", "recover", "status", "renewal-preflight"}, "unknown action")
+        if action == "renewal-preflight":
+            require(type(writer) is str and writer in self.context["writers"], "renewal writer must be configured")
+        else:
+            require(writer is None, "writer selection is only valid for renewal preflight")
         if action == "boundary":
             return self.config_boundary()
         state = self.lc.PinnedDirectory.open(self.context["state_root"], "process state")
@@ -573,11 +610,15 @@ class Initial:
             evidence = self.authenticate()
             journal, terminal = self.records(state, evidence)
             self.lc.require_snapshot(state, "lock", lock_identity, "process lock")
+            if action == "renewal-preflight":
+                require(terminal == "complete", "renewal preflight requires a completed initial receipt")
             if terminal == "complete":
                 self.unit(("active", "enabled"))
                 self.native_validate()
                 self.ready()
                 require(self.authenticate() == evidence, "completed inputs drifted")
+                if action == "renewal-preflight":
+                    return self.renewal_observation(state, evidence, writer, lock_identity)
                 return {"schema": 1, "status": "complete", "changed": False}
             if terminal == "failed":
                 self.unit(("inactive", "disabled"))
@@ -637,11 +678,14 @@ class Initial:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("boundary", "check", "activate", "recover", "status"))
+    parser.add_argument("action", choices=("boundary", "check", "activate", "recover", "status", "renewal-preflight"))
     parser.add_argument("--config", required=True)
+    parser.add_argument("--writer", choices=("loki", "mimir"))
     args = parser.parse_args()
+    if (args.action == "renewal-preflight") != (args.writer is not None):
+        parser.error("--writer is required only for renewal-preflight")
     try:
-        result = Initial(args.config).execute(args.action)
+        result = Initial(args.config).execute(args.action, writer=args.writer)
         sys.stdout.buffer.write(canonical(result))
     except Rejected as error:
         print(f"Alloy initial activation rejected: {error}", file=sys.stderr)

@@ -1,0 +1,18 @@
+---
+- name: Authenticate and stage one initial client certificate response
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require one literal client staging host in apply mode
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - ansible_limit | default('') == inventory_hostname
+          - not ansible_check_mode
+        fail_msg: Initial client staging requires apply mode and an explicit limit naming one inventory host.
+
+    - name: Stage the signed response without service activation
+      ansible.builtin.include_role:
+        name: pki_host_local_certificate
+        tasks_from: client_response_stage

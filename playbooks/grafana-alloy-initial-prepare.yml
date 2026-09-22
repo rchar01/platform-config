@@ -1,0 +1,18 @@
+---
+- name: Prepare initial takeover of one stopped Alloy process
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require one literal Alloy preparation host in apply mode
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - ansible_limit | default('') == inventory_hostname
+          - not ansible_check_mode
+        fail_msg: Alloy initial preparation requires apply mode and one literal inventory host limit.
+
+    - name: Prepare exact initial control inputs
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: initial_prepare

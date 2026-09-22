@@ -256,12 +256,22 @@ class ActionModule(ActionBase):
         with Path(task_vars['fixture_events']).open('a') as stream:
             stream.write(json.dumps({'argv': argv, 'check': self._task.check_mode}) + '\\n')
         if argv == ['/usr/bin/systemctl', 'show', 'alloy.service', '--no-pager',
+                    '--property=LoadState,ActiveState,UnitFileState,FragmentPath,SourcePath']:
+            lines = task_vars['fixture_stage_lines']
+            return dict(changed=False, rc=0, stdout='\\n'.join(lines), stdout_lines=lines)
+        if argv == ['/usr/bin/systemctl', 'show', 'alloy.service', '--no-pager',
                     '--property=LoadState,FragmentPath,SourcePath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState']:
             lines = ['LoadState=loaded', 'FragmentPath=/usr/lib/systemd/system/alloy.service', 'SourcePath=',
                      'DropInPaths=/etc/systemd/system/alloy.service.d/platform.conf', 'NeedDaemonReload=no',
                      'ActiveState=' + task_vars.get('fixture_active', 'inactive'), 'UnitFileState=disabled']
             return dict(changed=False, rc=0, stdout='\\n'.join(lines), stdout_lines=lines)
         assert argv[0] == '/usr/local/libexec/platform-alloy-initial-activate', argv
+        if argv[1] == 'renewal-preflight':
+            assert argv[2:] == ['--config', '/etc/alloy/pki/initial-activation.json',
+                               '--writer', task_vars['grafana_alloy_renewal_writer']], argv
+            return dict(changed=False, rc=task_vars.get('fixture_rc', 0),
+                        stdout=task_vars.get('fixture_stdout', json.dumps(task_vars['fixture_outcome'])),
+                        stderr=task_vars.get('fixture_stderr', ''))
         assert argv[1] in ('check', 'activate', 'status', 'recover'), argv
         assert argv[2:] == ['--config', '/etc/alloy/pki/initial-activation.json'], argv
         outcome = task_vars.get('fixture_outcome', {'schema': 1, 'status': 'prepared', 'changed': False})
@@ -372,6 +382,11 @@ def role_case(repo_root, isolated_test_dir, namespace_root_runner):
     evidence_dir.mkdir()
     environment = {**_evidence_environment(repo_root, evidence_dir),
                    "ANSIBLE_ROLES_PATH": str(root / "roles") + ":" + str(repo_root / "roles")}
+    callback = evidence_dir / "callback_plugins/alloy_tls_evidence.py"
+    callback.write_text(callback.read_text().replace('"action": result._task.action,', '''
+            "action": result._task.action,
+            "no_log": bool(result._task.no_log),
+            "public_msg": value.get("msg") if result._task.action == "ansible.builtin.debug" else None,'''))
 
     def observations():
         return _events(evidence_dir)
@@ -858,3 +873,268 @@ def test_no_implicit_prepare_recover_or_success_on_command_failure(role_case):
         result.assert_failure()
         assert [e["argv"][1] for e in events] == ["activate"]
         assert tree(c.target) == before
+
+
+def renewal_observation(context, writer="loki"):
+    observed = 1800000000
+    entries = {}
+    for index, (name, configured) in enumerate(context["writers"].items()):
+        request_id = ("a" if name == "loki" else "b") * 32
+        entries[name] = {
+            "service": configured["service"], "profile": "client-p384-sha384-v1",
+            "subject_dn": f"CN={name}.sender,OU=Telemetry,O=Example,C=US",
+            "request_id": request_id, "request_sha256": digest((name + " request").encode()),
+            "certificate_sha256": digest((name + " leaf").encode()),
+            "certificate_spki_sha256": digest((name + " spki").encode()),
+            "version_path": configured["versions_root"] + "/" + request_id,
+            "validation_boundary_sha256": digest((name + " boundary").encode()),
+            "rollback_hold_seconds": 2592000,
+            "leaf_not_after_epoch": observed + 4000000 + index,
+            "client_chain_not_after_epoch": observed + 5000000 - 2000000 * index,
+            "remaining_lifetime_seconds": 4000000 if index == 0 else 3000000,
+        }
+    return {
+        "schema": 1, "kind": "alloy-initial-renewal-preflight", "status": "predecessor-verified",
+        "changed": False, "target": context["target"], "writer": writer,
+        "initial_receipt_sha256": digest(b"initial receipt"), "inventory_sha256": context["inventory_sha256"],
+        "observed_at_epoch": observed, "writers": entries,
+    }
+
+
+def test_renewal_outcome_batched_strict_schema_and_bindings(bridge, repo_root):
+    inputs = values(repo_root)
+    assert inputs["grafana_alloy_renewal_writer"] == ""
+    context = {**bridge.validate(inputs), "inventory_sha256": digest(b"inventory")}
+    valid = renewal_observation(context)
+    filters = bridge.FilterModule().filters()
+    assert filters["grafana_alloy_initial_renewal_outcome"] == bridge.renewal_outcome
+    for selected in PREFIXES:
+        outcome = {**valid, "writer": selected}
+        assert bridge.renewal_outcome(outcome, context, selected) == outcome
+        single_context = {**context, "writers": {selected: context["writers"][selected]}}
+        single = {**outcome, "writers": {selected: outcome["writers"][selected]}}
+        assert bridge.renewal_outcome(single, single_context, selected) == single
+
+    cases = [None, [], "predecessor-verified", {**valid, "extra": "unexpected"}]
+    for key in valid:
+        cases.append({field: value for field, value in valid.items() if field != key})
+    for field, replacements in {
+        "schema": [True, False, "1", 1.0, 2], "kind": [None, "alloy-initial"],
+        "status": ["complete", "failed", True], "changed": [True, 0, "false", None],
+        "target": ["other-host", None], "writer": ["mimir", "other", None, []],
+        "initial_receipt_sha256": ["A" * 64, "a" * 63, 0],
+        "inventory_sha256": ["0" * 64, "bad", None],
+        "observed_at_epoch": [True, False, 0, -1, "1800000000", 1800000000.0],
+        "writers": [[], {}, {"loki": valid["writers"]["loki"]},
+                    {**valid["writers"], "other": valid["writers"]["loki"]}],
+    }.items():
+        cases.extend({**valid, field: replacement} for replacement in replacements)
+    entry = valid["writers"]["loki"]
+    bad_entries = [None, [], {**entry, "extra": True}]
+    bad_entries.extend({field: value for field, value in entry.items() if field != key} for key in entry)
+    for field, replacements in {
+        "service": ["mimir-writer", None], "profile": ["server-p384-sha384-v1", None],
+        "subject_dn": ["CN=only", "CN=a,OU=b,O=c,C=us", "CN=a,OU=b,O=c,C=USA",
+                       "CN=a,OU=b,O=c,C=US\n", "CN=a,OU=b,O=c,C=US,O=extra",
+                       "CN=a b,OU=b,O=c,C=US", "CN=é,OU=b,O=c,C=US",
+                       "CN=" + "a" * 65 + ",OU=b,O=c,C=US", "CN=,OU=b,O=c,C=US", None],
+        "request_id": ["A" * 32, "a" * 31, "../unsafe", True],
+        "version_path": [entry["version_path"] + "/", entry["version_path"].replace("loki", "mimir"),
+                         context["writers"]["loki"]["versions_root"] + "/" + "b" * 32, None],
+        **{field: ["A" * 64, "a" * 63, "a" * 65, "g" * 64, None, True]
+           for field in ("request_sha256", "certificate_sha256", "certificate_spki_sha256", "validation_boundary_sha256")},
+        **{field: [True, False, 0, -1, "1", 1.0, None]
+           for field in ("rollback_hold_seconds", "leaf_not_after_epoch", "client_chain_not_after_epoch", "remaining_lifetime_seconds")},
+    }.items():
+        bad_entries.extend({**entry, field: replacement} for replacement in replacements)
+    bad_entries += [
+        {**entry, "remaining_lifetime_seconds": entry["remaining_lifetime_seconds"] + 1},
+        {**entry, "leaf_not_after_epoch": valid["observed_at_epoch"]},
+        {**entry, "client_chain_not_after_epoch": valid["observed_at_epoch"] - 1},
+        {**entry, "subject_dn": valid["writers"]["mimir"]["subject_dn"]},
+        {**entry, "certificate_spki_sha256": valid["writers"]["mimir"]["certificate_spki_sha256"]},
+    ]
+    cases.extend({**valid, "writers": {**valid["writers"], "loki": bad}} for bad in bad_entries)
+    for index, outcome in enumerate(cases):
+        with pytest.raises(AnsibleFilterError, match="inputs rejected: renewal_outcome") as error:
+            bridge.renewal_outcome(outcome, context, "loki")
+        assert str(error.value) == "Alloy initial inputs rejected: renewal_outcome", index
+    for selected in ("", "other", "loki,mimir", "../loki", None, True, []):
+        with pytest.raises(AnsibleFilterError):
+            bridge.renewal_outcome(valid, context, selected)
+    with pytest.raises(AnsibleFilterError):
+        bridge.renewal_outcome(valid, {**context, "writers": {"mimir": context["writers"]["mimir"]}}, "loki")
+
+
+def install_renewal_inputs(c, bridge):
+    # Seed the already-installed fixture directly; renewal never invokes prepare.
+    plan = bridge.validate(c.inputs)
+    inputs = bridge.build(plan, bridge.sources(c.inputs), c.config.read_text(), c.dropin.read_text())
+    for directory in inputs["directories"]:
+        path = c.target / directory.lstrip("/")
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700 if directory.startswith("/var/lib/platform-config") or directory == "/etc/alloy/pki" else 0o755)
+    for entry in inputs["files"]:
+        if entry.get("required"):
+            continue
+        path = c.target / entry["path"].lstrip("/")
+        content = base64.b64decode(entry["content"]) if entry.get("base64") else entry["content"].encode()
+        path.write_bytes(content)
+        path.chmod(int(entry["mode"], 8))
+    return inputs["context"]
+
+
+def assert_renewal_read_only(c, before):
+    assert tree(c.target) == before
+    observed = c.observations()
+    assert all(not event["changed"] for event in observed), observed
+    assert all(event["action"] in {"ansible.builtin.include_role", "ansible.builtin.include_tasks",
+                                    "ansible.builtin.assert", "ansible.builtin.set_fact", "ansible.builtin.stat",
+                                    "fixture_command", "ansible.builtin.debug"} for event in observed), observed
+    assert not any("prepare" in event["name"].lower() or "policy" in event["name"].lower() for event in observed)
+    return observed
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["apply", "check"])
+def test_renewal_preflight_selected_writers_read_only_real_entry_chain(role_case, bridge, check):
+    c = role_case
+    context = install_renewal_inputs(c, bridge)
+    before = tree(c.target)
+    tasks = []
+    for writer in PREFIXES:
+        tasks += [
+            {"ansible.builtin.include_role": {"name": str(c.role), "tasks_from": "renewal_preflight.yml"},
+             "vars": {"grafana_alloy_renewal_writer": writer, "fixture_outcome": renewal_observation(context, writer)}},
+            {"ansible.builtin.assert": {"that": [
+                f"grafana_alloy_renewal_result == fixture_expected_{writer}"]}, "no_log": True},
+        ]
+    # The inherited stopped/disabled declaration is valid for read-only observation;
+    # the helper, rather than desired-state authorization, checks actual runtime.
+    result, events = c.run("unused", tasks=tasks, check=check, overrides={
+        "fixture_expected_" + writer: renewal_observation(context, writer) for writer in PREFIXES
+    }, extra_vars="grafana_alloy_initial_action=activate")
+    result.assert_success()
+    assert events == [{"argv": [HELPER, "renewal-preflight", "--config", CONTEXT, "--writer", writer], "check": False}
+                      for writer in PREFIXES]
+    observed = assert_renewal_read_only(c, before)
+    commands = [event for event in observed if event["action"] == "fixture_command"]
+    assert len(commands) == 2 and all(event["no_log"] for event in commands)
+    assert all(event["no_log"] for event in observed if event["action"] in {"ansible.builtin.stat", "ansible.builtin.set_fact"})
+    reports = [event["public_msg"] for event in observed if event["action"] == "ansible.builtin.debug"]
+    assert reports == [{"schema": 1, "status": "predecessor-verified", "changed": False,
+                        "target": "localhost", "writer": writer} for writer in PREFIXES]
+    assert "changed=0" in result.stdout
+    for private in ("CN=", "Telemetry", "subject_dn", "version_path", CONTEXT, context["inventory_sha256"]):
+        assert private not in result.stdout
+
+
+def test_renewal_preflight_invalid_selection_batched_before_source_io(role_case):
+    c = role_case
+    before = tree(c.target)
+    # Exercise omission with the shipped empty default, before the typed matrix.
+    result, events = c.run("renewal_preflight.yml", check=True)
+    result.assert_failure()
+    assert events == []
+    observed = assert_renewal_read_only(c, before)
+    assert not any(event["action"] in {"ansible.builtin.stat", "ansible.builtin.set_fact"} for event in observed)
+    cases = [{"grafana_alloy_renewal_writer": value} for value in
+             ("", "other", "Loki", "loki,mimir", "../loki", "loki\n", "--writer=mimir", True, 1, None, [], {})]
+    cases += [{"grafana_alloy_renewal_writer": "loki", "grafana_alloy_initial_writers": writers}
+              for writers in ({}, [], "loki", {"mimir": c.inputs["grafana_alloy_initial_writers"]["mimir"]})]
+    case_file = c.root / "invalid-renewal.yml"
+    case_file.write_text(yaml.safe_dump([
+        {"ansible.builtin.set_fact": {"fixture_rejected": False}},
+        {"block": [{"ansible.builtin.include_role": {"name": str(c.role), "tasks_from": "renewal_preflight.yml"},
+                    "vars": {key: "{{ fixture_case.get('" + key + "', fixture_base['" + key + "']) }}"
+                             for key in ("grafana_alloy_renewal_writer", "grafana_alloy_initial_writers")}}],
+         "rescue": [{"ansible.builtin.set_fact": {"fixture_rejected": True}}]},
+        {"ansible.builtin.assert": {"that": ["fixture_rejected", "grafana_alloy_renewal_result is not defined"]}},
+    ], sort_keys=False))
+    result, events = c.run("unused", check=True, overrides={
+        "fixture_base": c.inputs, "grafana_alloy_initial_inventory_src": "/must-not-read/inventory.yml",
+        "grafana_alloy_initial_platform_pki_src": "/must-not-read/platform-pki",
+    }, tasks=[{"ansible.builtin.include_tasks": str(case_file), "loop": cases,
+               "loop_control": {"loop_var": "fixture_case", "label": "invalid-selection"}}])
+    result.assert_success()
+    assert events == []
+    observed = assert_renewal_read_only(c, before)
+    failed = [event for event in observed if event["status"] == "failed"]
+    assert len(failed) == len(cases)
+    assert all(event["name"].endswith("Require one literal host and a configured renewal writer") for event in failed)
+    assert not any(event["name"].endswith("Validate Grafana Alloy immutable initial inputs") for event in observed)
+
+
+@pytest.mark.parametrize("limit", [None, "all", "local*", "localhost,localhost"])
+def test_renewal_preflight_requires_literal_limit_before_io(role_case, limit):
+    c = role_case
+    before = tree(c.target)
+    result, events = c.run("renewal_preflight.yml", limit=limit, overrides={"grafana_alloy_renewal_writer": "loki"})
+    result.assert_failure()
+    assert events == []
+    observed = assert_renewal_read_only(c, before)
+    assert len([event for event in observed if event["status"] == "failed"]) == 1
+    assert not any(event["action"] in {"ansible.builtin.stat", "ansible.builtin.set_fact"} for event in observed)
+
+
+@pytest.mark.parametrize("fault", ["rc", "stderr", "malformed", "extra", "binding", "entry-extra", "writer-binding"])
+def test_renewal_preflight_command_rejection_never_reports_success(role_case, bridge, fault):
+    c = role_case
+    context = install_renewal_inputs(c, bridge)
+    outcome = renewal_observation(context)
+    overrides = {"grafana_alloy_renewal_writer": "loki", "fixture_outcome": outcome}
+    if fault == "rc":
+        overrides["fixture_rc"] = 1
+    elif fault == "stderr":
+        overrides["fixture_stderr"] = "private diagnostic CN=must-not-leak"
+    elif fault == "malformed":
+        overrides["fixture_stdout"] = "not-json CN=must-not-leak"
+    elif fault == "extra":
+        outcome["authorization"] = True
+    elif fault == "binding":
+        outcome["inventory_sha256"] = "0" * 64
+    elif fault == "entry-extra":
+        outcome["writers"]["mimir"]["authorization"] = True
+    else:
+        outcome["writer"] = "mimir"
+    before = tree(c.target)
+    result, events = c.run("renewal_preflight.yml", check=True, overrides=overrides)
+    result.assert_failure()
+    assert events == [{"argv": [HELPER, "renewal-preflight", "--config", CONTEXT, "--writer", "loki"], "check": False}]
+    observed = assert_renewal_read_only(c, before)
+    assert not any(event["action"] == "ansible.builtin.debug" for event in observed)
+    failed = [event for event in observed if event["status"] == "failed"]
+    assert len(failed) == 1 and failed[0]["no_log"]
+    assert failed[0]["name"].endswith("Run the fixed read-only renewal preflight" if fault in ("rc", "stderr")
+                                    else "Validate and record the exact renewal predecessor observation")
+    assert "predecessor-verified" not in result.stdout and "must-not-leak" not in result.stdout
+
+
+@pytest.mark.parametrize("drift", ["missing", "helper", "lifecycle", "artifact", "inventory", "context",
+                                   "config", "dropin", "source-pin", "desired-config"])
+def test_renewal_preflight_requires_exact_sources_without_repair(role_case, bridge, drift):
+    c = role_case
+    overrides: dict = {"grafana_alloy_renewal_writer": "loki"}
+    if drift != "missing":
+        context = install_renewal_inputs(c, bridge)
+        overrides["fixture_outcome"] = renewal_observation(context)
+        if drift == "source-pin":
+            overrides["grafana_alloy_initial_inventory_sha256"] = "0" * 64
+        elif drift == "desired-config":
+            overrides["grafana_alloy_loki_url"] = "https://other.example.invalid/api/push"
+        else:
+            path = {"helper": c.target / HELPER.lstrip("/"), "lifecycle": c.lifecycle,
+                    "artifact": c.target / "usr/local/bin/platform-pki", "inventory": c.target / "etc/alloy/pki/inventory.yml",
+                    "context": c.target / CONTEXT.lstrip("/"), "config": c.config, "dropin": c.dropin}[drift]
+            path.write_bytes(path.read_bytes() + b"\n")
+    before = tree(c.target)
+    result, events = c.run("renewal_preflight.yml", check=True, overrides=overrides)
+    result.assert_failure()
+    assert events == []
+    observed = assert_renewal_read_only(c, before)
+    assert not any(event["action"] == "ansible.builtin.debug" for event in observed)
+    failed = [event for event in observed if event["status"] == "failed"]
+    assert len(failed) == 1 and failed[0]["no_log"]
+    expected = ("Reject unsafe existing control directories without repair" if drift == "missing" else
+                "Snapshot reviewed controller sources with exact byte hashes" if drift == "source-pin" else
+                "Reject any existing immutable source or context drift")
+    assert failed[0]["name"].endswith(expected)

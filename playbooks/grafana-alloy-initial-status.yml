@@ -1,0 +1,17 @@
+---
+- name: Inspect one Alloy initial process receipt
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require one literal Alloy status host
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - ansible_limit | default('') == inventory_hostname
+        fail_msg: Alloy initial status requires one literal inventory host limit.
+
+    - name: Read authenticated initial process status
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: initial_status

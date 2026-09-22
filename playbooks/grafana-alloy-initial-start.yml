@@ -1,0 +1,18 @@
+---
+- name: Start one prepared Alloy process for the first time
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require one literal Alloy initial start host in apply mode
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - ansible_limit | default('') == inventory_hostname
+          - not ansible_check_mode
+        fail_msg: Alloy initial start requires apply mode and one literal inventory host limit.
+
+    - name: Perform the fixed guarded initial start
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: initial_activate

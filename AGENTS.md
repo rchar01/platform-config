@@ -50,6 +50,15 @@
 
 ## Monitoring Boundary
 
+- Fresh Alloy installation uses the fixed boundary/client-request/client-stage,
+  stopped-stage, initial-prepare/start/status/recover playbooks, one literal host
+  at a time. Keep offline signing separate and client issuance predecessor-free.
+  `initial_stage` rejects active/enabled/unknown units and retained process owners
+  before ordinary convergence; prepare and start remain separate invocations.
+  Reuse existing roles, defaults and validators; no variable-selected actions or
+  automatic inclusion in `site.yml`/combined monitoring. Renewal preflight is not
+  a fresh-install prerequisite. See `docs/alloy-initial-install.md`.
+
 - Client PKI request/staging reuses `pki_host_local_certificate` with the fixed
   issue-only `client-stage-v1` adapter and `client-p384-sha384-v1` profile. Preserve
   existing server adapters, signed exchange schema and target-local keys. Stage
@@ -88,6 +97,15 @@
   Initial replay/readiness does not establish renewal, revocation, ingestion or
   post-completion rollback. Task-only boundary/status paths must not invoke role
   dependencies. See `roles/grafana_alloy/README.md#guarded-initial-start`.
+
+- Alloy `renewal_preflight` is read-only, including check mode: one literal host,
+  one configured writer, exact installed initial inputs and a completed initial
+  receipt with actual active/enabled state. Hold the process and all writer locks;
+  reauthenticate both writers, source/record metadata, native config and readiness.
+  Report strict predecessor/validity observations without renewing, migrating
+  receipts, installing helpers or changing service state. Observed validity is not
+  CRL/ingestion evidence or renewal authorization; retain original initial and
+  issue-only staging semantics. See `roles/grafana_alloy/README.md#read-only-renewal-preflight`.
 
 ## Kubernetes Bastion Boundary
 

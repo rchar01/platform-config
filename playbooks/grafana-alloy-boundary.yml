@@ -1,0 +1,16 @@
+---
+- name: Review one fresh Alloy host's pre-CSR boundaries
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Require one literal Alloy inventory host
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == [inventory_hostname]
+          - ansible_limit | default('') == inventory_hostname
+        fail_msg: Alloy boundary review requires an explicit limit naming one inventory host.
+
+    - name: Render controller-only initial certificate boundaries
+      ansible.builtin.include_role:
+        name: grafana_alloy
+        tasks_from: initial_boundary

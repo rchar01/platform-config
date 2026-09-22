@@ -217,6 +217,12 @@ separate Loki mTLS file references with early input/file checks. The shared
 supports issue-only client requests and authenticated immutable staging. Alloy's
 [guarded initial start](roles/grafana_alloy/README.md#guarded-initial-start) consumes
 those direct paths with signed inventory binding and failed-start recovery.
+The [fresh Alloy installation workflow](docs/alloy-initial-install.md) provides
+fixed playbooks for boundary review, initial issue/staging, stopped installation,
+preparation and first start.
+Its [read-only renewal preflight](roles/grafana_alloy/README.md#read-only-renewal-preflight)
+authenticates the first predecessor and all configured writers, reporting validity under
+the existing locks before a future renewal handoff.
 Renewal, overlap enforcement and full monitoring delivery qualification remain pending.
 
 ## Repository Family

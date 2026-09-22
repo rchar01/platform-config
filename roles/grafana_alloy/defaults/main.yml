@@ -61,3 +61,6 @@ grafana_alloy_initial_inventory_sha256: ""
 grafana_alloy_initial_platform_pki_src: ""
 grafana_alloy_initial_platform_pki_sha256: ""
 grafana_alloy_initial_writers: {}
+
+# Read-only predecessor observation; explicitly select one configured writer.
+grafana_alloy_renewal_writer: ""

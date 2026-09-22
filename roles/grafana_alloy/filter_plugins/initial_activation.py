@@ -257,8 +257,48 @@ def outcome(value, action):
     return value
 
 
+@sanitized
+def renewal_outcome(value, context, writer):
+    # This is a bounded observation, never a new lifecycle authorization record.
+    require(isinstance(value, dict) and set(value) == {
+        "schema", "kind", "status", "changed", "target", "writer", "initial_receipt_sha256",
+        "inventory_sha256", "observed_at_epoch", "writers",
+    })
+    require(isinstance(value["schema"], int) and not isinstance(value["schema"], bool) and value["schema"] == 1)
+    require(value["kind"] == "alloy-initial-renewal-preflight" and value["status"] == "predecessor-verified"
+            and value["changed"] is False)
+    require(isinstance(writer, str) and writer in PREFIXES and writer in context["writers"])
+    require(value["target"] == context["target"] and value["writer"] == writer
+            and sha(value["inventory_sha256"]) == context["inventory_sha256"])
+    sha(value["initial_receipt_sha256"])
+    observed = value["observed_at_epoch"]
+    require(isinstance(observed, int) and not isinstance(observed, bool) and observed > 0)
+    writers = value["writers"]
+    require(isinstance(writers, dict) and set(writers) == set(context["writers"]) and writer in writers)
+    subjects, spkis = set(), set()
+    for name, entry in writers.items():
+        require(isinstance(entry, dict) and set(entry) == {
+            "service", "profile", "subject_dn", "request_id", "request_sha256", "certificate_sha256",
+            "certificate_spki_sha256", "version_path", "validation_boundary_sha256", "rollback_hold_seconds",
+            "leaf_not_after_epoch", "client_chain_not_after_epoch", "remaining_lifetime_seconds",
+        })
+        require(entry["service"] == context["writers"][name]["service"] and entry["profile"] == "client-p384-sha384-v1")
+        text(entry["subject_dn"], r"CN=[A-Za-z0-9._-]{1,64},OU=[A-Za-z0-9._-]{1,64},O=[A-Za-z0-9._-]{1,64},C=[A-Z]{2}")
+        text(entry["request_id"], r"[0-9a-f]{32}")
+        require(entry["version_path"] == context["writers"][name]["versions_root"] + "/" + entry["request_id"])
+        for field in ("request_sha256", "certificate_sha256", "certificate_spki_sha256", "validation_boundary_sha256"):
+            sha(entry[field])
+        for field in ("rollback_hold_seconds", "leaf_not_after_epoch", "client_chain_not_after_epoch", "remaining_lifetime_seconds"):
+            require(isinstance(entry[field], int) and not isinstance(entry[field], bool) and entry[field] > 0)
+        require(entry["remaining_lifetime_seconds"] == min(entry["leaf_not_after_epoch"], entry["client_chain_not_after_epoch"]) - observed)
+        subjects.add(entry["subject_dn"])
+        spkis.add(entry["certificate_spki_sha256"])
+    require(len(subjects) == len(writers) and len(spkis) == len(writers))
+    return value
+
+
 class FilterModule:
     def filters(self):
         return {"grafana_alloy_initial_" + name: function for name, function in
                 (("validate", validate), ("sources", sources), ("boundary", boundary),
-                 ("build", build), ("outcome", outcome))}
+                 ("build", build), ("outcome", outcome), ("renewal_outcome", renewal_outcome))}

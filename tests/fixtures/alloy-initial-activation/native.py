@@ -112,6 +112,8 @@ def main():
     baseline = inputs()
     state_before = snapshot(STATE)
     action('check', 'prepared')
+    refused = run(HELPER, 'renewal-preflight', '--config', str(CONTEXT), '--writer', 'loki', ok=False)
+    assert refused.returncode == 1 and not refused.stdout
     assert inputs() == baseline and snapshot(STATE) == state_before
     print('PASS: native RPM/unit/config validation and read-only prepared check', flush=True)
 
@@ -185,6 +187,21 @@ def main():
         action(name, 'complete')
         assert snapshot(STATE) == records and service() == active and inputs() == baseline
     print('PASS: actual enable/start, native HTTP 200, complete receipt and four no-restart/no-write replays', flush=True)
+    context = json.loads(CONTEXT.read_bytes())
+    receipt_hash = hashlib.sha256((STATE / 'complete.json').read_bytes()).hexdigest()
+    for writer in ('loki', 'mimir'):
+        result = run(HELPER, 'renewal-preflight', '--config', str(CONTEXT), '--writer', writer)
+        value = json.loads(result.stdout)
+        assert not result.stderr and value['status'] == 'predecessor-verified' and value['changed'] is False
+        assert value['writer'] == writer and value['target'] == context['target']
+        assert value['initial_receipt_sha256'] == receipt_hash
+        assert value['inventory_sha256'] == context['inventory_sha256']
+        assert set(value['writers']) == {'loki', 'mimir'}
+        for name, observed in value['writers'].items():
+            assert observed['service'] == context['writers'][name]['service']
+            assert observed['remaining_lifetime_seconds'] > 0
+        assert snapshot(STATE) == records and service() == active and inputs() == baseline
+    print('PASS: both native renewal preflights bound the initial predecessor without writes or restarts', flush=True)
 
 
 if __name__ == '__main__':

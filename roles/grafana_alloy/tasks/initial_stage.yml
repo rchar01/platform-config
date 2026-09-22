@@ -1,0 +1,43 @@
+---
+- name: Require explicit single-host stopped Alloy staging intent
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all == [inventory_hostname]
+      - ansible_limit | default('') == inventory_hostname
+      - grafana_alloy_enabled is sameas true
+      - grafana_alloy_service_enabled is sameas false
+      - grafana_alloy_service_state == 'stopped'
+    fail_msg: Fresh Alloy staging requires one literal host and an enabled role with disabled/stopped service intent.
+
+- name: Reject retained initial process ownership before staging
+  ansible.builtin.import_tasks: initial_guard.yml
+
+- name: Validate direct initial mTLS paths before ordinary convergence
+  ansible.builtin.set_fact:
+    grafana_alloy_initial_plan: "{{ vars | grafana_alloy_initial_validate }}"
+  no_log: true
+
+- name: Observe the Alloy unit before any staging changes
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - alloy.service
+      - --no-pager
+      - --property=LoadState,ActiveState,UnitFileState,FragmentPath,SourcePath
+  register: grafana_alloy_initial_stage_unit
+  changed_when: false
+  check_mode: false
+
+- name: Require an absent or inactive disabled Alloy unit
+  ansible.builtin.assert:
+    that:
+      - >-
+        grafana_alloy_initial_stage_unit.stdout_lines | sort in
+        [(['LoadState=not-found', 'ActiveState=inactive', 'UnitFileState=', 'FragmentPath=', 'SourcePath='] | sort),
+         (['LoadState=loaded', 'ActiveState=inactive', 'UnitFileState=disabled',
+           'FragmentPath=/usr/lib/systemd/system/alloy.service', 'SourcePath='] | sort)]
+    fail_msg: Fresh Alloy staging requires an absent or stopped disabled native RPM unit; foreign owners are refused.
+
+- name: Reuse ordinary Alloy convergence with stopped intent
+  ansible.builtin.import_tasks: main.yml

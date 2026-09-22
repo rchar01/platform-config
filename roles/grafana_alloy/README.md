@@ -91,17 +91,21 @@ files during activation. All configured Loki/Mimir outputs must use authenticate
 staged client versions at direct immutable paths, with strict mTLS and distinct
 writer identities. Mimir bearer-token mode is outside this initial path.
 
-Use these explicit `tasks_from` entry points from a reviewed play:
+The [fresh-install workflow](../../docs/alloy-initial-install.md) supplies fixed
+public playbooks around these `tasks_from` entry points:
 
 | Entry point | Purpose |
 | --- | --- |
 | `initial_boundary` | Controller-only pre-CSR boundary hashes; no target I/O |
+| `initial_stage` | Reuse ordinary convergence only for an absent or inactive/disabled unit and stopped intent |
 | `initial_prepare` | Verify stopped/disabled prerequisites and install absent exact control inputs |
 | `initial_check` / `initial_status` | Read-only authenticated state observations; inspect the returned status |
 | `initial_activate` | One fixed enable/start, readiness proof and durable initial receipt |
 | `initial_recover` | Authenticate retained intent and restore disabled/stopped state; never retry activation |
 
-Mutating entries require one literal host limit and apply mode. Preparation
+Initial preparation/start/recovery require one literal host limit and apply mode.
+Fresh stopped staging also requires that literal limit and supports check mode;
+it rejects retained process ownership before ordinary convergence. Preparation
 requires `grafana_alloy_enabled: true`, `grafana_alloy_service_enabled: false`,
 and `grafana_alloy_service_state: stopped`; activation requires explicit
 `true`/`started` service intent. No public Make/CI activation route is added.
@@ -180,3 +184,46 @@ real Loki indexing, HAProxy authorization or full monitoring/CI qualification.
 The current systemd override retains root execution for access to the existing
 system journal collection contract. Reducing privileges requires separate target
 qualification of journal access and all enabled collectors.
+
+### Read-Only Renewal Preflight
+
+Use `tasks_from: renewal_preflight` with one literal host limit and
+`grafana_alloy_renewal_writer: loki` or `mimir` (default empty). It requires the
+exact installed initial helper/control inputs and a completed initial receipt
+with actual active/enabled Alloy. Apply and check mode both run the same read-only
+observation; desired service state is not activation authorization for this entry.
+It imports only task entries, without role convergence or dependencies.
+
+The helper's fixed `renewal-preflight --config
+/etc/alloy/pki/initial-activation.json --writer <loki|mimir>` action retains the
+process lock and shared locks for every configured writer. It reauthenticates
+signed stages, original config/inventory/file identities, RPM/unit bytes, native
+configuration and loopback readiness. Prepared, failed, interrupted, drifted,
+expired or unknown state rejects without a service action or state repair.
+
+`grafana_alloy_renewal_result` contains the initial receipt and inventory digests,
+selected writer, observation time, and each writer's request/certificate/SPKI,
+subject, direct version path, boundary, signed hold, leaf/client-chain expiries
+and remaining lifetime. Detailed evidence uses `no_log`; routine reporting exposes
+only schema, status, changed, target and writer. The strict result status is
+`predecessor-verified`, with `changed: false`.
+
+This is evidence for designing the first renewal handoff, not permission to create
+a successor or alter selection. It creates no request, key, selector, active
+record, configuration or service change. The signed hold is reported rather than
+enforced as a renewal admission margin; a still-valid predecessor may be below
+the initial-start margin. It proves neither CRL status nor remote acceptance.
+Later mutating operations must reconstruct their evidence under their own locks.
+
+The entry cannot upgrade an older installed helper or overwrite retained control
+inputs; exact-source drift fails closed. Do not rerun `initial_prepare` against a
+completed initial installation to obtain newer helper bytes. Historical receipt
+handoff, reviewed helper upgrades, multiple versions, actual renewal and operational
+rollback remain separate work.
+
+Targeted helper tests are in `tests/python/test_alloy_renewal_preflight.py` and
+require the reviewed generated tools artifact via `PLATFORM_ALLOY_TEST_PKI_ZIPAPP`.
+Selected `test_renewal_*` cases in `tests/python/test_alloy_initial_role.py` cover
+the real task chain and strict result schema. The native initial-activation lane
+also checks both writer selections with unchanged PID, invocation, inputs and
+receipts.
